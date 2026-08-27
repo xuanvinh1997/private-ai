@@ -23,7 +23,7 @@ from private_ai_api.schemas import (
     WorkspaceUpdate,
 )
 from private_ai_api.services.gpu_lease import InsufficientVram
-from private_ai_api.services.ollama import OllamaUnavailable
+from private_ai_api.services.provider import NoProviderConfigured, ProviderUnavailable
 
 router = APIRouter(tags=["workspaces"])
 
@@ -154,7 +154,7 @@ async def delete_workspace(
     if not existing:
         raise HTTPException(status_code=404, detail="Workspace not found")
     # Conversations cascade in SQLite, but a document also owns files on disk and nodes in
-    # Neo4j, so each one has to go through the processor before the row disappears.
+    # the knowledge index, so each one goes through the processor before the row is gone.
     documents = services.database.fetch_all(
         "SELECT id FROM documents WHERE workspace_id = ?",
         (workspace_id,),
@@ -236,13 +236,9 @@ def delete_conversation(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-def _format_document_context(item: dict[str, object]) -> str:
-    location = [f"đoạn {int(item['chunk_index']) + 1}"]
-    if item.get("page_number") is not None:
-        location.append(f"trang {item['page_number']}")
-    if item.get("section_title"):
-        location.append(f"mục {item['section_title']}")
-    return f"[Nguồn: {item['filename']} · {' · '.join(location)}]\n{item['content']}"
+def _format_document_context(item: dict[str, Any]) -> str:
+    """LightRAG cites by file, so the prompt names the file the passage came from."""
+    return f"[Nguồn: {item.get('filename') or 'không rõ'}]\n{item.get('content', '')}"
 
 
 async def _prepare_chat(
@@ -374,9 +370,14 @@ async def chat_in_conversation(
         stream=False,
     )
     try:
-        result = await services.ollama.chat(request)
-    except OllamaUnavailable as exc:
-        raise HTTPException(status_code=503, detail="Ollama is not reachable") from exc
+        result = await services.ai.chat(request)
+    except NoProviderConfigured as exc:
+        raise HTTPException(status_code=503, detail="No AI provider is configured") from exc
+    except ProviderUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The selected AI provider is not reachable",
+        ) from exc
     except InsufficientVram as exc:
         raise HTTPException(status_code=503, detail="Not enough reserved GPU capacity") from exc
     answer = str(result.get("message", {}).get("content", "")).strip()
@@ -406,7 +407,7 @@ async def stream_chat_in_conversation(
         answer_parts: list[str] = []
         saved = False
         try:
-            async for event in services.ollama.chat_stream(request):
+            async for event in services.ai.chat_stream(request):
                 content = str(event.get("message", {}).get("content", ""))
                 if content:
                     answer_parts.append(content)
@@ -420,8 +421,10 @@ async def stream_chat_in_conversation(
             detail = _complete_chat(conversation_id, payload, services, conversation, answer)
             saved = True
             yield _sse({"type": "done", "conversation": detail.model_dump(mode="json")})
-        except OllamaUnavailable:
-            yield _sse({"type": "error", "message": "Ollama is not reachable"})
+        except NoProviderConfigured:
+            yield _sse({"type": "error", "message": "No AI provider is configured"})
+        except ProviderUnavailable:
+            yield _sse({"type": "error", "message": "The selected AI provider is not reachable"})
         except InsufficientVram:
             yield _sse({"type": "error", "message": "Not enough reserved GPU capacity"})
         except asyncio.CancelledError:

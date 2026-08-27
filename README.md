@@ -17,9 +17,9 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - Tài liệu được chia đoạn, tìm kiếm cục bộ và tự đưa các đoạn liên quan vào chat kèm yêu cầu
   dẫn nguồn. Retrieval kết hợp keyword và embedding bằng reciprocal-rank fusion; vector được
   lưu trong SQLite nên không cần extension native riêng trên macOS hoặc Windows.
-- Chunk giữ metadata section và trang cho tài liệu mới. Neo4j tạo chuỗi
-  `Document -> Section -> Chunk`, nhãn entity theo loại, mở rộng graph có giới hạn 1-2 hop và
-  rerank cục bộ; citation trong chat kèm file, trang, section và chunk ID khi nguồn có dữ liệu.
+- LightRAG lo chunking, embedding, trích xuất entity/quan hệ và truy xuất; mỗi không gian làm
+  việc là một namespace riêng nên không gian này không bao giờ trả lời bằng tài liệu của không
+  gian kia. Citation trong chat dẫn theo tên tệp nguồn.
 - `embeddinggemma` là embedding model mặc định. Có thể đổi bằng
   `PRIVATE_AI_EMBEDDING_MODEL`; khi model không sẵn sàng, hệ thống tự fallback về keyword.
 - MarkItDown và plugin `markitdown-ocr` được bật trong worker. Khi chọn vision model, plugin
@@ -28,9 +28,8 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
   scan tự fallback sang Tesseract/Poppler. Ngôn ngữ OCR cấu hình bằng
   `PRIVATE_AI_OCR_LANGUAGES=vie+eng`.
 - Memory có tạo, sửa, bật/tắt, xóa và semantic search. SQLite giữ bản chuẩn cùng embedding
-  cache; Neo4j giữ `Memory`/`User`, quan hệ `BELONGS_TO` và vector index 768 chiều. Chat chỉ
-  lấy top-k memory liên quan và fallback về keyword/recent khi Ollama hoặc Neo4j ngoại tuyến;
-  UI cho phép xuất toàn bộ memory thành JSON.
+  cache và tự xếp hạng bằng vector đã lưu. Chat chỉ lấy top-k memory liên quan và fallback về
+  keyword/recent khi nhà cung cấp ngoại tuyến; UI cho phép xuất toàn bộ memory thành JSON.
 - `GpuLeaseManager` đồng bộ model Ollama đang chạy từ `/api/ps`, reserve trước chat/embedding.
   ASR batch giữ 2 GiB trong lúc transcription; ASR streaming giữ lease trong lúc native model
   được cache và giải phóng khi API shutdown. Request mới bị từ chối trước khi load nếu vượt
@@ -41,12 +40,9 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - `pywebview` desktop launcher với runtime adapter local/WSL.
 - MCP Python SDK v2 server tại `http://127.0.0.1:8010/mcp`, có bearer token cục bộ,
   Origin/Host validation và 21 tool cho document, GraphRAG, memory, model inventory/default.
-- Neo4j GraphRAG đồng bộ `Document`/`Chunk`/`Entity`, tạo vector + full-text index và dùng
-  `HybridRetriever`; chat vẫn fallback về SQLite khi Neo4j tắt.
-- Khi đặt `PRIVATE_AI_GRAPH_ENTITY_MODEL`, worker gọi Ollama structured output để trích xuất
-  entity/relation, lưu facts cùng provenance model trong SQLite rồi tạo quan hệ Neo4j. Nếu
-  không cấu hình, ingestion nhanh vẫn dùng heuristic entity/co-occurrence.
-- Neo4j Compose chỉ expose loopback và không còn mật khẩu mặc định.
+- Knowledge graph chạy bằng LightRAG nhúng thẳng trong tiến trình API, lưu graph/vector/KV
+  bằng file dưới `.local-data/lightrag`. Không có database server nào phải chạy kèm. LLM và
+  embedding của LightRAG đi qua đúng nhà cung cấp AI đang bật.
 - Nút microphone ưu tiên AudioWorklet, resample trực tiếp thành PCM float32 mono 16 kHz và gửi
   khung 320 ms qua binary WebSocket. FastAPI dùng binding shared-library của `transcribe.cpp`,
   cache Nemotron trong tiến trình và trả committed/tentative partial cùng transcript cuối vào
@@ -56,6 +52,15 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - Model Manager gộp model Ollama và Nemotron ASR, lưu default theo tác vụ, trạng thái
   load/unload, update/delete có xác nhận, SHA-256 của ASR và lịch sử thao tác/lỗi. UI chỉ đưa
   language model vào hộp chọn chat và hiển thị runtime/default/checksum tương ứng.
+- Cài đặt có mục Nhà cung cấp AI: ngoài Ollama cục bộ dựng sẵn, người dùng thêm được máy chủ
+  nói chuẩn OpenAI API (vLLM, LM Studio, LiteLLM, OpenAI…) kèm base URL và API key, kiểm tra
+  kết nối trước khi lưu rồi chuyển sang dùng. Chat, embedding và trích xuất tri thức đều đi
+  qua nhà cung cấp đang bật; model default cho embedding lưu trong SQLite nên giữ sau khi
+  khởi động lại. Model từ xa không cho pull/unload/delete và trả 422 kèm lý do. Ollama cục bộ
+  chỉ là bản ghi được seed sẵn ở lần chạy đầu: sửa tên, đổi địa chỉ (WSL2 hoặc máy khác trong
+  mạng) hay xóa hẳn đều được, xóa rồi thì không seed lại. Đổi địa chỉ thì GPU lease và health
+  đi theo host mới. Xóa hết nhà cung cấp thì health trả `not_configured` và chat trả 503 "No
+  AI provider is configured" thay vì báo mất kết nối.
 
 ## Phần chưa hoàn tất so với `GOAL.md`
 
@@ -77,7 +82,6 @@ health luôn phản ánh trạng thái runtime thật, không giả lập servic
 - Python 3.12 trở lên.
 - Node.js 22 trở lên và Corepack (hoặc pnpm).
 - Ollama nếu cần model local.
-- Docker Desktop/Engine nếu cần Neo4j.
 - Poppler và Tesseract là fallback cục bộ cho ảnh/PDF scan khi chưa chọn vision model. Script
   Windows cài cả hai vào Conda environment; nếu dùng `-SkipNativeTools`, hãy tự thêm thư mục
   chứa `pdftoppm.exe` và `tesseract.exe` vào `PATH`.
@@ -154,16 +158,12 @@ PRIVATE_AI_WSL_API_EXECUTABLE=/opt/private-ai/.venv/bin/private-ai-api
 
 Launcher gọi trực tiếp `wsl.exe --distribution ... --cd ... -- executable`, không tạo command string qua `cmd.exe` hay Bash. Trên macOS, `auto` luôn chọn runtime `local`.
 
-## Neo4j
+## Knowledge graph
 
-```text
-.venv/bin/private-ai-neo4j up
-```
-
-Trên Windows dùng `conda run --no-capture-output -n private-ai private-ai-neo4j up`. Helper tạo mật khẩu mạnh tại
-`.local-data/neo4j-password`, truyền bằng environment cho Compose và không in secret ra màn
-hình. Dùng action `status`, `logs` hoặc `down` để quản lý container. Có thể override bằng
-`PRIVATE_AI_NEO4J_PASSWORD`; đặt `PRIVATE_AI_NEO4J_ENABLED=false` để tắt hoàn toàn GraphRAG.
+Không cần cài gì thêm. LightRAG chạy trong tiến trình API và ghi chỉ mục xuống
+`.local-data/lightrag/<workspace>`. Chỉ mục dùng model embedding đang đặt mặc định cho tác vụ
+`embedding` và model chat đang đặt mặc định cho tác vụ `chat`; đổi model embedding sẽ dựng lại
+chỉ mục vì số chiều vector thay đổi. Đặt `PRIVATE_AI_EMBEDDING_ENABLED=false` để tắt hẳn.
 
 ## Voice-to-text
 
@@ -179,7 +179,9 @@ Python; MSVC đặt DLL trong thư mục `bin/Release`. Runtime/model được l
 `.local-data/asr`; `private-ai-asr status` báo riêng trạng thái batch và native streaming.
 Ngôn ngữ mặc định là `vi-VN`, có thể đổi qua `PRIVATE_AI_ASR_LANGUAGE`.
 
-Capacity GPU mặc định là 96 GiB theo máy đích trong `GOAL.md`. Có thể cấu hình cho máy khác:
+Capacity GPU được nhận diện theo máy. Trên Apple Silicon không có VRAM riêng nên ngân sách
+lấy từ `iogpu.wired_limit_mb` nếu được đặt, ngược lại là phần RAM macOS dành mặc định cho GPU
+(khoảng 75% với máy nhiều RAM). Các nền tảng khác giữ mặc định 96 GiB. Có thể ép giá trị khác:
 
 ```text
 PRIVATE_AI_GPU_CAPACITY_BYTES=103079215104
@@ -211,7 +213,7 @@ dữ liệu giả.
 
 Lần kiểm tra runtime gần nhất trên macOS (2026-08-27) đạt 43 test, Ruff, TypeScript
 typecheck và Vite production build. Smoke test qua HTTP/WebSocket đã xác nhận workspace/chat
-với Qwen, lưu lại message, upload/search/xóa document, CRUD/search memory, Neo4j health,
+với Qwen, lưu lại message, upload/search/xóa document, CRUD/search memory, health,
 Nemotron load/unload, ASR partial/final và JPG OCR thật qua Tesseract; dữ liệu tạm của smoke
 test được xóa sau khi chạy.
 

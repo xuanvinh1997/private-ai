@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from private_ai_api.dependencies import AppServices, get_services
 from private_ai_api.schemas import ChatRequest
 from private_ai_api.services.gpu_lease import InsufficientVram
-from private_ai_api.services.ollama import OllamaUnavailable
+from private_ai_api.services.provider import NoProviderConfigured, ProviderUnavailable
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -20,8 +20,13 @@ async def chat(
     if request.stream:
         raise HTTPException(status_code=422, detail="Use the WebSocket endpoint for streaming chat")
     try:
-        return await services.ollama.chat(request)
-    except OllamaUnavailable as exc:
-        raise HTTPException(status_code=503, detail="Ollama is not reachable") from exc
+        return await services.ai.chat(request)
+    except NoProviderConfigured as exc:
+        raise HTTPException(status_code=503, detail="No AI provider is configured") from exc
+    except ProviderUnavailable as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="The selected AI provider is not reachable",
+        ) from exc
     except InsufficientVram as exc:
         raise HTTPException(status_code=503, detail="Not enough reserved GPU capacity") from exc

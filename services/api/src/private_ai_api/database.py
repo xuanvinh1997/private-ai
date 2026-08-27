@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS documents (
     source_path TEXT NOT NULL,
     extracted_text TEXT,
     error TEXT,
+    indexed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(workspace_id, sha256)
@@ -137,6 +138,17 @@ CREATE TABLE IF NOT EXISTS model_events (
 CREATE INDEX IF NOT EXISTS model_events_created
 ON model_events(created_at DESC);
 
+CREATE TABLE IF NOT EXISTS ai_providers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('ollama', 'openai')),
+    base_url TEXT NOT NULL,
+    api_key TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -197,6 +209,7 @@ class Database:
                 "INTEGER NOT NULL DEFAULT 0",
             )
             self._ensure_column(connection, "document_chunks", "page_number", "INTEGER")
+            self._ensure_column(connection, "documents", "indexed_at", "TEXT")
             self._ensure_column(connection, "memories", "embedding_json", "TEXT")
             self._ensure_column(connection, "memories", "embedding_model", "TEXT")
             self._backfill_document_sections(connection)

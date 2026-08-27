@@ -14,7 +14,7 @@ from private_ai_api.dependencies import AppServices, get_services
 from private_ai_api.schemas import DefaultModelRequest, ModelInfo, ModelState, PullRequest
 from private_ai_api.services.asr import ASR_MODEL_NAME, AsrUnavailable
 from private_ai_api.services.gpu_lease import InsufficientVram
-from private_ai_api.services.ollama import OllamaUnavailable
+from private_ai_api.services.provider import ProviderReadOnly, ProviderUnavailable
 
 router = APIRouter(prefix="/models", tags=["models"])
 MODEL_TASKS = {"chat", "embedding", "vision", "asr"}
@@ -43,16 +43,16 @@ def _record_event(
     )
 
 
-def _ensure_defaults(services: AppServices, ollama_models: list[ModelInfo]) -> dict[str, str]:
+def _ensure_defaults(services: AppServices, provider_models: list[ModelInfo]) -> dict[str, str]:
     now = datetime.now(UTC).isoformat()
     language_model = next(
-        (model.name for model in ollama_models if model.model_type == "language"),
+        (model.name for model in provider_models if model.model_type == "language"),
         None,
     )
     embedding_model = next(
         (
             model.name
-            for model in ollama_models
+            for model in provider_models
             if model.model_type == "embedding"
             and model.name.removesuffix(":latest")
             == services.settings.embedding_model.removesuffix(":latest")
@@ -115,10 +115,10 @@ def _asr_model_info(services: AppServices, defaults: dict[str, str]) -> ModelInf
 
 async def _all_models(services: AppServices) -> list[ModelInfo]:
     try:
-        ollama_models = await services.ollama.list_models()
-    except OllamaUnavailable:
-        ollama_models = []
-    defaults = _ensure_defaults(services, ollama_models)
+        provider_models = await services.ai.list_models()
+    except ProviderUnavailable:
+        provider_models = []
+    defaults = _ensure_defaults(services, provider_models)
     annotated = [
         model.model_copy(
             update={
@@ -127,7 +127,7 @@ async def _all_models(services: AppServices) -> list[ModelInfo]:
                 ]
             }
         )
-        for model in ollama_models
+        for model in provider_models
     ]
     annotated.append(_asr_model_info(services, defaults))
     return annotated
@@ -178,6 +178,11 @@ async def select_default_model(
         """,
         (task, request.model, now),
     )
+    if task == "embedding":
+        # Both hold the name to decide which stored vectors are stale; the index also has
+        # to drop its instances, because a new model usually means a new vector width.
+        await services.lightrag.use_embedding_model(request.model)
+        services.memory_service.embedding_model = request.model
     _record_event(services, request.model, f"select_default:{task}", "completed")
     return {"task": task, "model": request.model}
 
@@ -200,12 +205,16 @@ async def pull_model(
 ) -> StreamingResponse:
     async def events():
         try:
-            async for event in services.ollama.pull(request.name):
+            async for event in services.ai.pull(request.name):
                 yield f"data: {json.dumps(event)}\n\n"
             _record_event(services, request.name, "pull", "completed")
-        except OllamaUnavailable as exc:
+        except ProviderReadOnly as exc:
             _record_event(services, request.name, "pull", "failed", str(exc))
-            yield f"event: error\ndata: {json.dumps({'detail': 'Ollama is not reachable'})}\n\n"
+            yield f"event: error\ndata: {json.dumps({'detail': str(exc)})}\n\n"
+        except ProviderUnavailable as exc:
+            _record_event(services, request.name, "pull", "failed", str(exc))
+            detail = {"detail": "The selected AI provider is not reachable"}
+            yield f"event: error\ndata: {json.dumps(detail)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -260,9 +269,12 @@ async def unload_model(
         if name == ASR_MODEL_NAME:
             await services.asr.close()
         else:
-            await services.ollama.unload(name)
+            await services.ai.unload(name)
         _record_event(services, name, "unload", "completed")
-    except (OllamaUnavailable, AsrUnavailable) as exc:
+    except ProviderReadOnly as exc:
+        _record_event(services, name, "unload", "failed", str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (ProviderUnavailable, AsrUnavailable) as exc:
         _record_event(services, name, "unload", "failed", str(exc))
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -282,9 +294,12 @@ async def delete_model(
             services.asr.model_path.expanduser().unlink(missing_ok=True)
             checksum_path(services.asr.model_path.expanduser()).unlink(missing_ok=True)
         else:
-            await services.ollama.delete(name)
+            await services.ai.delete(name)
         _record_event(services, name, "delete", "completed")
-    except (OllamaUnavailable, OSError) as exc:
+    except ProviderReadOnly as exc:
+        _record_event(services, name, "delete", "failed", str(exc))
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except (ProviderUnavailable, OSError) as exc:
         _record_event(services, name, "delete", "failed", str(exc))
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     return Response(status_code=status.HTTP_204_NO_CONTENT)

@@ -1,14 +1,65 @@
 from __future__ import annotations
 
 import platform
-import secrets
-from contextlib import suppress
+import subprocess
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+FALLBACK_GPU_CAPACITY_BYTES = 96 * 1024**3
+
+
+def _sysctl_int(name: str) -> int | None:
+    try:
+        result = subprocess.run(  # noqa: S603
+            ["/usr/sbin/sysctl", "-n", name],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        return None
+
+
+def is_unified_memory() -> bool:
+    """True on Apple Silicon, where the GPU shares one pool with the CPU."""
+    return platform.system() == "Darwin" and platform.machine() == "arm64"
+
+
+def total_memory_bytes() -> int | None:
+    """Physical RAM, when the platform lets us read it cheaply."""
+    if platform.system() == "Darwin":
+        return _sysctl_int("hw.memsize")
+    return None
+
+
+def detect_gpu_capacity_bytes() -> int:
+    """Budget the GPU may actually use, rather than assuming the target machine.
+
+    On Apple Silicon there is no separate VRAM: the GPU draws from system RAM, capped by
+    ``iogpu.wired_limit_mb`` when set, and otherwise by the share macOS reserves by default
+    (about three quarters on large-memory machines, two thirds on smaller ones).
+    """
+    if not is_unified_memory():
+        return FALLBACK_GPU_CAPACITY_BYTES
+    total = total_memory_bytes()
+    if not total:
+        return FALLBACK_GPU_CAPACITY_BYTES
+    wired_limit_mb = _sysctl_int("iogpu.wired_limit_mb") or 0
+    if wired_limit_mb > 0:
+        return wired_limit_mb * 1024**2
+    share = 0.75 if total >= 36 * 1024**3 else 2 / 3
+    return int(total * share)
 
 
 class Settings(BaseSettings):
@@ -30,18 +81,12 @@ class Settings(BaseSettings):
     mcp_host: str = "127.0.0.1"
     mcp_port: int = Field(default=8010, ge=1, le=65535)
     mcp_require_auth: bool = True
-    neo4j_url: str = "bolt://127.0.0.1:7687"
-    neo4j_user: str = "neo4j"
-    neo4j_password: str = ""
-    neo4j_database: str = "neo4j"
-    neo4j_enabled: bool = True
-    graph_entity_model: str = ""
     asr_enabled: bool = True
     asr_executable: Path | None = None
     asr_model: Path | None = None
     asr_language: str = "vi-VN"
     ffmpeg_executable: str = ""
-    gpu_capacity_bytes: int = Field(default=96 * 1024**3, gt=0)
+    gpu_capacity_bytes: int = Field(default_factory=detect_gpu_capacity_bytes, gt=0)
     gpu_model_overhead_ratio: float = Field(default=1.1, ge=1.0, le=3.0)
     asr_vram_reservation_bytes: int = Field(default=2 * 1024**3, ge=0)
     desktop_runtime: Literal["auto", "local", "wsl"] = "auto"
@@ -71,8 +116,8 @@ class Settings(BaseSettings):
         return self.data_dir / "mcp-token"
 
     @property
-    def neo4j_password_path(self) -> Path:
-        return self.data_dir / "neo4j-password"
+    def lightrag_dir(self) -> Path:
+        return self.data_dir / "lightrag"
 
     @property
     def asr_dir(self) -> Path:
@@ -81,20 +126,6 @@ class Settings(BaseSettings):
     @property
     def default_asr_model_path(self) -> Path:
         return self.asr_dir / "models" / "nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf"
-
-    def resolved_neo4j_password(self, *, create: bool = False) -> str:
-        if self.neo4j_password:
-            return self.neo4j_password
-        if self.neo4j_password_path.is_file():
-            return self.neo4j_password_path.read_text(encoding="utf-8").strip()
-        if not create:
-            return ""
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        password = secrets.token_urlsafe(32)
-        self.neo4j_password_path.write_text(password, encoding="utf-8")
-        with suppress(OSError):
-            self.neo4j_password_path.chmod(0o600)
-        return password
 
     @property
     def platform_name(self) -> str:

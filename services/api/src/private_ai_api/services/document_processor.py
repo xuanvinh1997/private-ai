@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
-import math
 import os
 import re
 import shutil
@@ -20,11 +18,7 @@ from openai import OpenAI
 from pypdf import PdfReader
 
 from private_ai_api.database import Database
-from private_ai_api.services.gpu_lease import InsufficientVram
-from private_ai_api.services.ollama import OllamaClient, OllamaUnavailable
-
-if __import__("typing").TYPE_CHECKING:
-    from private_ai_api.services.graph_store import GraphStore
+from private_ai_api.services.lightrag_store import LightRagStore
 
 TEXT_EXTENSIONS = {".txt", ".md", ".markdown", ".csv", ".json", ".yaml", ".yml"}
 OFFICE_EXTENSIONS = {".docx", ".pptx", ".xlsx"}
@@ -35,6 +29,9 @@ IMAGE_OCR_PROMPT = (
     "Extract every visible word from this image. Preserve headings, lists and tables as "
     "Markdown. Do not summarize, translate or invent missing text."
 )
+
+
+OCR_ENABLED_KEY = "ocr_enabled"
 
 
 class UnsupportedDocument(RuntimeError):
@@ -49,94 +46,94 @@ class DocumentProcessor:
     def __init__(
         self,
         database: Database,
-        ollama: OllamaClient,
+        lightrag: LightRagStore,
         *,
-        embedding_model: str,
-        embedding_enabled: bool,
-        graph_store: GraphStore | None = None,
-        graph_entity_model: str = "",
         ollama_url: str = "http://127.0.0.1:11434",
         vision_model: str = "",
     ) -> None:
         self.database = database
-        self.ollama = ollama
-        self.embedding_model = embedding_model
-        self.embedding_enabled = embedding_enabled
-        self.graph_store = graph_store
-        self.graph_entity_model = graph_entity_model.strip()
+        self.lightrag = lightrag
         self.ollama_url = ollama_url.rstrip("/")
         self.vision_model = vision_model.strip()
         self._markitdown: MarkItDown | None = None
-        self._markitdown_model: str | None = None
+        self._markitdown_signature: tuple[str, bool] | None = None
         self._markitdown_lock = threading.RLock()
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def process_pending(self) -> None:
+        """Finish anything the last run left behind, then index whatever is not in the graph."""
         pending = self.database.fetch_all(
             """
-            SELECT id, status, extracted_text FROM documents
+            SELECT id FROM documents
             WHERE status IN ('queued', 'processing')
-               OR (
-                    status = 'ready'
-                    AND extracted_text IS NOT NULL
-                    AND NOT EXISTS (
-                        SELECT 1 FROM document_chunks WHERE document_id = documents.id
-                    )
-               )
             ORDER BY created_at
             """
         )
         for document in pending:
-            if document["status"] == "ready" and document["extracted_text"]:
-                await asyncio.to_thread(
-                    self.index_text,
-                    document["id"],
-                    document["extracted_text"],
-                )
-            else:
-                await self.process(document["id"])
-        if self.embedding_enabled:
-            missing_embeddings = self.database.fetch_all(
-                """
-                SELECT DISTINCT d.id
-                FROM documents AS d
-                JOIN document_chunks AS c ON c.document_id = d.id
-                WHERE d.status = 'ready'
-                  AND (c.embedding_json IS NULL OR c.embedding_model != ?)
-                """,
-                (self.embedding_model,),
-            )
-            for document in missing_embeddings:
-                await self.embed_document(document["id"])
-        if self.graph_entity_model:
-            missing_graph = self.database.fetch_all(
-                """
-                SELECT DISTINCT d.id
-                FROM documents AS d
-                JOIN document_chunks AS c ON c.document_id = d.id
-                WHERE d.status = 'ready'
-                  AND (c.graph_model IS NULL OR c.graph_model != ?)
-                ORDER BY d.updated_at DESC
-                """,
-                (self.graph_entity_model,),
-            )
-            for document in missing_graph:
-                await self.extract_graph(str(document["id"]))
+            await self.process(str(document["id"]))
+        unindexed = self.database.fetch_all(
+            """
+            SELECT id FROM documents
+            WHERE status = 'ready' AND extracted_text IS NOT NULL AND indexed_at IS NULL
+            ORDER BY created_at
+            """
+        )
+        for document in unindexed:
+            await self.index_document(str(document["id"]))
 
     async def process(self, document_id: str) -> None:
         lock = self._locks.setdefault(document_id, asyncio.Lock())
         async with lock:
             await asyncio.to_thread(self._process_sync, document_id)
-            await self._embed_document(document_id)
-            await self._extract_graph_document(document_id)
-            await self._sync_graph(document_id)
+        await self.index_document(document_id)
+
+    async def index_document(self, document_id: str) -> bool:
+        """Hand the extracted text to LightRAG, which chunks, embeds and builds the graph."""
+        lock = self._locks.setdefault(document_id, asyncio.Lock())
+        async with lock:
+            document = self.database.fetch_one(
+                "SELECT workspace_id, filename, extracted_text, status "
+                "FROM documents WHERE id = ?",
+                (document_id,),
+            )
+            if not document or document["status"] != "ready":
+                return False
+            indexed = await self.lightrag.index_document(
+                str(document["workspace_id"]),
+                document_id,
+                str(document["filename"]),
+                str(document["extracted_text"] or ""),
+            )
+            self.database.execute(
+                "UPDATE documents SET indexed_at = ? WHERE id = ?",
+                (datetime.now(UTC).isoformat() if indexed else None, document_id),
+            )
+            return indexed
 
     async def delete(self, document_id: str) -> bool:
         lock = self._locks.setdefault(document_id, asyncio.Lock())
         async with lock:
-            if self.graph_store:
-                await self.graph_store.delete_document(document_id)
+            document = self.database.fetch_one(
+                "SELECT workspace_id FROM documents WHERE id = ?",
+                (document_id,),
+            )
+            if document:
+                await self.lightrag.delete_document(str(document["workspace_id"]), document_id)
             return await asyncio.to_thread(self._delete_sync, document_id)
+
+    async def search(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        workspace_id: str,
+    ) -> list[dict[str, object]]:
+        """Search one workspace. Never returns another workspace's content."""
+        return await self.lightrag.search(query, workspace_id, limit)
+
+
+
+
 
     def _delete_sync(self, document_id: str) -> bool:
         document = self.database.fetch_one(
@@ -150,518 +147,17 @@ class DocumentProcessor:
         shutil.rmtree(source_path.parent, ignore_errors=True)
         return True
 
-    def index_text(self, document_id: str, text: str) -> None:
-        chunks = self._chunk_records(text)
-        created_at = datetime.now(UTC).isoformat()
-        section_rows: dict[int, dict[str, object]] = {}
-        for chunk in chunks:
-            section_index = int(chunk["section_index"])
-            section = section_rows.setdefault(
-                section_index,
-                {
-                    "id": f"{document_id}:section:{section_index}",
-                    "title": chunk["section_title"],
-                    "level": chunk["section_level"],
-                    "pages": [],
-                },
-            )
-            if chunk["page_number"] is not None:
-                section["pages"].append(int(chunk["page_number"]))  # type: ignore[union-attr]
-        with self.database.connection() as connection:
-            connection.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
-            connection.execute(
-                "DELETE FROM document_sections WHERE document_id = ?",
-                (document_id,),
-            )
-            connection.executemany(
-                """
-                INSERT INTO document_sections(
-                    id, document_id, section_index, title, level,
-                    page_start, page_end, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    (
-                        section["id"],
-                        document_id,
-                        section_index,
-                        section["title"],
-                        section["level"],
-                        min(section["pages"]) if section["pages"] else None,
-                        max(section["pages"]) if section["pages"] else None,
-                        created_at,
-                    )
-                    for section_index, section in sorted(section_rows.items())
-                ),
-            )
-            connection.executemany(
-                """
-                INSERT INTO document_chunks(
-                    id, document_id, chunk_index, content,
-                    section_id, section_title, section_level, page_number,
-                    embedding_json, embedding_model, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
-                """,
-                (
-                    (
-                        str(uuid4()),
-                        document_id,
-                        index,
-                        chunk["content"],
-                        section_rows[int(chunk["section_index"])]["id"],
-                        chunk["section_title"],
-                        chunk["section_level"],
-                        chunk["page_number"],
-                        created_at,
-                    )
-                    for index, chunk in enumerate(chunks)
-                ),
-            )
 
-    async def embed_document(self, document_id: str) -> bool:
-        lock = self._locks.setdefault(document_id, asyncio.Lock())
-        async with lock:
-            embedded = await self._embed_document(document_id)
-            await self._extract_graph_document(document_id)
-            await self._sync_graph(document_id)
-            return embedded
 
-    async def extract_graph(self, document_id: str) -> bool:
-        lock = self._locks.setdefault(document_id, asyncio.Lock())
-        async with lock:
-            extracted = await self._extract_graph_document(document_id)
-            await self._sync_graph(document_id)
-            return extracted
 
-    async def _sync_graph(self, document_id: str) -> bool:
-        if not self.graph_store:
-            return False
-        return await self.graph_store.sync_document(document_id)
 
-    async def _embed_document(self, document_id: str) -> bool:
-        if not self.embedding_enabled:
-            return False
-        chunks = self.database.fetch_all(
-            """
-            SELECT c.id, c.content
-            FROM document_chunks AS c
-            JOIN documents AS d ON d.id = c.document_id
-            WHERE c.document_id = ? AND d.status = 'ready'
-              AND (c.embedding_json IS NULL OR c.embedding_model != ?)
-            ORDER BY c.chunk_index
-            """,
-            (document_id, self.embedding_model),
-        )
-        if not chunks:
-            return True
-        job_id = str(uuid4())
-        created_at = datetime.now(UTC).isoformat()
-        self.database.upsert_job(
-            {
-                "id": job_id,
-                "kind": "document_embedding",
-                "status": "processing",
-                "progress": 0.0,
-                "payload": {"document_id": document_id, "model": self.embedding_model},
-                "created_at": created_at,
-                "updated_at": created_at,
-            }
-        )
-        try:
-            for offset in range(0, len(chunks), 16):
-                batch = chunks[offset : offset + 16]
-                vectors = await self.ollama.embed(
-                    self.embedding_model,
-                    [str(chunk["content"]) for chunk in batch],
-                )
-                self.database.execute_many(
-                    """
-                    UPDATE document_chunks
-                    SET embedding_json = ?, embedding_model = ?
-                    WHERE id = ?
-                    """,
-                    (
-                        (
-                            json.dumps(vector, separators=(",", ":")),
-                            self.embedding_model,
-                            chunk["id"],
-                        )
-                        for chunk, vector in zip(batch, vectors, strict=True)
-                    ),
-                )
-                self.database.upsert_job(
-                    {
-                        "id": job_id,
-                        "kind": "document_embedding",
-                        "status": "processing",
-                        "progress": min(1.0, (offset + len(batch)) / len(chunks)),
-                        "payload": {
-                            "document_id": document_id,
-                            "model": self.embedding_model,
-                        },
-                        "created_at": created_at,
-                        "updated_at": datetime.now(UTC).isoformat(),
-                    }
-                )
-        except (InsufficientVram, OllamaUnavailable, ValueError, TypeError) as exc:
-            self.database.upsert_job(
-                {
-                    "id": job_id,
-                    "kind": "document_embedding",
-                    "status": "failed",
-                    "progress": 0.0,
-                    "payload": {"document_id": document_id, "model": self.embedding_model},
-                    "error": str(exc),
-                    "created_at": created_at,
-                    "updated_at": datetime.now(UTC).isoformat(),
-                }
-            )
-            return False
-        self.database.upsert_job(
-            {
-                "id": job_id,
-                "kind": "document_embedding",
-                "status": "completed",
-                "progress": 1.0,
-                "payload": {"document_id": document_id, "model": self.embedding_model},
-                "created_at": created_at,
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
-        )
-        return True
 
-    async def _extract_graph_document(self, document_id: str) -> bool:
-        if not self.graph_entity_model:
-            return False
-        chunks = self.database.fetch_all(
-            """
-            SELECT c.id, c.content
-            FROM document_chunks AS c
-            JOIN documents AS d ON d.id = c.document_id
-            WHERE c.document_id = ? AND d.status = 'ready'
-              AND (c.graph_model IS NULL OR c.graph_model != ?)
-            ORDER BY c.chunk_index
-            """,
-            (document_id, self.graph_entity_model),
-        )
-        if not chunks:
-            return True
-        job_id = str(uuid4())
-        created_at = datetime.now(UTC).isoformat()
-        self.database.upsert_job(
-            {
-                "id": job_id,
-                "kind": "graph_extraction",
-                "status": "processing",
-                "progress": 0.0,
-                "payload": {"document_id": document_id, "model": self.graph_entity_model},
-                "created_at": created_at,
-                "updated_at": created_at,
-            }
-        )
-        try:
-            for index, chunk in enumerate(chunks, start=1):
-                facts = await self.ollama.extract_graph(
-                    self.graph_entity_model,
-                    str(chunk["content"]),
-                )
-                extracted_at = datetime.now(UTC).isoformat()
-                with self.database.connection() as connection:
-                    connection.execute(
-                        "DELETE FROM chunk_entities WHERE chunk_id = ?",
-                        (chunk["id"],),
-                    )
-                    connection.execute(
-                        "DELETE FROM chunk_relations WHERE chunk_id = ?",
-                        (chunk["id"],),
-                    )
-                    connection.executemany(
-                        """
-                        INSERT INTO chunk_entities(
-                            chunk_id, document_id, key, name, kind, source_model, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            (
-                                chunk["id"],
-                                document_id,
-                                entity["key"],
-                                entity["name"],
-                                entity["kind"],
-                                self.graph_entity_model,
-                                extracted_at,
-                            )
-                            for entity in facts["entities"]
-                        ),
-                    )
-                    connection.executemany(
-                        """
-                        INSERT INTO chunk_relations(
-                            chunk_id, document_id, source_key, target_key,
-                            relation, source_model, created_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            (
-                                chunk["id"],
-                                document_id,
-                                relation["source_key"],
-                                relation["target_key"],
-                                relation["relation"],
-                                self.graph_entity_model,
-                                extracted_at,
-                            )
-                            for relation in facts["relations"]
-                        ),
-                    )
-                    connection.execute(
-                        "UPDATE document_chunks SET graph_model = ? WHERE id = ?",
-                        (self.graph_entity_model, chunk["id"]),
-                    )
-                self.database.upsert_job(
-                    {
-                        "id": job_id,
-                        "kind": "graph_extraction",
-                        "status": "processing",
-                        "progress": index / len(chunks),
-                        "payload": {
-                            "document_id": document_id,
-                            "model": self.graph_entity_model,
-                        },
-                        "created_at": created_at,
-                        "updated_at": datetime.now(UTC).isoformat(),
-                    }
-                )
-        except (InsufficientVram, OllamaUnavailable, KeyError, TypeError, ValueError) as exc:
-            self.database.upsert_job(
-                {
-                    "id": job_id,
-                    "kind": "graph_extraction",
-                    "status": "failed",
-                    "progress": 0.0,
-                    "payload": {
-                        "document_id": document_id,
-                        "model": self.graph_entity_model,
-                    },
-                    "error": str(exc),
-                    "created_at": created_at,
-                    "updated_at": datetime.now(UTC).isoformat(),
-                }
-            )
-            return False
-        self.database.upsert_job(
-            {
-                "id": job_id,
-                "kind": "graph_extraction",
-                "status": "completed",
-                "progress": 1.0,
-                "payload": {"document_id": document_id, "model": self.graph_entity_model},
-                "created_at": created_at,
-                "updated_at": datetime.now(UTC).isoformat(),
-            }
-        )
-        return True
 
-    async def search(
-        self,
-        query: str,
-        limit: int = 5,
-        *,
-        workspace_id: str,
-    ) -> list[dict[str, object]]:
-        """Search the chunks of one workspace. Never returns another workspace's content."""
-        tokens = list(dict.fromkeys(self._search_tokens(query)))[:32]
-        if not tokens:
-            return []
-        rows = self.database.fetch_all(
-            """
-            SELECT c.id AS chunk_id, c.document_id, c.chunk_index, c.content,
-                   c.section_id, c.section_title, c.section_level, c.page_number,
-                   c.embedding_json, c.embedding_model, d.filename
-            FROM document_chunks AS c
-            JOIN documents AS d ON d.id = c.document_id
-            WHERE d.status = 'ready' AND d.workspace_id = ?
-            """,
-            (workspace_id,),
-        )
-        keyword_ranked = self._keyword_rank(tokens, rows)
-        semantic_ranked: list[dict[str, object]] = []
-        graph_ranked: list[dict[str, object]] = []
-        if self.embedding_enabled:
-            try:
-                query_vector = (await self.ollama.embed(self.embedding_model, [query]))[0]
-                semantic_ranked = self._semantic_rank(query_vector, rows)
-                if self.graph_store:
-                    # Neo4j holds every workspace's chunks, so keep only the ones this
-                    # workspace owns before they reach the fusion step.
-                    in_scope = {str(row["chunk_id"]) for row in rows}
-                    graph_ranked = [
-                        record
-                        for record in await self.graph_store.search(query, query_vector, 20)
-                        if str(record.get("chunk_id")) in in_scope
-                    ]
-            except (InsufficientVram, OllamaUnavailable, ValueError, TypeError, IndexError):
-                semantic_ranked = []
-        candidates = self._fuse_rankings(
-            keyword_ranked,
-            semantic_ranked,
-            graph_ranked,
-            limit=max(20, limit * 4),
-        )
-        return self._local_rerank(query, tokens, candidates, limit)
 
-    def _keyword_rank(
-        self,
-        tokens: list[str],
-        rows: list[dict[str, object]],
-    ) -> list[dict[str, object]]:
-        normalized_query = " ".join(tokens)
-        ranked: list[tuple[float, dict[str, object]]] = []
-        for row in rows:
-            haystack_tokens = self._search_tokens(f"{row['filename']} {row['content']}")
-            haystack = " ".join(haystack_tokens)
-            haystack_set = set(haystack_tokens)
-            matched = sum(1 for token in tokens if token in haystack_set)
-            if not matched:
-                continue
-            score = matched / len(tokens)
-            if normalized_query and normalized_query in haystack:
-                score += 0.75
-            ranked.append(
-                (
-                    score,
-                    {
-                        "chunk_id": row["chunk_id"],
-                        "document_id": row["document_id"],
-                        "filename": row["filename"],
-                        "chunk_index": row["chunk_index"],
-                        "section_id": row["section_id"],
-                        "section_title": row["section_title"],
-                        "section_level": row["section_level"],
-                        "page_number": row["page_number"],
-                        "content": row["content"],
-                        "score": round(score, 4),
-                    },
-                )
-            )
-        ranked.sort(
-            key=lambda item: (
-                -item[0],
-                str(item[1]["filename"]),
-                int(item[1]["chunk_index"]),
-            )
-        )
-        return [item for _, item in ranked]
 
-    def _semantic_rank(
-        self,
-        query_vector: list[float],
-        rows: list[dict[str, object]],
-    ) -> list[dict[str, object]]:
-        ranked: list[tuple[float, dict[str, object]]] = []
-        for row in rows:
-            if row["embedding_model"] != self.embedding_model or not row["embedding_json"]:
-                continue
-            vector = json.loads(str(row["embedding_json"]))
-            similarity = self._cosine_similarity(query_vector, vector)
-            if similarity < 0.3:
-                continue
-            ranked.append(
-                (
-                    similarity,
-                    {
-                        "chunk_id": row["chunk_id"],
-                        "document_id": row["document_id"],
-                        "filename": row["filename"],
-                        "chunk_index": row["chunk_index"],
-                        "section_id": row["section_id"],
-                        "section_title": row["section_title"],
-                        "section_level": row["section_level"],
-                        "page_number": row["page_number"],
-                        "content": row["content"],
-                        "score": round(similarity, 4),
-                    },
-                )
-            )
-        ranked.sort(key=lambda item: -item[0])
-        return [item for _, item in ranked[:20]]
 
-    @staticmethod
-    def _fuse_rankings(
-        *rankings: list[dict[str, object]],
-        limit: int,
-    ) -> list[dict[str, object]]:
-        scores: dict[str, float] = {}
-        records: dict[str, dict[str, object]] = {}
-        active = [ranking for ranking in rankings if ranking]
-        if not active:
-            return []
-        weight = 1.0 / len(active)
-        for ranking in active:
-            for rank, record in enumerate(ranking[:20], start=1):
-                chunk_id = str(record["chunk_id"])
-                scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (60 + rank)
-                records[chunk_id] = record
-        ordered = sorted(scores, key=lambda chunk_id: -scores[chunk_id])
-        selected: list[dict[str, object]] = []
-        for chunk_id in ordered[: max(1, min(limit, 20))]:
-            selected.append({**records[chunk_id], "score": round(scores[chunk_id] * 100, 4)})
-        return selected
 
-    @staticmethod
-    def _cosine_similarity(left: list[float], right: list[float]) -> float:
-        if not left or len(left) != len(right):
-            return -1.0
-        dot = sum(a * b for a, b in zip(left, right, strict=True))
-        left_norm = math.sqrt(sum(value * value for value in left))
-        right_norm = math.sqrt(sum(value * value for value in right))
-        if not left_norm or not right_norm:
-            return -1.0
-        return dot / (left_norm * right_norm)
 
-    def _local_rerank(
-        self,
-        query: str,
-        tokens: list[str],
-        candidates: list[dict[str, object]],
-        limit: int,
-    ) -> list[dict[str, object]]:
-        """Deterministic in-process reranker over the fused candidate set."""
-        query_phrase = " ".join(tokens)
-        query_terms = set(tokens)
-        ranked: list[tuple[float, dict[str, object]]] = []
-        for candidate in candidates:
-            searchable = " ".join(
-                self._search_tokens(
-                    f"{candidate.get('filename', '')} "
-                    f"{candidate.get('section_title', '')} "
-                    f"{candidate.get('content', '')}"
-                )
-            )
-            candidate_terms = set(searchable.split())
-            overlap = len(query_terms & candidate_terms) / max(1, len(query_terms))
-            phrase_bonus = 0.35 if query_phrase and query_phrase in searchable else 0.0
-            heading_bonus = 0.15 if any(
-                token in self._search_tokens(str(candidate.get("section_title") or ""))
-                for token in query_terms
-            ) else 0.0
-            base = float(candidate.get("score") or 0.0)
-            rerank_score = base + overlap + phrase_bonus + heading_bonus
-            ranked.append(
-                (
-                    rerank_score,
-                    {**candidate, "rerank_score": round(rerank_score, 4)},
-                )
-            )
-        ranked.sort(
-            key=lambda item: (
-                -item[0],
-                str(item[1].get("filename") or ""),
-                int(item[1].get("chunk_index") or 0),
-            )
-        )
-        return [item for _, item in ranked[: max(1, min(limit, 20))]]
 
     def _process_sync(self, document_id: str) -> None:
         document = self.database.fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,))
@@ -692,7 +188,12 @@ class DocumentProcessor:
             ).strip()
             ocr_error: str | None = None
             extension = source_path.suffix.lower()
-            if not meaningful and (extension == ".pdf" or extension in IMAGE_EXTENSIONS):
+            ocr_allowed = self.ocr_enabled()
+            if not meaningful and not ocr_allowed:
+                ocr_error = "OCR is turned off, and this file has no readable text layer"
+            if not meaningful and ocr_allowed and (
+                extension == ".pdf" or extension in IMAGE_EXTENSIONS
+            ):
                 try:
                     normalized = (
                         self._ocr_pdf(source_path)
@@ -713,7 +214,6 @@ class DocumentProcessor:
                     extracted_text=normalized,
                     error=None,
                 )
-                self.index_text(document_id, normalized)
                 job_status = "completed"
                 progress = 1.0
                 error = None
@@ -751,92 +251,9 @@ class DocumentProcessor:
             }
         )
 
-    @staticmethod
-    def _split_text(text: str, size: int = 1400, overlap: int = 180) -> list[str]:
-        normalized = re.sub(r"[ \t]+", " ", text).strip()
-        if not normalized:
-            return []
-        chunks: list[str] = []
-        start = 0
-        while start < len(normalized):
-            end = min(start + size, len(normalized))
-            if end < len(normalized):
-                boundary = max(
-                    normalized.rfind("\n", start, end),
-                    normalized.rfind(". ", start, end),
-                )
-                if boundary > start + size // 2:
-                    end = boundary + 1
-            chunk = normalized[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            if end >= len(normalized):
-                break
-            start = max(start + 1, end - overlap)
-        return chunks
 
-    @classmethod
-    def _chunk_records(
-        cls,
-        text: str,
-        size: int = 1400,
-        overlap: int = 180,
-    ) -> list[dict[str, object]]:
-        records: list[dict[str, object]] = []
-        section_index = 0
-        section_title = "Nội dung"
-        section_level = 0
-        page_number: int | None = None
-        buffer: list[str] = []
 
-        def flush() -> None:
-            content = "\n".join(buffer).strip()
-            buffer.clear()
-            for chunk in cls._split_text(content, size=size, overlap=overlap):
-                records.append(
-                    {
-                        "content": chunk,
-                        "section_index": section_index,
-                        "section_title": section_title,
-                        "section_level": section_level,
-                        "page_number": page_number,
-                    }
-                )
 
-        for raw_line in text.splitlines():
-            line = raw_line.rstrip()
-            page_match = PAGE_MARKER.fullmatch(line.strip())
-            if page_match:
-                flush()
-                page_number = int(page_match.group(1))
-                continue
-            heading = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
-            if heading:
-                flush()
-                if records or section_title != "Nội dung":
-                    section_index += 1
-                section_title = heading.group(2).strip()[:240]
-                section_level = len(heading.group(1))
-                buffer.append(line)
-                continue
-            buffer.append(line)
-        flush()
-        return records
-
-    @classmethod
-    def _chunk_text(cls, text: str, size: int = 1400, overlap: int = 180) -> list[str]:
-        return [
-            str(record["content"])
-            for record in cls._chunk_records(text, size=size, overlap=overlap)
-        ]
-
-    @staticmethod
-    def _search_tokens(value: str) -> list[str]:
-        return [
-            token
-            for token in re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
-            if len(token) > 1
-        ]
 
     def _update_document(
         self,
@@ -861,12 +278,24 @@ class DocumentProcessor:
         )
         return str(configured["model_name"]).strip() if configured else self.vision_model
 
+    def ocr_enabled(self) -> bool:
+        """Whether reading a document may fall back to OCR. Defaults to on."""
+        stored = self.database.fetch_one(
+            "SELECT value FROM app_state WHERE key = ?",
+            (OCR_ENABLED_KEY,),
+        )
+        return stored is None or str(stored["value"]) == "1"
+
     def _markitdown_converter(self) -> MarkItDown:
-        model = self._active_vision_model()
+        ocr = self.ocr_enabled()
+        model = self._active_vision_model() if ocr else ""
+        signature = (model, ocr)
         with self._markitdown_lock:
-            if self._markitdown is not None and self._markitdown_model == model:
+            if self._markitdown is not None and self._markitdown_signature == signature:
                 return self._markitdown
-            options: dict[str, object] = {"enable_plugins": True}
+            # The plugin set is where markitdown-ocr lives, so turning OCR off has to drop it
+            # along with the vision model.
+            options: dict[str, object] = {"enable_plugins": ocr}
             if model:
                 options.update(
                     {
@@ -879,7 +308,7 @@ class DocumentProcessor:
                     }
                 )
             self._markitdown = MarkItDown(**options)
-            self._markitdown_model = model
+            self._markitdown_signature = signature
             return self._markitdown
 
     def _extract_markitdown(self, path: Path) -> str:

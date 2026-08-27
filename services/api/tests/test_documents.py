@@ -7,8 +7,6 @@ from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfWriter
 
-from private_ai_api.services.document_processor import DocumentProcessor
-
 
 class FakeEmbedder:
     async def embed(self, _model: str, inputs: list[str]) -> list[list[float]]:
@@ -55,7 +53,7 @@ def test_text_document_is_hashed_extracted_and_deduplicated(client: TestClient) 
     assert first.json()["extracted_text"].startswith("# Local knowledge")
     assert second.status_code == 201
     assert second.json()["id"] == first.json()["id"]
-    assert len(client.get("/api/v1/documents", params=workspace).json()) == 1
+    assert client.get("/api/v1/documents", params=workspace).json()["total"] == 1
     search = client.get(
         "/api/v1/documents/search",
         params={"q": "Local knowledge", "workspace_id": "personal"},
@@ -72,8 +70,10 @@ def test_text_document_is_hashed_extracted_and_deduplicated(client: TestClient) 
     )
     assert other.status_code == 201
     assert other.json()["id"] != first.json()["id"]
-    assert len(client.get("/api/v1/documents", params=workspace).json()) == 1
-    assert len(client.get("/api/v1/documents", params={"workspace_id": "research"}).json()) == 1
+    assert client.get("/api/v1/documents", params=workspace).json()["total"] == 1
+    assert (
+        client.get("/api/v1/documents", params={"workspace_id": "research"}).json()["total"] == 1
+    )
 
 
 def test_pdf_processing_status_retry_and_delete(client: TestClient) -> None:
@@ -208,133 +208,6 @@ def test_markitdown_ocr_plugin_is_installed() -> None:
     assert "ocr" in plugins
 
 
-def test_semantic_search_uses_persisted_embeddings(client: TestClient) -> None:
-    processor = client.app.state.services.document_processor
-    processor.embedding_enabled = True
-    processor.embedding_model = "test-embedding"
-    processor.ollama = FakeEmbedder()
-    uploaded = client.post(
-        "/api/v1/documents",
-        files={
-            "file": (
-                "transport.md",
-                b"A motor vehicle converts energy into motion.",
-                "text/markdown",
-            )
-        },
-        data={"workspace_id": "personal"},
-    )
-    assert uploaded.status_code == 201
-
-    search = client.get(
-        "/api/v1/documents/search",
-        params={"q": "automobile", "workspace_id": "personal"},
-    )
-
-    assert search.status_code == 200
-    assert search.json()[0]["filename"] == "transport.md"
-    stored = client.app.state.services.database.fetch_one(
-        "SELECT embedding_json, embedding_model FROM document_chunks WHERE document_id = ?",
-        (uploaded.json()["id"],),
-    )
-    assert stored is not None
-    assert stored["embedding_json"] == "[1.0,0.0]"
-    assert stored["embedding_model"] == "test-embedding"
-
-
-def test_document_graph_facts_are_extracted_and_persisted(client: TestClient) -> None:
-    processor = client.app.state.services.document_processor
-    processor.graph_entity_model = "test-graph"
-    processor.ollama = FakeGraphExtractor()
-
-    uploaded = client.post(
-        "/api/v1/documents",
-        files={
-            "file": (
-                "company.md",
-                b"OpenAI is based in San Francisco.",
-                "text/markdown",
-            )
-        },
-        data={"workspace_id": "personal"},
-    )
-
-    assert uploaded.status_code == 201
-    document_id = uploaded.json()["id"]
-    entities = client.app.state.services.database.fetch_all(
-        "SELECT key, name, kind FROM chunk_entities WHERE document_id = ? ORDER BY key",
-        (document_id,),
-    )
-    relations = client.app.state.services.database.fetch_all(
-        "SELECT source_key, target_key, relation FROM chunk_relations WHERE document_id = ?",
-        (document_id,),
-    )
-    chunk = client.app.state.services.database.fetch_one(
-        "SELECT graph_model FROM document_chunks WHERE document_id = ?",
-        (document_id,),
-    )
-
-    assert entities == [
-        {"key": "openai", "name": "OpenAI", "kind": "organization"},
-        {"key": "san francisco", "name": "San Francisco", "kind": "place"},
-    ]
-    assert relations == [
-        {
-            "source_key": "openai",
-            "target_key": "san francisco",
-            "relation": "based_in",
-        }
-    ]
-    assert chunk and chunk["graph_model"] == "test-graph"
-
-
-def test_heading_aware_chunks_store_section_and_page_metadata(client: TestClient) -> None:
-    uploaded = client.post(
-        "/api/v1/documents",
-        files={
-            "file": (
-                "guide.md",
-                "# Khởi động\nCài đặt ứng dụng.\n\n## Windows\nChạy bằng PowerShell.".encode(),
-                "text/markdown",
-            )
-        },
-        data={"workspace_id": "personal"},
-    )
-    assert uploaded.status_code == 201
-    document_id = uploaded.json()["id"]
-
-    sections = client.app.state.services.database.fetch_all(
-        "SELECT section_index, title, level FROM document_sections "
-        "WHERE document_id = ? ORDER BY section_index",
-        (document_id,),
-    )
-    chunks = client.app.state.services.database.fetch_all(
-        "SELECT section_title, section_level FROM document_chunks "
-        "WHERE document_id = ? ORDER BY chunk_index",
-        (document_id,),
-    )
-    results = client.get(
-        "/api/v1/documents/search",
-        params={"q": "PowerShell", "workspace_id": "personal"},
-    ).json()
-
-    assert sections == [
-        {"section_index": 0, "title": "Khởi động", "level": 1},
-        {"section_index": 1, "title": "Windows", "level": 2},
-    ]
-    assert chunks[-1]["section_title"] == "Windows"
-    assert chunks[-1]["section_level"] == 2
-    assert results[0]["section_title"] == "Windows"
-    assert "rerank_score" in results[0]
-
-    page_records = DocumentProcessor._chunk_records(
-        "<!-- private-ai-page:1 -->\n# Một\nTrang đầu\n"
-        "<!-- private-ai-page:2 -->\nTrang sau"
-    )
-    assert [record["page_number"] for record in page_records] == [1, 2]
-    assert all(record["section_title"] == "Một" for record in page_records)
-
-
 def test_pre_workspace_document_library_is_wiped_on_migration(tmp_path: Path) -> None:
     from private_ai_api.database import Database
 
@@ -376,3 +249,76 @@ def test_pre_workspace_document_library_is_wiped_on_migration(tmp_path: Path) ->
     assert database.fetch_all("SELECT * FROM documents") == []
     columns = {row["name"] for row in database.fetch_all("PRAGMA table_info(documents)")}
     assert "workspace_id" in columns
+
+
+def test_document_library_is_paginated(client: TestClient) -> None:
+    for index in range(5):
+        uploaded = client.post(
+            "/api/v1/documents",
+            files={"file": (f"doc-{index}.md", f"# Doc {index}".encode(), "text/markdown")},
+            data=workspace,
+        )
+        assert uploaded.status_code == 201
+
+    first = client.get("/api/v1/documents", params={**workspace, "limit": 2}).json()
+    assert first["total"] == 5
+    assert first["limit"] == 2
+    assert first["offset"] == 0
+    assert len(first["items"]) == 2
+
+    second = client.get(
+        "/api/v1/documents",
+        params={**workspace, "limit": 2, "offset": 2},
+    ).json()
+    assert len(second["items"]) == 2
+    assert {item["id"] for item in second["items"]}.isdisjoint({i["id"] for i in first["items"]})
+
+    last = client.get("/api/v1/documents", params={**workspace, "limit": 2, "offset": 4}).json()
+    assert len(last["items"]) == 1
+
+    past_end = client.get("/api/v1/documents", params={**workspace, "limit": 2, "offset": 99})
+    assert past_end.json()["items"] == []
+    assert past_end.json()["total"] == 5
+
+    # Out-of-range paging arguments are clamped, never fatal.
+    clamped = client.get("/api/v1/documents", params={**workspace, "limit": 999, "offset": -5})
+    assert clamped.status_code == 200
+    assert clamped.json()["limit"] == 100
+    assert clamped.json()["offset"] == 0
+
+
+def test_document_library_filters_by_name_and_status(client: TestClient) -> None:
+    for name in ("bao-cao-quy-1.md", "bao-cao-quy-2.md", "ghi-chu.md"):
+        client.post(
+            "/api/v1/documents",
+            files={"file": (name, f"# {name}".encode(), "text/markdown")},
+            data=workspace,
+        )
+
+    matched = client.get("/api/v1/documents", params={**workspace, "q": "bao-cao"}).json()
+    assert matched["total"] == 2
+    assert {item["filename"] for item in matched["items"]} == {
+        "bao-cao-quy-1.md",
+        "bao-cao-quy-2.md",
+    }
+
+    # Filtering narrows the page, but the workspace summary keeps counting everything.
+    assert matched["summary"]["total"] == 3
+    assert matched["summary"]["byte_size"] > 0
+    assert matched["summary"]["pending"] == 0
+    assert matched["summary"]["failed"] == 0
+
+    by_status = client.get("/api/v1/documents", params={**workspace, "status": "ready"}).json()
+    assert by_status["total"] == 3
+    assert client.get(
+        "/api/v1/documents",
+        params={**workspace, "status": "failed"},
+    ).json()["total"] == 0
+
+    # Filter and pagination compose.
+    paged = client.get(
+        "/api/v1/documents",
+        params={**workspace, "q": "bao-cao", "limit": 1, "offset": 1},
+    ).json()
+    assert paged["total"] == 2
+    assert len(paged["items"]) == 1

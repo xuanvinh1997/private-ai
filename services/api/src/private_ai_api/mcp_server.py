@@ -21,10 +21,12 @@ from private_ai_api.database import Database
 from private_ai_api.schemas import MemoryType
 from private_ai_api.services.asr import ASR_MODEL_NAME, AsrService
 from private_ai_api.services.document_processor import DocumentProcessor
-from private_ai_api.services.gpu_lease import GpuLeaseManager, InsufficientVram
-from private_ai_api.services.graph_store import GraphStore
+from private_ai_api.services.gpu_lease import GpuLeaseManager
+from private_ai_api.services.lightrag_store import LightRagStore, default_model
 from private_ai_api.services.memory_service import MemoryService
-from private_ai_api.services.ollama import OllamaClient, OllamaUnavailable
+from private_ai_api.services.ollama import OllamaClient
+from private_ai_api.services.provider import ProviderUnavailable
+from private_ai_api.services.provider_registry import ProviderRegistry, ProviderRouter
 
 
 def _safe_filename(value: str) -> str:
@@ -59,7 +61,10 @@ class StaticTokenVerifier:
         )
 
 
-def create_mcp_server(settings: Settings | None = None) -> MCPServer:
+def create_mcp_server(
+    settings: Settings | None = None,
+    lightrag: LightRagStore | None = None,
+) -> MCPServer:
     configured = settings or get_settings()
     configured.data_dir.mkdir(parents=True, exist_ok=True)
     configured.documents_dir.mkdir(parents=True, exist_ok=True)
@@ -74,26 +79,25 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         gpu_leases=gpu_leases,
         model_overhead_ratio=configured.gpu_model_overhead_ratio,
     )
-    graph = GraphStore(
-        database,
-        url=configured.neo4j_url,
-        user=configured.neo4j_user,
-        password=configured.resolved_neo4j_password(),
-        neo4j_database=configured.neo4j_database,
-        enabled=configured.neo4j_enabled,
+    ai = ProviderRouter(
+        ProviderRegistry(
+            database,
+            ollama=ollama,
+            ollama_url=configured.ollama_url,
+            timeout=configured.request_timeout_seconds,
+        )
     )
-    documents = DocumentProcessor(
-        database,
-        ollama,
+    lightrag = lightrag or LightRagStore(
+        configured.data_dir,
+        ai,
         embedding_model=configured.embedding_model,
-        embedding_enabled=configured.embedding_enabled,
-        graph_store=graph,
-        graph_entity_model=configured.graph_entity_model,
+        resolve_chat_model=lambda: default_model(database, "chat"),
+        enabled=configured.embedding_enabled,
     )
+    documents = DocumentProcessor(database, lightrag)
     memories = MemoryService(
         database,
-        ollama,
-        graph,
+        ai,
         embedding_model=configured.embedding_model,
         embedding_enabled=configured.embedding_enabled,
     )
@@ -145,28 +149,6 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         if not workspace:
             raise ValueError("Workspace not found; call workspaces.list for valid IDs")
         return workspace_id
-
-    def _workspace_document_ids(workspace_id: str) -> set[str]:
-        return {
-            str(row["id"])
-            for row in database.fetch_all(
-                "SELECT id FROM documents WHERE workspace_id = ?",
-                (workspace_id,),
-            )
-        }
-
-    def _workspace_entity_keys(workspace_id: str) -> set[str]:
-        return {
-            str(row["key"])
-            for row in database.fetch_all(
-                """
-                SELECT DISTINCT e.key FROM chunk_entities AS e
-                JOIN documents AS d ON d.id = e.document_id
-                WHERE d.workspace_id = ?
-                """,
-                (workspace_id,),
-            )
-        }
 
     @server.tool(name="workspaces.list")
     def list_workspaces() -> list[dict[str, Any]]:
@@ -228,24 +210,6 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         _require_workspace(workspace_id)
         return await documents.search(query, max(1, min(limit, 20)), workspace_id=workspace_id)
 
-    @server.tool(name="documents.get_chunk")
-    def get_document_chunk(chunk_id: str) -> dict[str, Any]:
-        """Get an exact chunk and its source metadata by chunk ID."""
-        chunk = database.fetch_one(
-            """
-            SELECT c.id AS chunk_id, c.document_id, d.workspace_id, c.chunk_index, c.content,
-                   c.section_id, c.section_title, c.section_level, c.page_number,
-                   c.embedding_model, d.filename
-            FROM document_chunks AS c
-            JOIN documents AS d ON d.id = c.document_id
-            WHERE c.id = ?
-            """,
-            (chunk_id,),
-        )
-        if not chunk:
-            raise ValueError("Document chunk not found")
-        return chunk
-
     @server.tool(name="documents.ingest_text")
     async def ingest_text(filename: str, content: str, workspace_id: str) -> dict[str, Any]:
         """Store, chunk, and index user-provided Markdown or plain text in one workspace."""
@@ -285,8 +249,7 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
                 now,
             ),
         )
-        documents.index_text(document_id, content)
-        await documents.embed_document(document_id)
+        await documents.index_document(document_id)
         return document_status(document_id)
 
     @server.tool(name="documents.delete")
@@ -304,21 +267,9 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         workspace_id: str,
         limit: int = 5,
     ) -> list[dict[str, object]]:
-        """Search Neo4j indexes within one workspace; return an empty list when offline."""
+        """Search one workspace's knowledge index; return an empty list when it is offline."""
         _require_workspace(workspace_id)
-        if not configured.embedding_enabled:
-            return []
-        try:
-            vectors = await ollama.embed(configured.embedding_model, [query])
-        except (InsufficientVram, OllamaUnavailable):
-            return []
-        # Neo4j stores every workspace's graph in one place, so scope on the way out.
-        owned = _workspace_document_ids(workspace_id)
-        return [
-            record
-            for record in await graph.search(query, vectors[0], max(1, min(limit, 20)))
-            if str(record.get("document_id")) in owned
-        ]
+        return await lightrag.search(query, workspace_id, max(1, min(limit, 20)))
 
     @server.tool(name="graph.find_entity")
     async def find_graph_entity(
@@ -328,12 +279,7 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
     ) -> list[dict[str, object]]:
         """Find graph entities mentioned by one workspace's documents."""
         _require_workspace(workspace_id)
-        keys = _workspace_entity_keys(workspace_id)
-        return [
-            record
-            for record in await graph.find_entities(query, max(1, min(limit, 100)))
-            if str(record.get("key")) in keys
-        ]
+        return await lightrag.find_entities(query, workspace_id, max(1, min(limit, 100)))
 
     @server.tool(name="graph.neighborhood")
     async def graph_neighborhood(
@@ -341,40 +287,9 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         workspace_id: str,
         limit: int = 30,
     ) -> dict[str, object]:
-        """Expand a known entity by up to two hops, citing only this workspace's chunks."""
+        """Expand a known entity by up to two hops within one workspace."""
         _require_workspace(workspace_id)
-        if entity_key not in _workspace_entity_keys(workspace_id):
-            return {"entity": None, "neighbors": [], "chunks": []}
-        owned = _workspace_document_ids(workspace_id)
-        result = await graph.neighborhood(entity_key, max(1, min(limit, 100)))
-        chunks = result.get("chunks")
-        if isinstance(chunks, list):
-            result["chunks"] = [
-                chunk
-                for chunk in chunks
-                if isinstance(chunk, dict) and str(chunk.get("document_id")) in owned
-            ]
-        return result
-
-    @server.tool(name="graph.find_relationships")
-    async def find_graph_relationships(
-        workspace_id: str,
-        source_key: str = "",
-        target_key: str = "",
-        limit: int = 50,
-    ) -> list[dict[str, object]]:
-        """Read one workspace's entity relationships; arbitrary Cypher is not exposed."""
-        _require_workspace(workspace_id)
-        owned = _workspace_document_ids(workspace_id)
-        return [
-            record
-            for record in await graph.relationships(
-                source_key,
-                target_key,
-                max(1, min(limit, 200)),
-            )
-            if str(record.get("document_id")) in owned
-        ]
+        return await lightrag.neighborhood(entity_key, workspace_id, max(1, min(limit, 100)))
 
     @server.tool(name="graph.answer")
     async def graph_answer(query: str, workspace_id: str, limit: int = 5) -> dict[str, object]:
@@ -385,7 +300,7 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
             max(1, min(limit, 20)),
             workspace_id=workspace_id,
         )
-        entities = await graph.find_entities(query, 10)
+        entities = await lightrag.find_entities(query, workspace_id, 10)
         return {"query": query, "sources": search_results, "entities": entities}
 
     @server.tool(name="memory.list")
@@ -472,8 +387,8 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
 
     async def model_inventory() -> list[dict[str, Any]]:
         try:
-            inventory = [model.model_dump(mode="json") for model in await ollama.list_models()]
-        except OllamaUnavailable:
+            inventory = [model.model_dump(mode="json") for model in await ai.list_models()]
+        except ProviderUnavailable:
             inventory = []
         configured_embedding = configured.embedding_model.removesuffix(":latest")
         canonical_embedding = next(

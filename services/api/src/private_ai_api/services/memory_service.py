@@ -9,25 +9,23 @@ from typing import Any
 
 from private_ai_api.database import Database
 from private_ai_api.services.gpu_lease import InsufficientVram
-from private_ai_api.services.graph_store import GraphStore
-from private_ai_api.services.ollama import OllamaClient, OllamaUnavailable
+from private_ai_api.services.provider import ProviderUnavailable
+from private_ai_api.services.provider_registry import ProviderRouter
 
 
 class MemoryService:
-    """Keeps SQLite memory canonical and Neo4j semantic memory synchronized."""
+    """Keeps memories in SQLite, with their own embeddings for semantic recall."""
 
     def __init__(
         self,
         database: Database,
-        ollama: OllamaClient,
-        graph_store: GraphStore,
+        ollama: ProviderRouter,
         *,
         embedding_model: str,
         embedding_enabled: bool,
     ) -> None:
         self.database = database
         self.ollama = ollama
-        self.graph_store = graph_store
         self.embedding_model = embedding_model
         self.embedding_enabled = embedding_enabled
         self._locks: dict[str, asyncio.Lock] = {}
@@ -56,7 +54,7 @@ class MemoryService:
                         self.embedding_model,
                         [str(memory["content"])],
                     ))[0]
-                except (InsufficientVram, OllamaUnavailable, IndexError, TypeError, ValueError):
+                except (InsufficientVram, ProviderUnavailable, IndexError, TypeError, ValueError):
                     embedded = False
                 else:
                     self.database.execute(
@@ -68,12 +66,10 @@ class MemoryService:
                         ),
                     )
                     embedded = True
-            await self.graph_store.sync_memory(memory_id)
             return embedded
 
     async def delete_memory(self, memory_id: str) -> None:
         self.database.execute("DELETE FROM memories WHERE id = ?", (memory_id,))
-        await self.graph_store.delete_memory(memory_id)
         self._locks.pop(memory_id, None)
 
     async def search(
@@ -108,20 +104,12 @@ class MemoryService:
                     self.embedding_model,
                     [query],
                 ))[0]
-            except (InsufficientVram, OllamaUnavailable, IndexError, TypeError, ValueError):
+            except (InsufficientVram, ProviderUnavailable, IndexError, TypeError, ValueError):
                 query_vector = []
             if query_vector:
-                graph_results = await self.graph_store.search_memories(
-                    query_vector,
-                    user_id=user_id,
-                    limit=bounded_limit,
-                )
-                if graph_results:
-                    rankings.append(graph_results)
-                else:
-                    semantic = self._semantic_rank(query_vector, rows)
-                    if semantic:
-                        rankings.append(semantic)
+                semantic = self._semantic_rank(query_vector, rows)
+                if semantic:
+                    rankings.append(semantic)
         if not rankings:
             return [self._public_record(row) for row in rows[:bounded_limit]]
         return self._fuse(rankings, rows, bounded_limit)

@@ -4,12 +4,17 @@ import type {
   ChatResponse,
   ConversationDetail,
   ConversationRecord,
+  DocumentPage,
   DocumentRecord,
   Health,
   MemoryRecord,
   MemoryType,
   ModelInfo,
   ModelEvent,
+  Preferences,
+  ProviderDraft,
+  ProviderProbeResult,
+  ProviderRecord,
   WorkspaceRecord,
 } from "./types";
 
@@ -43,6 +48,38 @@ export const api = {
     request<void>(`/models/${encodeURIComponent(name)}/unload`, { method: "POST" }),
   deleteModel: (name: string) =>
     request<void>(`/models/${encodeURIComponent(name)}?confirmed=true`, { method: "DELETE" }),
+  preferences: () => request<Preferences>("/preferences"),
+  updatePreferences: (changes: Partial<Preferences>) =>
+    request<Preferences>("/preferences", {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(changes),
+    }),
+  providers: () => request<ProviderRecord[]>("/providers"),
+  createProvider: (draft: ProviderDraft) =>
+    request<ProviderRecord>("/providers", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(draft),
+    }),
+  updateProvider: (id: string, changes: Partial<ProviderDraft> & { enabled?: boolean }) =>
+    request<ProviderRecord>(`/providers/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(changes),
+    }),
+  activateProvider: (id: string) =>
+    request<ProviderRecord>(`/providers/${id}/activate`, { method: "POST" }),
+  probeProvider: (id: string) =>
+    request<ProviderProbeResult>(`/providers/${id}/probe`, { method: "POST" }),
+  probeProviderDraft: (draft: Omit<ProviderDraft, "name">) =>
+    request<ProviderProbeResult>("/providers/probe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(draft),
+    }),
+  deleteProvider: (id: string) =>
+    request<void>(`/providers/${id}?confirmed=true`, { method: "DELETE" }),
   chat: (model: string, messages: ChatMessage[]) =>
     request<ChatResponse>("/chat", {
       method: "POST",
@@ -107,8 +144,22 @@ export const api = {
     body.append("file", audio, filename);
     return request<AsrResult>("/asr/transcribe", { method: "POST", body });
   },
-  documents: (workspaceId: string) =>
-    request<DocumentRecord[]>(`/documents?workspace_id=${encodeURIComponent(workspaceId)}`),
+  documents: (
+    workspaceId: string,
+    limit: number,
+    offset: number,
+    query = "",
+    status = "",
+  ) => {
+    const search = new URLSearchParams({
+      workspace_id: workspaceId,
+      limit: String(limit),
+      offset: String(offset),
+    });
+    if (query) search.set("q", query);
+    if (status) search.set("status", status);
+    return request<DocumentPage>(`/documents?${search}`);
+  },
   processDocument: (id: string) =>
     request<{ id: string; status: string }>(`/documents/${id}/process`, { method: "POST" }),
   deleteDocument: (id: string) =>

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from conftest import FakeIndex
 
 from private_ai_api.config import Settings
 from private_ai_api.mcp_server import create_mcp_server
@@ -15,20 +16,19 @@ async def test_mcp_tools_share_documents_and_memory(tmp_path: Path) -> None:
             data_dir=tmp_path,
             frontend_dist=tmp_path / "missing-web",
             embedding_enabled=False,
-        )
+        ),
+        FakeIndex(),  # type: ignore[arg-type]
     )
     tool_names = {tool.name for tool in await server.list_tools()}
     assert {
         "workspaces.list",
         "documents.list",
         "documents.search",
-        "documents.get_chunk",
         "documents.ingest_text",
         "documents.delete",
         "graph.search",
         "graph.neighborhood",
         "graph.find_entity",
-        "graph.find_relationships",
         "graph.answer",
         "memory.list",
         "memory.remember",
@@ -70,9 +70,7 @@ async def test_mcp_tools_share_documents_and_memory(tmp_path: Path) -> None:
         {"query": "violet-lantern", "workspace_id": "personal", "limit": 3},
     )
     assert searched.structured_content["result"][0]["filename"] == "mcp-notes.md"
-    chunk_id = searched.structured_content["result"][0]["chunk_id"]
-    chunk = await server.call_tool("documents.get_chunk", {"chunk_id": chunk_id})
-    assert "violet-lantern" in chunk.structured_content["content"]
+    assert "violet-lantern" in searched.structured_content["result"][0]["content"]
 
     remembered = await server.call_tool(
         "memory.remember",

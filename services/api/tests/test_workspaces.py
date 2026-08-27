@@ -34,7 +34,7 @@ class FakeOllama:
 
 def test_workspace_conversation_and_persisted_chat(client: TestClient) -> None:
     fake_ollama = FakeOllama()
-    client.app.state.services.ollama = fake_ollama
+    client.app.state.services.ai = fake_ollama
 
     seeded = client.get("/api/v1/workspaces")
     assert seeded.status_code == 200
@@ -81,7 +81,7 @@ def test_workspace_conversation_and_persisted_chat(client: TestClient) -> None:
 
 def test_conversation_injects_relevant_local_document(client: TestClient) -> None:
     fake_ollama = FakeOllama()
-    client.app.state.services.ollama = fake_ollama
+    client.app.state.services.ai = fake_ollama
     uploaded = client.post(
         "/api/v1/documents",
         files={
@@ -126,7 +126,7 @@ def test_conversation_injects_relevant_local_document(client: TestClient) -> Non
 
 def test_conversation_streams_and_persists_assistant_message(client: TestClient) -> None:
     fake_ollama = FakeOllama()
-    client.app.state.services.ollama = fake_ollama
+    client.app.state.services.ai = fake_ollama
     conversation = client.post(
         "/api/v1/workspaces/personal/conversations",
         json={"model": "test-model"},
@@ -169,7 +169,7 @@ def test_deleted_seed_workspace_stays_deleted_after_restart(tmp_path: Path) -> N
 
 def test_documents_never_leak_between_workspaces(client: TestClient) -> None:
     fake_ollama = FakeOllama()
-    client.app.state.services.ollama = fake_ollama
+    client.app.state.services.ai = fake_ollama
     uploaded = client.post(
         "/api/v1/documents",
         files={
@@ -184,7 +184,8 @@ def test_documents_never_leak_between_workspaces(client: TestClient) -> None:
     assert uploaded.status_code == 201
 
     # The library and the search endpoint are both scoped.
-    assert client.get("/api/v1/documents", params={"workspace_id": "personal"}).json() == []
+    listed = client.get("/api/v1/documents", params={"workspace_id": "personal"}).json()
+    assert listed["items"] == []
     assert (
         client.get(
             "/api/v1/documents/search",

@@ -4,15 +4,57 @@ export interface Health {
   status: string;
   platform: string;
   services: Record<string, ServiceState>;
+  provider: {
+    id: string;
+    name: string;
+    kind: ProviderKind;
+    base_url: string;
+    builtin: boolean;
+  } | null;
   gpu: {
     capacity_bytes: number;
     reserved_bytes: number;
+    unified_memory: boolean;
+    total_memory_bytes: number | null;
     leases: Array<{
       owner: string;
       bytes_reserved: number;
       source: "reserved" | "observed";
     }>;
   };
+}
+
+export interface Preferences {
+  ocr_enabled: boolean;
+}
+
+export type ProviderKind = "ollama" | "openai";
+
+export interface ProviderRecord {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  base_url: string;
+  has_api_key: boolean;
+  enabled: boolean;
+  builtin: boolean;
+  active: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ProviderDraft {
+  name: string;
+  kind: ProviderKind;
+  base_url: string;
+  api_key: string;
+}
+
+export interface ProviderProbeResult {
+  reachable: boolean;
+  model_count: number;
+  models: string[];
+  detail?: string | null;
 }
 
 export interface ModelInfo {
@@ -99,6 +141,21 @@ export interface DocumentRecord {
   created_at: string;
   updated_at: string;
 }
+
+export interface DocumentPage {
+  items: DocumentRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  summary: {
+    total: number;
+    byte_size: number;
+    pending: number;
+    failed: number;
+  };
+}
+
+export type DocumentStatus = DocumentRecord["status"];
 
 export type MemoryType = "preference" | "fact" | "episodic";
 

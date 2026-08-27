@@ -14,6 +14,7 @@ from fastapi import (
     File,
     Form,
     HTTPException,
+    Query,
     Response,
     UploadFile,
     status,
@@ -44,12 +45,52 @@ def _require_workspace(services: AppServices, workspace_id: str) -> None:
 def list_documents(
     workspace_id: str,
     services: Annotated[AppServices, Depends(get_services)],
-) -> list[dict[str, Any]]:
+    q: str = "",
+    document_status: Annotated[str, Query(alias="status")] = "",
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
     _require_workspace(services, workspace_id)
-    return services.database.fetch_all(
-        "SELECT * FROM documents WHERE workspace_id = ? ORDER BY created_at DESC",
+    page_size = max(1, min(limit, 100))
+    start = max(0, offset)
+
+    clauses = ["workspace_id = ?"]
+    parameters: list[Any] = [workspace_id]
+    if q.strip():
+        clauses.append("filename LIKE ?")
+        parameters.append(f"%{q.strip()}%")
+    if document_status:
+        clauses.append("status = ?")
+        parameters.append(document_status)
+    where = " AND ".join(clauses)
+
+    counted = services.database.fetch_one(
+        f"SELECT COUNT(*) AS total FROM documents WHERE {where}",  # noqa: S608
+        tuple(parameters),
+    )
+    # Totals for the whole workspace stay stable so the header does not jump while filtering.
+    summary = services.database.fetch_one(
+        """
+        SELECT COUNT(*) AS total,
+               COALESCE(SUM(byte_size), 0) AS byte_size,
+               COALESCE(SUM(status IN ('queued', 'processing')), 0) AS pending,
+               COALESCE(SUM(status IN ('failed', 'needs_ocr')), 0) AS failed
+        FROM documents WHERE workspace_id = ?
+        """,
         (workspace_id,),
     )
+    items = services.database.fetch_all(
+        f"SELECT * FROM documents WHERE {where} "  # noqa: S608
+        "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+        (*parameters, page_size, start),
+    )
+    return {
+        "items": items,
+        "total": int(counted["total"]) if counted else 0,
+        "limit": page_size,
+        "offset": start,
+        "summary": dict(summary or {}),
+    }
 
 
 @router.get("/search")
@@ -148,8 +189,7 @@ async def upload_document(
         ),
     )
     if extracted_text:
-        services.document_processor.index_text(document_id, extracted_text)
-        background_tasks.add_task(services.document_processor.embed_document, document_id)
+        background_tasks.add_task(services.document_processor.index_document, document_id)
     if document_status == "queued":
         background_tasks.add_task(services.document_processor.process, document_id)
     return services.database.fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,)) or {}
@@ -165,7 +205,7 @@ def process_document(
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
     services.database.execute(
-        "UPDATE documents SET status = 'queued', error = NULL WHERE id = ?",
+        "UPDATE documents SET status = 'queued', error = NULL, indexed_at = NULL WHERE id = ?",
         (document_id,),
     )
     background_tasks.add_task(services.document_processor.process, document_id)

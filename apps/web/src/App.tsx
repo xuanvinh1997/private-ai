@@ -34,17 +34,22 @@ import {
   onCleanup,
 } from "solid-js";
 import { api } from "./api";
+import { formatBytes, formatRelativeTime } from "./format";
 import { LibraryView, MemoryView, WorkspaceDialog } from "./components/DataViews";
+import { ProviderSettings } from "./components/Providers";
 import { Markdown } from "./components/Markdown";
 import type {
   ChatMessage,
   ConversationDetail,
+  DocumentRecord,
   ModelInfo,
   ServiceState,
   WorkspaceRecord,
 } from "./types";
 
 type View = "chat" | "library" | "models" | "memory" | "settings";
+const DOCUMENTS_PER_PAGE = 20;
+
 type Theme = "light" | "dark";
 type FontScale = "normal" | "large";
 
@@ -66,22 +71,6 @@ function getStoredPreference<T extends string>(key: string, allowed: T[], fallba
   const value = window.localStorage.getItem(key) as T | null;
   return value && allowed.includes(value) ? value : fallback;
 }
-
-const formatBytes = (bytes: number) => {
-  if (!bytes) return "0 GB";
-  const gib = bytes / 1024 ** 3;
-  return `${gib < 10 ? gib.toFixed(1) : gib.toFixed(0)} GB`;
-};
-
-const formatRelativeTime = (value: string) => {
-  const elapsed = Date.now() - new Date(value).getTime();
-  const minutes = Math.max(0, Math.floor(elapsed / 60_000));
-  if (minutes < 1) return "Bây giờ";
-  if (minutes < 60) return `${minutes} phút`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours} giờ`;
-  return new Intl.DateTimeFormat("vi-VN", { day: "2-digit", month: "2-digit" }).format(new Date(value));
-};
 
 function StatusPip(props: { state: ServiceState | "idle" }) {
   return <span class={`status-pip status-${props.state}`} aria-hidden="true" />;
@@ -267,6 +256,20 @@ function App() {
   const [health, { refetch: refetchHealth }] = createResource(api.health);
   const [models, { refetch: refetchModels }] = createResource(api.models);
   const [workspaceList, { refetch: refetchWorkspaces }] = createResource(api.workspaces);
+  const [preferences, { mutate: mutatePreferences }] = createResource(api.preferences);
+  const [ocrError, setOcrError] = createSignal("");
+
+  const toggleOcr = async (enabled: boolean) => {
+    const previous = preferences();
+    setOcrError("");
+    mutatePreferences({ ocr_enabled: enabled });
+    try {
+      mutatePreferences(await api.updatePreferences({ ocr_enabled: enabled }));
+    } catch (cause) {
+      mutatePreferences(previous);
+      setOcrError(cause instanceof Error ? cause.message : "Không lưu được lựa chọn OCR");
+    }
+  };
   // createResource only skips a fetch for false/null/undefined, so an empty id would be
   // sent as a real request and leave both resources stuck in an error state.
   const workspaceSource = createMemo(() => activeWorkspace() || undefined);
@@ -274,10 +277,45 @@ function App() {
     workspaceSource,
     api.conversations,
   );
-  const [documents, { refetch: refetchDocuments }] = createResource(
-    workspaceSource,
-    api.documents,
+  const [documentPage, setDocumentPage] = createSignal(0);
+  const [documentSearch, setDocumentSearch] = createSignal("");
+  const [documentStatus, setDocumentStatus] = createSignal("");
+  const documentQuery = createMemo(() => {
+    const workspaceId = activeWorkspace();
+    if (!workspaceId) return undefined;
+    return {
+      workspaceId,
+      offset: documentPage() * DOCUMENTS_PER_PAGE,
+      search: documentSearch(),
+      status: documentStatus(),
+    };
+  });
+  const [documents, { refetch: refetchDocuments }] = createResource(documentQuery, (query) =>
+    api.documents(
+      query.workspaceId,
+      DOCUMENTS_PER_PAGE,
+      query.offset,
+      query.search,
+      query.status,
+    ),
   );
+  // Keep the previous page on screen while the next one loads instead of blanking the list.
+  const documentItems = createMemo<DocumentRecord[]>(
+    (previous) => documents()?.items ?? (documents.loading ? previous : []),
+    [],
+  );
+  const documentTotal = createMemo(() => documents()?.total ?? 0);
+  const documentSummary = createMemo(
+    () => documents()?.summary ?? { total: 0, byte_size: 0, pending: 0, failed: 0 },
+  );
+  const documentPageCount = createMemo(() =>
+    Math.max(1, Math.ceil(documentTotal() / DOCUMENTS_PER_PAGE)),
+  );
+  const changeDocumentFilter = (search: string, status: string) => {
+    setDocumentSearch(search);
+    setDocumentStatus(status);
+    setDocumentPage(0);
+  };
   let fileInput!: HTMLInputElement;
   let messageList!: HTMLDivElement;
   let activeChatController: AbortController | undefined;
@@ -319,10 +357,15 @@ function App() {
     if (!gpu) return "Đang đo…";
     return `${formatBytes(gpu.reserved_bytes)} / ${formatBytes(gpu.capacity_bytes)}`;
   });
+  const vramTitle = createMemo(() =>
+    health()?.gpu.unified_memory ? "Bộ nhớ hợp nhất cho GPU" : "VRAM đang dùng",
+  );
   const vramDetail = createMemo(() => {
-    const count = health()?.gpu.leases?.length ?? 0;
-    if (!count) return "Không có mô hình trong GPU";
-    return `${count} mô hình đang dùng VRAM`;
+    const gpu = health()?.gpu;
+    const count = gpu?.leases?.length ?? 0;
+    const models = count ? `${count} mô hình đang dùng` : "Không có mô hình trong GPU";
+    if (!gpu?.unified_memory || !gpu.total_memory_bytes) return models;
+    return `${models} · dùng chung ${formatBytes(gpu.total_memory_bytes)} RAM của SoC`;
   });
 
   const healthPoll = window.setInterval(() => {
@@ -350,8 +393,10 @@ function App() {
 
   createEffect(() => {
     const available = chatModels();
+    // Switching provider replaces the whole inventory, so a stale pick has to be dropped.
+    if (!available.length || available.some((model) => model.name === selectedModel())) return;
     const preferred = available.find((model) => model.default_for.includes("chat")) ?? available[0];
-    if (preferred && !selectedModel()) setSelectedModel(preferred.name);
+    setSelectedModel(preferred.name);
   });
 
   const chooseChatModel = (name: string) => {
@@ -383,7 +428,7 @@ function App() {
   const chooseWorkspace = (id: string) => {
     setActiveWorkspace(id);
     setConfirmWorkspaceDelete("");
-    refetchDocuments();
+    changeDocumentFilter("", "");
     setActiveConversation("");
     setView("chat");
     setMessages([]);
@@ -459,6 +504,11 @@ function App() {
     refetchConversations();
     refetchWorkspaces();
   };
+
+  createEffect(() => {
+    if (!documents()) return;
+    if (documentPage() > documentPageCount() - 1) setDocumentPage(documentPageCount() - 1);
+  });
 
   createEffect(() => {
     const items = workspaceList();
@@ -936,23 +986,23 @@ function App() {
                     <h2>Tài liệu trong thư viện</h2>
                     <Show when={uploadError() || documents.error}><div class="inline-error" role="alert">{uploadError() || (documents.error as Error)?.message}</div></Show>
                     <Show when={uploading()}><div class="context-loading"><i />Đang nhập tài liệu…</div></Show>
-                    <Show when={(documents()?.length ?? 0) > 0} fallback={<Show when={!uploading()}><button class="empty-context" onClick={() => fileInput.click()}><FileUp size={22} /><span><strong>Thêm tài liệu</strong><small>PDF, Office hoặc Markdown</small></span></button></Show>}>
-                      <div class="context-documents"><For each={documents()?.slice(0, 3)}>{(document) => (
+                    <Show when={documentItems().length > 0} fallback={<Show when={!uploading()}><button class="empty-context" onClick={() => fileInput.click()}><FileUp size={22} /><span><strong>Thêm tài liệu</strong><small>PDF, Office hoặc Markdown</small></span></button></Show>}>
+                      <div class="context-documents"><For each={documentItems().slice(0, 3)}>{(document) => (
                         <button onClick={() => setView("library")}><BookOpenText size={17} /><span><strong>{document.filename}</strong><small>{document.status === "ready" ? "Sẵn sàng" : document.status}</small></span></button>
                       )}</For></div>
                     </Show>
                   </section>
                   <section class="context-block"><h2>Trạng thái hệ thống</h2><dl class="service-list">
                     <div><dt><StatusPip state={serviceState("ollama")} /> Ollama</dt><dd>{serviceState("ollama") === "online" ? "Sẵn sàng" : "Ngoại tuyến"}</dd></div>
-                    <div><dt><StatusPip state={serviceState("neo4j")} /> Kho tri thức</dt><dd>{serviceState("neo4j") === "online" ? "Sẵn sàng" : "Chưa cấu hình"}</dd></div>
+                    <div><dt><StatusPip state={serviceState("knowledge_graph")} /> Kho tri thức</dt><dd>{serviceState("knowledge_graph") === "online" ? "Sẵn sàng" : "Chưa dựng"}</dd></div>
                     <div><dt><StatusPip state={serviceState("asr")} /> Giọng nói</dt><dd>{serviceState("asr") === "online" ? "Sẵn sàng" : "Chưa cấu hình"}</dd></div>
                   </dl></section>
                   <section class="context-block resource-block">
-                    <div><h2>VRAM đang dùng</h2><span>{vramLabel()}</span></div>
+                    <div><h2>{vramTitle()}</h2><span>{vramLabel()}</span></div>
                     <div
                       class="resource-track"
                       role="progressbar"
-                      aria-label="Mức sử dụng VRAM"
+                      aria-label={vramTitle()}
                       aria-valuemin="0"
                       aria-valuemax="100"
                       aria-valuenow={vramPercent()}
@@ -965,7 +1015,24 @@ function App() {
             </Match>
 
             <Match when={view() === "library"}>
-              <LibraryView documents={documents()} uploadError={uploadError()} workspaceName={hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"} loading={documents.loading} uploading={uploading()} onUpload={() => fileInput.click()} onRefresh={refetchDocuments} />
+              <LibraryView
+                documents={documentItems()}
+                total={documentTotal()}
+                summary={documentSummary()}
+                page={documentPage()}
+                pageSize={DOCUMENTS_PER_PAGE}
+                pageCount={documentPageCount()}
+                onPageChange={setDocumentPage}
+                search={documentSearch()}
+                status={documentStatus()}
+                onFilterChange={changeDocumentFilter}
+                uploadError={uploadError()}
+                workspaceName={hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"}
+                loading={documents.loading}
+                uploading={uploading()}
+                onUpload={() => fileInput.click()}
+                onRefresh={refetchDocuments}
+              />
             </Match>
             <Match when={view() === "models"}>
               <section class="page-view"><div class="page-heading page-heading-row"><div><span>Mô hình cục bộ</span><h1>Quản lý mô hình</h1><p>Quản lý Ollama và ASR: trạng thái tải, VRAM, mặc định tác vụ và kiểm tra SHA-256.</p></div><AddModelDialog onCompleted={() => { refetchModels(); refetchHealth(); }} /></div><div class="model-list"><Switch><Match when={models.loading}><div class="loading-row"><i />Đang đọc thư viện mô hình…</div></Match><Match when={models.error || (models()?.length ?? 0) === 0}><div class="empty-models"><HardDrive size={28} /><strong>Chưa tìm thấy mô hình</strong><span>Khởi động Ollama rồi thêm mô hình đầu tiên.</span></div></Match><Match when={(models()?.length ?? 0) > 0}><For each={models()}>{(model) => <ModelRow model={model} onRefresh={() => { refetchModels(); refetchHealth(); }} />}</For></Match></Switch></div></section>
@@ -979,7 +1046,25 @@ function App() {
                 <div class="settings-sections">
                   <section><div><strong>Giao diện</strong><span>Chọn nền sáng dễ đọc hoặc nền tối.</span></div><div class="segmented-control settings-control"><button classList={{ active: theme() === "light" }} onClick={() => setTheme("light")}>Sáng</button><button classList={{ active: theme() === "dark" }} onClick={() => setTheme("dark")}>Tối</button></div></section>
                   <section><div><strong>Cỡ chữ</strong><span>Tăng toàn bộ chữ và vùng điều khiển.</span></div><button classList={{ "button": true, "button-secondary": true, active: fontScale() === "large" }} onClick={() => setFontScale(fontScale() === "large" ? "normal" : "large")}><Type size={18} />{fontScale() === "large" ? "Đang dùng chữ lớn" : "Bật chữ lớn"}</button></section>
+                  <section>
+                    <div>
+                      <strong>Đọc văn bản bằng OCR</strong>
+                      <span>Bật plugin OCR, mô hình OCR và Tesseract khi tệp không có lớp văn bản. Tắt thì chỉ đọc văn bản có sẵn, nhanh hơn nhưng bỏ qua tài liệu scan.</span>
+                      <Show when={ocrError()}><span class="settings-error">{ocrError()}</span></Show>
+                    </div>
+                    <label class="settings-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={preferences()?.ocr_enabled ?? true}
+                        disabled={preferences.loading}
+                        onChange={(event) => void toggleOcr(event.currentTarget.checked)}
+                      />
+                      <span>{(preferences()?.ocr_enabled ?? true) ? "Đang bật" : "Đang tắt"}</span>
+                    </label>
+                  </section>
+                  <section><div><strong>Nhà cung cấp đang dùng</strong><span>Nơi mô hình thực sự chạy cho phiên làm việc này.</span></div><div class="settings-control"><StatusPip state={health()?.services.provider ?? "offline"} /> {health.loading ? "Đang kiểm tra…" : (health()?.provider?.name ?? "Chưa cấu hình")}</div></section>
                 </div>
+                <ProviderSettings onChanged={() => { refetchModels(); refetchHealth(); }} />
               </section>
             </Match>
           </Switch>

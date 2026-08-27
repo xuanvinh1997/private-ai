@@ -1,19 +1,28 @@
 import { Dialog } from "@kobalte/core/dialog";
 import {
   BrainCircuit,
+  ChevronLeft,
+  ChevronRight,
   Download,
-  FileText,
   FileUp,
   Pencil,
   Plus,
   RotateCw,
+  Search,
   ShieldCheck,
   Trash2,
   X,
 } from "lucide-solid";
-import { For, Match, Show, Switch, createResource, createSignal } from "solid-js";
+import { For, Match, Show, Switch, createResource, createSignal, onCleanup } from "solid-js";
 import { api } from "../api";
-import type { DocumentRecord, MemoryRecord, MemoryType, WorkspaceRecord } from "../types";
+import { formatFileSize, formatRelativeTime } from "../format";
+import type {
+  DocumentRecord,
+  DocumentStatus,
+  MemoryRecord,
+  MemoryType,
+  WorkspaceRecord,
+} from "../types";
 
 interface WorkspaceDialogProps {
   workspace?: WorkspaceRecord;
@@ -120,8 +129,39 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
   );
 }
 
+const STATUS_LABELS: Record<DocumentStatus, string> = {
+  queued: "Đang chờ",
+  processing: "Đang xử lý",
+  ready: "Sẵn sàng",
+  needs_ocr: "Cần OCR",
+  failed: "Lỗi",
+};
+
+const STATUS_FILTERS: { value: string; label: string }[] = [
+  { value: "", label: "Tất cả" },
+  { value: "ready", label: "Sẵn sàng" },
+  { value: "processing", label: "Đang xử lý" },
+  { value: "needs_ocr", label: "Cần OCR" },
+  { value: "failed", label: "Lỗi" },
+];
+
+function fileKind(filename: string): string {
+  const extension = filename.split(".").pop() ?? "";
+  if (!extension || extension === filename) return "TXT";
+  return extension.slice(0, 4).toUpperCase();
+}
+
 export function LibraryView(props: {
-  documents: DocumentRecord[] | undefined;
+  documents: DocumentRecord[];
+  total: number;
+  summary: { total: number; byte_size: number; pending: number; failed: number };
+  page: number;
+  pageSize: number;
+  pageCount: number;
+  onPageChange: (page: number) => void;
+  search: string;
+  status: string;
+  onFilterChange: (search: string, status: string) => void;
   workspaceName: string;
   uploadError: string;
   loading: boolean;
@@ -132,6 +172,25 @@ export function LibraryView(props: {
   const [workingId, setWorkingId] = createSignal("");
   const [confirmDelete, setConfirmDelete] = createSignal("");
   const [error, setError] = createSignal("");
+  const [draftSearch, setDraftSearch] = createSignal(props.search);
+  let searchTimer: number | undefined;
+
+  const filtering = () => Boolean(props.search || props.status);
+  const rangeStart = () => props.page * props.pageSize + 1;
+  const rangeEnd = () => props.page * props.pageSize + props.documents.length;
+
+  // Debounce so each keystroke does not become its own request.
+  const queueSearch = (value: string) => {
+    setDraftSearch(value);
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => props.onFilterChange(value.trim(), props.status), 250);
+  };
+  onCleanup(() => window.clearTimeout(searchTimer));
+
+  const clearFilters = () => {
+    setDraftSearch("");
+    props.onFilterChange("", "");
+  };
 
   const retry = async (id: string) => {
     setWorkingId(id);
@@ -163,47 +222,151 @@ export function LibraryView(props: {
     }
   };
 
-  const statusLabel = (status: DocumentRecord["status"]) => ({
-    queued: "Đang chờ",
-    processing: "Đang xử lý",
-    ready: "Sẵn sàng",
-    needs_ocr: "Cần OCR",
-    failed: "Lỗi",
-  })[status];
-
   return (
     <section class="page-view">
       <div class="page-heading page-heading-row">
-        <div><span>Thư viện riêng</span><h1>{props.workspaceName}</h1><p>Tài liệu được trích xuất trên máy và chỉ dùng cho không gian làm việc này.</p></div>
-        <button class="button button-primary" onClick={props.onUpload}><FileUp size={18} /> Thêm tài liệu</button>
+        <div>
+          <span>Thư viện riêng</span>
+          <h1>{props.workspaceName}</h1>
+          <p class="library-stats">
+            <Show when={props.summary.total > 0} fallback="Chưa có tài liệu nào trong không gian này.">
+              <strong>{props.summary.total}</strong> tài liệu
+              <em>·</em> {formatFileSize(props.summary.byte_size)}
+              <Show when={props.summary.pending > 0}>
+                <em>·</em> <span class="stat-pending">{props.summary.pending} đang xử lý</span>
+              </Show>
+              <Show when={props.summary.failed > 0}>
+                <em>·</em> <span class="stat-failed">{props.summary.failed} cần xem lại</span>
+              </Show>
+            </Show>
+          </p>
+        </div>
+        <button class="button button-primary" onClick={props.onUpload} disabled={props.uploading}>
+          <FileUp size={18} /> {props.uploading ? "Đang nhập…" : "Thêm tài liệu"}
+        </button>
       </div>
+
       <Show when={error() || props.uploadError}>
         <div class="inline-error page-error" role="alert">{error() || props.uploadError}</div>
       </Show>
+
+      <Show when={props.summary.total > 0}>
+        <div class="library-toolbar">
+          <div class="library-search">
+            <Search size={16} />
+            <input
+              type="search"
+              value={draftSearch()}
+              placeholder="Tìm theo tên tệp"
+              aria-label="Tìm tài liệu theo tên tệp"
+              onInput={(event) => queueSearch(event.currentTarget.value)}
+            />
+          </div>
+          <div class="library-filters" role="group" aria-label="Lọc theo trạng thái">
+            <For each={STATUS_FILTERS}>{(filter) => (
+              <button
+                type="button"
+                classList={{ active: props.status === filter.value }}
+                aria-pressed={props.status === filter.value}
+                onClick={() => props.onFilterChange(props.search, filter.value)}
+              >{filter.label}</button>
+            )}</For>
+          </div>
+        </div>
+      </Show>
+
       <Switch>
-        <Match when={props.loading}><div class="loading-row"><i />Đang đọc thư viện…</div></Match>
-        <Match when={(props.documents?.length ?? 0) === 0}>
+        <Match when={props.loading && props.documents.length === 0}>
+          <div class="loading-row"><i />Đang đọc thư viện…</div>
+        </Match>
+        <Match when={props.documents.length === 0 && filtering()}>
+          <div class="library-empty">
+            <Search size={26} />
+            <strong>Không có tài liệu nào khớp</strong>
+            <span>Thử từ khóa khác hoặc bỏ bộ lọc trạng thái.</span>
+            <button class="button button-secondary" onClick={clearFilters}>Xóa bộ lọc</button>
+          </div>
+        </Match>
+        <Match when={props.documents.length === 0}>
           <button class="large-upload" onClick={props.onUpload} disabled={props.uploading}>
-            <FileUp size={30} /><strong>{props.uploading ? "Đang nhập tài liệu…" : "Chọn tài liệu từ máy"}</strong>
+            <FileUp size={30} />
+            <strong>{props.uploading ? "Đang nhập tài liệu…" : "Chọn tài liệu từ máy"}</strong>
             <span>Thêm vào {props.workspaceName} · PDF, Office, JPG, PNG, WebP, Markdown và văn bản · tối đa 100 MB</span>
           </button>
         </Match>
-        <Match when={(props.documents?.length ?? 0) > 0}>
-          <div class="document-list">
+        <Match when={props.documents.length > 0}>
+          <div classList={{ "document-list": true, refreshing: props.loading }}>
             <For each={props.documents}>{(document) => (
               <article class="document-row">
-                <div class="document-icon"><FileText size={22} /></div>
-                <div class="document-copy"><strong>{document.filename}</strong><span>{(document.byte_size / 1024 / 1024).toFixed(1)} MB · {document.error || "Đã lưu cục bộ"}</span></div>
-                <span class={`document-status document-${document.status}`}>{statusLabel(document.status)}</span>
+                <div class="document-icon" aria-hidden="true">{fileKind(document.filename)}</div>
+                <div class="document-copy">
+                  <strong title={document.filename}>{document.filename}</strong>
+                  <span>
+                    {formatFileSize(document.byte_size)}
+                    <em>·</em> {formatRelativeTime(document.created_at)}
+                    <Show when={document.error}><em>·</em> <b>{document.error}</b></Show>
+                  </span>
+                </div>
+                <span classList={{ "document-status": true, [`document-${document.status}`]: true }}>
+                  <i aria-hidden="true" />{STATUS_LABELS[document.status]}
+                </span>
                 <div class="document-actions">
                   <Show when={document.status === "failed" || document.status === "needs_ocr"}>
-                    <button disabled={workingId() === document.id} onClick={() => void retry(document.id)} aria-label="Xử lý lại"><RotateCw size={18} /></button>
+                    <button
+                      class="icon-action"
+                      disabled={workingId() === document.id}
+                      onClick={() => void retry(document.id)}
+                      aria-label={`Xử lý lại ${document.filename}`}
+                    ><RotateCw size={17} /></button>
                   </Show>
-                  <button classList={{ danger: confirmDelete() === document.id }} disabled={workingId() === document.id} onClick={() => void remove(document.id)} aria-label={confirmDelete() === document.id ? "Bấm lại để xác nhận xóa" : "Xóa tài liệu"}><Trash2 size={18} /></button>
+                  <Show
+                    when={confirmDelete() === document.id}
+                    fallback={
+                      <button
+                        class="icon-action"
+                        disabled={workingId() === document.id}
+                        onClick={() => void remove(document.id)}
+                        aria-label={`Xóa ${document.filename}`}
+                      ><Trash2 size={17} /></button>
+                    }
+                  >
+                    <div class="confirm-delete">
+                      <button
+                        class="confirm-yes"
+                        disabled={workingId() === document.id}
+                        onClick={() => void remove(document.id)}
+                      >Xóa hẳn</button>
+                      <button class="confirm-no" onClick={() => setConfirmDelete("")}>Hủy</button>
+                    </div>
+                  </Show>
                 </div>
               </article>
             )}</For>
           </div>
+
+          <nav class="pager" aria-label="Phân trang tài liệu">
+            <span class="pager-range">
+              {rangeStart()}–{rangeEnd()} trong {props.total}
+              <Show when={filtering()}> (đã lọc)</Show>
+            </span>
+            <Show when={props.pageCount > 1}>
+              <div class="pager-controls">
+                <button
+                  type="button"
+                  disabled={props.page === 0}
+                  onClick={() => props.onPageChange(props.page - 1)}
+                  aria-label="Trang trước"
+                ><ChevronLeft size={17} /></button>
+                <span>Trang {props.page + 1}/{props.pageCount}</span>
+                <button
+                  type="button"
+                  disabled={props.page >= props.pageCount - 1}
+                  onClick={() => props.onPageChange(props.page + 1)}
+                  aria-label="Trang sau"
+                ><ChevronRight size={17} /></button>
+              </div>
+            </Show>
+          </nav>
         </Match>
       </Switch>
     </section>

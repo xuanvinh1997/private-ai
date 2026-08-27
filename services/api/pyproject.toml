@@ -9,7 +9,7 @@ dependencies = [
   "markitdown[docx,pdf,pptx,xlsx]>=0.1.7,<0.2",
   "markitdown-ocr>=0.1,<0.2",
   "mcp>=2,<3",
-  "neo4j-graphrag>=1.19,<2",
+  "lightrag-hku>=1.5,<2",
   "orjson>=3.10,<4",
   "openai>=2,<4",
   "pydantic-settings>=2.6,<3",
@@ -29,7 +29,6 @@ dev = [
 [project.scripts]
 private-ai-api = "private_ai_api.main:run"
 private-ai-mcp = "private_ai_api.mcp_server:run"
-private-ai-neo4j = "private_ai_api.neo4j_manager:run"
 private-ai-asr = "private_ai_api.asr_manager:run"
 
 [build-system]

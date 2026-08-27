@@ -65,6 +65,62 @@ class DefaultModelRequest(BaseModel):
     model: str = Field(min_length=1, max_length=240)
 
 
+class PreferencesRecord(BaseModel):
+    ocr_enabled: bool = True
+
+
+class PreferencesUpdate(BaseModel):
+    ocr_enabled: bool | None = None
+
+
+class ProviderKind(StrEnum):
+    OLLAMA = "ollama"
+    OPENAI = "openai"
+
+
+class ProviderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    kind: ProviderKind = ProviderKind.OPENAI
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(default="", max_length=500)
+    enabled: bool = True
+
+
+class ProviderUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    base_url: str | None = Field(default=None, min_length=1, max_length=500)
+    api_key: str | None = Field(default=None, max_length=500)
+    enabled: bool | None = None
+
+
+class ProviderRecord(BaseModel):
+    id: str
+    name: str
+    kind: ProviderKind
+    base_url: str
+    has_api_key: bool = False
+    enabled: bool = True
+    builtin: bool = False
+    active: bool = False
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class ProviderProbe(BaseModel):
+    """A connection check that can run against a saved provider or an unsaved draft."""
+
+    kind: ProviderKind = ProviderKind.OPENAI
+    base_url: str = Field(min_length=1, max_length=500)
+    api_key: str = Field(default="", max_length=500)
+
+
+class ProviderProbeResult(BaseModel):
+    reachable: bool
+    model_count: int = 0
+    models: list[str] = Field(default_factory=list)
+    detail: str | None = None
+
+
 class ChatMessage(BaseModel):
     role: str
     content: str

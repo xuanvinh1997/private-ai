@@ -57,11 +57,9 @@ async def test_memory_service_embeds_searches_and_deletes(tmp_path: Path) -> Non
     database.initialize()
     insert_memory(database, "concise", "Prefers concise answers")
     insert_memory(database, "location", "Lives in Hanoi")
-    graph = FakeGraph()
     service = MemoryService(
         database,
         FakeOllama(),  # type: ignore[arg-type]
-        graph,  # type: ignore[arg-type]
         embedding_model="test-embedding",
         embedding_enabled=True,
     )
@@ -69,7 +67,6 @@ async def test_memory_service_embeds_searches_and_deletes(tmp_path: Path) -> Non
     await service.sync_all()
     results = await service.search("short response", limit=1)
 
-    assert graph.synced == ["concise", "location"]
     assert results[0]["id"] == "concise"
     assert "embedding_json" not in results[0]
     assert database.fetch_one(
@@ -78,4 +75,3 @@ async def test_memory_service_embeds_searches_and_deletes(tmp_path: Path) -> Non
 
     await service.delete_memory("concise")
     assert database.fetch_one("SELECT id FROM memories WHERE id = 'concise'") is None
-    assert graph.deleted == ["concise"]
