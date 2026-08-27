@@ -1,0 +1,21 @@
+[project]
+name = "private-ai-workspace"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["services/api", "apps/desktop"]
+
+[tool.pytest.ini_options]
+testpaths = ["services/api/tests", "apps/desktop/tests"]
+addopts = "-q"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["services/api/src", "apps/desktop/src"]
+extend-exclude = [".local-data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
