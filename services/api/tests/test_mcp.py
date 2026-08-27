@@ -19,6 +19,7 @@ async def test_mcp_tools_share_documents_and_memory(tmp_path: Path) -> None:
     )
     tool_names = {tool.name for tool in await server.list_tools()}
     assert {
+        "workspaces.list",
         "documents.list",
         "documents.search",
         "documents.get_chunk",
@@ -60,12 +61,13 @@ async def test_mcp_tools_share_documents_and_memory(tmp_path: Path) -> None:
         {
             "filename": "mcp-notes.md",
             "content": "MCP local knowledge contains the violet-lantern marker.",
+            "workspace_id": "personal",
         },
     )
     assert ingested.structured_content["status"] == "ready"
     searched = await server.call_tool(
         "documents.search",
-        {"query": "violet-lantern", "limit": 3},
+        {"query": "violet-lantern", "workspace_id": "personal", "limit": 3},
     )
     assert searched.structured_content["result"][0]["filename"] == "mcp-notes.md"
     chunk_id = searched.structured_content["result"][0]["chunk_id"]

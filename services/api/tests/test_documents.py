@@ -1,5 +1,6 @@
 from importlib.metadata import entry_points
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 
 from fastapi.testclient import TestClient
@@ -41,21 +42,38 @@ class FakeGraphExtractor:
         }
 
 
+workspace = {"workspace_id": "personal"}
+
+
 def test_text_document_is_hashed_extracted_and_deduplicated(client: TestClient) -> None:
     files = {"file": ("notes.md", b"# Local knowledge\nXin chao", "text/markdown")}
-    first = client.post("/api/v1/documents", files=files)
-    second = client.post("/api/v1/documents", files=files)
+    first = client.post("/api/v1/documents", files=files, data=workspace)
+    second = client.post("/api/v1/documents", files=files, data=workspace)
 
     assert first.status_code == 201
     assert first.json()["status"] == "ready"
     assert first.json()["extracted_text"].startswith("# Local knowledge")
     assert second.status_code == 201
     assert second.json()["id"] == first.json()["id"]
-    assert len(client.get("/api/v1/documents").json()) == 1
-    search = client.get("/api/v1/documents/search", params={"q": "Local knowledge"})
+    assert len(client.get("/api/v1/documents", params=workspace).json()) == 1
+    search = client.get(
+        "/api/v1/documents/search",
+        params={"q": "Local knowledge", "workspace_id": "personal"},
+    )
     assert search.status_code == 200
     assert search.json()[0]["filename"] == "notes.md"
     assert "Xin chao" in search.json()[0]["content"]
+
+    # The same bytes in another workspace are a separate document, not a dedup hit.
+    other = client.post(
+        "/api/v1/documents",
+        files=files,
+        data={"workspace_id": "research"},
+    )
+    assert other.status_code == 201
+    assert other.json()["id"] != first.json()["id"]
+    assert len(client.get("/api/v1/documents", params=workspace).json()) == 1
+    assert len(client.get("/api/v1/documents", params={"workspace_id": "research"}).json()) == 1
 
 
 def test_pdf_processing_status_retry_and_delete(client: TestClient) -> None:
@@ -67,6 +85,7 @@ def test_pdf_processing_status_retry_and_delete(client: TestClient) -> None:
     uploaded = client.post(
         "/api/v1/documents",
         files={"file": ("scan.pdf", buffer.getvalue(), "application/pdf")},
+        data={"workspace_id": "personal"},
     )
     assert uploaded.status_code == 201
     document_id = uploaded.json()["id"]
@@ -101,13 +120,17 @@ def test_scanned_pdf_uses_ocr_fallback(client: TestClient, monkeypatch) -> None:
     uploaded = client.post(
         "/api/v1/documents",
         files={"file": ("scanned.pdf", buffer.getvalue(), "application/pdf")},
+        data={"workspace_id": "personal"},
     )
 
     assert uploaded.status_code == 201
     document = client.get(f"/api/v1/documents/{uploaded.json()['id']}").json()
     assert document["status"] == "ready"
     assert document["extracted_text"] == "Nội dung nhận dạng từ trang scan"
-    search = client.get("/api/v1/documents/search", params={"q": "nhận dạng trang scan"})
+    search = client.get(
+        "/api/v1/documents/search",
+        params={"q": "nhận dạng trang scan", "workspace_id": "personal"},
+    )
     assert search.status_code == 200
     assert search.json()[0]["filename"] == "scanned.pdf"
 
@@ -144,6 +167,7 @@ def test_jpeg_uses_markitdown_vision_output(client: TestClient, monkeypatch) -> 
     uploaded = client.post(
         "/api/v1/documents",
         files={"file": ("camera.jpg", _jpeg_bytes(), "image/jpeg")},
+        data={"workspace_id": "personal"},
     )
 
     assert uploaded.status_code == 201
@@ -165,13 +189,17 @@ def test_jpeg_falls_back_to_local_ocr(client: TestClient, monkeypatch) -> None:
     uploaded = client.post(
         "/api/v1/documents",
         files={"file": ("fallback.jpeg", _jpeg_bytes(), "image/jpeg")},
+        data={"workspace_id": "personal"},
     )
 
     assert uploaded.status_code == 201
     document = client.get(f"/api/v1/documents/{uploaded.json()['id']}").json()
     assert document["status"] == "ready"
     assert "LOCAL-JPG-7319" in document["extracted_text"]
-    results = client.get("/api/v1/documents/search", params={"q": "LOCAL-JPG-7319"}).json()
+    results = client.get(
+        "/api/v1/documents/search",
+        params={"q": "LOCAL-JPG-7319", "workspace_id": "personal"},
+    ).json()
     assert results[0]["filename"] == "fallback.jpeg"
 
 
@@ -194,10 +222,14 @@ def test_semantic_search_uses_persisted_embeddings(client: TestClient) -> None:
                 "text/markdown",
             )
         },
+        data={"workspace_id": "personal"},
     )
     assert uploaded.status_code == 201
 
-    search = client.get("/api/v1/documents/search", params={"q": "automobile"})
+    search = client.get(
+        "/api/v1/documents/search",
+        params={"q": "automobile", "workspace_id": "personal"},
+    )
 
     assert search.status_code == 200
     assert search.json()[0]["filename"] == "transport.md"
@@ -224,6 +256,7 @@ def test_document_graph_facts_are_extracted_and_persisted(client: TestClient) ->
                 "text/markdown",
             )
         },
+        data={"workspace_id": "personal"},
     )
 
     assert uploaded.status_code == 201
@@ -265,6 +298,7 @@ def test_heading_aware_chunks_store_section_and_page_metadata(client: TestClient
                 "text/markdown",
             )
         },
+        data={"workspace_id": "personal"},
     )
     assert uploaded.status_code == 201
     document_id = uploaded.json()["id"]
@@ -279,7 +313,10 @@ def test_heading_aware_chunks_store_section_and_page_metadata(client: TestClient
         "WHERE document_id = ? ORDER BY chunk_index",
         (document_id,),
     )
-    results = client.get("/api/v1/documents/search", params={"q": "PowerShell"}).json()
+    results = client.get(
+        "/api/v1/documents/search",
+        params={"q": "PowerShell", "workspace_id": "personal"},
+    ).json()
 
     assert sections == [
         {"section_index": 0, "title": "Khởi động", "level": 1},
@@ -296,3 +333,46 @@ def test_heading_aware_chunks_store_section_and_page_metadata(client: TestClient
     )
     assert [record["page_number"] for record in page_records] == [1, 2]
     assert all(record["section_title"] == "Một" for record in page_records)
+
+
+def test_pre_workspace_document_library_is_wiped_on_migration(tmp_path: Path) -> None:
+    from private_ai_api.database import Database
+
+    path = tmp_path / "legacy.db"
+    database = Database(path)
+    database.initialize()
+
+    # Recreate the old global-library shape and drop a document into it.
+    with database.connection() as connection:
+        connection.execute("PRAGMA foreign_keys=OFF")
+        connection.execute("DROP TABLE documents")
+        connection.execute(
+            """
+            CREATE TABLE documents (
+                id TEXT PRIMARY KEY, filename TEXT NOT NULL, media_type TEXT,
+                sha256 TEXT NOT NULL UNIQUE, byte_size INTEGER NOT NULL,
+                status TEXT NOT NULL, source_path TEXT NOT NULL, extracted_text TEXT,
+                error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )
+            """
+        )
+    stale_dir = tmp_path / "stale-doc"
+    stale_dir.mkdir()
+    stale_file = stale_dir / "old.md"
+    stale_file.write_text("# Old global document", encoding="utf-8")
+    database.execute(
+        """
+        INSERT INTO documents(
+            id, filename, media_type, sha256, byte_size, status, source_path,
+            extracted_text, error, created_at, updated_at
+        ) VALUES ('old-1', 'old.md', 'text/markdown', 'sha', 10, 'ready', ?, 'x', NULL, 'n', 'n')
+        """,
+        (str(stale_file),),
+    )
+
+    purged = Database(path).initialize()
+
+    assert purged == [str(stale_file)]
+    assert database.fetch_all("SELECT * FROM documents") == []
+    columns = {row["name"] for row in database.fetch_all("PRAGMA table_info(documents)")}
+    assert "workspace_id" in columns

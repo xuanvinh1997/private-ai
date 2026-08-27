@@ -76,9 +76,9 @@ def test_sync_document_creates_sections_and_typed_entity_labels(tmp_path: Path) 
     database.execute(
         """
         INSERT INTO documents(
-            id, filename, media_type, sha256, byte_size, status, source_path,
+            id, workspace_id, filename, media_type, sha256, byte_size, status, source_path,
             extracted_text, error, created_at, updated_at
-        ) VALUES ('doc-1', 'guide.md', 'text/markdown', 'sha', 10, 'ready',
+        ) VALUES ('doc-1', 'personal', 'guide.md', 'text/markdown', 'sha', 10, 'ready',
                   'guide.md', '# Team', NULL, ?, ?)
         """,
         (now, now),

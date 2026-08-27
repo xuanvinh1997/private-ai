@@ -91,6 +91,7 @@ def test_conversation_injects_relevant_local_document(client: TestClient) -> Non
                 "text/markdown",
             )
         },
+        data={"workspace_id": "research"},
     )
     assert uploaded.status_code == 201
     remembered = client.post(
@@ -164,3 +165,60 @@ def test_deleted_seed_workspace_stays_deleted_after_restart(tmp_path: Path) -> N
             "research",
             "private-ai",
         }
+
+
+def test_documents_never_leak_between_workspaces(client: TestClient) -> None:
+    fake_ollama = FakeOllama()
+    client.app.state.services.ollama = fake_ollama
+    uploaded = client.post(
+        "/api/v1/documents",
+        files={
+            "file": (
+                "research-only.md",
+                b"The internal launch codename is Starfruit-Delta.",
+                "text/markdown",
+            )
+        },
+        data={"workspace_id": "research"},
+    )
+    assert uploaded.status_code == 201
+
+    # The library and the search endpoint are both scoped.
+    assert client.get("/api/v1/documents", params={"workspace_id": "personal"}).json() == []
+    assert (
+        client.get(
+            "/api/v1/documents/search",
+            params={"q": "Starfruit-Delta", "workspace_id": "personal"},
+        ).json()
+        == []
+    )
+
+    # A chat in another workspace must not be grounded on that document.
+    conversation = client.post(
+        "/api/v1/workspaces/personal/conversations",
+        json={"model": "test-model"},
+    ).json()
+    response = client.post(
+        f"/api/v1/conversations/{conversation['id']}/chat",
+        json={"model": "test-model", "content": "What is the launch codename?"},
+    )
+    assert response.status_code == 200
+    assert fake_ollama.last_request is not None
+    assert not any(
+        "Starfruit-Delta" in message.content for message in fake_ollama.last_request.messages
+    )
+
+
+def test_deleting_a_workspace_removes_its_documents_and_files(client: TestClient) -> None:
+    uploaded = client.post(
+        "/api/v1/documents",
+        files={"file": ("doomed.md", b"# Doomed\ncontent", "text/markdown")},
+        data={"workspace_id": "research"},
+    ).json()
+    source_path = Path(uploaded["source_path"])
+    assert source_path.exists()
+
+    assert client.delete("/api/v1/workspaces/research?confirmed=true").status_code == 204
+    assert client.get(f"/api/v1/documents/{uploaded['id']}").status_code == 404
+    assert not source_path.exists()
+    assert client.get("/api/v1/documents", params={"workspace_id": "research"}).status_code == 404

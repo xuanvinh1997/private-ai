@@ -140,7 +140,7 @@ def update_workspace(
 
 
 @router.delete("/workspaces/{workspace_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_workspace(
+async def delete_workspace(
     workspace_id: str,
     confirmed: bool,
     services: Annotated[AppServices, Depends(get_services)],
@@ -153,6 +153,14 @@ def delete_workspace(
     )
     if not existing:
         raise HTTPException(status_code=404, detail="Workspace not found")
+    # Conversations cascade in SQLite, but a document also owns files on disk and nodes in
+    # Neo4j, so each one has to go through the processor before the row disappears.
+    documents = services.database.fetch_all(
+        "SELECT id FROM documents WHERE workspace_id = ?",
+        (workspace_id,),
+    )
+    for document in documents:
+        await services.document_processor.delete(str(document["id"]))
     services.database.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -258,7 +266,11 @@ async def _prepare_chat(
         """,
         (user_message_id, conversation_id, payload.content, now),
     )
-    document_context = await services.document_processor.search(payload.content, limit=4)
+    document_context = await services.document_processor.search(
+        payload.content,
+        limit=4,
+        workspace_id=str(conversation["workspace_id"]),
+    )
     memory_context = await services.memory_service.search(
         payload.content,
         user_id="local-user",

@@ -228,6 +228,8 @@ button:active:not(:disabled) { transform: translateY(1px); }
 .context-documents strong, .context-documents small { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .context-documents strong { color: var(--ink); font-size: .74rem; }
 .context-documents small { color: var(--muted); font-size: .65rem; }
+.context-loading { min-height: 52px; border-radius: 8px; display: flex; align-items: center; gap: 9px; padding: 8px 10px; color: var(--muted); background: var(--surface); font-size: .74rem; }
+.context-loading i { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: pulse 1s infinite; }
 .context-block { padding: 22px 19px 24px; border-bottom: 1px solid var(--line); }
 .context-block h2 { margin: 0 0 14px; color: var(--muted); font-size: .74rem; font-weight: 720; text-transform: uppercase; letter-spacing: .045em; }
 .empty-context { width: 100%; min-height: 72px; border: 1px dashed var(--line-strong); border-radius: 10px; display: flex; align-items: center; gap: 12px; padding: 12px; color: var(--accent); background: var(--surface); text-align: left; cursor: pointer; }

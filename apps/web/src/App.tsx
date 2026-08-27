@@ -250,7 +250,7 @@ function App() {
   const [view, setView] = createSignal<View>("chat");
   const [theme, setTheme] = createSignal<Theme>(getStoredPreference("private-ai-theme", ["light", "dark"], "light"));
   const [fontScale, setFontScale] = createSignal<FontScale>(getStoredPreference("private-ai-font-scale", ["normal", "large"], "normal"));
-  const [activeWorkspace, setActiveWorkspace] = createSignal("personal");
+  const [activeWorkspace, setActiveWorkspace] = createSignal("");
   const [activeConversation, setActiveConversation] = createSignal("");
   const [confirmConversationDelete, setConfirmConversationDelete] = createSignal(false);
   const [confirmWorkspaceDelete, setConfirmWorkspaceDelete] = createSignal("");
@@ -261,16 +261,23 @@ function App() {
   const [sending, setSending] = createSignal(false);
   const [chatError, setChatError] = createSignal("");
   const [uploading, setUploading] = createSignal(false);
+  const [uploadError, setUploadError] = createSignal("");
   const [recording, setRecording] = createSignal(false);
   const [transcribing, setTranscribing] = createSignal(false);
   const [health, { refetch: refetchHealth }] = createResource(api.health);
   const [models, { refetch: refetchModels }] = createResource(api.models);
   const [workspaceList, { refetch: refetchWorkspaces }] = createResource(api.workspaces);
+  // createResource only skips a fetch for false/null/undefined, so an empty id would be
+  // sent as a real request and leave both resources stuck in an error state.
+  const workspaceSource = createMemo(() => activeWorkspace() || undefined);
   const [conversations, { refetch: refetchConversations }] = createResource(
-    activeWorkspace,
+    workspaceSource,
     api.conversations,
   );
-  const [documents, { refetch: refetchDocuments }] = createResource(api.documents);
+  const [documents, { refetch: refetchDocuments }] = createResource(
+    workspaceSource,
+    api.documents,
+  );
   let fileInput!: HTMLInputElement;
   let messageList!: HTMLDivElement;
   let activeChatController: AbortController | undefined;
@@ -376,6 +383,7 @@ function App() {
   const chooseWorkspace = (id: string) => {
     setActiveWorkspace(id);
     setConfirmWorkspaceDelete("");
+    refetchDocuments();
     setActiveConversation("");
     setView("chat");
     setMessages([]);
@@ -451,6 +459,12 @@ function App() {
     refetchConversations();
     refetchWorkspaces();
   };
+
+  createEffect(() => {
+    const items = workspaceList();
+    if (!items || items.some((workspace) => workspace.id === activeWorkspace())) return;
+    setActiveWorkspace(items[0]?.id ?? "");
+  });
 
   createEffect(() => {
     const items = conversations();
@@ -737,12 +751,21 @@ function App() {
     const input = event.currentTarget as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
+    const workspaceId = activeWorkspace();
+    if (!workspaceId) {
+      setUploadError("Hãy tạo một không gian làm việc trước khi thêm tài liệu.");
+      input.value = "";
+      return;
+    }
     setUploading(true);
+    setUploadError("");
     try {
-      await api.uploadDocument(file);
-      setView("library");
+      // Stay on the current view; progress shows in the context rail instead.
+      await api.uploadDocument(file, workspaceId);
       refetchDocuments();
       window.setTimeout(() => refetchDocuments(), 800);
+    } catch (cause) {
+      setUploadError(cause instanceof Error ? cause.message : "Không thể thêm tài liệu");
     } finally {
       setUploading(false);
       input.value = "";
@@ -911,7 +934,9 @@ function App() {
                   </div>
                   <section class="context-block">
                     <h2>Tài liệu trong thư viện</h2>
-                    <Show when={(documents()?.length ?? 0) > 0} fallback={<button class="empty-context" onClick={() => fileInput.click()}><FileUp size={22} /><span><strong>Thêm tài liệu</strong><small>PDF, Office hoặc Markdown</small></span></button>}>
+                    <Show when={uploadError() || documents.error}><div class="inline-error" role="alert">{uploadError() || (documents.error as Error)?.message}</div></Show>
+                    <Show when={uploading()}><div class="context-loading"><i />Đang nhập tài liệu…</div></Show>
+                    <Show when={(documents()?.length ?? 0) > 0} fallback={<Show when={!uploading()}><button class="empty-context" onClick={() => fileInput.click()}><FileUp size={22} /><span><strong>Thêm tài liệu</strong><small>PDF, Office hoặc Markdown</small></span></button></Show>}>
                       <div class="context-documents"><For each={documents()?.slice(0, 3)}>{(document) => (
                         <button onClick={() => setView("library")}><BookOpenText size={17} /><span><strong>{document.filename}</strong><small>{document.status === "ready" ? "Sẵn sàng" : document.status}</small></span></button>
                       )}</For></div>
@@ -940,7 +965,7 @@ function App() {
             </Match>
 
             <Match when={view() === "library"}>
-              <LibraryView documents={documents()} loading={documents.loading} uploading={uploading()} onUpload={() => fileInput.click()} onRefresh={refetchDocuments} />
+              <LibraryView documents={documents()} uploadError={uploadError()} workspaceName={hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"} loading={documents.loading} uploading={uploading()} onUpload={() => fileInput.click()} onRefresh={refetchDocuments} />
             </Match>
             <Match when={view() === "models"}>
               <section class="page-view"><div class="page-heading page-heading-row"><div><span>Mô hình cục bộ</span><h1>Quản lý mô hình</h1><p>Quản lý Ollama và ASR: trạng thái tải, VRAM, mặc định tác vụ và kiểm tra SHA-256.</p></div><AddModelDialog onCompleted={() => { refetchModels(); refetchHealth(); }} /></div><div class="model-list"><Switch><Match when={models.loading}><div class="loading-row"><i />Đang đọc thư viện mô hình…</div></Match><Match when={models.error || (models()?.length ?? 0) === 0}><div class="empty-models"><HardDrive size={28} /><strong>Chưa tìm thấy mô hình</strong><span>Khởi động Ollama rồi thêm mô hình đầu tiên.</span></div></Match><Match when={(models()?.length ?? 0) > 0}><For each={models()}>{(model) => <ModelRow model={model} onRefresh={() => { refetchModels(); refetchHealth(); }} />}</For></Match></Switch></div></section>

@@ -9,7 +9,10 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - SQLite lưu workspace, hội thoại, message, memory, document, chunk và background job.
 - Workspace và lịch sử chat có CRUD thật; chat stream token từ Ollama qua SSE, cho phép dừng
   generation và lưu lại câu hỏi cùng câu trả lời đã hoàn thành.
-- Upload theo luồng, giới hạn kích thước, SHA-256 và deduplicate; PDF, DOCX, PPTX,
+- Tài liệu thuộc về đúng một workspace: thư viện, tìm kiếm, ngữ cảnh chat và các tool MCP
+  đều bị giới hạn trong workspace đang mở, và xóa workspace sẽ xóa luôn tài liệu, file trên
+  đĩa và node graph của nó.
+- Upload theo luồng, giới hạn kích thước, SHA-256 và deduplicate trong phạm vi workspace; PDF, DOCX, PPTX,
   XLSX, JPG/JPEG, PNG, WebP, TIFF, BMP, GIF, Markdown và text được trích xuất bởi worker cục bộ.
 - Tài liệu được chia đoạn, tìm kiếm cục bộ và tự đưa các đoạn liên quan vào chat kèm yêu cầu
   dẫn nguồn. Retrieval kết hợp keyword và embedding bằng reciprocal-rank fusion; vector được

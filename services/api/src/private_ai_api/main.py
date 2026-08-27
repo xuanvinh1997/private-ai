@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
@@ -28,7 +30,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         configured.data_dir.mkdir(parents=True, exist_ok=True)
         configured.documents_dir.mkdir(parents=True, exist_ok=True)
         database = Database(configured.database_path)
-        database.initialize()
+        for purged in database.initialize():
+            shutil.rmtree(Path(purged).parent, ignore_errors=True)
         gpu_leases = GpuLeaseManager(capacity_bytes=configured.gpu_capacity_bytes)
         ollama = OllamaClient(
             configured.ollama_url,

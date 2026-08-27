@@ -88,6 +88,7 @@ export interface ConversationDetail extends ConversationRecord {
 
 export interface DocumentRecord {
   id: string;
+  workspace_id: string;
   filename: string;
   media_type?: string;
   sha256: string;

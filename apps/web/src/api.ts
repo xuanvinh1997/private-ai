@@ -96,9 +96,10 @@ export const api = {
     }
     if (buffer.trim()) consume(buffer);
   },
-  uploadDocument: (file: File) => {
+  uploadDocument: (file: File, workspaceId: string) => {
     const body = new FormData();
     body.append("file", file);
+    body.append("workspace_id", workspaceId);
     return request<DocumentRecord>("/documents", { method: "POST", body });
   },
   transcribeAudio: (audio: Blob, filename = "recording.webm") => {
@@ -106,7 +107,8 @@ export const api = {
     body.append("file", audio, filename);
     return request<AsrResult>("/asr/transcribe", { method: "POST", body });
   },
-  documents: () => request<DocumentRecord[]>("/documents"),
+  documents: (workspaceId: string) =>
+    request<DocumentRecord[]>(`/documents?workspace_id=${encodeURIComponent(workspaceId)}`),
   processDocument: (id: string) =>
     request<{ id: string; status: string }>(`/documents/${id}/process`, { method: "POST" }),
   deleteDocument: (id: string) =>

@@ -179,8 +179,10 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def initialize(self) -> None:
+    def initialize(self) -> list[str]:
+        """Create or migrate the schema, returning document paths the caller must delete."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        purged = self._purge_workspaceless_documents()
         with self.connection() as connection:
             connection.executescript(SCHEMA)
             self._ensure_column(connection, "document_chunks", "embedding_json", "TEXT")
@@ -199,6 +201,41 @@ class Database:
             self._ensure_column(connection, "memories", "embedding_model", "TEXT")
             self._backfill_document_sections(connection)
             self._seed_workspaces(connection)
+        return purged
+
+    def _purge_workspaceless_documents(self) -> list[str]:
+        """Drop a pre-workspace ``documents`` table so the schema can recreate it scoped.
+
+        Documents used to be a single global library shared by every workspace. There is
+        no correct workspace to attribute those rows to, so the library is wiped once and
+        the on-disk paths are handed back for the caller to remove.
+        """
+        connection = sqlite3.connect(self.path, timeout=30)
+        connection.row_factory = sqlite3.Row
+        try:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(documents)")}
+            if not columns or "workspace_id" in columns:
+                return []
+            paths = [
+                str(row["source_path"])
+                for row in connection.execute("SELECT source_path FROM documents")
+            ]
+            for table in (
+                "chunk_relations",
+                "chunk_entities",
+                "document_chunks",
+                "document_sections",
+            ):
+                connection.execute(f"DELETE FROM {table}")  # noqa: S608
+            connection.execute("DROP TABLE documents")
+            connection.commit()
+            return paths
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     @staticmethod
     def _ensure_column(

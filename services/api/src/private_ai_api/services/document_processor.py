@@ -463,7 +463,14 @@ class DocumentProcessor:
         )
         return True
 
-    async def search(self, query: str, limit: int = 5) -> list[dict[str, object]]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 5,
+        *,
+        workspace_id: str,
+    ) -> list[dict[str, object]]:
+        """Search the chunks of one workspace. Never returns another workspace's content."""
         tokens = list(dict.fromkeys(self._search_tokens(query)))[:32]
         if not tokens:
             return []
@@ -474,8 +481,9 @@ class DocumentProcessor:
                    c.embedding_json, c.embedding_model, d.filename
             FROM document_chunks AS c
             JOIN documents AS d ON d.id = c.document_id
-            WHERE d.status = 'ready'
-            """
+            WHERE d.status = 'ready' AND d.workspace_id = ?
+            """,
+            (workspace_id,),
         )
         keyword_ranked = self._keyword_rank(tokens, rows)
         semantic_ranked: list[dict[str, object]] = []
@@ -485,7 +493,14 @@ class DocumentProcessor:
                 query_vector = (await self.ollama.embed(self.embedding_model, [query]))[0]
                 semantic_ranked = self._semantic_rank(query_vector, rows)
                 if self.graph_store:
-                    graph_ranked = await self.graph_store.search(query, query_vector, 20)
+                    # Neo4j holds every workspace's chunks, so keep only the ones this
+                    # workspace owns before they reach the fusion step.
+                    in_scope = {str(row["chunk_id"]) for row in rows}
+                    graph_ranked = [
+                        record
+                        for record in await self.graph_store.search(query, query_vector, 20)
+                        if str(record.get("chunk_id")) in in_scope
+                    ]
             except (InsufficientVram, OllamaUnavailable, ValueError, TypeError, IndexError):
                 semantic_ranked = []
         candidates = self._fuse_rankings(

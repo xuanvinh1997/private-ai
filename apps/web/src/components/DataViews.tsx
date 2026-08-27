@@ -122,6 +122,8 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
 
 export function LibraryView(props: {
   documents: DocumentRecord[] | undefined;
+  workspaceName: string;
+  uploadError: string;
   loading: boolean;
   uploading: boolean;
   onUpload: () => void;
@@ -172,16 +174,18 @@ export function LibraryView(props: {
   return (
     <section class="page-view">
       <div class="page-heading page-heading-row">
-        <div><span>Thư viện riêng</span><h1>Tài liệu của bạn</h1><p>Tài liệu được trích xuất trên máy và sẵn sàng cho truy xuất.</p></div>
+        <div><span>Thư viện riêng</span><h1>{props.workspaceName}</h1><p>Tài liệu được trích xuất trên máy và chỉ dùng cho không gian làm việc này.</p></div>
         <button class="button button-primary" onClick={props.onUpload}><FileUp size={18} /> Thêm tài liệu</button>
       </div>
-      <Show when={error()}><div class="inline-error page-error" role="alert">{error()}</div></Show>
+      <Show when={error() || props.uploadError}>
+        <div class="inline-error page-error" role="alert">{error() || props.uploadError}</div>
+      </Show>
       <Switch>
         <Match when={props.loading}><div class="loading-row"><i />Đang đọc thư viện…</div></Match>
         <Match when={(props.documents?.length ?? 0) === 0}>
           <button class="large-upload" onClick={props.onUpload} disabled={props.uploading}>
             <FileUp size={30} /><strong>{props.uploading ? "Đang nhập tài liệu…" : "Chọn tài liệu từ máy"}</strong>
-            <span>PDF, Office, JPG, PNG, WebP, Markdown và văn bản · tối đa 100 MB</span>
+            <span>Thêm vào {props.workspaceName} · PDF, Office, JPG, PNG, WebP, Markdown và văn bản · tối đa 100 MB</span>
           </button>
         </Match>
         <Match when={(props.documents?.length ?? 0) > 0}>

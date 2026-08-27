@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import os
 import secrets
+import shutil
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,7 +64,9 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
     configured.data_dir.mkdir(parents=True, exist_ok=True)
     configured.documents_dir.mkdir(parents=True, exist_ok=True)
     database = Database(configured.database_path)
-    database.initialize()
+    # Either process can win the race to migrate, so both have to clear the orphaned files.
+    for purged in database.initialize():
+        shutil.rmtree(Path(purged).parent, ignore_errors=True)
     gpu_leases = GpuLeaseManager(configured.gpu_capacity_bytes)
     ollama = OllamaClient(
         configured.ollama_url,
@@ -134,15 +137,62 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         auth=auth,
     )
 
-    @server.tool(name="documents.list")
-    def list_documents(limit: int = 50) -> list[dict[str, Any]]:
-        """List local documents without returning their full extracted text."""
+    def _require_workspace(workspace_id: str) -> str:
+        workspace = database.fetch_one(
+            "SELECT id FROM workspaces WHERE id = ?",
+            (workspace_id,),
+        )
+        if not workspace:
+            raise ValueError("Workspace not found; call workspaces.list for valid IDs")
+        return workspace_id
+
+    def _workspace_document_ids(workspace_id: str) -> set[str]:
+        return {
+            str(row["id"])
+            for row in database.fetch_all(
+                "SELECT id FROM documents WHERE workspace_id = ?",
+                (workspace_id,),
+            )
+        }
+
+    def _workspace_entity_keys(workspace_id: str) -> set[str]:
+        return {
+            str(row["key"])
+            for row in database.fetch_all(
+                """
+                SELECT DISTINCT e.key FROM chunk_entities AS e
+                JOIN documents AS d ON d.id = e.document_id
+                WHERE d.workspace_id = ?
+                """,
+                (workspace_id,),
+            )
+        }
+
+    @server.tool(name="workspaces.list")
+    def list_workspaces() -> list[dict[str, Any]]:
+        """List workspaces. Every document tool needs one of these IDs."""
         return database.fetch_all(
             """
-            SELECT id, filename, media_type, byte_size, status, error, created_at, updated_at
-            FROM documents ORDER BY updated_at DESC LIMIT ?
+            SELECT w.id, w.name, w.description, w.updated_at,
+                   COUNT(d.id) AS document_count
+            FROM workspaces AS w
+            LEFT JOIN documents AS d ON d.workspace_id = w.id
+            GROUP BY w.id
+            ORDER BY w.updated_at DESC
+            """
+        )
+
+    @server.tool(name="documents.list")
+    def list_documents(workspace_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        """List one workspace's documents without returning their full extracted text."""
+        _require_workspace(workspace_id)
+        return database.fetch_all(
+            """
+            SELECT id, workspace_id, filename, media_type, byte_size, status, error,
+                   created_at, updated_at
+            FROM documents WHERE workspace_id = ? ORDER BY updated_at DESC LIMIT ?
             """,
-            (max(1, min(limit, 200)),),
+            (workspace_id, max(1, min(limit, 200))),
         )
 
     @server.tool(name="documents.status")
@@ -150,7 +200,8 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         """Return ingestion and indexing status for one local document."""
         document = database.fetch_one(
             """
-            SELECT id, filename, media_type, byte_size, status, error, created_at, updated_at
+            SELECT id, workspace_id, filename, media_type, byte_size, status, error,
+                   created_at, updated_at
             FROM documents WHERE id = ?
             """,
             (document_id,),
@@ -168,16 +219,21 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         return {**document, **(counts or {"chunks": 0, "embedded_chunks": 0})}
 
     @server.tool(name="documents.search")
-    async def search_documents(query: str, limit: int = 5) -> list[dict[str, object]]:
-        """Hybrid keyword and semantic search over local document chunks."""
-        return await documents.search(query, max(1, min(limit, 20)))
+    async def search_documents(
+        query: str,
+        workspace_id: str,
+        limit: int = 5,
+    ) -> list[dict[str, object]]:
+        """Hybrid keyword and semantic search over one workspace's document chunks."""
+        _require_workspace(workspace_id)
+        return await documents.search(query, max(1, min(limit, 20)), workspace_id=workspace_id)
 
     @server.tool(name="documents.get_chunk")
     def get_document_chunk(chunk_id: str) -> dict[str, Any]:
         """Get an exact chunk and its source metadata by chunk ID."""
         chunk = database.fetch_one(
             """
-            SELECT c.id AS chunk_id, c.document_id, c.chunk_index, c.content,
+            SELECT c.id AS chunk_id, c.document_id, d.workspace_id, c.chunk_index, c.content,
                    c.section_id, c.section_title, c.section_level, c.page_number,
                    c.embedding_model, d.filename
             FROM document_chunks AS c
@@ -191,13 +247,17 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         return chunk
 
     @server.tool(name="documents.ingest_text")
-    async def ingest_text(filename: str, content: str) -> dict[str, Any]:
-        """Store, chunk, and index user-provided Markdown or plain text."""
+    async def ingest_text(filename: str, content: str, workspace_id: str) -> dict[str, Any]:
+        """Store, chunk, and index user-provided Markdown or plain text in one workspace."""
         if not content.strip():
             raise ValueError("Document content cannot be empty")
+        _require_workspace(workspace_id)
         safe_name = _safe_filename(filename)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        duplicate = database.fetch_one("SELECT * FROM documents WHERE sha256 = ?", (digest,))
+        duplicate = database.fetch_one(
+            "SELECT * FROM documents WHERE workspace_id = ? AND sha256 = ?",
+            (workspace_id, digest),
+        )
         if duplicate:
             return duplicate
         document_id = str(uuid4())
@@ -209,12 +269,13 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         database.execute(
             """
             INSERT INTO documents(
-                id, filename, media_type, sha256, byte_size, status, source_path,
+                id, workspace_id, filename, media_type, sha256, byte_size, status, source_path,
                 extracted_text, error, created_at, updated_at
-            ) VALUES (?, ?, 'text/markdown', ?, ?, 'ready', ?, ?, NULL, ?, ?)
+            ) VALUES (?, ?, ?, 'text/markdown', ?, ?, 'ready', ?, ?, NULL, ?, ?)
             """,
             (
                 document_id,
+                workspace_id,
                 safe_name,
                 digest,
                 len(content.encode("utf-8")),
@@ -238,39 +299,92 @@ def create_mcp_server(settings: Settings | None = None) -> MCPServer:
         return {"deleted": True}
 
     @server.tool(name="graph.search")
-    async def search_graph(query: str, limit: int = 5) -> list[dict[str, object]]:
-        """Search Neo4j vector and full-text indexes; return an empty list when offline."""
+    async def search_graph(
+        query: str,
+        workspace_id: str,
+        limit: int = 5,
+    ) -> list[dict[str, object]]:
+        """Search Neo4j indexes within one workspace; return an empty list when offline."""
+        _require_workspace(workspace_id)
         if not configured.embedding_enabled:
             return []
         try:
             vectors = await ollama.embed(configured.embedding_model, [query])
         except (InsufficientVram, OllamaUnavailable):
             return []
-        return await graph.search(query, vectors[0], max(1, min(limit, 20)))
+        # Neo4j stores every workspace's graph in one place, so scope on the way out.
+        owned = _workspace_document_ids(workspace_id)
+        return [
+            record
+            for record in await graph.search(query, vectors[0], max(1, min(limit, 20)))
+            if str(record.get("document_id")) in owned
+        ]
 
     @server.tool(name="graph.find_entity")
-    async def find_graph_entity(query: str, limit: int = 20) -> list[dict[str, object]]:
-        """Find graph entities by normalized display name."""
-        return await graph.find_entities(query, max(1, min(limit, 100)))
+    async def find_graph_entity(
+        query: str,
+        workspace_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        """Find graph entities mentioned by one workspace's documents."""
+        _require_workspace(workspace_id)
+        keys = _workspace_entity_keys(workspace_id)
+        return [
+            record
+            for record in await graph.find_entities(query, max(1, min(limit, 100)))
+            if str(record.get("key")) in keys
+        ]
 
     @server.tool(name="graph.neighborhood")
-    async def graph_neighborhood(entity_key: str, limit: int = 30) -> dict[str, object]:
-        """Expand a known entity by up to two hops with source chunks."""
-        return await graph.neighborhood(entity_key, max(1, min(limit, 100)))
+    async def graph_neighborhood(
+        entity_key: str,
+        workspace_id: str,
+        limit: int = 30,
+    ) -> dict[str, object]:
+        """Expand a known entity by up to two hops, citing only this workspace's chunks."""
+        _require_workspace(workspace_id)
+        if entity_key not in _workspace_entity_keys(workspace_id):
+            return {"entity": None, "neighbors": [], "chunks": []}
+        owned = _workspace_document_ids(workspace_id)
+        result = await graph.neighborhood(entity_key, max(1, min(limit, 100)))
+        chunks = result.get("chunks")
+        if isinstance(chunks, list):
+            result["chunks"] = [
+                chunk
+                for chunk in chunks
+                if isinstance(chunk, dict) and str(chunk.get("document_id")) in owned
+            ]
+        return result
 
     @server.tool(name="graph.find_relationships")
     async def find_graph_relationships(
+        workspace_id: str,
         source_key: str = "",
         target_key: str = "",
         limit: int = 50,
     ) -> list[dict[str, object]]:
-        """Read templated entity relationships; arbitrary Cypher is not exposed."""
-        return await graph.relationships(source_key, target_key, max(1, min(limit, 200)))
+        """Read one workspace's entity relationships; arbitrary Cypher is not exposed."""
+        _require_workspace(workspace_id)
+        owned = _workspace_document_ids(workspace_id)
+        return [
+            record
+            for record in await graph.relationships(
+                source_key,
+                target_key,
+                max(1, min(limit, 200)),
+            )
+            if str(record.get("document_id")) in owned
+        ]
 
     @server.tool(name="graph.answer")
-    async def graph_answer(query: str, limit: int = 5) -> dict[str, object]:
+    async def graph_answer(query: str, workspace_id: str, limit: int = 5) -> dict[str, object]:
         """Return an evidence bundle suitable for a grounded answer."""
-        search_results = await documents.search(query, max(1, min(limit, 20)))
+        _require_workspace(workspace_id)
+        search_results = await documents.search(
+            query,
+            max(1, min(limit, 20)),
+            workspace_id=workspace_id,
+        )
         entities = await graph.find_entities(query, 10)
         return {"query": query, "sources": search_results, "entities": entities}
 

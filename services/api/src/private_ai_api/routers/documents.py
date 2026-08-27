@@ -12,6 +12,7 @@ from fastapi import (
     BackgroundTasks,
     Depends,
     File,
+    Form,
     HTTPException,
     Response,
     UploadFile,
@@ -30,22 +31,38 @@ def _safe_filename(value: str) -> str:
     return name or "document"
 
 
+def _require_workspace(services: AppServices, workspace_id: str) -> None:
+    workspace = services.database.fetch_one(
+        "SELECT id FROM workspaces WHERE id = ?",
+        (workspace_id,),
+    )
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+
 @router.get("")
 def list_documents(
+    workspace_id: str,
     services: Annotated[AppServices, Depends(get_services)],
 ) -> list[dict[str, Any]]:
-    return services.database.fetch_all("SELECT * FROM documents ORDER BY created_at DESC")
+    _require_workspace(services, workspace_id)
+    return services.database.fetch_all(
+        "SELECT * FROM documents WHERE workspace_id = ? ORDER BY created_at DESC",
+        (workspace_id,),
+    )
 
 
 @router.get("/search")
 async def search_documents(
     q: str,
+    workspace_id: str,
     services: Annotated[AppServices, Depends(get_services)],
     limit: int = 5,
 ) -> list[dict[str, object]]:
+    _require_workspace(services, workspace_id)
     if not q.strip():
         return []
-    return await services.document_processor.search(q, limit)
+    return await services.document_processor.search(q, limit, workspace_id=workspace_id)
 
 
 @router.get("/{document_id}")
@@ -64,7 +81,9 @@ async def upload_document(
     background_tasks: BackgroundTasks,
     services: Annotated[AppServices, Depends(get_services)],
     file: Annotated[UploadFile, File()],
+    workspace_id: Annotated[str, Form()],
 ) -> dict[str, Any]:
+    _require_workspace(services, workspace_id)
     filename = _safe_filename(file.filename or "document")
     document_id = str(uuid4())
     target_dir = services.settings.documents_dir / document_id
@@ -91,7 +110,10 @@ async def upload_document(
         await file.close()
 
     sha256 = digest.hexdigest()
-    duplicate = services.database.fetch_one("SELECT * FROM documents WHERE sha256 = ?", (sha256,))
+    duplicate = services.database.fetch_one(
+        "SELECT * FROM documents WHERE workspace_id = ? AND sha256 = ?",
+        (workspace_id, sha256),
+    )
     if duplicate:
         shutil.rmtree(target_dir, ignore_errors=True)
         return duplicate
@@ -107,12 +129,13 @@ async def upload_document(
     services.database.execute(
         """
         INSERT INTO documents(
-            id, filename, media_type, sha256, byte_size, status, source_path,
+            id, workspace_id, filename, media_type, sha256, byte_size, status, source_path,
             extracted_text, error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
         """,
         (
             document_id,
+            workspace_id,
             filename,
             file.content_type,
             sha256,
