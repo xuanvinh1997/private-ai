@@ -3,12 +3,18 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib.error import URLError
+from urllib.request import ProxyHandler, build_opener
 
 ROOT = Path(__file__).resolve().parent.parent
+API_HOST = "127.0.0.1"
+API_PORT = 8000
 
 
 def executable(name: str) -> str:
@@ -20,6 +26,49 @@ def executable(name: str) -> str:
         if found:
             return found
     raise RuntimeError(f"Required executable is not installed: {name}")
+
+
+def spawn(
+    command: list[str],
+    cwd: Path,
+    environment: dict[str, str] | None = None,
+) -> subprocess.Popen[bytes]:
+    """Give each service its own process group so reload workers cannot outlive us."""
+    if os.name == "nt":
+        return subprocess.Popen(
+            command, cwd=cwd, env=environment, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        )
+    return subprocess.Popen(command, cwd=cwd, env=environment, start_new_session=True)
+
+
+def signal_group(process: subprocess.Popen[bytes], number: int) -> None:
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        process.kill() if number == signal.SIGKILL else process.terminate()
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), number)
+    except (ProcessLookupError, PermissionError):
+        process.kill() if number == signal.SIGKILL else process.terminate()
+
+
+def port_holder(host: str, port: int) -> str | None:
+    """Name whatever already listens, so a clash is not just 'Address already in use'."""
+    try:
+        with socket.create_connection((host, port), timeout=1.0):
+            pass
+    except OSError:
+        return None
+    # A system proxy must never be consulted for a loopback address.
+    opener = build_opener(ProxyHandler({}))
+    try:
+        with opener.open(f"http://{host}:{port}/api/v1/health/live", timeout=2.0) as response:
+            if response.status == 200:
+                return "a Private AI API is already running there"
+    except (URLError, OSError):
+        pass
+    return "another application is holding it"
 
 
 def api_command() -> tuple[list[str], dict[str, str]]:
@@ -72,18 +121,36 @@ def main() -> None:
     if args.api_only and args.web_only:
         parser.error("--api-only and --web-only cannot be combined")
 
+    def interrupt(number: int, frame: object) -> None:
+        raise KeyboardInterrupt
+
+    # Register both explicitly: a child of a non-interactive shell inherits SIGINT as SIG_IGN,
+    # and detached process groups no longer receive the terminal's signals on our behalf.
+    signal.signal(signal.SIGINT, interrupt)
+    signal.signal(signal.SIGTERM, interrupt)
+
     processes: list[subprocess.Popen[bytes]] = []
     try:
         if not args.web_only:
+            if holder := port_holder(API_HOST, API_PORT):
+                lookup = (
+                    f"netstat -ano | findstr :{API_PORT}"
+                    if os.name == "nt"
+                    else f"lsof -nP -iTCP:{API_PORT} -sTCP:LISTEN"
+                )
+                parser.exit(
+                    1,
+                    f"Port {API_PORT} is busy: {holder}. Stop it and retry, run "
+                    f"'{sys.executable} tools/dev.py --web-only', or find the process with "
+                    f"'{lookup}'.\n",
+                )
             command, environment = api_command()
-            processes.append(subprocess.Popen(command, cwd=ROOT, env=environment))
+            processes.append(spawn(command, ROOT, environment))
             if not args.no_mcp:
                 command, mcp_environment = mcp_command(environment)
-                processes.append(
-                    subprocess.Popen(command, cwd=ROOT, env=mcp_environment)
-                )
+                processes.append(spawn(command, ROOT, mcp_environment))
         if not args.api_only:
-            processes.append(subprocess.Popen(web_command(), cwd=ROOT / "apps" / "web"))
+            processes.append(spawn(web_command(), ROOT / "apps" / "web"))
         while processes:
             if exited := next(
                 (process for process in processes if process.poll() is not None),
@@ -95,13 +162,12 @@ def main() -> None:
         pass
     finally:
         for process in processes:
-            if process.poll() is None:
-                process.terminate()
+            signal_group(process, signal.SIGTERM)
         for process in processes:
             try:
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                process.kill()
+                signal_group(process, signal.SIGKILL)
 
 
 if __name__ == "__main__":

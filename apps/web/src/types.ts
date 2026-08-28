@@ -10,6 +10,7 @@ export interface Health {
     kind: ProviderKind;
     base_url: string;
     builtin: boolean;
+    on_device: boolean;
   } | null;
   gpu: {
     capacity_bytes: number;

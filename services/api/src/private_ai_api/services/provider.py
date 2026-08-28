@@ -3,8 +3,16 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
+from urllib.parse import urlsplit
 
 PROVIDER_KINDS = ("ollama", "openai")
+LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"})
+
+
+def runs_on_device(base_url: str) -> bool:
+    """A provider is on-device when its endpoint never leaves the loopback interface."""
+    host = urlsplit(base_url).hostname
+    return host is not None and host.lower() in LOOPBACK_HOSTS
 
 GRAPH_SCHEMA: dict[str, Any] = {
     "type": "object",

@@ -471,6 +471,15 @@ function App() {
     chatModels().filter((model) => model.state !== "failed" && model.state !== "downloading"),
   );
   const serviceState = (name: string): ServiceState => health()?.services[name] ?? "offline";
+  const providerOnDevice = createMemo(() => Boolean(health()?.provider?.on_device));
+  const providerStatus = createMemo(() => {
+    const provider = health()?.provider;
+    if (!provider) return "Chưa cấu hình";
+    if (serviceState("provider") === "online") {
+      return providerOnDevice() ? `${provider.name} · trên thiết bị` : `${provider.name} · từ xa`;
+    }
+    return `${provider.name} · không phản hồi`;
+  });
   const vramPercent = createMemo(() => {
     const gpu = health()?.gpu;
     if (!gpu?.capacity_bytes) return 0;
@@ -507,8 +516,8 @@ function App() {
     } else if (state("provider") === "offline") {
       list.push({ id: "provider-offline", tone: "alert", title: "Nhà cung cấp AI không phản hồi", detail: "Không gọi được endpoint đang chọn, cuộc trò chuyện sẽ lỗi.", actionLabel: "Kiểm tra nhà cung cấp", onAction: () => openSettingsTab("providers") });
     }
-    if (state("ollama") === "offline") {
-      list.push({ id: "ollama-offline", tone: "alert", title: "Ollama đã ngoại tuyến", detail: "Máy chủ mô hình cục bộ không chạy trên máy này.", actionLabel: "Mở mô hình", onAction: () => openSettingsTab("models") });
+    if (providerOnDevice() && state("local_runtime") === "offline") {
+      list.push({ id: "local-runtime-offline", tone: "alert", title: "Máy chủ mô hình cục bộ đã ngoại tuyến", detail: "Nhà cung cấp đang chọn chạy trên máy này nhưng runtime không phản hồi.", actionLabel: "Mở mô hình", onAction: () => openSettingsTab("models") });
     }
     if (state("knowledge_graph") === "not_configured") {
       list.push({ id: "graph-missing", tone: "warn", title: "Kho tri thức chưa dựng", detail: "Tải tài liệu lên để Private AI lập chỉ mục và trả lời theo ngữ cảnh.", actionLabel: "Mở tài liệu", onAction: () => setView("library") });
@@ -1390,7 +1399,10 @@ function App() {
                     </Show>
                   </section>
                   <section class="context-block"><h2>Trạng thái hệ thống</h2><dl class="service-list">
-                    <div><dt><StatusPip state={serviceState("ollama")} /> Ollama</dt><dd>{serviceState("ollama") === "online" ? "Sẵn sàng" : "Ngoại tuyến"}</dd></div>
+                    <div><dt><StatusPip state={serviceState("provider")} /> Nhà cung cấp AI</dt><dd>{providerStatus()}</dd></div>
+                    <Show when={providerOnDevice()}>
+                      <div><dt><StatusPip state={serviceState("local_runtime")} /> Máy chủ cục bộ</dt><dd>{serviceState("local_runtime") === "online" ? "Sẵn sàng" : "Ngoại tuyến"}</dd></div>
+                    </Show>
                     <div><dt><StatusPip state={serviceState("knowledge_graph")} /> Kho tri thức</dt><dd>{serviceState("knowledge_graph") === "online" ? "Sẵn sàng" : "Chưa dựng"}</dd></div>
                     <div><dt><StatusPip state={serviceState("asr")} /> Giọng nói</dt><dd>{serviceState("asr") === "online" ? "Sẵn sàng" : "Chưa cấu hình"}</dd></div>
                   </dl></section>
@@ -1406,11 +1418,11 @@ function App() {
                     ><i style={{ transform: `scaleX(${vramPercent() / 100})` }} /></div>
                     <small>{vramDetail()}</small>
                   </section>
-                  <div classList={{ "local-note": true, "local-note-remote": Boolean(health()?.provider && !health()?.provider?.builtin) }}>
+                  <div classList={{ "local-note": true, "local-note-remote": Boolean(health()?.provider && !providerOnDevice()) }}>
                     <ShieldCheck size={22} aria-hidden="true" />
                     <div>
-                      <strong>{health()?.provider?.builtin ? "Đang chạy trên thiết bị" : "Đang dùng máy chủ đã chọn"}</strong>
-                      <span>{health()?.provider?.builtin ? "Nội dung được gửi tới runtime cục bộ." : "Nội dung trò chuyện và tài liệu liên quan có thể rời khỏi máy này."}</span>
+                      <strong>{providerOnDevice() ? "Đang chạy trên thiết bị" : "Đang dùng máy chủ đã chọn"}</strong>
+                      <span>{providerOnDevice() ? "Nội dung được gửi tới runtime cục bộ." : "Nội dung trò chuyện và tài liệu liên quan có thể rời khỏi máy này."}</span>
                     </div>
                   </div>
                 </aside>

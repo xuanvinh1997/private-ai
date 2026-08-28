@@ -35,7 +35,8 @@ function Invoke-Conda {
     }
 }
 
-$conda = Get-Command conda -ErrorAction SilentlyContinue
+$conda = Get-Command conda.exe -CommandType Application -ErrorAction SilentlyContinue
+
 if ($null -eq $conda) {
     $knownLocations = @(
         (Join-Path $env:USERPROFILE "miniconda3\Scripts\conda.exe"),
@@ -43,22 +44,32 @@ if ($null -eq $conda) {
         (Join-Path $env:ProgramData "miniconda3\Scripts\conda.exe"),
         (Join-Path $env:ProgramData "anaconda3\Scripts\conda.exe")
     )
-    $fallback = $knownLocations | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+    $fallback = $knownLocations |
+        Where-Object { Test-Path $_ } |
+        Select-Object -First 1
+
     if ($null -eq $fallback) {
         throw "Conda was not found. Open Anaconda Prompt or run 'conda init powershell', then retry."
     }
+
     $script:CondaCommand = $fallback
-} else {
-    $script:CondaCommand = $conda.Name
 }
+else {
+    $script:CondaCommand = $conda.Source
+}
+
+Write-Host "Using Conda executable: $script:CondaCommand"
+
 
 Push-Location $RepoRoot
 try {
     Write-Step "Checking Conda environment '$EnvironmentName'"
-    $environmentJson = & $script:CondaCommand env list --json
+    $environmentJson = & $script:CondaCommand @("env", "list", "--json")
     if ($LASTEXITCODE -ne 0) {
         throw "Unable to read the Conda environment list."
     }
+
     $environmentInfo = ($environmentJson -join [Environment]::NewLine) | ConvertFrom-Json
     $environmentExists = @($environmentInfo.envs) | Where-Object {
         (Split-Path $_ -Leaf) -eq $EnvironmentName

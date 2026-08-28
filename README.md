@@ -69,6 +69,11 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
   mạng) hay xóa hẳn đều được, xóa rồi thì không seed lại. Đổi địa chỉ thì GPU lease và health
   đi theo host mới. Xóa hết nhà cung cấp thì health trả `not_configured` và chat trả 503 "No
   AI provider is configured" thay vì báo mất kết nối.
+- Trạng thái hệ thống nói theo nhà cung cấp đang bật, không lấy Ollama làm đại diện cho AI:
+  `services.provider` là trạng thái của endpoint đang dùng, còn `services.local_runtime` là máy
+  chủ mô hình cục bộ và chỉ hiện trên bảng khi nhà cung cấp thật sự chạy trên máy. Nhãn "trên
+  thiết bị" đọc từ `provider.on_device`, tính theo base URL có phải loopback hay không, nên bản
+  ghi Ollama cục bộ trỏ sang WSL2 hoặc máy khác vẫn được cảnh báo là dữ liệu rời khỏi máy.
 
 ## Phần chưa hoàn tất so với `GOAL.md`
 

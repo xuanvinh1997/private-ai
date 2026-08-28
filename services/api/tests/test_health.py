@@ -1,11 +1,13 @@
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from private_ai_api import config
 from private_ai_api.config import Settings, detect_gpu_capacity_bytes
 from private_ai_api.main import create_app
+from private_ai_api.services.provider import runs_on_device
 
 
 def test_health_reports_gateway_and_database(client: TestClient) -> None:
@@ -62,3 +64,67 @@ def test_non_unified_memory_keeps_the_documented_default(monkeypatch: pytest.Mon
     monkeypatch.setattr(config, "is_unified_memory", lambda: False)
 
     assert detect_gpu_capacity_bytes() == config.FALLBACK_GPU_CAPACITY_BYTES
+
+
+def _remote_transport() -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [{"id": "gpt-4o-mini", "object": "model"}]})
+        return httpx.Response(404, json={"error": {"message": "unknown route"}})
+
+    return httpx.MockTransport(handler)
+
+
+def test_health_reports_the_active_provider_rather_than_a_fixed_runtime(
+    client: TestClient,
+) -> None:
+    services = client.get("/api/v1/health").json()["services"]
+
+    # Ollama is one provider among others, so it no longer stands for the AI service itself.
+    assert "ollama" not in services
+    assert services["provider"] in {"online", "offline"}
+    assert services["local_runtime"] in {"online", "offline"}
+
+
+def test_health_marks_a_loopback_provider_as_on_device(client: TestClient) -> None:
+    payload = client.get("/api/v1/health").json()
+
+    assert payload["provider"]["base_url"].startswith("http://127.0.0.1")
+    assert payload["provider"]["on_device"] is True
+
+
+def test_health_marks_a_remote_provider_as_off_device(client: TestClient) -> None:
+    client.app.state.services.providers.transport = _remote_transport()
+    created = client.post(
+        "/api/v1/providers",
+        json={
+            "name": "Bộ định tuyến từ xa",
+            "kind": "openai",
+            "base_url": "https://host.example/v1",
+            "api_key": "secret-key",
+        },
+    )
+    assert created.status_code == 201
+    assert client.post(f"/api/v1/providers/{created.json()['id']}/activate").status_code == 200
+
+    payload = client.get("/api/v1/health").json()
+
+    assert payload["provider"]["on_device"] is False
+    # The local server keeps its own row: it still backs the GPU and model panels.
+    assert "local_runtime" in payload["services"]
+
+
+@pytest.mark.parametrize(
+    ("base_url", "expected"),
+    [
+        ("http://127.0.0.1:11434", True),
+        ("http://localhost:11434/v1", True),
+        ("http://[::1]:11434", True),
+        ("https://api.openai.com/v1", False),
+        # A local record repointed at WSL2 or another machine is no longer on-device.
+        ("http://192.168.1.20:11434", False),
+        ("", False),
+    ],
+)
+def test_runs_on_device_only_trusts_the_loopback_interface(base_url: str, expected: bool) -> None:
+    assert runs_on_device(base_url) is expected
