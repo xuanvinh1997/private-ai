@@ -21,6 +21,7 @@ from private_ai_api.routers import (
     memory,
     models,
     preferences,
+    profiles,
     providers,
     workspaces,
 )
@@ -83,11 +84,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gpu_leases=gpu_leases,
             vram_reservation_bytes=configured.asr_vram_reservation_bytes,
         )
+        def vision_endpoint() -> tuple[str, str]:
+            """Where markitdown should send images: the provider the user selected."""
+            provider = provider_registry.active_config()
+            if provider is None or provider.kind == "ollama":
+                host = provider.base_url if provider else configured.ollama_url
+                return f"{host.rstrip('/')}/v1", "ollama"
+            return provider_registry.client_for(provider).base_url, provider.api_key
+
         document_processor = DocumentProcessor(
             database,
             lightrag,
             ollama_url=configured.ollama_url,
             vision_model=configured.vision_model,
+            ai=ai,
+            resolve_vision_endpoint=vision_endpoint,
         )
         memory_service = MemoryService(
             database,
@@ -143,6 +154,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(models.router, prefix="/api/v1")
     app.include_router(providers.router, prefix="/api/v1")
     app.include_router(preferences.router, prefix="/api/v1")
+    app.include_router(profiles.router, prefix="/api/v1")
     app.include_router(chat.router, prefix="/api/v1")
     app.include_router(memory.router, prefix="/api/v1")
     app.include_router(documents.router, prefix="/api/v1")

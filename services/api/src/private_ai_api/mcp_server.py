@@ -18,6 +18,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from private_ai_api.config import Settings, get_settings
 from private_ai_api.database import Database
+from private_ai_api.routers.profiles import active_profile_id
 from private_ai_api.schemas import MemoryType
 from private_ai_api.services.asr import ASR_MODEL_NAME, AsrService
 from private_ai_api.services.document_processor import DocumentProcessor
@@ -94,7 +95,7 @@ def create_mcp_server(
         resolve_chat_model=lambda: default_model(database, "chat"),
         enabled=configured.embedding_enabled,
     )
-    documents = DocumentProcessor(database, lightrag)
+    documents = DocumentProcessor(database, lightrag, ai=ai)
     memories = MemoryService(
         database,
         ai,
@@ -306,11 +307,12 @@ def create_mcp_server(
     @server.tool(name="memory.list")
     def list_memory(include_disabled: bool = False) -> list[dict[str, Any]]:
         """List user-approved personal memory entries."""
-        predicate = "user_id = 'local-user'" + ("" if include_disabled else " AND enabled = 1")
+        predicate = "user_id = ?" + ("" if include_disabled else " AND enabled = 1")
         return database.fetch_all(
             "SELECT id, user_id, type, content, source, confidence, enabled, "
             "created_at, updated_at, expires_at FROM memories "
-            f"WHERE {predicate} ORDER BY updated_at DESC"  # noqa: S608
+            f"WHERE {predicate} ORDER BY updated_at DESC",  # noqa: S608
+            (active_profile_id(database),),
         )
 
     @server.tool(name="memory.remember")
@@ -330,9 +332,17 @@ def create_mcp_server(
             INSERT INTO memories(
                 id, user_id, type, content, source, confidence, enabled,
                 created_at, updated_at, expires_at
-            ) VALUES (?, 'local-user', ?, ?, ?, 1, 1, ?, ?, NULL)
+            ) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?, NULL)
             """,
-            (memory_id, normalized_type, content.strip(), source, now, now),
+            (
+                memory_id,
+                active_profile_id(database),
+                normalized_type,
+                content.strip(),
+                source,
+                now,
+                now,
+            ),
         )
         await memories.sync_memory(memory_id)
         return database.fetch_one(
@@ -346,7 +356,7 @@ def create_mcp_server(
         """Search enabled personal memory entries semantically with local fallback."""
         return await memories.search(
             query,
-            user_id="local-user",
+            user_id=active_profile_id(database),
             limit=max(1, min(limit, 20)),
         )
 

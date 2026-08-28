@@ -40,6 +40,14 @@ def ollama_transport(state: dict[str, Any]) -> httpx.MockTransport:
             if state.get("embedding_loaded"):
                 models.append({"name": "embeddinggemma:latest", "size_vram": 8})
             return httpx.Response(200, json={"models": models})
+        if request.url.path == "/api/show":
+            payload = json.loads(request.content)
+            if payload["model"] == "embeddinggemma:latest":
+                return httpx.Response(200, json={"capabilities": ["embedding"]})
+            capabilities = ["completion"]
+            if state.get("vision_capabilities"):
+                capabilities.extend(["vision", "tools", "thinking"])
+            return httpx.Response(200, json={"capabilities": capabilities})
         if request.url.path == "/api/chat":
             payload = json.loads(request.content)
             state["chat_calls"] = state.get("chat_calls", 0) + 1
@@ -85,6 +93,19 @@ def chat_request() -> ChatRequest:
         messages=[ChatMessage(role="user", content="Reply OK")],
         stream=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_ollama_uses_reported_model_capabilities() -> None:
+    client = OllamaClient(
+        "http://ollama.test",
+        transport=ollama_transport({"vision_capabilities": True}),
+    )
+
+    models = await client.list_models()
+    vision = next(model for model in models if model.name == "tiny:latest")
+
+    assert vision.capabilities == ["chat", "vision", "tools", "thinking"]
 
 
 @pytest.mark.asyncio

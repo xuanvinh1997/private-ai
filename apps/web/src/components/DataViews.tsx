@@ -13,8 +13,10 @@ import {
   Trash2,
   X,
 } from "lucide-solid";
+import type { JSX } from "solid-js";
 import { For, Match, Show, Switch, createResource, createSignal, onCleanup } from "solid-js";
 import { api } from "../api";
+import { Markdown } from "./Markdown";
 import { formatFileSize, formatRelativeTime } from "../format";
 import type {
   DocumentRecord,
@@ -29,6 +31,10 @@ interface WorkspaceDialogProps {
   onSaved: (workspace: WorkspaceRecord) => void;
   onDeleted?: (id: string) => void;
   trigger: "add" | "edit";
+  /** Cho phép màn hình khác dùng lại hộp thoại này với nút bấm riêng. */
+  triggerClass?: string;
+  triggerLabel?: string;
+  triggerContent?: JSX.Element;
 }
 
 export function WorkspaceDialog(props: WorkspaceDialogProps) {
@@ -90,10 +96,10 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
   return (
     <Dialog open={open()} onOpenChange={prepare}>
       <Dialog.Trigger
-        class={props.trigger === "add" ? "section-action" : "context-action"}
-        aria-label={props.trigger === "add" ? "Thêm không gian làm việc" : "Sửa không gian làm việc"}
+        class={props.triggerClass ?? (props.trigger === "add" ? "section-action" : "context-action")}
+        aria-label={props.triggerLabel ?? (props.trigger === "add" ? "Thêm không gian làm việc" : "Sửa không gian làm việc")}
       >
-        {props.trigger === "add" ? <Plus size={18} /> : <Pencil size={18} />}
+        {props.triggerContent ?? (props.trigger === "add" ? <Plus size={18} /> : <Pencil size={18} />)}
       </Dialog.Trigger>
       <Dialog.Portal>
         <Dialog.Overlay class="dialog-overlay" />
@@ -151,10 +157,92 @@ function fileKind(filename: string): string {
   return extension.slice(0, 4).toUpperCase();
 }
 
+const documentIsBusy = (document: DocumentRecord) =>
+  document.status === "queued" || document.status === "processing";
+
+export function DocumentViewer(props: {
+  documentId: string;
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [document, { refetch }] = createResource(() => props.documentId, api.document);
+  const [working, setWorking] = createSignal(false);
+  const [error, setError] = createSignal("");
+
+  const readWithOcr = async () => {
+    setWorking(true);
+    setError("");
+    try {
+      await api.processDocument(props.documentId, true);
+      // Extraction runs in the background, so give it a moment before reading back.
+      window.setTimeout(() => void refetch(), 900);
+      props.onChanged();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Không thể đọc lại tài liệu");
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && props.onClose()}>
+      <Dialog.Portal>
+        <Dialog.Overlay class="dialog-overlay" />
+        <div class="dialog-positioner">
+          <Dialog.Content class="dialog-content document-viewer">
+            <Dialog.Title>{document()?.filename ?? "Đang mở tài liệu"}</Dialog.Title>
+            <Dialog.Description>
+              <Show when={document()} fallback="Đang đọc nội dung đã trích xuất…">
+                {STATUS_LABELS[document()!.status]}
+                <em> · </em>{formatFileSize(document()!.byte_size)}
+                <em> · </em>{document()!.use_ocr === false ? "không dùng OCR" : "OCR theo mặc định"}
+              </Show>
+            </Dialog.Description>
+
+            <Show when={error()}><p class="field-error">{error()}</p></Show>
+
+            <div class="document-body">
+              <Switch>
+                <Match when={document.loading}>
+                  <div class="loading-row"><i />Đang đọc nội dung…</div>
+                </Match>
+                <Match when={document.error}>
+                  <div class="library-empty">
+                    <strong>Không đọc được tài liệu</strong>
+                    <span>{(document.error as Error)?.message}</span>
+                  </div>
+                </Match>
+                <Match when={document()?.extracted_text}>
+                  <Markdown content={document()!.extracted_text ?? ""} />
+                </Match>
+                <Match when={document()}>
+                  <div class="library-empty">
+                    <strong>Chưa có nội dung nào được trích xuất</strong>
+                    <span>{document()!.error ?? "Tài liệu có thể là bản scan chưa qua OCR."}</span>
+                    <button
+                      class="button button-secondary"
+                      disabled={working()}
+                      onClick={() => void readWithOcr()}
+                    >{working() ? "Đang đọc lại…" : "Đọc lại có OCR"}</button>
+                  </div>
+                </Match>
+              </Switch>
+            </div>
+
+            <Dialog.CloseButton class="icon-button dialog-close" aria-label="Đóng tài liệu">
+              <X size={20} />
+            </Dialog.CloseButton>
+          </Dialog.Content>
+        </div>
+      </Dialog.Portal>
+    </Dialog>
+  );
+}
+
 export function LibraryView(props: {
   documents: DocumentRecord[];
   total: number;
-  summary: { total: number; byte_size: number; pending: number; failed: number };
+  summary: { total: number; byte_size: number; pending: number; indexing: number; failed: number };
   page: number;
   pageSize: number;
   pageCount: number;
@@ -163,13 +251,12 @@ export function LibraryView(props: {
   status: string;
   onFilterChange: (search: string, status: string) => void;
   workspaceName: string;
-  uploadError: string;
   loading: boolean;
-  uploading: boolean;
   onUpload: () => void;
   onRefresh: () => void;
 }) {
   const [workingId, setWorkingId] = createSignal("");
+  const [viewing, setViewing] = createSignal("");
   const [confirmDelete, setConfirmDelete] = createSignal("");
   const [error, setError] = createSignal("");
   const [draftSearch, setDraftSearch] = createSignal(props.search);
@@ -192,11 +279,11 @@ export function LibraryView(props: {
     props.onFilterChange("", "");
   };
 
-  const retry = async (id: string) => {
+  const retry = async (id: string, useOcr?: boolean) => {
     setWorkingId(id);
     setError("");
     try {
-      await api.processDocument(id);
+      await api.processDocument(id, useOcr);
       props.onRefresh();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Không thể xử lý lại tài liệu");
@@ -235,19 +322,22 @@ export function LibraryView(props: {
               <Show when={props.summary.pending > 0}>
                 <em>·</em> <span class="stat-pending">{props.summary.pending} đang xử lý</span>
               </Show>
+              <Show when={props.summary.indexing > 0}>
+                <em>·</em> <span class="stat-pending">{props.summary.indexing} đang lập chỉ mục</span>
+              </Show>
               <Show when={props.summary.failed > 0}>
                 <em>·</em> <span class="stat-failed">{props.summary.failed} cần xem lại</span>
               </Show>
             </Show>
           </p>
         </div>
-        <button class="button button-primary" onClick={props.onUpload} disabled={props.uploading}>
-          <FileUp size={18} /> {props.uploading ? "Đang nhập…" : "Thêm tài liệu"}
+        <button class="button button-primary" onClick={props.onUpload}>
+          <FileUp size={18} /> Thêm tài liệu
         </button>
       </div>
 
-      <Show when={error() || props.uploadError}>
-        <div class="inline-error page-error" role="alert">{error() || props.uploadError}</div>
+      <Show when={error()}>
+        <div class="inline-error page-error" role="alert">{error()}</div>
       </Show>
 
       <Show when={props.summary.total > 0}>
@@ -279,6 +369,14 @@ export function LibraryView(props: {
         <Match when={props.loading && props.documents.length === 0}>
           <div class="loading-row"><i />Đang đọc thư viện…</div>
         </Match>
+        <Match when={props.documents.length === 0 && !filtering()}>
+          <div class="library-empty">
+            <FileUp size={26} />
+            <strong>Chưa có tài liệu nào</strong>
+            <span>Thêm tệp từ đây, hoặc kéo thả vào cột ngữ cảnh ở màn trò chuyện.</span>
+            <button class="button button-secondary" onClick={props.onUpload}>Thêm tài liệu</button>
+          </div>
+        </Match>
         <Match when={props.documents.length === 0 && filtering()}>
           <div class="library-empty">
             <Search size={26} />
@@ -287,20 +385,20 @@ export function LibraryView(props: {
             <button class="button button-secondary" onClick={clearFilters}>Xóa bộ lọc</button>
           </div>
         </Match>
-        <Match when={props.documents.length === 0}>
-          <button class="large-upload" onClick={props.onUpload} disabled={props.uploading}>
-            <FileUp size={30} />
-            <strong>{props.uploading ? "Đang nhập tài liệu…" : "Chọn tài liệu từ máy"}</strong>
-            <span>Thêm vào {props.workspaceName} · PDF, Office, JPG, PNG, WebP, Markdown và văn bản · tối đa 100 MB</span>
-          </button>
-        </Match>
         <Match when={props.documents.length > 0}>
           <div classList={{ "document-list": true, refreshing: props.loading }}>
             <For each={props.documents}>{(document) => (
-              <article class="document-row">
+              <article class="document-row" aria-busy={documentIsBusy(document)}>
                 <div class="document-icon" aria-hidden="true">{fileKind(document.filename)}</div>
                 <div class="document-copy">
-                  <strong title={document.filename}>{document.filename}</strong>
+                  <button
+                    class="document-open"
+                    disabled={documentIsBusy(document)}
+                    title={documentIsBusy(document)
+                      ? `${document.filename} vẫn đang xử lý`
+                      : `Xem nội dung ${document.filename}`}
+                    onClick={() => !documentIsBusy(document) && setViewing(document.id)}
+                  >{document.filename}</button>
                   <span>
                     {formatFileSize(document.byte_size)}
                     <em>·</em> {formatRelativeTime(document.created_at)}
@@ -309,8 +407,18 @@ export function LibraryView(props: {
                 </div>
                 <span classList={{ "document-status": true, [`document-${document.status}`]: true }}>
                   <i aria-hidden="true" />{STATUS_LABELS[document.status]}
+                  <Show when={documentIsBusy(document)}>
+                    <span class="document-status-progress" aria-hidden="true" />
+                  </Show>
                 </span>
                 <div class="document-actions">
+                  <Show when={document.status === "needs_ocr"}>
+                    <button
+                      class="text-action"
+                      disabled={workingId() === document.id}
+                      onClick={() => void retry(document.id, true)}
+                    >Đọc lại có OCR</button>
+                  </Show>
                   <Show when={document.status === "failed" || document.status === "needs_ocr"}>
                     <button
                       class="icon-action"
@@ -369,12 +477,25 @@ export function LibraryView(props: {
           </nav>
         </Match>
       </Switch>
+
+      <Show when={viewing()}>
+        <DocumentViewer
+          documentId={viewing()}
+          onClose={() => setViewing("")}
+          onChanged={props.onRefresh}
+        />
+      </Show>
     </section>
   );
 }
 
-export function MemoryView() {
-  const [memories, { refetch }] = createResource(api.memories);
+export function MemoryView(props: { embedded?: boolean; profileId?: string } = {}) {
+  // Keyed on the profile so switching accounts reloads the list instead of showing the
+  // previous person's memories.
+  const [memories, { refetch }] = createResource(
+    () => props.profileId ?? "",
+    () => api.memories(),
+  );
   const [open, setOpen] = createSignal(false);
   const [type, setType] = createSignal<MemoryType>("preference");
   const [content, setContent] = createSignal("");
@@ -450,7 +571,7 @@ export function MemoryView() {
   };
 
   return (
-    <section class="page-view">
+    <section classList={{ "page-view": !props.embedded, "settings-panel": Boolean(props.embedded) }}>
       <div class="page-heading page-heading-row">
         <div><span>Bộ nhớ cá nhân</span><h1>Điều Private AI ghi nhớ</h1><p>Bạn kiểm soát từng mục đã lưu và có thể tắt hoặc xóa bất cứ lúc nào.</p></div>
         <div class="page-heading-actions">

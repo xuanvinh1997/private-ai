@@ -24,6 +24,15 @@ export interface Health {
   };
 }
 
+export interface ProfileRecord {
+  id: string;
+  display_name: string;
+  created_at: string;
+  updated_at: string;
+  active: boolean;
+  memory_count: number;
+}
+
 export interface Preferences {
   ocr_enabled: boolean;
 }
@@ -137,7 +146,9 @@ export interface DocumentRecord {
   byte_size: number;
   status: "queued" | "processing" | "ready" | "needs_ocr" | "failed";
   extracted_text?: string;
+  use_ocr?: boolean | null;
   error?: string;
+  indexed_at?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -151,6 +162,7 @@ export interface DocumentPage {
     total: number;
     byte_size: number;
     pending: number;
+    indexing: number;
     failed: number;
   };
 }

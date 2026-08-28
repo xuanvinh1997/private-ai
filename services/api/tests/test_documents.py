@@ -105,16 +105,20 @@ def test_pdf_processing_status_retry_and_delete(client: TestClient) -> None:
     assert client.get(f"/api/v1/documents/{document_id}").status_code == 404
 
 
-def test_scanned_pdf_uses_ocr_fallback(client: TestClient, monkeypatch) -> None:
+def test_scanned_pdf_is_read_by_the_vision_model(client: TestClient, monkeypatch) -> None:
     buffer = BytesIO()
     writer = PdfWriter()
     writer.add_blank_page(width=200, height=200)
     writer.write(buffer)
     processor = client.app.state.services.document_processor
+    monkeypatch.setattr(processor, "vision_model", "test-vision")
+    # markitdown only reaches its OCR converter when plugins and a vision model are on.
     monkeypatch.setattr(
         processor,
-        "_ocr_pdf",
-        lambda _path: "Nội dung nhận dạng từ trang scan",
+        "_extract_markitdown",
+        lambda _path, ocr, model="": (
+            "*[Image OCR]\n\nNội dung nhận dạng từ trang scan" if ocr and model else ""
+        ),
     )
 
     uploaded = client.post(
@@ -126,7 +130,7 @@ def test_scanned_pdf_uses_ocr_fallback(client: TestClient, monkeypatch) -> None:
     assert uploaded.status_code == 201
     document = client.get(f"/api/v1/documents/{uploaded.json()['id']}").json()
     assert document["status"] == "ready"
-    assert document["extracted_text"] == "Nội dung nhận dạng từ trang scan"
+    assert "Nội dung nhận dạng từ trang scan" in document["extracted_text"]
     search = client.get(
         "/api/v1/documents/search",
         params={"q": "nhận dạng trang scan", "workspace_id": "personal"},
@@ -177,15 +181,15 @@ def test_jpeg_uses_markitdown_vision_output(client: TestClient, monkeypatch) -> 
     assert document["extracted_text"].startswith("<!-- private-ai-page:1 -->")
 
 
-def test_jpeg_falls_back_to_local_ocr(client: TestClient, monkeypatch) -> None:
+def test_an_image_without_a_vision_model_says_what_is_missing(client: TestClient) -> None:
+    """OCR runs through the vision model only, so an unset one has to be named."""
     processor = client.app.state.services.document_processor
-    monkeypatch.setattr(processor, "_extract_markitdown", lambda _path: "")
-    monkeypatch.setattr(
-        processor,
-        "_ocr_image",
-        lambda _path: "<!-- private-ai-page:1 -->\n# Image OCR\n\nLOCAL-JPG-7319",
-    )
 
+    async def no_models() -> list[object]:
+        return []
+
+    # Do not let a developer's running Ollama inventory make this test environment-dependent.
+    processor.ai = SimpleNamespace(list_models=no_models)
     uploaded = client.post(
         "/api/v1/documents",
         files={"file": ("fallback.jpeg", _jpeg_bytes(), "image/jpeg")},
@@ -194,13 +198,8 @@ def test_jpeg_falls_back_to_local_ocr(client: TestClient, monkeypatch) -> None:
 
     assert uploaded.status_code == 201
     document = client.get(f"/api/v1/documents/{uploaded.json()['id']}").json()
-    assert document["status"] == "ready"
-    assert "LOCAL-JPG-7319" in document["extracted_text"]
-    results = client.get(
-        "/api/v1/documents/search",
-        params={"q": "LOCAL-JPG-7319", "workspace_id": "personal"},
-    ).json()
-    assert results[0]["filename"] == "fallback.jpeg"
+    assert document["status"] == "needs_ocr"
+    assert "không có mô hình nào đọc được ảnh" in document["error"]
 
 
 def test_markitdown_ocr_plugin_is_installed() -> None:

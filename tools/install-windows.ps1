@@ -6,8 +6,7 @@ param(
     [ValidatePattern("^3\.(12|13|14)$")]
     [string]$PythonVersion = "3.12",
 
-    [switch]$SkipChecks,
-    [switch]$SkipNativeTools
+    [switch]$SkipChecks
 )
 
 Set-StrictMode -Version Latest
@@ -66,9 +65,6 @@ try {
     }
 
     $condaPackages = @("python=$PythonVersion", "nodejs=22", "pip")
-    if (-not $SkipNativeTools) {
-        $condaPackages += @("poppler", "tesseract")
-    }
 
     if ($environmentExists) {
         Invoke-Conda `

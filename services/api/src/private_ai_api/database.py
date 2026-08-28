@@ -8,6 +8,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+# The profile that owns rows written before profiles existed.
+LEGACY_PROFILE_ID = "local-user"
+ACTIVE_PROFILE_KEY = "active_profile_id"
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
@@ -38,6 +42,7 @@ CREATE TABLE IF NOT EXISTS documents (
     source_path TEXT NOT NULL,
     extracted_text TEXT,
     error TEXT,
+    use_ocr INTEGER,
     indexed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -149,6 +154,13 @@ CREATE TABLE IF NOT EXISTS ai_providers (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS profiles (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS app_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -209,11 +221,13 @@ class Database:
                 "INTEGER NOT NULL DEFAULT 0",
             )
             self._ensure_column(connection, "document_chunks", "page_number", "INTEGER")
+            self._ensure_column(connection, "documents", "use_ocr", "INTEGER")
             self._ensure_column(connection, "documents", "indexed_at", "TEXT")
             self._ensure_column(connection, "memories", "embedding_json", "TEXT")
             self._ensure_column(connection, "memories", "embedding_model", "TEXT")
             self._backfill_document_sections(connection)
             self._seed_workspaces(connection)
+            self._seed_profile(connection)
         return purged
 
     def _purge_workspaceless_documents(self) -> list[str]:
@@ -288,6 +302,31 @@ class Database:
                 """,
                 (section_id, document_id),
             )
+
+    @staticmethod
+    def _seed_profile(connection: sqlite3.Connection) -> None:
+        """Give every database exactly one profile to start from.
+
+        Its id is the ``local-user`` that memories were written against before profiles
+        existed, so those rows stay attached to the person who wrote them. The name is
+        left empty on purpose: that is what the web app reads as "not introduced yet"
+        and answers with the onboarding prompt.
+        """
+        existing = connection.execute("SELECT COUNT(*) FROM profiles").fetchone()[0]
+        if existing:
+            return
+        now = datetime.now(UTC).isoformat()
+        connection.execute(
+            "INSERT INTO profiles(id, display_name, created_at, updated_at) VALUES (?, '', ?, ?)",
+            (LEGACY_PROFILE_ID, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO app_state(key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (ACTIVE_PROFILE_KEY, LEGACY_PROFILE_ID),
+        )
 
     @staticmethod
     def _seed_workspaces(connection: sqlite3.Connection) -> None:

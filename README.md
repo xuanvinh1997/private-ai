@@ -22,11 +22,13 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
   gian kia. Citation trong chat dẫn theo tên tệp nguồn.
 - `embeddinggemma` là embedding model mặc định. Có thể đổi bằng
   `PRIVATE_AI_EMBEDDING_MODEL`; khi model không sẵn sàng, hệ thống tự fallback về keyword.
-- MarkItDown và plugin `markitdown-ocr` được bật trong worker. Khi chọn vision model, plugin
-  gọi Ollama qua OpenAI-compatible API để giữ heading/list/table và đọc ảnh nhúng trong
-  PDF/Office; JPG/PNG cũng đi qua MarkItDown vision. Nếu không có vision model, ảnh và PDF
-  scan tự fallback sang Tesseract/Poppler. Ngôn ngữ OCR cấu hình bằng
-  `PRIVATE_AI_OCR_LANGUAGES=vie+eng`.
+- MarkItDown và plugin `markitdown-ocr` được bật trong worker. OCR **chỉ chạy bằng LLM
+  vision**, không dùng engine OCR cổ điển: plugin gọi model vision qua OpenAI-compatible API
+  của nhà cung cấp đang bật, giữ heading/list/table, đọc ảnh nhúng trong PDF/Office và OCR cả
+  trang cho bản scan; JPG/PNG cũng đi qua đường này. Tick OCR là đủ: nếu chưa đặt mặc định cho
+  tác vụ `vision`, worker tự lấy model có khả năng đọc ảnh trong kho của nhà cung cấp đang
+  bật. Không có model nào đọc được ảnh thì tài liệu vào `needs_ocr` kèm lý do, chứ không đoán
+  bừa.
 - Memory có tạo, sửa, bật/tắt, xóa và semantic search. SQLite giữ bản chuẩn cùng embedding
   cache và tự xếp hạng bằng vector đã lưu. Chat chỉ lấy top-k memory liên quan và fallback về
   keyword/recent khi nhà cung cấp ngoại tuyến; UI cho phép xuất toàn bộ memory thành JSON.
@@ -82,9 +84,7 @@ health luôn phản ánh trạng thái runtime thật, không giả lập servic
 - Python 3.12 trở lên.
 - Node.js 22 trở lên và Corepack (hoặc pnpm).
 - Ollama nếu cần model local.
-- Poppler và Tesseract là fallback cục bộ cho ảnh/PDF scan khi chưa chọn vision model. Script
-  Windows cài cả hai vào Conda environment; nếu dùng `-SkipNativeTools`, hãy tự thêm thư mục
-  chứa `pdftoppm.exe` và `tesseract.exe` vào `PATH`.
+- Một model đọc được ảnh nếu cần OCR; worker tự nhận ra, hoặc chỉ định bằng nút "Dùng cho OCR".
 - Git, CMake và FFmpeg nếu dùng voice-to-text; Windows cần Visual Studio Build Tools có C++.
 
 Không cần Bash, Make, symlink hay đường dẫn cố định để chạy development workflow.
@@ -111,14 +111,13 @@ npx --yes pnpm@10.17.1 --dir apps/web build
 powershell -ExecutionPolicy Bypass -File .\tools\install-windows.ps1
 ```
 
-Script mặc định tạo hoặc cập nhật Conda environment `private-ai` với Python 3.12, Node.js 22,
-Poppler và Tesseract; cài API/desktop/frontend, chạy test + lint + typecheck, build frontend và
+Script mặc định tạo hoặc cập nhật Conda environment `private-ai` với Python 3.12 và Node.js 22;
+cài API/desktop/frontend, chạy test + lint + typecheck, build frontend và
 tạo wheel Python trong `dist\python`. Có thể tùy chỉnh:
 
 ```text
 .\tools\install-windows.ps1 -EnvironmentName private-ai-dev -PythonVersion 3.13
 .\tools\install-windows.ps1 -SkipChecks
-.\tools\install-windows.ps1 -SkipNativeTools
 ```
 
 Sau khi build, chạy development services hoặc desktop shell mà không cần activate environment:
@@ -202,8 +201,8 @@ PRIVATE_AI_GRAPH_ENTITY_MODEL=qwen3.8:27b-mlx
 PRIVATE_AI_VISION_MODEL=qwen3-vl:8b
 ```
 
-Không cấu hình vision model vẫn hỗ trợ JPG/PNG qua Tesseract; tài liệu không bị báo
-`Unsupported document type`.
+Chưa chọn vision model thì JPG/PNG và PDF scan vào `needs_ocr` kèm lý do; tài liệu không bị
+báo `Unsupported document type`.
 
 Structured output được validate, có một lần retry JSON cho model không tuân thủ schema hoàn
 toàn; chunk thất bại được ghi vào job `graph_extraction` và sẽ được thử lại thay vì thay bằng
@@ -214,7 +213,7 @@ dữ liệu giả.
 Lần kiểm tra runtime gần nhất trên macOS (2026-08-27) đạt 43 test, Ruff, TypeScript
 typecheck và Vite production build. Smoke test qua HTTP/WebSocket đã xác nhận workspace/chat
 với Qwen, lưu lại message, upload/search/xóa document, CRUD/search memory, health,
-Nemotron load/unload, ASR partial/final và JPG OCR thật qua Tesseract; dữ liệu tạm của smoke
+Nemotron load/unload, ASR partial/final và JPG OCR qua vision model; dữ liệu tạm của smoke
 test được xóa sau khi chạy.
 
 ```text

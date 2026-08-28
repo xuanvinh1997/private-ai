@@ -133,6 +133,23 @@ class ChatRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
 
 
+class ProfileCreate(BaseModel):
+    display_name: str = Field(default="", max_length=60)
+
+
+class ProfileUpdate(BaseModel):
+    display_name: str = Field(max_length=60)
+
+
+class ProfileRecord(BaseModel):
+    id: str
+    display_name: str = ""
+    created_at: datetime
+    updated_at: datetime
+    active: bool = False
+    memory_count: int = 0
+
+
 class WorkspaceCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=500)

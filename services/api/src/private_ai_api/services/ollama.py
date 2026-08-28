@@ -64,6 +64,9 @@ class OllamaClient:
         try:
             async with self._client(self.timeout) as client:
                 installed, running = await self._model_responses(client)
+                reported_capabilities = await self._reported_capabilities(
+                    client, installed.get("models", [])
+                )
         except httpx.HTTPError as exc:
             raise OllamaUnavailable(str(exc)) from exc
 
@@ -73,7 +76,9 @@ class OllamaClient:
             name = item["name"]
             active = running_by_name.get(name)
             details = item.get("details", {})
-            capabilities = self._capabilities(f"{name} {details.get('family', '')}")
+            capabilities = reported_capabilities.get(name) or self._capabilities(
+                f"{name} {details.get('family', '')}"
+            )
             result.append(
                 ModelInfo(
                     name=name,
@@ -88,6 +93,45 @@ class OllamaClient:
             )
         await self._synchronize_running_models(result)
         return result
+
+    async def _reported_capabilities(
+        self,
+        client: httpx.AsyncClient,
+        models: list[dict[str, Any]],
+    ) -> dict[str, list[str]]:
+        """Read Ollama's authoritative metadata; old servers fall back to name inference."""
+        result: dict[str, list[str]] = {}
+        for item in models:
+            name = str(item.get("name", "")).strip()
+            if not name:
+                continue
+            try:
+                response = await client.post(
+                    f"{self.base_url}/api/show",
+                    json={"model": name, "verbose": False},
+                )
+                response.raise_for_status()
+            except httpx.HTTPError:
+                continue
+            capabilities = self._normalize_capabilities(response.json().get("capabilities"))
+            if capabilities:
+                result[name] = capabilities
+        return result
+
+    @staticmethod
+    def _normalize_capabilities(value: object) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        aliases = {"completion": "chat"}
+        supported = {"chat", "embedding", "vision", "tools", "thinking"}
+        normalized: list[str] = []
+        for capability in value:
+            if not isinstance(capability, str):
+                continue
+            name = aliases.get(capability.lower(), capability.lower())
+            if name in supported and name not in normalized:
+                normalized.append(name)
+        return normalized
 
     @staticmethod
     def _owner(name: str) -> str:

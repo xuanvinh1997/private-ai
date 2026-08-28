@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import StreamingResponse
 
 from private_ai_api.dependencies import AppServices, get_services
+from private_ai_api.routers.profiles import active_profile_id
 from private_ai_api.schemas import (
     ChatMessage,
     ChatRequest,
@@ -269,7 +270,7 @@ async def _prepare_chat(
     )
     memory_context = await services.memory_service.search(
         payload.content,
-        user_id="local-user",
+        user_id=active_profile_id(services.database),
         limit=5,
     )
     request = ChatRequest(

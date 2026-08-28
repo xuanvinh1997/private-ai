@@ -3,15 +3,18 @@ import {
   BookOpenText,
   Boxes,
   BrainCircuit,
-  ChevronDown,
   FileUp,
   HardDrive,
+  LayoutGrid,
   MessageSquareText,
   Mic2,
   MoreHorizontal,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Paperclip,
   Plus,
-  RotateCw,
   Send,
   Settings2,
   ShieldCheck,
@@ -35,9 +38,16 @@ import {
 } from "solid-js";
 import { api } from "./api";
 import { formatBytes, formatRelativeTime } from "./format";
-import { LibraryView, MemoryView, WorkspaceDialog } from "./components/DataViews";
+import { DocumentViewer, LibraryView, MemoryView, WorkspaceDialog } from "./components/DataViews";
+import { WorkspacesView } from "./components/WorkspacesView";
+import { ProfileNameDialog, ProfileSwitcher, initialsOf } from "./components/Profiles";
+import { UploadDialog } from "./components/UploadDialog";
+import { notify, ToastViewport } from "./components/AppToast";
 import { ProviderSettings } from "./components/Providers";
 import { Markdown } from "./components/Markdown";
+import { ModelPicker } from "./components/ModelPicker";
+import { NotificationsMenu } from "./components/Notifications";
+import type { Notice } from "./components/Notifications";
 import type {
   ChatMessage,
   ConversationDetail,
@@ -47,7 +57,8 @@ import type {
   WorkspaceRecord,
 } from "./types";
 
-type View = "chat" | "library" | "models" | "memory" | "settings";
+type View = "chat" | "workspaces" | "library" | "settings";
+type SettingsTab = "general" | "models" | "memory" | "providers";
 const DOCUMENTS_PER_PAGE = 20;
 
 type Theme = "light" | "dark";
@@ -55,9 +66,16 @@ type FontScale = "normal" | "large";
 
 const navigation = [
   { id: "chat" as const, label: "Trò chuyện", icon: MessageSquareText },
+  { id: "workspaces" as const, label: "Không gian", icon: LayoutGrid },
   { id: "library" as const, label: "Tài liệu", icon: BookOpenText },
+];
+
+// Cấu hình nâng cao gom hết vào trang Cài đặt thay vì chiếm chỗ ở thanh bên.
+const settingsTabs = [
+  { id: "general" as const, label: "Chung", icon: Settings2 },
   { id: "models" as const, label: "Mô hình", icon: Boxes },
   { id: "memory" as const, label: "Bộ nhớ", icon: BrainCircuit },
+  { id: "providers" as const, label: "Nhà cung cấp", icon: HardDrive },
 ];
 
 const starterPrompts = [
@@ -66,11 +84,42 @@ const starterPrompts = [
   "Tìm lại thông tin tôi đã lưu về dự án",
 ];
 
+function getStoredFlag(key: string) {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(key) === "1";
+}
+
 function getStoredPreference<T extends string>(key: string, allowed: T[], fallback: T): T {
   if (typeof window === "undefined") return fallback;
   const value = window.localStorage.getItem(key) as T | null;
   return value && allowed.includes(value) ? value : fallback;
 }
+
+const MODEL_ACTIONS: Record<string, string> = {
+  pull: "Đã tải mô hình",
+  load: "Đã nạp mô hình",
+  unload: "Đã dỡ mô hình",
+  update: "Đã cập nhật mô hình",
+  delete: "Đã xoá mô hình",
+};
+
+function modelActionLabel(action: string) {
+  if (action.startsWith("select_default:")) return "Đã đổi mô hình mặc định";
+  return MODEL_ACTIONS[action] ?? action;
+}
+
+const isDocumentBusy = (document: DocumentRecord) =>
+  document.status === "queued" || document.status === "processing";
+
+const documentStatusLabel = (document: DocumentRecord) => {
+  switch (document.status) {
+    case "queued": return "Đang chờ xử lý";
+    case "processing": return "Đang OCR";
+    case "ready": return "Sẵn sàng";
+    case "needs_ocr": return "OCR chưa đọc được";
+    case "failed": return "Xử lý lỗi";
+  }
+};
 
 function StatusPip(props: { state: ServiceState | "idle" }) {
   return <span class={`status-pip status-${props.state}`} aria-hidden="true" />;
@@ -237,6 +286,7 @@ function AddModelDialog(props: { onCompleted: () => void }) {
 
 function App() {
   const [view, setView] = createSignal<View>("chat");
+  const [settingsTab, setSettingsTab] = createSignal<SettingsTab>("general");
   const [theme, setTheme] = createSignal<Theme>(getStoredPreference("private-ai-theme", ["light", "dark"], "light"));
   const [fontScale, setFontScale] = createSignal<FontScale>(getStoredPreference("private-ai-font-scale", ["normal", "large"], "normal"));
   const [activeWorkspace, setActiveWorkspace] = createSignal("");
@@ -244,25 +294,45 @@ function App() {
   const [confirmConversationDelete, setConfirmConversationDelete] = createSignal(false);
   const [confirmWorkspaceDelete, setConfirmWorkspaceDelete] = createSignal("");
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = createSignal(getStoredFlag("private-ai-sidebar-collapsed"));
+  const [railCollapsed, setRailCollapsed] = createSignal(getStoredFlag("private-ai-rail-collapsed"));
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
   const [draft, setDraft] = createSignal("");
   const [selectedModel, setSelectedModel] = createSignal("");
   const [sending, setSending] = createSignal(false);
   const [chatError, setChatError] = createSignal("");
-  const [uploading, setUploading] = createSignal(false);
-  const [uploadError, setUploadError] = createSignal("");
+  // dragenter/dragleave also fire for children, so depth decides when the overlay drops.
+  const [chatDragDepth, setChatDragDepth] = createSignal(0);
+  const [uploadOpen, setUploadOpen] = createSignal(false);
+  const [stagedFiles, setStagedFiles] = createSignal<File[]>([]);
+  const [viewingDocument, setViewingDocument] = createSignal("");
+  // The file picker is a separate element, so the choice has to survive the round trip.
   const [recording, setRecording] = createSignal(false);
   const [transcribing, setTranscribing] = createSignal(false);
   const [health, { refetch: refetchHealth }] = createResource(api.health);
   const [models, { refetch: refetchModels }] = createResource(api.models);
+  const [modelEvents, { refetch: refetchModelEvents }] = createResource(api.modelEvents);
   const [workspaceList, { refetch: refetchWorkspaces }] = createResource(api.workspaces);
   const [preferences, { mutate: mutatePreferences }] = createResource(api.preferences);
+  const [profiles, { refetch: refetchProfiles }] = createResource(api.profiles);
+
+  const activeProfile = createMemo(() => profiles()?.find((profile) => profile.active));
+  const profileName = createMemo(() => activeProfile()?.display_name?.trim() ?? "");
+  // An empty name means nobody has introduced themselves yet, which is the onboarding cue.
+  const needsOnboarding = createMemo(() =>
+    Boolean(!profiles.loading && activeProfile() && !profileName()),
+  );
+
+  const openUpload = (files: File[] = []) => {
+    setStagedFiles(files);
+    setUploadOpen(true);
+  };
   const [ocrError, setOcrError] = createSignal("");
 
   const toggleOcr = async (enabled: boolean) => {
     const previous = preferences();
     setOcrError("");
-    mutatePreferences({ ocr_enabled: enabled });
+    mutatePreferences({ ...previous, ocr_enabled: enabled });
     try {
       mutatePreferences(await api.updatePreferences({ ocr_enabled: enabled }));
     } catch (cause) {
@@ -306,7 +376,7 @@ function App() {
   );
   const documentTotal = createMemo(() => documents()?.total ?? 0);
   const documentSummary = createMemo(
-    () => documents()?.summary ?? { total: 0, byte_size: 0, pending: 0, failed: 0 },
+    () => documents()?.summary ?? { total: 0, byte_size: 0, pending: 0, indexing: 0, failed: 0 },
   );
   const documentPageCount = createMemo(() =>
     Math.max(1, Math.ceil(documentTotal() / DOCUMENTS_PER_PAGE)),
@@ -316,7 +386,6 @@ function App() {
     setDocumentStatus(status);
     setDocumentPage(0);
   };
-  let fileInput!: HTMLInputElement;
   let messageList!: HTMLDivElement;
   let activeChatController: AbortController | undefined;
   let mediaRecorder: MediaRecorder | undefined;
@@ -368,15 +437,88 @@ function App() {
     return `${models} · dùng chung ${formatBytes(gpu.total_memory_bytes)} RAM của SoC`;
   });
 
+  const notices = createMemo<Notice[]>(() => {
+    const list: Notice[] = [];
+    const state = (name: string) => health()?.services[name];
+    if (state("provider") === "not_configured") {
+      list.push({ id: "provider-missing", tone: "warn", title: "Chưa chọn nhà cung cấp AI", detail: "Thêm Ollama hoặc một endpoint tương thích OpenAI trong Cài đặt." });
+    } else if (state("provider") === "offline") {
+      list.push({ id: "provider-offline", tone: "alert", title: "Nhà cung cấp AI không phản hồi", detail: "Không gọi được endpoint đang chọn, cuộc trò chuyện sẽ lỗi." });
+    }
+    if (state("ollama") === "offline") {
+      list.push({ id: "ollama-offline", tone: "alert", title: "Ollama đã ngoại tuyến", detail: "Máy chủ mô hình cục bộ không chạy trên máy này." });
+    }
+    if (state("knowledge_graph") === "not_configured") {
+      list.push({ id: "graph-missing", tone: "warn", title: "Kho tri thức chưa dựng", detail: "Tải tài liệu lên để Private AI lập chỉ mục và trả lời theo ngữ cảnh." });
+    }
+    if (state("asr") === "offline") {
+      list.push({ id: "asr-offline", tone: "warn", title: "Nhập bằng giọng nói chưa sẵn sàng", detail: "Cài mô hình nhận dạng giọng nói trong Cài đặt → Mô hình." });
+    }
+    const summary = documentSummary();
+    if (summary.failed) {
+      const firstFailure = documentItems().find((document) =>
+        document.status === "failed" || document.status === "needs_ocr"
+      );
+      list.push({
+        id: "documents-failed",
+        tone: "alert",
+        title: `${summary.failed} tài liệu xử lý lỗi`,
+        detail: firstFailure
+          ? `${firstFailure.filename}: ${firstFailure.error ?? documentStatusLabel(firstFailure)}`
+          : "Mở Thư viện để xem nguyên nhân và thử xử lý lại.",
+      });
+    }
+    if (summary.pending) {
+      const firstPending = documentItems().find(isDocumentBusy);
+      list.push({
+        id: "documents-pending",
+        tone: "info",
+        title: `${summary.pending} tài liệu đang xử lý`,
+        detail: firstPending
+          ? `${firstPending.filename}: ${documentStatusLabel(firstPending)}`
+          : "Nội dung sẽ vào kho tri thức khi trích xuất xong.",
+      });
+    }
+    if (summary.indexing) {
+      list.push({
+        id: "documents-indexing",
+        tone: "info",
+        title: `${summary.indexing} tài liệu đang vào kho tri thức`,
+        detail: "OCR đã xong; LightRAG đang tạo embedding và graph memory.",
+      });
+    }
+    for (const event of (modelEvents() ?? []).slice(0, 6)) {
+      const failed = event.status === "failed";
+      list.push({
+        id: event.id,
+        tone: failed ? "alert" : "info",
+        title: `${modelActionLabel(event.action)}${failed ? " thất bại" : ""}`,
+        detail: failed && event.detail ? `${event.model_name} — ${event.detail}` : event.model_name,
+        at: event.created_at,
+      });
+    }
+    return list;
+  });
+
   const healthPoll = window.setInterval(() => {
     if (document.visibilityState === "visible") void refetchHealth();
   }, 5_000);
+  // One workspace-level poll updates every queued row and the notification menu without
+  // issuing one request per file.
+  const documentPoll = window.setInterval(() => {
+    const summary = documentSummary();
+    const indexing = summary.indexing > 0 && serviceState("knowledge_graph") === "online";
+    if (document.visibilityState === "visible" && (summary.pending > 0 || indexing)) {
+      void refetchDocuments();
+    }
+  }, 1_200);
   const refreshVisibleHealth = () => {
     if (document.visibilityState === "visible") void refetchHealth();
   };
   document.addEventListener("visibilitychange", refreshVisibleHealth);
   onCleanup(() => {
     window.clearInterval(healthPoll);
+    window.clearInterval(documentPoll);
     document.removeEventListener("visibilitychange", refreshVisibleHealth);
   });
 
@@ -389,6 +531,11 @@ function App() {
     );
     window.localStorage.setItem("private-ai-theme", theme());
     window.localStorage.setItem("private-ai-font-scale", fontScale());
+  });
+
+  createEffect(() => {
+    window.localStorage.setItem("private-ai-sidebar-collapsed", sidebarCollapsed() ? "1" : "0");
+    window.localStorage.setItem("private-ai-rail-collapsed", railCollapsed() ? "1" : "0");
   });
 
   createEffect(() => {
@@ -407,6 +554,7 @@ function App() {
   const refresh = () => Promise.all([
     refetchHealth(),
     refetchModels(),
+    refetchModelEvents(),
     refetchWorkspaces(),
     refetchConversations(),
     refetchDocuments(),
@@ -462,6 +610,12 @@ function App() {
     setMessages([]);
     setView("chat");
     refetchWorkspaces();
+  };
+
+  // Trong màn hình quản lý, lưu xong thì ở lại danh sách thay vì nhảy về chat.
+  const handleWorkspaceManaged = (workspace: WorkspaceRecord) => {
+    refetchWorkspaces();
+    if (!activeWorkspace()) setActiveWorkspace(workspace.id);
   };
 
   const handleWorkspaceDeleted = async (id: string) => {
@@ -797,47 +951,40 @@ function App() {
       void submitMessage();
     }
   };
-  const handleUpload = async (event: Event) => {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    if (!file) return;
-    const workspaceId = activeWorkspace();
-    if (!workspaceId) {
-      setUploadError("Hãy tạo một không gian làm việc trước khi thêm tài liệu.");
-      input.value = "";
-      return;
-    }
-    setUploading(true);
-    setUploadError("");
-    try {
-      // Stay on the current view; progress shows in the context rail instead.
-      await api.uploadDocument(file, workspaceId);
-      refetchDocuments();
-      window.setTimeout(() => refetchDocuments(), 800);
-    } catch (cause) {
-      setUploadError(cause instanceof Error ? cause.message : "Không thể thêm tài liệu");
-    } finally {
-      setUploading(false);
-      input.value = "";
-    }
-  };
+  // Without this, a file dropped anywhere else replaces the app with the file itself.
+  const swallowStrayDrop = (event: DragEvent) => event.preventDefault();
+  window.addEventListener("dragover", swallowStrayDrop);
+  window.addEventListener("drop", swallowStrayDrop);
+  onCleanup(() => {
+    window.removeEventListener("dragover", swallowStrayDrop);
+    window.removeEventListener("drop", swallowStrayDrop);
+  });
 
   return (
     <>
       <a class="skip-link" href="#main-content">Bỏ qua thanh điều hướng</a>
-      <div class="app-shell">
+      <div classList={{ "app-shell": true, "sidebar-collapsed": sidebarCollapsed(), "rail-collapsed": railCollapsed() }}>
         <aside classList={{ sidebar: true, open: sidebarOpen() }} aria-label="Không gian làm việc">
           <div class="sidebar-header">
             <button class="brand" onClick={() => setView("chat")} aria-label="Private AI">
               <span class="brand-mark"><i /><i /><i /></span>
               <span><strong>PRIVATE</strong><em>AI</em></span>
             </button>
+            <button
+              class="sidebar-toggle"
+              onClick={() => setSidebarCollapsed(!sidebarCollapsed())}
+              aria-label={sidebarCollapsed() ? "Mở rộng thanh bên" : "Thu gọn thanh bên"}
+              aria-expanded={!sidebarCollapsed()}
+              title={sidebarCollapsed() ? "Mở rộng thanh bên" : "Thu gọn thanh bên"}
+            >
+              {sidebarCollapsed() ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}
+            </button>
             <button class="icon-button mobile-close" onClick={() => setSidebarOpen(false)} aria-label="Đóng menu"><X size={21} /></button>
           </div>
-          <button class="new-chat-button" onClick={newConversation}><Plus size={20} /> Cuộc trò chuyện mới</button>
+          <button class="new-chat-button" onClick={newConversation} title="Cuộc trò chuyện mới"><Plus size={20} /><span>Cuộc trò chuyện mới</span></button>
           <nav class="primary-nav" aria-label="Điều hướng chính">
             <For each={navigation}>{(item) => (
-              <button classList={{ "nav-item": true, active: view() === item.id }} onClick={() => { setView(item.id); setSidebarOpen(false); }} aria-current={view() === item.id ? "page" : undefined}>
+              <button classList={{ "nav-item": true, active: view() === item.id }} onClick={() => { setView(item.id); setSidebarOpen(false); }} aria-current={view() === item.id ? "page" : undefined} title={item.label}>
                 <item.icon size={20} stroke-width={1.8} /><span>{item.label}</span>
               </button>
             )}</For>
@@ -853,16 +1000,18 @@ function App() {
               </Show>
               <For each={workspaceList()}>{(workspace) => (
                 <div classList={{ "workspace-row": true, active: activeWorkspace() === workspace.id }}>
-                  <button class="workspace-item" onClick={() => chooseWorkspace(workspace.id)}>
+                  <button class="workspace-item" onClick={() => chooseWorkspace(workspace.id)} title={workspace.description || workspace.name}>
                     <span class="workspace-dot" aria-hidden="true" />
-                    <span class="workspace-copy"><strong>{workspace.name}</strong><small>{workspace.description}</small></span>
-                    <time>{formatRelativeTime(workspace.updated_at)}</time>
+                    <span class="workspace-copy"><strong>{workspace.name}</strong></span>
                   </button>
                   <button classList={{ "workspace-delete": true, danger: confirmWorkspaceDelete() === workspace.id }} onClick={() => void deleteWorkspace(workspace.id)} aria-label={confirmWorkspaceDelete() === workspace.id ? `Bấm lại để xác nhận xóa ${workspace.name} và toàn bộ cuộc trò chuyện bên trong` : `Xóa không gian làm việc ${workspace.name}`}><Trash2 size={15} /></button>
                 </div>
               )}</For>
             </div>
-            <div class="section-label conversation-label"><span>Cuộc trò chuyện</span></div>
+            <button class="workspace-manage" onClick={() => { setView("workspaces"); setSidebarOpen(false); }}>
+              <LayoutGrid size={16} /> Quản lý không gian
+            </button>
+            <div class="section-label conversation-label"><span>Gần đây</span></div>
             <div class="conversation-list">
               <Show when={!conversations.loading && (conversations()?.length ?? 0) === 0}>
                 <p class="empty-conversations">Chưa có cuộc trò chuyện</p>
@@ -880,18 +1029,14 @@ function App() {
               )}</For>
             </div>
           </div>
-          <div class="sidebar-preferences">
-            <div class="preference-row">
-              <span>Giao diện</span>
-              <div class="segmented-control" aria-label="Chọn giao diện">
-                <button classList={{ active: theme() === "light" }} onClick={() => setTheme("light")}>Sáng</button>
-                <button classList={{ active: theme() === "dark" }} onClick={() => setTheme("dark")}>Tối</button>
-              </div>
-            </div>
-            <button classList={{ "font-control": true, active: fontScale() === "large" }} onClick={() => setFontScale(fontScale() === "large" ? "normal" : "large")} aria-pressed={fontScale() === "large"}>
-              <Type size={19} /> Chữ lớn <span>{fontScale() === "large" ? "Bật" : "Tắt"}</span>
-            </button>
-            <button classList={{ "settings-link": true, active: view() === "settings" }} onClick={() => setView("settings")}><Settings2 size={19} /> Cài đặt</button>
+          <div class="sidebar-footer">
+            <ProfileSwitcher
+              profiles={profiles() ?? []}
+              active={activeProfile()}
+              online={health()?.status === "ok"}
+              onChanged={() => refetchProfiles()}
+              onOpenSettings={() => { setView("settings"); setSidebarOpen(false); }}
+            />
           </div>
         </aside>
 
@@ -899,31 +1044,60 @@ function App() {
           <header class="topbar">
             <div class="topbar-title">
               <button class="icon-button mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Mở menu"><MoreHorizontal size={22} /></button>
-              <div><strong>{view() === "chat" ? (hasWorkspace() ? currentWorkspace().name : "Chưa có không gian") : view() === "settings" ? "Cài đặt" : navigation.find((item) => item.id === view())?.label}</strong><span><StatusPip state={health()?.status === "ok" ? "online" : "offline"} /> Dữ liệu được xử lý trên máy</span></div>
+              <div><strong>{view() === "chat" ? (hasWorkspace() ? currentWorkspace().name : "Chưa có không gian") : view() === "settings" ? "Cài đặt" : navigation.find((item) => item.id === view())?.label}</strong><span><StatusPip state={health()?.status === "ok" ? "online" : "offline"} /> Trên thiết bị</span></div>
             </div>
             <div class="topbar-actions">
-              <label class="model-select-label">
-                <span>Mô hình</span>
-                <select value={selectedModel()} onChange={(event) => chooseChatModel(event.currentTarget.value)}>
-                  <Show when={!models.loading && chatModels().length === 0}><option value="">Chưa có mô hình</option></Show>
-                  <For each={chatModels()}>{(model) => <option value={model.name}>{model.name}</option>}</For>
-                </select>
-                <ChevronDown size={16} aria-hidden="true" />
-              </label>
-              <button class="icon-button" onClick={refresh} aria-label="Làm mới trạng thái"><RotateCw size={19} /></button>
-              <div class="avatar" aria-label="Tài khoản của Vinh">VP</div>
+              <Show when={view() === "chat"}>
+                <button
+                  class="icon-button context-toggle"
+                  onClick={() => setRailCollapsed(!railCollapsed())}
+                  aria-label={railCollapsed() ? "Hiện bảng ngữ cảnh" : "Ẩn bảng ngữ cảnh"}
+                  aria-expanded={!railCollapsed()}
+                  title={railCollapsed() ? "Hiện bảng ngữ cảnh" : "Ẩn bảng ngữ cảnh"}
+                >
+                  {railCollapsed() ? <PanelRightOpen size={19} /> : <PanelRightClose size={19} />}
+                </button>
+              </Show>
+              <NotificationsMenu notices={notices()} onOpen={() => void refresh()} />
             </div>
           </header>
 
           <Switch>
             <Match when={view() === "chat"}>
-              <div class="chat-workspace">
+              <div
+                class="chat-workspace"
+                onDragEnter={(event) => {
+                  if (!event.dataTransfer?.types.includes("Files")) return;
+                  event.preventDefault();
+                  setChatDragDepth(chatDragDepth() + 1);
+                }}
+                onDragOver={(event) => {
+                  if (event.dataTransfer?.types.includes("Files")) event.preventDefault();
+                }}
+                onDragLeave={() => setChatDragDepth(Math.max(0, chatDragDepth() - 1))}
+                onDrop={(event) => {
+                  const files = Array.from(event.dataTransfer?.files ?? []);
+                  if (!files.length) return;
+                  event.preventDefault();
+                  setChatDragDepth(0);
+                  openUpload(files);
+                }}
+              >
+                <Show when={chatDragDepth() > 0}>
+                  <div class="chat-dropzone" aria-hidden="true">
+                    <div>
+                      <FileUp size={30} />
+                      <strong>Thả để thêm vào {hasWorkspace() ? currentWorkspace().name : "thư viện"}</strong>
+                      <span>PDF, Office, ảnh, Markdown và văn bản · tối đa 100 MB mỗi tệp</span>
+                    </div>
+                  </div>
+                </Show>
                 <section class="conversation" aria-label="Cuộc trò chuyện">
                   <div class="message-list" ref={messageList} aria-live="polite">
                     <Show when={messages().length > 0} fallback={
                       <div class="chat-welcome">
                         <div class="welcome-mark"><Sparkles size={28} /></div>
-                        <p>Chào bạn, Vinh</p>
+                        <p>{profileName() ? `Chào bạn, ${profileName()}` : "Chào bạn"}</p>
                         <h1>Hôm nay bạn muốn làm gì?</h1>
                         <span>Hỏi bằng ngôn ngữ tự nhiên. Private AI sẽ dùng mô hình và tài liệu trên máy để trả lời.</span>
                         <div class="starter-prompts"><For each={starterPrompts}>{(prompt) => <button onClick={() => void submitMessage(prompt)}>{prompt}<Send size={17} /></button>}</For></div>
@@ -932,7 +1106,7 @@ function App() {
                       <div class="message-stream">
                         <Index each={messages()}>{(message) => (
                           <article class={`message message-${message().role}`}>
-                            <div class="message-author"><span>{message().role === "user" ? "VP" : "AI"}</span><strong>{message().role === "user" ? "Bạn" : "Private AI"}</strong></div>
+                            <div class="message-author"><span>{message().role === "user" ? initialsOf(profileName() || "Bạn") : "AI"}</span><strong>{message().role === "user" ? (profileName() || "Bạn") : "Private AI"}</strong></div>
                             <Show
                               when={message().content}
                               fallback={<div class="thinking"><i /><i /><i /><span>Đang suy nghĩ</span></div>}
@@ -950,7 +1124,14 @@ function App() {
                       <textarea value={draft()} onInput={(event) => setDraft(event.currentTarget.value)} onKeyDown={handleComposerKeyDown} placeholder="Nhập câu hỏi cho Private AI…" aria-label="Tin nhắn" rows={2} />
                       <div class="composer-tools">
                         <div>
-                          <button type="button" onClick={() => fileInput.click()} aria-label="Đính kèm tài liệu"><Paperclip size={20} /><span>Đính kèm</span></button>
+                          <ModelPicker
+                            models={chatModels()}
+                            selected={selectedModel()}
+                            loading={models.loading}
+                            onSelect={chooseChatModel}
+                            onManage={() => { setView("settings"); setSettingsTab("models"); }}
+                          />
+                          <button type="button" onClick={() => openUpload()} aria-label="Đính kèm tài liệu"><Paperclip size={20} /><span>Đính kèm</span></button>
                           <button
                             type="button"
                             classList={{ "recording-button": recording() }}
@@ -983,13 +1164,67 @@ function App() {
                     </Show>
                   </div>
                   <section class="context-block">
-                    <h2>Tài liệu trong thư viện</h2>
-                    <Show when={uploadError() || documents.error}><div class="inline-error" role="alert">{uploadError() || (documents.error as Error)?.message}</div></Show>
-                    <Show when={uploading()}><div class="context-loading"><i />Đang nhập tài liệu…</div></Show>
-                    <Show when={documentItems().length > 0} fallback={<Show when={!uploading()}><button class="empty-context" onClick={() => fileInput.click()}><FileUp size={22} /><span><strong>Thêm tài liệu</strong><small>PDF, Office hoặc Markdown</small></span></button></Show>}>
+                    <div class="context-block-heading">
+                      <h2>Tài liệu</h2>
+                      <Show when={hasWorkspace() && !documents.loading}>
+                        <span>{documentSummary().total}</span>
+                      </Show>
+                    </div>
+                    <Show when={documents.error}><div class="inline-error" role="alert">{(documents.error as Error)?.message}</div></Show>
+                    <Show when={hasWorkspace() && documents.loading}>
+                      <div class="context-loading" role="status"><i />Đang đọc thư viện…</div>
+                    </Show>
+                    <Show when={hasWorkspace() && !documents.loading && documentItems().length > 0}>
                       <div class="context-documents"><For each={documentItems().slice(0, 3)}>{(document) => (
-                        <button onClick={() => setView("library")}><BookOpenText size={17} /><span><strong>{document.filename}</strong><small>{document.status === "ready" ? "Sẵn sàng" : document.status}</small></span></button>
+                        <button
+                          disabled={isDocumentBusy(document)}
+                          aria-busy={isDocumentBusy(document)}
+                          onClick={() => !isDocumentBusy(document) && setViewingDocument(document.id)}
+                          title={isDocumentBusy(document)
+                            ? `${document.filename} vẫn đang xử lý`
+                            : `Xem nội dung ${document.filename}`}
+                        >
+                          <BookOpenText size={17} aria-hidden="true" />
+                          <span>
+                            <strong>{document.filename}</strong>
+                            <small>{documentStatusLabel(document)}</small>
+                            <Show when={isDocumentBusy(document)}>
+                              <i class="context-document-progress" aria-hidden="true" />
+                            </Show>
+                          </span>
+                        </button>
                       )}</For></div>
+                    </Show>
+                    <Show
+                      when={hasWorkspace()}
+                      fallback={
+                        <WorkspaceDialog
+                          trigger="add"
+                          triggerClass="context-add context-add-create"
+                          triggerLabel="Tạo không gian làm việc để thêm tài liệu"
+                          triggerContent={
+                            <>
+                              <Plus size={19} aria-hidden="true" />
+                              <span>
+                                <strong>Tạo không gian trước</strong>
+                                <small>Tài liệu cần một nơi lưu riêng</small>
+                              </span>
+                            </>
+                          }
+                          onSaved={handleWorkspaceSaved}
+                        />
+                      }
+                    >
+                      <Show when={!documents.loading && documentItems().length === 0}>
+                        <p class="context-empty">Chưa có tài liệu trong không gian này.</p>
+                      </Show>
+                      <button class="context-add" onClick={() => openUpload()}>
+                        <FileUp size={19} aria-hidden="true" />
+                        <span>
+                          <strong>Thêm tài liệu</strong>
+                          <small>Chọn nhiều tệp hoặc kéo thả vào màn hình</small>
+                        </span>
+                      </button>
                     </Show>
                   </section>
                   <section class="context-block"><h2>Trạng thái hệ thống</h2><dl class="service-list">
@@ -1007,13 +1242,23 @@ function App() {
                       aria-valuemax="100"
                       aria-valuenow={vramPercent()}
                     ><i style={{ transform: `scaleX(${vramPercent() / 100})` }} /></div>
-                    <small>{vramDetail()} · tự cập nhật mỗi 5 giây</small>
+                    <small>{vramDetail()}</small>
                   </section>
-                  <div class="local-note"><ShieldCheck size={22} /><div><strong>Riêng tư trên thiết bị</strong><span>Nội dung trò chuyện không rời khỏi máy này.</span></div></div>
+                  {/* <div class="local-note"><ShieldCheck size={22} /><div><strong>Riêng tư trên thiết bị</strong><span>Nội dung trò chuyện không rời khỏi máy này.</span></div></div> */}
                 </aside>
               </div>
             </Match>
 
+            <Match when={view() === "workspaces"}>
+              <WorkspacesView
+                workspaces={workspaceList() ?? []}
+                activeId={activeWorkspace()}
+                loading={workspaceList.loading}
+                onOpen={(id) => { chooseWorkspace(id); setView("chat"); }}
+                onSaved={handleWorkspaceManaged}
+                onDeleted={(id) => void handleWorkspaceDeleted(id)}
+              />
+            </Match>
             <Match when={view() === "library"}>
               <LibraryView
                 documents={documentItems()}
@@ -1026,52 +1271,145 @@ function App() {
                 search={documentSearch()}
                 status={documentStatus()}
                 onFilterChange={changeDocumentFilter}
-                uploadError={uploadError()}
                 workspaceName={hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"}
                 loading={documents.loading}
-                uploading={uploading()}
-                onUpload={() => fileInput.click()}
+                onUpload={() => openUpload()}
                 onRefresh={refetchDocuments}
               />
             </Match>
-            <Match when={view() === "models"}>
-              <section class="page-view"><div class="page-heading page-heading-row"><div><span>Mô hình cục bộ</span><h1>Quản lý mô hình</h1><p>Quản lý Ollama và ASR: trạng thái tải, VRAM, mặc định tác vụ và kiểm tra SHA-256.</p></div><AddModelDialog onCompleted={() => { refetchModels(); refetchHealth(); }} /></div><div class="model-list"><Switch><Match when={models.loading}><div class="loading-row"><i />Đang đọc thư viện mô hình…</div></Match><Match when={models.error || (models()?.length ?? 0) === 0}><div class="empty-models"><HardDrive size={28} /><strong>Chưa tìm thấy mô hình</strong><span>Khởi động Ollama rồi thêm mô hình đầu tiên.</span></div></Match><Match when={(models()?.length ?? 0) > 0}><For each={models()}>{(model) => <ModelRow model={model} onRefresh={() => { refetchModels(); refetchHealth(); }} />}</For></Match></Switch></div></section>
-            </Match>
-            <Match when={view() === "memory"}>
-              <MemoryView />
-            </Match>
             <Match when={view() === "settings"}>
               <section class="page-view settings-page">
-                <div class="page-heading"><span>Cài đặt thiết bị</span><h1>Hiển thị và trải nghiệm</h1><p>Các lựa chọn này chỉ được lưu trên máy hiện tại.</p></div>
-                <div class="settings-sections">
-                  <section><div><strong>Giao diện</strong><span>Chọn nền sáng dễ đọc hoặc nền tối.</span></div><div class="segmented-control settings-control"><button classList={{ active: theme() === "light" }} onClick={() => setTheme("light")}>Sáng</button><button classList={{ active: theme() === "dark" }} onClick={() => setTheme("dark")}>Tối</button></div></section>
-                  <section><div><strong>Cỡ chữ</strong><span>Tăng toàn bộ chữ và vùng điều khiển.</span></div><button classList={{ "button": true, "button-secondary": true, active: fontScale() === "large" }} onClick={() => setFontScale(fontScale() === "large" ? "normal" : "large")}><Type size={18} />{fontScale() === "large" ? "Đang dùng chữ lớn" : "Bật chữ lớn"}</button></section>
-                  <section>
-                    <div>
-                      <strong>Đọc văn bản bằng OCR</strong>
-                      <span>Bật plugin OCR, mô hình OCR và Tesseract khi tệp không có lớp văn bản. Tắt thì chỉ đọc văn bản có sẵn, nhanh hơn nhưng bỏ qua tài liệu scan.</span>
-                      <Show when={ocrError()}><span class="settings-error">{ocrError()}</span></Show>
-                    </div>
-                    <label class="settings-checkbox">
-                      <input
-                        type="checkbox"
-                        checked={preferences()?.ocr_enabled ?? true}
-                        disabled={preferences.loading}
-                        onChange={(event) => void toggleOcr(event.currentTarget.checked)}
-                      />
-                      <span>{(preferences()?.ocr_enabled ?? true) ? "Đang bật" : "Đang tắt"}</span>
-                    </label>
-                  </section>
-                  <section><div><strong>Nhà cung cấp đang dùng</strong><span>Nơi mô hình thực sự chạy cho phiên làm việc này.</span></div><div class="settings-control"><StatusPip state={health()?.services.provider ?? "offline"} /> {health.loading ? "Đang kiểm tra…" : (health()?.provider?.name ?? "Chưa cấu hình")}</div></section>
+                <div class="page-heading"><span>Cài đặt thiết bị</span><h1>Cài đặt</h1><p>Hiển thị, xử lý tài liệu và các cấu hình nâng cao đều nằm ở đây. Mọi lựa chọn chỉ lưu trên máy hiện tại.</p></div>
+                <div class="settings-layout">
+                  <nav class="settings-tabs" aria-label="Nhóm cài đặt">
+                    <For each={settingsTabs}>{(tab) => (
+                      <button
+                        classList={{ "settings-tab": true, active: settingsTab() === tab.id }}
+                        onClick={() => setSettingsTab(tab.id)}
+                        aria-current={settingsTab() === tab.id ? "page" : undefined}
+                      ><tab.icon size={18} stroke-width={1.8} /><span>{tab.label}</span></button>
+                    )}</For>
+                  </nav>
+
+                  <div class="settings-panels">
+                    <Switch>
+                      <Match when={settingsTab() === "general"}>
+                        <div class="settings-sections">
+                          <section><div><strong>Giao diện</strong><span>Chọn nền sáng dễ đọc hoặc nền tối.</span></div><div class="segmented-control settings-control"><button classList={{ active: theme() === "light" }} onClick={() => setTheme("light")}>Sáng</button><button classList={{ active: theme() === "dark" }} onClick={() => setTheme("dark")}>Tối</button></div></section>
+                          <section><div><strong>Cỡ chữ</strong><span>Tăng toàn bộ chữ và vùng điều khiển.</span></div><button classList={{ "button": true, "button-secondary": true, active: fontScale() === "large" }} onClick={() => setFontScale(fontScale() === "large" ? "normal" : "large")}><Type size={18} />{fontScale() === "large" ? "Đang dùng chữ lớn" : "Bật chữ lớn"}</button></section>
+                          <section>
+                            <div>
+                              <strong>Đọc văn bản bằng OCR</strong>
+                              <span>Bật plugin OCR, mô hình OCR và Tesseract khi tệp không có lớp văn bản. Tắt thì chỉ đọc văn bản có sẵn, nhanh hơn nhưng bỏ qua tài liệu scan.</span>
+                              <Show when={ocrError()}><span class="settings-error">{ocrError()}</span></Show>
+                            </div>
+                            <label class="settings-checkbox">
+                              <input
+                                type="checkbox"
+                                checked={preferences()?.ocr_enabled ?? true}
+                                disabled={preferences.loading}
+                                onChange={(event) => void toggleOcr(event.currentTarget.checked)}
+                              />
+                              <span>{(preferences()?.ocr_enabled ?? true) ? "Đang bật" : "Đang tắt"}</span>
+                            </label>
+                          </section>
+                          <section><div><strong>Nhà cung cấp đang dùng</strong><span>Nơi mô hình thực sự chạy cho phiên làm việc này.</span></div><div class="settings-control"><StatusPip state={health()?.services.provider ?? "offline"} /> {health.loading ? "Đang kiểm tra…" : (health()?.provider?.name ?? "Chưa cấu hình")}</div></section>
+                        </div>
+                      </Match>
+
+                      <Match when={settingsTab() === "models"}>
+                        <section class="settings-panel">
+                          <div class="page-heading page-heading-row"><div><span>Mô hình cục bộ</span><h1>Quản lý mô hình</h1><p>Quản lý Ollama và ASR: trạng thái tải, VRAM, mặc định tác vụ và kiểm tra SHA-256.</p></div><AddModelDialog onCompleted={() => { refetchModels(); refetchHealth(); }} /></div>
+                          <div class="model-list">
+                            <Switch>
+                              <Match when={models.loading}>
+                                <div class="loading-row"><i />Đang đọc thư viện mô hình…</div>
+                              </Match>
+                              <Match when={models.error || (models()?.length ?? 0) === 0}>
+                                <div class="empty-models">
+                                  <HardDrive size={28} />
+                                  <strong>Chưa tìm thấy mô hình</strong>
+                                  <span>Khởi động Ollama rồi thêm mô hình đầu tiên.</span>
+                                </div>
+                              </Match>
+                              <Match when={(models()?.length ?? 0) > 0}>
+                                <For each={models()}>{(model) => (
+                                  <ModelRow model={model} onRefresh={() => {
+                                    refetchModels();
+                                    refetchHealth();
+                                  }} />
+                                )}</For>
+                              </Match>
+                            </Switch>
+                          </div>
+                        </section>
+                      </Match>
+
+                      <Match when={settingsTab() === "memory"}>
+                        <MemoryView embedded profileId={activeProfile()?.id} />
+                      </Match>
+
+                      <Match when={settingsTab() === "providers"}>
+                        <ProviderSettings onChanged={() => { refetchModels(); refetchHealth(); }} />
+                      </Match>
+                    </Switch>
+                  </div>
                 </div>
-                <ProviderSettings onChanged={() => { refetchModels(); refetchHealth(); }} />
               </section>
             </Match>
           </Switch>
         </main>
         <Show when={sidebarOpen()}><button class="sidebar-scrim" onClick={() => setSidebarOpen(false)} aria-label="Đóng menu" /></Show>
       </div>
-      <input ref={fileInput} class="sr-only" type="file" onChange={handleUpload} />
+      <Show when={viewingDocument()}>
+        <DocumentViewer
+          documentId={viewingDocument()}
+          onClose={() => setViewingDocument("")}
+          onChanged={() => refetchDocuments()}
+        />
+      </Show>
+      <ProfileNameDialog
+        open={needsOnboarding()}
+        mode="onboarding"
+        profile={activeProfile()}
+        onClose={() => refetchProfiles()}
+        onDone={() => refetchProfiles()}
+      />
+      <UploadDialog
+        open={uploadOpen()}
+        workspaceId={activeWorkspace()}
+        workspaceName={hasWorkspace() ? currentWorkspace().name : ""}
+        defaultOcr={false}
+        initialFiles={stagedFiles()}
+        onClose={() => setUploadOpen(false)}
+        onCompleted={({ uploaded, ready, failed, pending }) => {
+          if (uploaded || ready || failed || pending) {
+            refetchDocuments();
+          }
+          if (failed) {
+            notify({
+              tone: "error",
+              title: "Có tài liệu xử lý lỗi",
+              description: `${ready} tệp đã sẵn sàng, ${failed} tệp cần xem lại.`,
+              duration: 6_000,
+            });
+          } else if (pending) {
+            notify({
+              tone: "info",
+              title: `${pending} tài liệu vẫn đang xử lý`,
+              description: "Bạn có thể theo dõi tiếp trong Thư viện và thanh thông báo.",
+              duration: 6_000,
+            });
+          } else {
+            notify({
+              tone: "success",
+              title: `Đã xử lý ${ready} tài liệu`,
+              description: "Nội dung đã sẵn sàng trong thư viện.",
+            });
+          }
+        }}
+      />
+      <ToastViewport />
     </>
   );
 }

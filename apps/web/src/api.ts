@@ -15,6 +15,7 @@ import type {
   ProviderDraft,
   ProviderProbeResult,
   ProviderRecord,
+  ProfileRecord,
   WorkspaceRecord,
 } from "./types";
 
@@ -48,6 +49,23 @@ export const api = {
     request<void>(`/models/${encodeURIComponent(name)}/unload`, { method: "POST" }),
   deleteModel: (name: string) =>
     request<void>(`/models/${encodeURIComponent(name)}?confirmed=true`, { method: "DELETE" }),
+  profiles: () => request<ProfileRecord[]>("/profiles"),
+  createProfile: (displayName: string) =>
+    request<ProfileRecord>("/profiles", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ display_name: displayName }),
+    }),
+  renameProfile: (id: string, displayName: string) =>
+    request<ProfileRecord>(`/profiles/${id}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ display_name: displayName }),
+    }),
+  activateProfile: (id: string) =>
+    request<ProfileRecord>(`/profiles/${id}/activate`, { method: "POST" }),
+  deleteProfile: (id: string) =>
+    request<void>(`/profiles/${id}?confirmed=true`, { method: "DELETE" }),
   preferences: () => request<Preferences>("/preferences"),
   updatePreferences: (changes: Partial<Preferences>) =>
     request<Preferences>("/preferences", {
@@ -133,12 +151,45 @@ export const api = {
     }
     if (buffer.trim()) consume(buffer);
   },
-  uploadDocument: (file: File, workspaceId: string) => {
+  uploadDocument: (
+    file: File,
+    workspaceId: string,
+    useOcr?: boolean,
+    onProgress?: (percent: number) => void,
+  ) => {
     const body = new FormData();
     body.append("file", file);
     body.append("workspace_id", workspaceId);
-    return request<DocumentRecord>("/documents", { method: "POST", body });
+    // Left out entirely when undefined, so the document follows the stored default.
+    if (useOcr !== undefined) body.append("use_ocr", String(useOcr));
+    return new Promise<DocumentRecord>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/v1/documents");
+      xhr.responseType = "json";
+      xhr.upload.onprogress = (event) => {
+        if (event.lengthComputable) {
+          onProgress?.(Math.round((event.loaded / event.total) * 100));
+        }
+      };
+      xhr.onerror = () => reject(new Error("Không thể kết nối để tải tài liệu"));
+      xhr.onabort = () => reject(new DOMException("Upload aborted", "AbortError"));
+      xhr.onload = () => {
+        const response = xhr.response as DocumentRecord | { detail?: string } | null;
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress?.(100);
+          resolve(response as DocumentRecord);
+          return;
+        }
+        reject(new Error(
+          response && "detail" in response && response.detail
+            ? response.detail
+            : `Request failed with ${xhr.status}`,
+        ));
+      };
+      xhr.send(body);
+    });
   },
+  document: (id: string) => request<DocumentRecord>(`/documents/${id}`),
   transcribeAudio: (audio: Blob, filename = "recording.webm") => {
     const body = new FormData();
     body.append("file", audio, filename);
@@ -160,8 +211,13 @@ export const api = {
     if (status) search.set("status", status);
     return request<DocumentPage>(`/documents?${search}`);
   },
-  processDocument: (id: string) =>
-    request<{ id: string; status: string }>(`/documents/${id}/process`, { method: "POST" }),
+  processDocument: (id: string, useOcr?: boolean) =>
+    request<{ id: string; status: string }>(
+      useOcr === undefined
+        ? `/documents/${id}/process`
+        : `/documents/${id}/process?use_ocr=${useOcr}`,
+      { method: "POST" },
+    ),
   deleteDocument: (id: string) =>
     request<void>(`/documents/${id}?confirmed=true`, { method: "DELETE" }),
   workspaces: () => request<WorkspaceRecord[]>("/workspaces"),

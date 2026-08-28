@@ -6,6 +6,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from private_ai_api.dependencies import AppServices, get_services
+from private_ai_api.routers.profiles import active_profile_id
 from private_ai_api.schemas import MemoryCreate, MemoryRecord
 
 router = APIRouter(prefix="/memory", tags=["memory"])
@@ -33,9 +34,10 @@ def _to_record(row: dict[str, object]) -> MemoryRecord:
 @router.get("", response_model=list[MemoryRecord])
 def list_memories(
     services: Annotated[AppServices, Depends(get_services)],
-    user_id: str = "local-user",
+    user_id: str | None = None,
     include_disabled: bool = False,
 ) -> list[MemoryRecord]:
+    user_id = user_id or active_profile_id(services.database)
     predicate = "user_id = ?" if include_disabled else "user_id = ? AND enabled = 1"
     rows = services.database.fetch_all(
         f"SELECT * FROM memories WHERE {predicate} ORDER BY updated_at DESC",  # noqa: S608
@@ -48,12 +50,16 @@ def list_memories(
 async def search_memories(
     q: str,
     services: Annotated[AppServices, Depends(get_services)],
-    user_id: str = "local-user",
+    user_id: str | None = None,
     limit: int = 5,
 ) -> list[MemoryRecord]:
     if not q.strip():
         return []
-    rows = await services.memory_service.search(q, user_id=user_id, limit=limit)
+    rows = await services.memory_service.search(
+        q,
+        user_id=user_id or active_profile_id(services.database),
+        limit=limit,
+    )
     return [_to_record(row) for row in rows]
 
 
@@ -62,7 +68,9 @@ async def create_memory(
     payload: MemoryCreate,
     services: Annotated[AppServices, Depends(get_services)],
 ) -> MemoryRecord:
-    record = MemoryRecord(**payload.model_dump())
+    record = MemoryRecord(
+        **{**payload.model_dump(), "user_id": active_profile_id(services.database)}
+    )
     services.database.execute(
         """
         INSERT INTO memories(
@@ -86,7 +94,7 @@ async def update_memory(
     if not existing:
         raise HTTPException(status_code=404, detail="Memory not found")
     record = MemoryRecord(
-        **payload.model_dump(),
+        **{**payload.model_dump(), "user_id": str(existing["user_id"])},
         id=memory_id,
         enabled=bool(existing["enabled"]),
         created_at=existing["created_at"],

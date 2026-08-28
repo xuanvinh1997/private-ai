@@ -74,6 +74,8 @@ def list_documents(
         SELECT COUNT(*) AS total,
                COALESCE(SUM(byte_size), 0) AS byte_size,
                COALESCE(SUM(status IN ('queued', 'processing')), 0) AS pending,
+               COALESCE(SUM(status = 'ready' AND extracted_text IS NOT NULL
+                            AND indexed_at IS NULL), 0) AS indexing,
                COALESCE(SUM(status IN ('failed', 'needs_ocr')), 0) AS failed
         FROM documents WHERE workspace_id = ?
         """,
@@ -123,6 +125,7 @@ async def upload_document(
     services: Annotated[AppServices, Depends(get_services)],
     file: Annotated[UploadFile, File()],
     workspace_id: Annotated[str, Form()],
+    use_ocr: Annotated[bool | None, Form()] = None,
 ) -> dict[str, Any]:
     _require_workspace(services, workspace_id)
     filename = _safe_filename(file.filename or "document")
@@ -171,8 +174,8 @@ async def upload_document(
         """
         INSERT INTO documents(
             id, workspace_id, filename, media_type, sha256, byte_size, status, source_path,
-            extracted_text, error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            extracted_text, use_ocr, error, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
         """,
         (
             document_id,
@@ -184,6 +187,7 @@ async def upload_document(
             document_status,
             str(target_path),
             extracted_text,
+            None if use_ocr is None else int(use_ocr),
             now,
             now,
         ),
@@ -200,10 +204,17 @@ def process_document(
     document_id: str,
     background_tasks: BackgroundTasks,
     services: Annotated[AppServices, Depends(get_services)],
+    use_ocr: bool | None = None,
 ) -> dict[str, str]:
+    """Re-read a document, optionally flipping its OCR choice for this and later runs."""
     document = services.database.fetch_one("SELECT id FROM documents WHERE id = ?", (document_id,))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
+    if use_ocr is not None:
+        services.database.execute(
+            "UPDATE documents SET use_ocr = ? WHERE id = ?",
+            (int(use_ocr), document_id),
+        )
     services.database.execute(
         "UPDATE documents SET status = 'queued', error = NULL, indexed_at = NULL WHERE id = ?",
         (document_id,),
