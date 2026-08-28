@@ -128,6 +128,17 @@ CREATE TABLE IF NOT EXISTS jobs (
     updated_at TEXT NOT NULL
 );
 
+-- One row per document that some process is actively ingesting. The in-process asyncio
+-- lock cannot span processes, and uvicorn --reload happily runs the old and the new worker
+-- side by side, so the claim has to live in the database. A claim whose heartbeat has gone
+-- quiet belongs to a process that died and may be taken over.
+CREATE TABLE IF NOT EXISTS document_claims (
+    document_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    claimed_at TEXT NOT NULL,
+    renewed_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS model_defaults (
     task TEXT PRIMARY KEY CHECK(task IN ('chat', 'embedding', 'vision', 'asr')),
     model_name TEXT NOT NULL,

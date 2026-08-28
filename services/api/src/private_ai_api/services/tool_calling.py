@@ -137,10 +137,15 @@ async def run_tool_calls(
     bridge: McpToolBridge,
     calls: list[ToolCall],
     *,
+    content: str = "",
     on_event: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[ChatMessage]:
-    """Execute one round of calls and return the assistant/tool messages they produce."""
-    messages = [ChatMessage(role="assistant", content="", tool_calls=calls)]
+    """Execute one round of calls and return the assistant/tool messages they produce.
+
+    ``content`` is whatever the model said before asking for the tools; keeping it in the
+    transcript is what lets the next round continue that thought instead of restarting it.
+    """
+    messages = [ChatMessage(role="assistant", content=content, tool_calls=calls)]
     for call in calls:
         output = await bridge.invoke(call.name, call.arguments)
         if on_event:

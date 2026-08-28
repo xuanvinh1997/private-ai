@@ -39,7 +39,13 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - SolidJS dashboard responsive, hiển thị health/model/VRAM; các màn hình Chat Workspaces,
   Library, Memory, Models và Settings đều nối với API.
 - Màn hình chính Chat Workspaces, light mode mặc định, dark mode tùy chọn và chế độ chữ lớn; lựa chọn được lưu cục bộ trên thiết bị.
-- `pywebview` desktop launcher với API local chạy trong cùng Python/Conda environment.
+- `pywebview` desktop launcher với API local chạy trong cùng Python/Conda environment. Đóng
+  cửa sổ chính là tắt hẳn: API được sinh ra trong process group riêng (Windows dùng Job Object
+  `KILL_ON_JOB_CLOSE`) nên `stop()` giết cả cây tiến trình, kể cả FFmpeg và bộ nhận dạng giọng
+  nói mà API tự sinh ra — `terminate()` riêng uvicorn sẽ bỏ sót chúng. Có ba đường dọn dẹp độc
+  lập vì không đường nào phủ hết: sự kiện `closed` của cửa sổ, handler SIGINT/SIGTERM (tín hiệu
+  không bao giờ chạy tới khối `finally`), và `atexit`. Hết hạn chờ 8 giây thì leo thang sang
+  SIGKILL.
 - MCP Python SDK v2 server tại `http://127.0.0.1:8010/mcp`, có bearer token cục bộ,
   Origin/Host validation và 25 tool cho document, GraphRAG, memory, model inventory/default,
   tìm kiếm web, thông số máy và đọc file cục bộ.

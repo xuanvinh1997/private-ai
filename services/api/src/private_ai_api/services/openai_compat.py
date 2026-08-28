@@ -134,6 +134,8 @@ class OpenAICompatClient:
 
     async def chat_stream(self, request: ChatRequest) -> AsyncIterator[dict[str, Any]]:
         payload = self._chat_payload(request, stream=True)
+        fragments: dict[int, dict[str, Any]] = {}
+        finish_reason: str | None = None
         try:
             async with (
                 self._client(None) as client,
@@ -153,14 +155,67 @@ class OpenAICompatClient:
                     choice = (event.get("choices") or [{}])[0]
                     delta = choice.get("delta") or {}
                     content = str(delta.get("content") or "")
-                    finish_reason = choice.get("finish_reason")
+                    self._collect_tool_call_deltas(fragments, delta.get("tool_calls"))
                     if content:
                         yield self._ollama_message(request.model, content, done=False)
-                    if finish_reason:
+                    if choice.get("finish_reason"):
+                        finish_reason = str(choice["finish_reason"])
                         break
         except httpx.HTTPError as exc:
             raise OpenAICompatUnavailable(str(exc)) from exc
-        yield self._ollama_message(request.model, "", done=True)
+        # The tool calls only exist once every fragment has arrived, so they ride the final
+        # event: dropping them here is what used to end the turn on the model's preamble.
+        yield self._ollama_message(
+            request.model,
+            "",
+            done=True,
+            finish_reason=finish_reason,
+            tool_calls=self._read_tool_calls({"tool_calls": self._assembled(fragments)}),
+        )
+
+    @staticmethod
+    def _collect_tool_call_deltas(
+        fragments: dict[int, dict[str, Any]],
+        deltas: Any,
+    ) -> None:
+        """Stitch the streamed tool-call fragments back into whole calls.
+
+        The id and the function name arrive once, the arguments arrive as a JSON string split
+        over many chunks, and every fragment is addressed by its position in the call list.
+        """
+        if not isinstance(deltas, list):
+            return
+        for position, raw in enumerate(deltas):
+            if not isinstance(raw, dict):
+                continue
+            index = raw.get("index")
+            if not isinstance(index, int):
+                index = position
+            call = fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
+            if raw.get("id"):
+                call["id"] = str(raw["id"])
+            function = raw.get("function") or {}
+            if function.get("name"):
+                call["name"] = str(function["name"])
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                call["arguments"] += arguments
+            elif isinstance(arguments, dict):
+                # A few hosts send the arguments whole rather than in fragments.
+                call["arguments"] = json.dumps(arguments, ensure_ascii=False)
+
+    @staticmethod
+    def _assembled(fragments: dict[int, dict[str, Any]]) -> list[dict[str, Any]]:
+        """The collected fragments as OpenAI-shaped calls, in the order the model asked."""
+        return [
+            {
+                "id": call["id"],
+                "type": "function",
+                "function": {"name": call["name"], "arguments": call["arguments"]},
+            }
+            for _, call in sorted(fragments.items())
+            if call["name"]
+        ]
 
     async def embed(self, model: str, inputs: list[str]) -> list[list[float]]:
         response = await self._post("/embeddings", {"model": model, "input": inputs})

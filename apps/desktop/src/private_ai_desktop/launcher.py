@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import atexit
 import os
 import platform
+import signal
 import sys
+from contextlib import suppress
 from pathlib import Path
 
 import webview
@@ -51,12 +54,31 @@ def report(error: Exception) -> None:
         ctypes.windll.user32.MessageBoxW(None, message, "Private AI", 0x10)
 
 
+def install_signal_handlers(runtime: RuntimeController) -> None:
+    """Stop the API on a signal too: a plain SIGTERM never unwinds to the finally block."""
+
+    def handle(number: int, frame: object) -> None:
+        runtime.stop()
+        # Re-raise with the default action so the exit status still reports the signal.
+        signal.signal(number, signal.SIG_DFL)
+        os.kill(os.getpid(), number)
+
+    for number in (signal.SIGINT, signal.SIGTERM):
+        with suppress(AttributeError, OSError, ValueError):
+            signal.signal(number, handle)
+
+
 def main() -> None:
     runtime = RuntimeController()
+    # Three independent paths, because no single one covers every way the window goes away:
+    # the closed event for a normal close, signals for a shutdown or a kill, and atexit for
+    # anything that unwinds the interpreter without passing through the finally block.
+    atexit.register(runtime.stop)
+    install_signal_handlers(runtime)
     try:
         ensure_web_engine()
         runtime.start()
-        webview.create_window(
+        window = webview.create_window(
             "Private AI",
             runtime.api_url,
             js_api=DesktopApi(),
@@ -65,6 +87,10 @@ def main() -> None:
             min_size=(1024, 700),
             background_color="#f3f6f4",
         )
+        # Closing the last window ends webview.start(), but the API is stopped here so a
+        # slow or wedged GUI teardown cannot leave it serving.
+        with suppress(AttributeError):
+            window.events.closed += runtime.stop
         webview.start(debug=os.getenv("PRIVATE_AI_DEBUG") == "1")
     except (RuntimeError, TimeoutError) as error:
         report(error)

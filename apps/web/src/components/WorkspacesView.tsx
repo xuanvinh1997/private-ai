@@ -114,13 +114,17 @@ export function WorkspacesView(props: {
         <Match when={filtered().length > 0}>
           <div class="workspace-grid">
             <For each={filtered()}>{(workspace) => (
-              <article classList={{ "workspace-card": true, active: props.activeId === workspace.id }}>
+              // The whole card opens the workspace; only the edit and delete controls opt out,
+              // so there is no dead space where a click looks ignored.
+              <article
+                classList={{ "workspace-card": true, active: props.activeId === workspace.id }}
+                onClick={() => props.onOpen(workspace.id)}
+              >
                 <div class="workspace-card-top">
                   <div class="workspace-card-name">
                     <button
                       class="document-open"
                       title={`Mở ${workspace.name}`}
-                      onClick={() => props.onOpen(workspace.id)}
                     >{workspace.name}</button>
                     <span>{workspace.id.slice(0, 8)}</span>
                   </div>
@@ -136,7 +140,7 @@ export function WorkspacesView(props: {
                   {workspace.conversation_count} cuộc trò chuyện
                   <em>·</em> cập nhật {formatRelativeTime(workspace.updated_at)}
                 </div>
-                <div class="workspace-card-actions">
+                <div class="workspace-card-actions" onClick={(event) => event.stopPropagation()}>
                   <WorkspaceDialog
                     workspace={workspace}
                     trigger="edit"

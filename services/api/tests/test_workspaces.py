@@ -159,6 +159,59 @@ def test_conversation_streams_and_persists_assistant_message(client: TestClient)
     assert detail["messages"][-1]["content"] == "Đã nhận: Xin chào streaming"
 
 
+class FakeToolCallingProvider:
+    """Asks for a tool on the first turn, answers with what it learned on the second."""
+
+    def __init__(self) -> None:
+        self.rounds: list[ChatRequest] = []
+
+    async def chat_stream(self, request: ChatRequest):
+        self.rounds.append(request)
+        if len(self.rounds) == 1:
+            yield {
+                "message": {"role": "assistant", "content": "Tôi sẽ tra cứu."},
+                "done": False,
+            }
+            yield {
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "call_1", "function": {"name": "workspaces__list", "arguments": {}}}
+                    ],
+                },
+                "done": True,
+            }
+            return
+        yield {"message": {"role": "assistant", "content": " Đã tra cứu xong."}, "done": True}
+
+
+def test_streaming_chat_continues_after_a_tool_call(client: TestClient) -> None:
+    provider = FakeToolCallingProvider()
+    client.app.state.services.ai = provider
+    conversation = client.post(
+        "/api/v1/workspaces/personal/conversations",
+        json={"model": "test-model"},
+    ).json()
+
+    with client.stream(
+        "POST",
+        f"/api/v1/conversations/{conversation['id']}/chat/stream",
+        json={"model": "test-model", "content": "Có workspace nào?"},
+    ) as response:
+        body = "\n".join(response.iter_lines())
+
+    assert response.status_code == 200
+    assert '"type":"tool","name":"workspaces.list"' in body
+    assert '"type":"done"' in body
+    detail = client.get(f"/api/v1/conversations/{conversation['id']}").json()
+    assert detail["messages"][-1]["content"] == "Tôi sẽ tra cứu. Đã tra cứu xong."
+    # The second round sees its own preamble and the tool output, not just the question.
+    transcript = provider.rounds[1].messages
+    assert transcript[-2].content == "Tôi sẽ tra cứu."
+    assert transcript[-1].role == "tool"
+
+
 def test_deleted_seed_workspace_stays_deleted_after_restart(tmp_path: Path) -> None:
     settings = Settings(
         data_dir=tmp_path,

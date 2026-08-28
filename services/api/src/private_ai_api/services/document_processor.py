@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import math
+import os
 import re
 import shutil
+import socket
 import threading
-from collections.abc import Callable
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Callable
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
 from uuid import uuid4
@@ -34,6 +37,10 @@ IMAGE_OCR_PROMPT = (
     "Extract every visible word from this image. Preserve headings, lists and tables as "
     "Markdown. Do not summarize, translate or invent missing text."
 )
+# The owner of an ingestion claim refreshes it on this cadence; a claim quieter than the
+# stale window belonged to a process that was killed and is free to take over.
+CLAIM_HEARTBEAT_SECONDS = 10.0
+CLAIM_STALE_SECONDS = 45.0
 
 
 class UnsupportedDocument(RuntimeError):
@@ -65,9 +72,98 @@ class DocumentProcessor:
         self._markitdown_signature: tuple[str, bool] | None = None
         self._markitdown_lock = threading.RLock()
         self._locks: dict[str, asyncio.Lock] = {}
+        # Identifies this process in document_claims. The asyncio locks above only order
+        # work inside one event loop; the claim is what keeps two processes apart.
+        self._owner = f"{socket.gethostname()}:{os.getpid()}"
+
+    def _acquire_claim(self, document_id: str) -> bool:
+        """Take the cross-process ingestion claim on one document.
+
+        Returns False when another *live* process already owns it, which is the signal to
+        leave the document alone rather than start a second run that would delete and
+        re-embed the chunks the first one is still writing.
+        """
+        now = datetime.now(UTC)
+        stamp = now.isoformat()
+        stale_before = (now - timedelta(seconds=CLAIM_STALE_SECONDS)).isoformat()
+        with self.database.connection() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO document_claims(document_id, owner, claimed_at, renewed_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(document_id) DO UPDATE SET
+                    owner = excluded.owner,
+                    claimed_at = excluded.claimed_at,
+                    renewed_at = excluded.renewed_at
+                WHERE document_claims.owner = excluded.owner
+                   OR document_claims.renewed_at < ?
+                """,
+                (document_id, self._owner, stamp, stamp, stale_before),
+            )
+            return cursor.rowcount > 0
+
+    def _renew_claim(self, document_id: str) -> None:
+        self.database.execute(
+            "UPDATE document_claims SET renewed_at = ? WHERE document_id = ? AND owner = ?",
+            (datetime.now(UTC).isoformat(), document_id, self._owner),
+        )
+
+    def _release_claim(self, document_id: str) -> None:
+        self.database.execute(
+            "DELETE FROM document_claims WHERE document_id = ? AND owner = ?",
+            (document_id, self._owner),
+        )
+
+    @asynccontextmanager
+    async def _claimed(self, document_id: str) -> AsyncIterator[bool]:
+        """Serialise ingestion of one document inside this loop *and* across processes."""
+        lock = self._locks.setdefault(document_id, asyncio.Lock())
+        async with lock:
+            if not self._acquire_claim(document_id):
+                yield False
+                return
+
+            async def heartbeat() -> None:
+                while True:
+                    await asyncio.sleep(CLAIM_HEARTBEAT_SECONDS)
+                    await asyncio.to_thread(self._renew_claim, document_id)
+
+            beat = asyncio.create_task(heartbeat())
+            try:
+                yield True
+            finally:
+                beat.cancel()
+                # Released synchronously: this also runs while the task is being cancelled
+                # at shutdown, where another await would be interrupted straight away.
+                self._release_claim(document_id)
+
+    def _recover_orphaned_jobs(self) -> None:
+        """Fail job rows left behind by a process that died mid-ingestion.
+
+        A job cannot outlive the process running it, so anything still ``processing`` at
+        startup is a corpse: without this it keeps the UI pinned at whatever percentage it
+        died on. Documents still claimed by a live process are left alone, because a worker
+        replaced by ``--reload`` can still be draining its background ingestion.
+        """
+        now = datetime.now(UTC)
+        stale_before = (now - timedelta(seconds=CLAIM_STALE_SECONDS)).isoformat()
+        with self.database.connection() as connection:
+            connection.execute(
+                "DELETE FROM document_claims WHERE renewed_at < ?",
+                (stale_before,),
+            )
+            connection.execute(
+                """
+                UPDATE jobs SET status = 'failed', error = ?, updated_at = ?
+                WHERE status = 'processing'
+                  AND document_id NOT IN (SELECT document_id FROM document_claims)
+                """,
+                ("Tiến trình xử lý dừng giữa chừng, đã xếp lại hàng đợi", now.isoformat()),
+            )
 
     async def process_pending(self) -> None:
         """Finish interrupted extraction and index each document in its saved RAG mode."""
+        self._recover_orphaned_jobs()
         pending = self.database.fetch_all(
             """
             SELECT id FROM documents
@@ -77,19 +173,31 @@ class DocumentProcessor:
         )
         for document in pending:
             await self.process(str(document["id"]))
+        # indexed_at alone is not proof of a usable index: a run killed after the timestamp
+        # was written, or one whose chunks were replaced underneath it, leaves embeddings
+        # missing while the document still reads as ready.
         unindexed = self.database.fetch_all(
             """
-            SELECT id FROM documents
-            WHERE status = 'ready' AND extracted_text IS NOT NULL AND indexed_at IS NULL
-            ORDER BY created_at
+            SELECT d.id FROM documents d
+            WHERE d.status = 'ready'
+              AND d.extracted_text IS NOT NULL
+              AND (
+                    d.indexed_at IS NULL
+                    OR (d.index_mode = 'simple' AND EXISTS (
+                            SELECT 1 FROM document_chunks c
+                            WHERE c.document_id = d.id AND c.embedding_json IS NULL
+                    ))
+              )
+            ORDER BY d.created_at
             """
         )
         for document in unindexed:
             await self.index_document(str(document["id"]))
 
     async def process(self, document_id: str) -> None:
-        lock = self._locks.setdefault(document_id, asyncio.Lock())
-        async with lock:
+        async with self._claimed(document_id) as mine:
+            if not mine:
+                return
             job_id, created_at = self._create_job(document_id)
             vision_model = await self.resolve_vision_model()
             extracted = await asyncio.to_thread(
@@ -125,8 +233,9 @@ class DocumentProcessor:
 
     async def index_document(self, document_id: str) -> bool:
         """Index extracted text as vectors only or as a full LightRAG graph."""
-        lock = self._locks.setdefault(document_id, asyncio.Lock())
-        async with lock:
+        async with self._claimed(document_id) as mine:
+            if not mine:
+                return False
             job_id, created_at = self._create_job(
                 document_id,
                 step="chunking",
@@ -253,7 +362,7 @@ class DocumentProcessor:
             {
                 "step": "embedding",
                 "progress": 0.48,
-                "detail": f"Đang tạo embedding cho {total} đoạn · không chạy LLM",
+                "detail": f"Đang tạo embedding cho {total} đoạn",
                 "estimated_chunks": total,
                 "embedded_vectors": 0,
                 "engine": "vector",
@@ -299,7 +408,7 @@ class DocumentProcessor:
                     {
                         "step": "embedding",
                         "progress": 0.48 + (embedded / total) * 0.48,
-                        "detail": f"Đã tạo {embedded}/{total} vector · không chạy LLM",
+                        "detail": f"Đã tạo {embedded}/{total} vector",
                         "estimated_chunks": total,
                         "embedded_vectors": embedded,
                         "vectors_per_second": embedded / elapsed,
@@ -317,7 +426,16 @@ class DocumentProcessor:
             )
         except (InsufficientVram, ProviderUnavailable, IndexError, TypeError, ValueError):
             return False
-        return embedded == total
+        if embedded != total:
+            return False
+        # The counter only knows what this run wrote. Ask the table before letting the
+        # caller stamp indexed_at, so a half-embedded document can never read as ready.
+        missing = self.database.fetch_one(
+            "SELECT COUNT(*) AS missing FROM document_chunks "
+            "WHERE document_id = ? AND embedding_json IS NULL",
+            (document_id,),
+        )
+        return int(missing["missing"]) == 0 if missing else False
 
     def _replace_simple_chunks(
         self,

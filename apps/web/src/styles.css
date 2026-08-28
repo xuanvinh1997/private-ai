@@ -594,6 +594,7 @@ select.text-input { appearance: none; padding-right: 34px; background-image: lin
 .workspace-page-stats em { color: var(--faint); font-style: normal; }
 .workspace-grid { width: min(100%, 980px); margin-top: 34px; display: grid; grid-template-columns: repeat(auto-fill, minmax(288px, 1fr)); gap: 12px; }
 .workspace-card { position: relative; border: 1px solid var(--line); border-radius: 12px; padding: 17px 18px 14px; display: grid; gap: 10px; align-content: start; background: var(--surface); transition: border-color 160ms ease; }
+.workspace-card { cursor: pointer; }
 .workspace-card:hover { border-color: var(--line-strong); }
 .workspace-card.active { border-color: var(--accent); background: var(--accent-soft); }
 .workspace-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }

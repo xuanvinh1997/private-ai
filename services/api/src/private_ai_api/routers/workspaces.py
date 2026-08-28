@@ -25,6 +25,12 @@ from private_ai_api.schemas import (
     WorkspaceUpdate,
 )
 from private_ai_api.services.gpu_lease import InsufficientVram
+from private_ai_api.services.long_document_summary import (
+    SummaryPlan,
+    SummaryScopeError,
+    build_summary_plan,
+    summarize_steps,
+)
 from private_ai_api.services.provider import NoProviderConfigured, ProviderUnavailable
 from private_ai_api.services.tool_calling import (
     MAX_TOOL_ROUNDS,
@@ -287,8 +293,16 @@ async def _prepare_chat(
     services: AppServices,
     *,
     stream: bool,
-) -> tuple[dict[str, Any], ChatRequest, str]:
+) -> tuple[dict[str, Any], ChatRequest, str, SummaryPlan | None]:
     conversation = _conversation_row(services, conversation_id)
+    try:
+        summary_plan = build_summary_plan(
+            services.database,
+            str(conversation["workspace_id"]),
+            payload.content,
+        )
+    except SummaryScopeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     existing_messages = services.database.fetch_all(
         "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
         (conversation_id,),
@@ -302,18 +316,25 @@ async def _prepare_chat(
         """,
         (user_message_id, conversation_id, payload.content, now),
     )
-    document_context = await services.document_processor.search(
-        payload.content,
-        limit=4,
-        workspace_id=str(conversation["workspace_id"]),
-        mode=payload.rag_mode.value,
-    )
-    memory_context = await services.memory_service.search(
-        payload.content,
-        user_id=active_profile_id(services.database),
-        limit=5,
-    )
-    web_context, web_notice = await _web_search_context(payload, services)
+    if summary_plan is None:
+        document_context = await services.document_processor.search(
+            payload.content,
+            limit=4,
+            workspace_id=str(conversation["workspace_id"]),
+            mode=payload.rag_mode.value,
+        )
+        memory_context = await services.memory_service.search(
+            payload.content,
+            user_id=active_profile_id(services.database),
+            limit=5,
+        )
+        web_context, web_notice = await _web_search_context(payload, services)
+    else:
+        # A long summary reads the selected source range exhaustively. Top-K passages,
+        # personal memory and web results would make that source-bounded result less reliable.
+        document_context = []
+        memory_context = []
+        web_context, web_notice = None, ""
     request = ChatRequest(
         model=payload.model,
         messages=[
@@ -366,7 +387,7 @@ async def _prepare_chat(
         ],
         stream=stream,
     )
-    return conversation, request, web_notice
+    return conversation, request, web_notice, summary_plan
 
 
 def _complete_chat(
@@ -418,23 +439,42 @@ async def chat_in_conversation(
     payload: ConversationChatRequest,
     services: Annotated[AppServices, Depends(get_services)],
 ) -> ConversationDetail:
-    conversation, request, _ = await _prepare_chat(
+    conversation, request, _, summary_plan = await _prepare_chat(
         conversation_id,
         payload,
         services,
         stream=False,
     )
     messages = list(request.messages)
-    specs = await _tool_specs(services)
     try:
+        if summary_plan is not None:
+            answer = ""
+            async for event in summarize_steps(summary_plan, services.ai, payload.model):
+                if event["type"] == "result":
+                    answer = str(event["answer"])
+            return _complete_chat(
+                conversation_id,
+                payload,
+                services,
+                conversation,
+                answer,
+            )
+        specs = await _tool_specs(services)
         for round_index in range(MAX_TOOL_ROUNDS + 1):
             # The last round drops the tools, so the model has to answer instead of asking again.
             offered = specs if round_index < MAX_TOOL_ROUNDS else []
             result = await services.ai.chat(with_tools(request, messages, offered))
-            calls = read_tool_calls(result.get("message", {}))
+            message = result.get("message", {})
+            calls = read_tool_calls(message)
             if not calls:
                 break
-            messages.extend(await run_tool_calls(services.tools, calls))
+            messages.extend(
+                await run_tool_calls(
+                    services.tools,
+                    calls,
+                    content=str(message.get("content") or ""),
+                )
+            )
     except NoProviderConfigured as exc:
         raise HTTPException(status_code=503, detail="No AI provider is configured") from exc
     except ProviderUnavailable as exc:
@@ -444,6 +484,8 @@ async def chat_in_conversation(
         ) from exc
     except InsufficientVram as exc:
         raise HTTPException(status_code=503, detail="Not enough reserved GPU capacity") from exc
+    except SummaryScopeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     answer = str(result.get("message", {}).get("content", "")).strip()
     if not answer:
         raise HTTPException(status_code=502, detail="Model returned an empty response")
@@ -460,7 +502,7 @@ async def stream_chat_in_conversation(
     payload: ConversationChatRequest,
     services: Annotated[AppServices, Depends(get_services)],
 ) -> StreamingResponse:
-    conversation, request, web_notice = await _prepare_chat(
+    conversation, request, web_notice, summary_plan = await _prepare_chat(
         conversation_id,
         payload,
         services,
@@ -475,11 +517,31 @@ async def stream_chat_in_conversation(
             yield _sse({"type": "notice", "message": web_notice})
         messages = list(request.messages)
         try:
+            if summary_plan is not None:
+                async for event in summarize_steps(summary_plan, services.ai, payload.model):
+                    if event["type"] == "progress":
+                        yield _sse({"type": "tool", "name": str(event["message"])})
+                    elif event["type"] == "result":
+                        content = str(event["answer"])
+                        answer_parts.append(content)
+                        yield _sse({"type": "delta", "content": content})
+                answer = "".join(answer_parts)
+                detail = _complete_chat(
+                    conversation_id,
+                    payload,
+                    services,
+                    conversation,
+                    answer,
+                )
+                saved = True
+                yield _sse({"type": "done", "conversation": detail.model_dump(mode="json")})
+                return
             specs = await _tool_specs(services)
             for round_index in range(MAX_TOOL_ROUNDS + 1):
                 # The final round is offered no tools, so it has to produce the answer.
                 offered = specs if round_index < MAX_TOOL_ROUNDS else []
                 pending: list[ToolCall] = []
+                spoken: list[str] = []
                 async for event in services.ai.chat_stream(
                     with_tools(request, messages, offered)
                 ):
@@ -487,6 +549,7 @@ async def stream_chat_in_conversation(
                     pending.extend(read_tool_calls(message))
                     content = str(message.get("content", ""))
                     if content:
+                        spoken.append(content)
                         answer_parts.append(content)
                         yield _sse({"type": "delta", "content": content})
                     if event.get("done"):
@@ -496,7 +559,9 @@ async def stream_chat_in_conversation(
                 # Report the call before running it: a slow tool would otherwise look like a hang.
                 for call in pending:
                     yield _sse({"type": "tool", "name": call.name.replace("__", ".")})
-                messages.extend(await run_tool_calls(services.tools, pending))
+                messages.extend(
+                    await run_tool_calls(services.tools, pending, content="".join(spoken))
+                )
             answer = "".join(answer_parts)
             if not answer.strip():
                 yield _sse({"type": "error", "message": "Model returned an empty response"})
@@ -510,6 +575,8 @@ async def stream_chat_in_conversation(
             yield _sse({"type": "error", "message": "The selected AI provider is not reachable"})
         except InsufficientVram:
             yield _sse({"type": "error", "message": "Not enough reserved GPU capacity"})
+        except SummaryScopeError as exc:
+            yield _sse({"type": "error", "message": str(exc)})
         except asyncio.CancelledError:
             raise
         finally:

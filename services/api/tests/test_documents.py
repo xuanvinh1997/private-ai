@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from importlib.metadata import entry_points
 from io import BytesIO
 from pathlib import Path
@@ -6,6 +7,8 @@ from types import SimpleNamespace
 from fastapi.testclient import TestClient
 from PIL import Image
 from pypdf import PdfWriter
+
+from private_ai_api.services.document_processor import CLAIM_STALE_SECONDS
 
 
 class FakeEmbedder:
@@ -378,3 +381,104 @@ def test_document_library_filters_by_name_and_status(client: TestClient) -> None
     ).json()
     assert paged["total"] == 2
     assert len(paged["items"]) == 1
+
+
+def test_a_live_claim_keeps_a_second_process_off_the_same_document(
+    client: TestClient,
+) -> None:
+    """uvicorn --reload runs the old and new worker at once; only one may ingest."""
+    processor = client.app.state.services.document_processor
+    document_id = "claimed-doc"
+
+    assert processor._acquire_claim(document_id) is True
+    # Re-entrant for the owner, so a retry inside the same process is not locked out.
+    assert processor._acquire_claim(document_id) is True
+
+    other = f"{processor._owner}-replacement"
+    mine, processor._owner = processor._owner, other
+    try:
+        assert processor._acquire_claim(document_id) is False
+        # Once the heartbeat has gone quiet the owner is presumed dead and can be replaced.
+        stale = (datetime.now(UTC) - timedelta(seconds=CLAIM_STALE_SECONDS + 5)).isoformat()
+        processor.database.execute(
+            "UPDATE document_claims SET renewed_at = ? WHERE document_id = ?",
+            (stale, document_id),
+        )
+        assert processor._acquire_claim(document_id) is True
+    finally:
+        processor._owner = mine
+
+    processor._owner = other
+    processor._release_claim(document_id)
+    assert processor.database.fetch_one(
+        "SELECT document_id FROM document_claims WHERE document_id = ?",
+        (document_id,),
+    ) is None
+
+
+def test_startup_fails_jobs_left_behind_by_a_killed_process(client: TestClient) -> None:
+    """A job row cannot outlive its process, so a stale one must not pin the UI at 71%."""
+    processor = client.app.state.services.document_processor
+    now = datetime.now(UTC).isoformat()
+    for job_id, document_id in (("orphan", "gone-doc"), ("live", "running-doc")):
+        processor.database.upsert_job(
+            {
+                "id": job_id,
+                "document_id": document_id,
+                "kind": "document_ingestion",
+                "status": "processing",
+                "progress": 0.7,
+                "payload": {"step": "embedding"},
+                "error": None,
+                "created_at": now,
+                "updated_at": now,
+            }
+        )
+    # Only the second document is still claimed, by a process that is very much alive.
+    processor._acquire_claim("running-doc")
+
+    processor._recover_orphaned_jobs()
+
+    rows = {
+        str(row["id"]): row
+        for row in processor.database.fetch_all("SELECT id, status, error FROM jobs")
+    }
+    assert rows["orphan"]["status"] == "failed"
+    assert rows["orphan"]["error"]
+    assert rows["live"]["status"] == "processing"
+
+
+def test_a_half_embedded_document_is_not_marked_indexed(client: TestClient) -> None:
+    """indexed_at must mean every chunk has a vector, not just that a run said so."""
+    processor = client.app.state.services.document_processor
+    uploaded = client.post(
+        "/api/v1/documents",
+        files={"file": ("vectors.txt", b"mot hai ba bon nam sau bay", "text/plain")},
+        data={"workspace_id": "personal", "index_mode": "simple"},
+    )
+    document_id = uploaded.json()["id"]
+    # Simulate a competing run having wiped the embeddings this document was credited for.
+    processor.database.execute(
+        "UPDATE document_chunks SET embedding_json = NULL WHERE document_id = ?",
+        (document_id,),
+    )
+    processor.database.execute(
+        "UPDATE documents SET indexed_at = NULL WHERE id = ?",
+        (document_id,),
+    )
+
+    unindexed = processor.database.fetch_all(
+        """
+        SELECT d.id FROM documents d
+        WHERE d.status = 'ready'
+          AND d.extracted_text IS NOT NULL
+          AND (
+                d.indexed_at IS NULL
+                OR (d.index_mode = 'simple' AND EXISTS (
+                        SELECT 1 FROM document_chunks c
+                        WHERE c.document_id = d.id AND c.embedding_json IS NULL
+                ))
+          )
+        """
+    )
+    assert document_id in {str(row["id"]) for row in unindexed}

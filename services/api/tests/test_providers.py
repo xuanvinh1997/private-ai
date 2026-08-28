@@ -250,6 +250,61 @@ async def test_streaming_translates_openai_chunks_to_ollama_events() -> None:
 
 
 @pytest.mark.asyncio
+async def test_streaming_reassembles_tool_calls_split_across_chunks() -> None:
+    chunks = [
+        {"choices": [{"delta": {"content": "Tôi sẽ tìm tài liệu."}}]},
+        {
+            "choices": [
+                {
+                    "delta": {
+                        "tool_calls": [
+                            {
+                                "index": 0,
+                                "id": "call_1",
+                                "function": {"name": "documents__search", "arguments": ""},
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": '{"query"'}}]}}
+            ]
+        },
+        {
+            "choices": [
+                {"delta": {"tool_calls": [{"index": 0, "function": {"arguments": ': "harry"}'}}]}}
+            ]
+        },
+        {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+    ]
+    body = "".join(f"data: {json.dumps(chunk)}\n\n" for chunk in chunks) + "data: [DONE]\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body, headers={"content-type": "text/event-stream"})
+
+    provider = OpenAICompatClient(
+        "https://host.example",
+        "key",
+        transport=httpx.MockTransport(handler),
+    )
+    request = ChatRequest(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "tóm tắt"}],
+        stream=True,
+    )
+    events = [event async for event in provider.chat_stream(request)]
+    final = events[-1]
+    assert final["done"] is True
+    assert final["done_reason"] == "tool_calls"
+    assert final["message"]["tool_calls"] == [
+        {"id": "call_1", "function": {"name": "documents__search", "arguments": {"query": "harry"}}}
+    ]
+
+
+@pytest.mark.asyncio
 async def test_remote_provider_refuses_model_downloads() -> None:
     provider = OpenAICompatClient("https://host.example", "key")
     with pytest.raises(ProviderReadOnly):

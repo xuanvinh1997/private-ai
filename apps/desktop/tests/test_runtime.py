@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import os
 import socket
 import sys
@@ -79,3 +80,76 @@ def test_workspace_root_honours_the_configured_project_dir(
     monkeypatch.setenv("PRIVATE_AI_PROJECT_DIR", str(tmp_path))
 
     assert workspace_root() == tmp_path.resolve()
+
+
+def process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def test_containment_gives_the_api_its_own_group() -> None:
+    containment = RuntimeController._containment()
+
+    if os.name == "nt":
+        assert "creationflags" in containment
+    else:
+        assert containment == {"start_new_session": True}
+
+
+def test_stop_kills_the_children_the_api_started(tmp_path) -> None:
+    """The API starts FFmpeg and the transcriber, and those must not outlive the window.
+
+    Terminating uvicorn alone leaves them running, so this spawns a stand-in that has a child
+    of its own and asserts the grandchild is gone once the controller stops.
+    """
+    import subprocess
+    import time
+
+    marker = tmp_path / "grandchild.pid"
+    script = tmp_path / "fake_api.py"
+    script.write_text(
+        "import pathlib, subprocess, sys, time\n"
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+        "pathlib.Path(sys.argv[1]).write_text(str(child.pid))\n"
+        "time.sleep(120)\n",
+        encoding="utf-8",
+    )
+
+    controller = RuntimeController()
+    controller.process = subprocess.Popen(  # noqa: S603
+        [sys.executable, str(script), str(marker)],
+        **RuntimeController._containment(),
+    )
+    controller._contain(controller.process)
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline and not marker.exists():
+            time.sleep(0.05)
+        assert marker.exists(), "the stand-in never reported its child"
+        grandchild = int(marker.read_text())
+        assert process_alive(grandchild)
+
+        controller.stop()
+
+        assert controller.process is None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and process_alive(grandchild):
+            time.sleep(0.05)
+        assert not process_alive(grandchild), "the API's child outlived the window"
+    finally:
+        with contextlib.suppress(Exception):
+            controller.stop()
+
+
+def test_stop_is_safe_to_call_twice_and_without_a_start() -> None:
+    controller = RuntimeController()
+
+    controller.stop()
+    controller.stop()
+
+    assert controller.process is None

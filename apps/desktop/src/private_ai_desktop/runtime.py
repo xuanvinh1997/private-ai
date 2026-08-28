@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import os
+import signal
 import socket
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.error import URLError
@@ -41,6 +43,67 @@ def frontend_dist(root: Path) -> Path:
     return root / "apps" / "web" / "dist"
 
 
+def windows_kill_on_close_job() -> int | None:
+    """A job whose handle, once dropped, takes every process inside it down.
+
+    Windows has no parent-death signal, so a crashed launcher would otherwise leave the API
+    running with no window attached to it. Closing this handle -- including when the process
+    dies without unwinding -- terminates the whole job.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    class BasicLimits(ctypes.Structure):
+        _fields_ = [
+            ("PerProcessUserTimeLimit", ctypes.c_int64),
+            ("PerJobUserTimeLimit", ctypes.c_int64),
+            ("LimitFlags", wintypes.DWORD),
+            ("MinimumWorkingSetSize", ctypes.c_size_t),
+            ("MaximumWorkingSetSize", ctypes.c_size_t),
+            ("ActiveProcessLimit", wintypes.DWORD),
+            ("Affinity", ctypes.POINTER(ctypes.c_ulong)),
+            ("PriorityClass", wintypes.DWORD),
+            ("SchedulingClass", wintypes.DWORD),
+        ]
+
+    class IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_uint64) for name in (
+            "ReadOperationCount",
+            "WriteOperationCount",
+            "OtherOperationCount",
+            "ReadTransferCount",
+            "WriteTransferCount",
+            "OtherTransferCount",
+        )]
+
+    class ExtendedLimits(ctypes.Structure):
+        _fields_ = [
+            ("BasicLimitInformation", BasicLimits),
+            ("IoInfo", IoCounters),
+            ("ProcessMemoryLimit", ctypes.c_size_t),
+            ("JobMemoryLimit", ctypes.c_size_t),
+            ("PeakProcessMemoryUsed", ctypes.c_size_t),
+            ("PeakJobMemoryUsed", ctypes.c_size_t),
+        ]
+
+    job = kernel32.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    limits = ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE
+    if not kernel32.SetInformationJobObject(
+        job,
+        9,  # JobObjectExtendedLimitInformation
+        ctypes.byref(limits),
+        ctypes.sizeof(limits),
+    ):
+        kernel32.CloseHandle(job)
+        return None
+    return job
+
+
 def port_is_taken(host: str, port: int) -> bool:
     # connect_ex on a socket with a timeout reports EINPROGRESS, so connect and catch instead.
     try:
@@ -56,6 +119,7 @@ class RuntimeController:
     port: int = field(default_factory=lambda: int(os.getenv("PRIVATE_AI_PORT", "8000")))
     process: subprocess.Popen[bytes] | None = field(default=None, init=False)
     log_path: Path | None = field(default=None, init=False)
+    job: int | None = field(default=None, init=False)
 
     @property
     def api_url(self) -> str:
@@ -121,9 +185,15 @@ class RuntimeController:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         # The window has no console on Windows, so the API needs somewhere to explain itself.
         with self.log_path.open("wb") as log:
-            self.process = subprocess.Popen(
-                command, cwd=cwd, env=environment, stdout=log, stderr=log
+            self.process = subprocess.Popen(  # noqa: S603
+                command,
+                cwd=cwd,
+                env=environment,
+                stdout=log,
+                stderr=log,
+                **self._containment(),
             )
+        self._contain(self.process)
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
@@ -149,12 +219,66 @@ class RuntimeController:
         except (URLError, TimeoutError, OSError):
             return False
 
-    def stop(self) -> None:
-        if not self.process or self.process.poll() is not None:
+    @staticmethod
+    def _containment() -> dict[str, object]:
+        """Spawn the API as the head of its own group, so its children can be killed too.
+
+        The API starts helpers of its own -- FFmpeg and the transcription binary -- and
+        terminating uvicorn alone would leave those running with nothing attached to them.
+        """
+        if os.name == "nt":
+            return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+        return {"start_new_session": True}
+
+    def _contain(self, process: subprocess.Popen[bytes]) -> None:
+        if os.name != "nt":
             return
-        self.process.terminate()
+        self.job = windows_kill_on_close_job()
+        if not self.job:
+            return
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not kernel32.AssignProcessToJobObject(self.job, int(process._handle)):  # noqa: SLF001
+            kernel32.CloseHandle(self.job)
+            self.job = None
+
+    def _signal_tree(self, number: int) -> None:
+        """Signal the whole group, falling back to the single process when that fails."""
+        process = self.process
+        if process is None:
+            return
+        if os.name == "nt":
+            # The job object owns the tree here; the group signal only reaches the console app.
+            process.kill() if number == signal.SIGKILL else process.terminate()
+            return
         try:
-            self.process.wait(timeout=8)
+            os.killpg(os.getpgid(process.pid), number)
+        except (ProcessLookupError, PermissionError, OSError):
+            process.kill() if number == signal.SIGKILL else process.terminate()
+
+    def _release_job(self) -> None:
+        if not self.job:
+            return
+        import ctypes
+
+        # Dropping the last handle is what kills anything still inside the job.
+        ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(self.job)
+        self.job = None
+
+    def stop(self) -> None:
+        """Take the API and everything it started down. Safe to call more than once."""
+        process = self.process
+        if process is None or process.poll() is not None:
+            self._release_job()
+            self.process = None
+            return
+        self._signal_tree(signal.SIGTERM)
+        try:
+            process.wait(timeout=8)
         except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=3)
+            self._signal_tree(signal.SIGKILL)
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=3)
+        self._release_job()
+        self.process = None

@@ -42,6 +42,7 @@ import {
   lazy,
   onCleanup,
 } from "solid-js";
+import { createStore, reconcile } from "solid-js/store";
 import { api } from "./api";
 import { formatBytes, formatRelativeTime } from "./format";
 import { DocumentViewer, LibraryView, MemoryView, WorkspaceDialog } from "./components/DataViews";
@@ -578,11 +579,25 @@ function App() {
       query.status,
     ),
   );
-  // Keep the previous page on screen while the next one loads instead of blanking the list.
-  const documentItems = createMemo<DocumentRecord[]>(
-    (previous) => documents()?.items ?? (documents.loading ? previous : []),
-    [],
-  );
+  // Keep the previous page on screen while the next one loads instead of blanking the list,
+  // and reconcile by id so a background poll patches the changed fields in place rather than
+  // tearing down and rebuilding every row.
+  const [documentRows, setDocumentRows] = createStore<{ items: DocumentRecord[] }>({ items: [] });
+  createEffect(() => {
+    const page = documents();
+    if (page) setDocumentRows("items", reconcile(page.items, { key: "id" }));
+  });
+  createEffect(() => {
+    activeWorkspace();
+    setDocumentRows("items", reconcile([], { key: "id" }));
+  });
+  const documentItems = () => documentRows.items;
+  // Only the first load of a page has nothing to show; the 1.2s progress poll must not swap
+  // the list out for a spinner or dim it, or the panel blinks the whole time a file indexes.
+  // "pending" is a real reload (workspace, page or filter changed); a poll only ever puts the
+  // resource in "refreshing", which must stay invisible.
+  const documentsReloading = createMemo(() => documents.state === "pending");
+  const documentsFirstLoad = createMemo(() => documentsReloading() && documentItems().length === 0);
   const documentTotal = createMemo(() => documents()?.total ?? 0);
   const documentSummary = createMemo(
     () => documents()?.summary ?? { total: 0, byte_size: 0, pending: 0, indexing: 0, failed: 0 },
@@ -774,10 +789,15 @@ function App() {
   }, 5_000);
   // One workspace-level poll updates every queued row and the notification menu without
   // issuing one request per file.
-  const documentPoll = window.setInterval(() => {
+  // Simple RAG never builds a LightRAG instance, so the knowledge graph stays
+  // "not_configured" while vectors are being embedded: gate the poll on the documents
+  // themselves instead of on that service state.
+  const documentsWorking = createMemo(() => {
     const summary = documentSummary();
-    const indexing = summary.indexing > 0 && serviceState("knowledge_graph") === "online";
-    if (document.visibilityState === "visible" && (summary.pending > 0 || indexing)) {
+    return summary.pending > 0 || summary.indexing > 0 || documentItems().some(isDocumentBusy);
+  });
+  const documentPoll = window.setInterval(() => {
+    if (document.visibilityState === "visible" && documentsWorking()) {
       void refetchDocuments();
     }
   }, 1_200);
@@ -853,6 +873,18 @@ function App() {
     }
   };
 
+  // Opening a workspace from the management page has to land somewhere visible: a collapsed
+  // sidebar hides the workspace list entirely, and a long list can leave the selected row
+  // scrolled out of sight, so the selection would be correct but invisible.
+  const revealWorkspaceInSidebar = (id: string) => {
+    if (sidebarCollapsed()) setSidebarCollapsed(false);
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector(`.workspace-list [data-workspace-id="${CSS.escape(id)}"]`)
+        ?.scrollIntoView({ block: "nearest" });
+    });
+  };
+
   const chooseWorkspace = (id: string) => {
     setActiveWorkspace(id);
     setConfirmWorkspaceDelete("");
@@ -862,6 +894,7 @@ function App() {
     setMessages([]);
     setChatError("");
     setSidebarOpen(false);
+    revealWorkspaceInSidebar(id);
   };
 
   const focusComposer = () => {
@@ -1347,7 +1380,10 @@ function App() {
                 <p class="empty-conversations">Chưa có không gian làm việc</p>
               </Show>
               <For each={workspaceList()}>{(workspace) => (
-                <div classList={{ "workspace-row": true, active: activeWorkspace() === workspace.id }}>
+                <div
+                  data-workspace-id={workspace.id}
+                  classList={{ "workspace-row": true, active: activeWorkspace() === workspace.id }}
+                >
                   <button class="workspace-item" onClick={() => chooseWorkspace(workspace.id)} title={workspace.description || workspace.name}>
                     <span class="workspace-dot" aria-hidden="true" />
                     <span class="workspace-copy"><strong>{workspace.name}</strong></span>
@@ -1555,7 +1591,7 @@ function App() {
                             onClick={() => void toggleWebSearch(!webSearchEnabled())}
                           >
                             <Globe size={19} aria-hidden="true" />
-                            <span>{webSearchEnabled() ? "Web: bật" : "Tìm web"}</span>
+                            {webSearchEnabled() ? <span>{webSearchBackendLabel(webSearchBackend())}</span>: <></>}
                           </button>
                           <button type="button" onClick={() => openUpload()} aria-label="Đính kèm tài liệu"><Paperclip size={20} /></button>
                           <button
@@ -1588,12 +1624,7 @@ function App() {
                       </div>
                     </form>
                     <p>
-                      Enter để gửi · Shift + Enter để xuống dòng · {ragMode() === "simple"
-                        ? "RAG nhanh tìm theo đoạn"
-                        : "Graph RAG suy luận theo quan hệ"}
-                      <Show when={webSearchEnabled()}>
-                        {" · "}<strong>Tìm kiếm web đang bật: câu hỏi được gửi tới {webSearchBackendLabel(webSearchBackend())}</strong>
-                      </Show>
+                      Enter để gửi · Shift + Enter để xuống dòng
                     </p>
                   </div>
                 </section>
@@ -1611,15 +1642,15 @@ function App() {
                   <section class="context-block">
                     <div class="context-block-heading">
                       <h2>Tài liệu</h2>
-                      <Show when={hasWorkspace() && !documents.loading}>
+                      <Show when={hasWorkspace() && !documentsFirstLoad()}>
                         <span>{documentSummary().total}</span>
                       </Show>
                     </div>
                     <Show when={documents.error}><div class="inline-error" role="alert">{(documents.error as Error)?.message}</div></Show>
-                    <Show when={hasWorkspace() && documents.loading}>
+                    <Show when={hasWorkspace() && documentsFirstLoad()}>
                       <div class="context-loading" role="status"><i />Đang đọc thư viện…</div>
                     </Show>
-                    <Show when={hasWorkspace() && !documents.loading && documentItems().length > 0}>
+                    <Show when={hasWorkspace() && !documentsFirstLoad() && documentItems().length > 0}>
                       <div class="context-documents"><For each={documentItems().slice(0, 3)}>{(document) => (
                         <button
                           disabled={isDocumentBusy(document)}
@@ -1672,7 +1703,7 @@ function App() {
                         />
                       }
                     >
-                      <Show when={!documents.loading && documentItems().length === 0}>
+                      <Show when={!documentsFirstLoad() && documentItems().length === 0}>
                         <p class="context-empty">Chưa có tài liệu trong không gian này.</p>
                       </Show>
                       <button class="context-add" onClick={() => openUpload()}>
@@ -1735,7 +1766,7 @@ function App() {
                 status={documentStatus()}
                 onFilterChange={changeDocumentFilter}
                 workspaceName={hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"}
-                loading={documents.loading}
+                loading={documentsReloading()}
                 onUpload={() => openUpload()}
                 onRefresh={refetchDocuments}
               />
