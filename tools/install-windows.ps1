@@ -3,7 +3,7 @@ param(
     [ValidatePattern("^[A-Za-z0-9_.-]+$")]
     [string]$EnvironmentName = "private-ai",
 
-    [ValidatePattern("^3\.(12|13|14)$")]
+    [ValidatePattern("^3\.(12|13)$")]
     [string]$PythonVersion = "3.12",
 
     [switch]$SkipChecks
@@ -99,7 +99,7 @@ try {
         -Arguments @(
             "run", "--no-capture-output", "--name", $EnvironmentName,
             "python", "-m", "pip", "install",
-            "--editable", "services/api[dev]",
+            "--editable", "services/api[dev,rag]",
             "--editable", "apps/desktop[dev]"
         )
 

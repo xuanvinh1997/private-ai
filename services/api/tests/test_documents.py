@@ -61,6 +61,14 @@ def test_text_document_is_hashed_extracted_and_deduplicated(client: TestClient) 
     assert search.status_code == 200
     assert search.json()[0]["filename"] == "notes.md"
     assert "Xin chao" in search.json()[0]["content"]
+    document_status = client.get(f"/api/v1/documents/{first.json()['id']}").json()
+    assert document_status["ingestion"]["status"] == "completed"
+    assert document_status["ingestion"]["progress"] == 1.0
+    assert document_status["ingestion"]["embedded_vectors"] == 1
+    assert document_status["ingestion"]["vectors_per_second"] > 0
+    assert document_status["ingestion"]["index_mode"] == "simple"
+    assert document_status["ingestion"]["engine"] == "vector"
+    assert client.app.state.services.lightrag.index_document_calls == 0
 
     # The same bytes in another workspace are a separate document, not a dedup hit.
     other = client.post(
@@ -71,9 +79,55 @@ def test_text_document_is_hashed_extracted_and_deduplicated(client: TestClient) 
     assert other.status_code == 201
     assert other.json()["id"] != first.json()["id"]
     assert client.get("/api/v1/documents", params=workspace).json()["total"] == 1
-    assert (
-        client.get("/api/v1/documents", params={"workspace_id": "research"}).json()["total"] == 1
+    assert client.get("/api/v1/documents", params={"workspace_id": "research"}).json()["total"] == 1
+
+
+def test_failed_index_is_terminal_and_exposed_to_the_library(
+    client: TestClient,
+    monkeypatch,
+) -> None:
+    async def fail_index(*_args, **_kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(
+        client.app.state.services.document_processor,
+        "_index_simple_document",
+        fail_index,
     )
+    uploaded = client.post(
+        "/api/v1/documents",
+        files={"file": ("broken-index.md", b"No embedding provider", "text/markdown")},
+        data=workspace,
+    )
+    document = client.get(f"/api/v1/documents/{uploaded.json()['id']}").json()
+
+    assert document["status"] == "failed"
+    assert document["ingestion"]["status"] == "failed"
+    assert document["ingestion"]["progress"] == 1.0
+    assert "embedding" in document["error"]
+
+
+def test_graph_rag_uses_the_selected_lightweight_model(client: TestClient) -> None:
+    selected = client.patch(
+        "/api/v1/preferences",
+        json={"rag_mode": "graph", "graph_model": "qwen3:4b"},
+    )
+    assert selected.status_code == 200
+
+    uploaded = client.post(
+        "/api/v1/documents",
+        files={"file": ("graph.md", b"OpenAI is based in San Francisco", "text/markdown")},
+        data=workspace,
+    )
+    document = client.get(f"/api/v1/documents/{uploaded.json()['id']}").json()
+    index = client.app.state.services.lightrag
+
+    assert index.index_document_calls == 1
+    assert index.last_graph_model == "qwen3:4b"
+    assert document["index_mode"] == "graph"
+    assert document["graph_model"] == "qwen3:4b"
+    assert document["ingestion"]["index_mode"] == "graph"
+    assert document["ingestion"]["graph_model"] == "qwen3:4b"
 
 
 def test_pdf_processing_status_retry_and_delete(client: TestClient) -> None:
@@ -309,10 +363,13 @@ def test_document_library_filters_by_name_and_status(client: TestClient) -> None
 
     by_status = client.get("/api/v1/documents", params={**workspace, "status": "ready"}).json()
     assert by_status["total"] == 3
-    assert client.get(
-        "/api/v1/documents",
-        params={**workspace, "status": "failed"},
-    ).json()["total"] == 0
+    assert (
+        client.get(
+            "/api/v1/documents",
+            params={**workspace, "status": "failed"},
+        ).json()["total"]
+        == 0
+    )
 
     # Filter and pagination compose.
     paged = client.get(

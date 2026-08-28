@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS documents (
     extracted_text TEXT,
     error TEXT,
     use_ocr INTEGER,
+    index_mode TEXT NOT NULL DEFAULT 'simple' CHECK(index_mode IN ('simple', 'graph')),
+    graph_model TEXT,
     indexed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
@@ -116,6 +118,7 @@ ON chunk_relations(document_id, chunk_id);
 
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
+    document_id TEXT,
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
     progress REAL NOT NULL DEFAULT 0,
@@ -164,6 +167,13 @@ CREATE TABLE IF NOT EXISTS profiles (
 CREATE TABLE IF NOT EXISTS app_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS file_access_grants (
+    id TEXT PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE,
+    recursive INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -223,8 +233,26 @@ class Database:
             self._ensure_column(connection, "document_chunks", "page_number", "INTEGER")
             self._ensure_column(connection, "documents", "use_ocr", "INTEGER")
             self._ensure_column(connection, "documents", "indexed_at", "TEXT")
+            index_mode_added = self._ensure_column(
+                connection,
+                "documents",
+                "index_mode",
+                "TEXT NOT NULL DEFAULT 'simple' CHECK(index_mode IN ('simple', 'graph'))",
+            )
+            self._ensure_column(connection, "documents", "graph_model", "TEXT")
+            # Before index modes existed every completed document went through LightRAG's
+            # graph pipeline. Preserve that fact instead of relabelling old data as simple.
+            if index_mode_added:
+                connection.execute(
+                    "UPDATE documents SET index_mode = 'graph' WHERE indexed_at IS NOT NULL"
+                )
+            self._ensure_column(connection, "jobs", "document_id", "TEXT")
             self._ensure_column(connection, "memories", "embedding_json", "TEXT")
             self._ensure_column(connection, "memories", "embedding_model", "TEXT")
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS jobs_document_updated "
+                "ON jobs(document_id, updated_at DESC)"
+            )
             self._backfill_document_sections(connection)
             self._seed_workspaces(connection)
             self._seed_profile(connection)
@@ -270,10 +298,12 @@ class Database:
         table: str,
         column: str,
         declaration: str,
-    ) -> None:
+    ) -> bool:
         columns = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}  # noqa: S608
         if column not in columns:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")  # noqa: S608
+            return True
+        return False
 
     @staticmethod
     def _backfill_document_sections(connection: sqlite3.Connection) -> None:
@@ -417,10 +447,11 @@ class Database:
         self.execute(
             """
             INSERT INTO jobs(
-                id, kind, status, progress, payload_json, error, created_at, updated_at
+                id, document_id, kind, status, progress, payload_json, error, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
+                document_id=excluded.document_id,
                 status=excluded.status,
                 progress=excluded.progress,
                 payload_json=excluded.payload_json,
@@ -429,6 +460,7 @@ class Database:
             """,
             (
                 job["id"],
+                job.get("document_id"),
                 job["kind"],
                 job["status"],
                 job["progress"],

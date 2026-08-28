@@ -1,12 +1,16 @@
 import cytoscape from "cytoscape";
 import type { Core, EdgeSingular, EventObject, NodeSingular } from "cytoscape";
-import { Focus, Layers, RefreshCw, Search, Share2, X, ZoomIn, ZoomOut } from "lucide-solid";
-import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
+import { Focus, Layers, Plus, RefreshCw, Search, Share2, Shuffle, X, ZoomIn, ZoomOut } from "lucide-solid";
+import { For, Match, Show, Switch, createEffect, createMemo, createResource, createSignal, onCleanup, onMount, untrack } from "solid-js";
 import { createStore } from "solid-js/store";
 import { api } from "../api";
-import type { GraphSnapshot } from "../types";
+import type { GraphEdge, GraphNode, GraphSnapshot } from "../types";
 
 const PALETTE = ["#1c7a63", "#3d6fb4", "#a8672c", "#7d55ab", "#a8465c", "#2f8f8a", "#5c6f3a", "#8a5a86"];
+
+/** Mỗi lần mở rộng chỉ xin lân cận trực tiếp, đủ để thêm một lớp mà không kéo cả kho về. */
+const EXPAND_DEPTH = 1;
+const EXPAND_LIMIT = 40;
 
 type NodeData = {
   id: string;
@@ -17,6 +21,7 @@ type NodeData = {
   degree: number;
   color: string;
   size: number;
+  layer: number;
 };
 
 type EdgeData = {
@@ -44,10 +49,29 @@ function readNumber(properties: Record<string, unknown>, key: string) {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
-function colorOf(type: string) {
+function hashOf(text: string) {
   let hash = 0;
-  for (let index = 0; index < type.length; index += 1) hash = (hash * 31 + type.charCodeAt(index)) >>> 0;
-  return PALETTE[hash % PALETTE.length];
+  for (let index = 0; index < text.length; index += 1) hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  return hash;
+}
+
+function colorOf(type: string) {
+  return PALETTE[hashOf(type) % PALETTE.length];
+}
+
+/** Quan hệ không có hướng, nên hai đầu sắp xếp lại để hai lần tải không sinh ra hai cạnh. */
+function edgeKey(edge: GraphEdge) {
+  const [from, to] = [edge.source, edge.target].sort();
+  return `${from}|${to}|${edge.type ?? ""}`;
+}
+
+/** Mỗi node toả lớp mới từ một góc riêng, để hai node cạnh nhau không đè vòng lên nhau. */
+function angleSeed(id: string) {
+  return ((hashOf(id) % 360) * Math.PI) / 180;
+}
+
+function sizeOf(degree: number) {
+  return 18 + Math.min(30, Math.sqrt(degree) * 9);
 }
 
 function prefersReducedMotion() {
@@ -113,6 +137,9 @@ function buildStyle(): cytoscape.StylesheetStyle[] {
         "text-outline-width": 2.4,
       },
     },
+    // Node đã mở rộng viền đậm, node đang chờ dữ liệu viền đứt: nhìn là biết còn gì để đào.
+    { selector: "node.expanded", style: { "border-color": accent, "border-width": 3.4 } },
+    { selector: "node.expanding", style: { "border-color": accentInk, "border-width": 4, "border-style": "dashed" } },
     { selector: "node:selected", style: { "border-color": ink, "border-width": 3 } },
     { selector: "edge:selected", style: { width: 3.4, "line-color": accent } },
     { selector: ".hidden", style: { display: "none" } },
@@ -129,6 +156,17 @@ export function GraphView(props: { workspaceId: string; workspaceName: string })
   const [counts, setCounts] = createSignal({ nodes: 0, edges: 0 });
   const [types, setTypes] = createSignal<[string, number][]>([]);
   const [settling, setSettling] = createSignal(false);
+  const [expandedIds, setExpandedIds] = createSignal<Set<string>>(new Set());
+  const [expanding, setExpanding] = createSignal("");
+  const [layers, setLayers] = createSignal(0);
+  const [expandNote, setExpandNote] = createSignal("");
+
+  // Đồ thị tích luỹ qua nhiều lần gọi, nên phải nhớ cái gì đã có để lần sau chỉ thêm phần mới.
+  const nodeIndex = new Map<string, GraphNode>();
+  const edgeIndex = new Map<string, GraphEdge>();
+  const drawnEdges = new Set<string>();
+  // Đổi lát nền giữa lúc đang mở lớp thì kết quả cũ phải bị bỏ, không gộp nhầm vào đồ thị mới.
+  let generation = 0;
 
   const [snapshot, { refetch }] = createResource(
     () => (props.workspaceId ? { id: props.workspaceId, entity: focus(), depth: depth(), limit: limit() } : undefined),
@@ -168,6 +206,171 @@ export function GraphView(props: { workspaceId: string; workspaceName: string })
     cy?.elements().removeClass("faded spotlight");
   };
 
+  /** Gộp một lát đồ thị vừa tải vào phần đang có, trả về đúng những phần tử chưa vẽ. */
+  const ingest = (data: GraphSnapshot, layer: number) => {
+    const freshNodes: cytoscape.ElementDefinition[] = [];
+    for (const node of data.nodes) {
+      if (nodeIndex.has(node.id)) continue;
+      nodeIndex.set(node.id, node);
+      const type = readText(node.properties, "entity_type") || "khác";
+      const item: NodeData = {
+        id: node.id,
+        label: node.labels[0] ?? node.id,
+        type,
+        description: readText(node.properties, "description"),
+        file: readText(node.properties, "file_path"),
+        degree: 0,
+        color: colorOf(type),
+        size: sizeOf(0),
+        layer,
+      };
+      freshNodes.push({ group: "nodes", data: item, classes: muted[type] ? "hidden" : "" });
+    }
+
+    for (const edge of data.edges) {
+      if (edge.source === edge.target) continue;
+      const key = edgeKey(edge);
+      if (!edgeIndex.has(key)) edgeIndex.set(key, edge);
+    }
+
+    // Cạnh chỉ vẽ được khi đã có cả hai đầu, nên lớp mới có thể làm sống lại cạnh treo của lớp trước.
+    const freshEdges: cytoscape.ElementDefinition[] = [];
+    for (const [key, edge] of edgeIndex) {
+      if (drawnEdges.has(key)) continue;
+      if (!nodeIndex.has(edge.source) || !nodeIndex.has(edge.target)) continue;
+      drawnEdges.add(key);
+      const keywords = readText(edge.properties, "keywords");
+      const item: EdgeData = {
+        id: key,
+        source: edge.source,
+        target: edge.target,
+        label: keywords || edge.type || "liên quan",
+        description: readText(edge.properties, "description"),
+        weight: readNumber(edge.properties, "weight"),
+        file: readText(edge.properties, "file_path"),
+      };
+      freshEdges.push({ group: "edges", data: item });
+    }
+
+    return { freshNodes, freshEdges };
+  };
+
+  /** Bậc và cỡ node đọc từ đồ thị đang vẽ, vì mỗi lớp mới lại đổi số quan hệ của node cũ. */
+  const refreshStats = () => {
+    const instance = cy;
+    if (!instance) return;
+    const tally = new Map<string, number>();
+    instance.nodes().forEach((node) => {
+      const degree = node.connectedEdges().length;
+      node.data("degree", degree);
+      node.data("size", sizeOf(degree));
+      const type = nodeData(node).type;
+      tally.set(type, (tally.get(type) ?? 0) + 1);
+    });
+    setCounts({ nodes: instance.nodes().length, edges: instance.edges().length });
+    setTypes([...tally.entries()].sort((left, right) => right[1] - left[1]));
+  };
+
+  const runLayout = (elements: cytoscape.Collection, randomize: boolean) => {
+    if (elements.empty()) return;
+    setSettling(true);
+    const layout = elements.layout({
+      name: "cose",
+      animate: !prefersReducedMotion(),
+      animationDuration: 700,
+      nodeDimensionsIncludeLabels: true,
+      idealEdgeLength: () => 90,
+      nodeRepulsion: () => 9000,
+      randomize,
+      fit: true,
+      padding: 40,
+    });
+    layout.one("layoutstop", () => setSettling(false));
+    layout.run();
+  };
+
+  /** Một lát nền mới thì bỏ hết phần tích luỹ: người dùng vừa đổi tâm hoặc đổi giới hạn. */
+  const renderBase = (data: GraphSnapshot | undefined) => {
+    const instance = cy;
+    if (!instance) return;
+    generation += 1;
+    setDetail(null);
+    setExpandNote("");
+    setExpandedIds(new Set<string>());
+    setExpanding("");
+    nodeIndex.clear();
+    edgeIndex.clear();
+    drawnEdges.clear();
+    instance.elements().remove();
+    if (!data || data.nodes.length === 0) {
+      setCounts({ nodes: 0, edges: 0 });
+      setTypes([]);
+      setLayers(0);
+      return;
+    }
+    const { freshNodes, freshEdges } = ingest(data, 0);
+    instance.add([...freshNodes, ...freshEdges]);
+    setLayers(1);
+    refreshStats();
+    runLayout(instance.elements(), true);
+  };
+
+  /** Mở thêm một lớp quanh node đang chọn, giữ nguyên chỗ của phần đã vẽ. */
+  const expandNode = async (id: string) => {
+    const instance = cy;
+    if (!instance || !props.workspaceId) return;
+    if (expanding() || expandedIds().has(id)) return;
+    const parent = instance.getElementById(id);
+    if (parent.empty()) return;
+
+    const era = generation;
+    setExpanding(id);
+    setExpandNote("");
+    parent.addClass("expanding");
+    try {
+      const data = await api.graph(props.workspaceId, id, EXPAND_DEPTH, EXPAND_LIMIT);
+      if (era !== generation) return;
+      const layer = layers();
+      const { freshNodes, freshEdges } = ingest(data, layer);
+      // Xếp lớp mới thành vòng quanh node cha thay vì chạy lại layout, để hình cũ đứng yên.
+      const origin = parent.position();
+      const radius = 110 + Math.min(160, freshNodes.length * 7);
+      const start = angleSeed(id);
+      freshNodes.forEach((element, index) => {
+        const angle = start + (2 * Math.PI * index) / Math.max(1, freshNodes.length);
+        element.position = {
+          x: origin.x + radius * Math.cos(angle),
+          y: origin.y + radius * Math.sin(angle),
+        };
+      });
+      instance.add([...freshNodes, ...freshEdges]);
+      refreshStats();
+      setExpandedIds(new Set(expandedIds()).add(id));
+      parent.addClass("expanded");
+      if (freshNodes.length > 0) setLayers(layer + 1);
+      if (freshNodes.length === 0) {
+        setExpandNote(
+          freshEdges.length > 0
+            ? `Thêm ${freshEdges.length} quan hệ giữa các thực thể đã có.`
+            : "Node này không còn lân cận nào chưa hiện.",
+        );
+      }
+      const open = detail();
+      if (open?.kind === "node" && open.node.id === id) {
+        setDetail({ kind: "node", node: { ...(parent.data() as NodeData) } });
+      }
+    } catch (error) {
+      if (era === generation) {
+        setExpandNote(error instanceof Error ? error.message : "Không mở rộng được node này.");
+      }
+    } finally {
+      if (era === generation) {
+        parent.removeClass("expanding");
+        setExpanding("");
+      }
+    }
+  };
+
   onMount(() => {
     cy = cytoscape({
       container: stage,
@@ -193,8 +396,9 @@ export function GraphView(props: { workspaceId: string; workspaceName: string })
     cy.on("tap", (event: EventObject) => {
       if (event.target === cy) setDetail(null);
     });
+    // Bấm đúp là mở thêm một lớp quanh node, không phải vẽ lại đồ thị từ đầu.
     cy.on("dbltap", "node", (event: EventObject) => {
-      focusEntity(nodeData(event.target as NodeSingular).id);
+      void expandNode(nodeData(event.target as NodeSingular).id);
     });
     cy.on("mouseover", "node, edge", (event: EventObject) => {
       spotlight(event.target as NodeSingular | EdgeSingular);
@@ -223,75 +427,8 @@ export function GraphView(props: { workspaceId: string; workspaceName: string })
 
   createEffect(() => {
     const data = snapshot() as GraphSnapshot | undefined;
-    const instance = cy;
-    if (!instance) return;
-    setDetail(null);
-    instance.elements().remove();
-    if (!data || data.nodes.length === 0) {
-      setCounts({ nodes: 0, edges: 0 });
-      setTypes([]);
-      return;
-    }
-
-    const known = new Set(data.nodes.map((node) => node.id));
-    const degrees = new Map<string, number>();
-    const links = data.edges.filter(
-      (edge) => known.has(edge.source) && known.has(edge.target) && edge.source !== edge.target,
-    );
-    links.forEach((edge) => {
-      degrees.set(edge.source, (degrees.get(edge.source) ?? 0) + 1);
-      degrees.set(edge.target, (degrees.get(edge.target) ?? 0) + 1);
-    });
-
-    const tally = new Map<string, number>();
-    const nodes = data.nodes.map((node) => {
-      const type = readText(node.properties, "entity_type") || "khác";
-      const degree = degrees.get(node.id) ?? 0;
-      tally.set(type, (tally.get(type) ?? 0) + 1);
-      const item: NodeData = {
-        id: node.id,
-        label: node.labels[0] ?? node.id,
-        type,
-        description: readText(node.properties, "description"),
-        file: readText(node.properties, "file_path"),
-        degree,
-        color: colorOf(type),
-        size: 18 + Math.min(30, Math.sqrt(degree) * 9),
-      };
-      return { group: "nodes" as const, data: item, classes: muted[type] ? "hidden" : "" };
-    });
-
-    const edges = links.map((edge, index) => {
-      const keywords = readText(edge.properties, "keywords");
-      const item: EdgeData = {
-        id: `e${index}`,
-        source: edge.source,
-        target: edge.target,
-        label: keywords || edge.type || "liên quan",
-        description: readText(edge.properties, "description"),
-        weight: readNumber(edge.properties, "weight"),
-        file: readText(edge.properties, "file_path"),
-      };
-      return { group: "edges" as const, data: item };
-    });
-
-    instance.add([...nodes, ...edges]);
-    setCounts({ nodes: nodes.length, edges: edges.length });
-    setTypes([...tally.entries()].sort((left, right) => right[1] - left[1]));
-
-    setSettling(true);
-    const layout = instance.layout({
-      name: "cose",
-      animate: !prefersReducedMotion(),
-      animationDuration: 700,
-      nodeDimensionsIncludeLabels: true,
-      idealEdgeLength: () => 90,
-      nodeRepulsion: () => 9000,
-      fit: true,
-      padding: 40,
-    });
-    layout.one("layoutstop", () => setSettling(false));
-    layout.run();
+    // Chỉ lát nền mới được vẽ lại: untrack để bật/tắt loại thực thể không xoá các lớp đã mở.
+    untrack(() => renderBase(data));
   });
 
   const toggleType = (type: string) => {
@@ -335,13 +472,24 @@ export function GraphView(props: { workspaceId: string; workspaceName: string })
           <p>
             Thực thể và quan hệ mà Private AI rút ra từ tài liệu của{" "}
             <strong>{props.workspaceName}</strong>. Kéo node để sắp lại, kéo nền để dời khung, lăn
-            chuột để phóng to, bấm một node hoặc một đường nối để xem chi tiết.
+            chuột để phóng to, bấm một node hoặc một đường nối để xem chi tiết. Bấm đúp vào một node
+            để mở thêm một lớp lân cận ngay trên hình đang có.
           </p>
         </div>
         <div class="page-heading-actions">
           <Show when={focus() !== "*"}>
             <button class="button button-secondary" type="button" onClick={() => focusEntity("*")}>
               <Layers size={17} /> Toàn bộ đồ thị
+            </button>
+          </Show>
+          <Show when={layers() > 1}>
+            <button
+              class="button button-secondary"
+              type="button"
+              disabled={settling()}
+              onClick={() => cy && runLayout(cy.elements(), false)}
+            >
+              <Shuffle size={17} /> Sắp xếp lại
             </button>
           </Show>
           <button class="button button-secondary" type="button" onClick={() => void refetch()}>
@@ -434,10 +582,15 @@ export function GraphView(props: { workspaceId: string; workspaceName: string })
             <div class="graph-status">
               <span>
                 <strong>{counts().nodes}</strong> thực thể · <strong>{counts().edges}</strong> quan hệ
+                <Show when={layers() > 1}> · {layers()} lớp</Show>
+                <Show when={expanding()}> · đang mở lớp mới…</Show>
                 <Show when={settling()}> · đang sắp xếp…</Show>
               </span>
+              <Show when={expandNote()}>
+                <em class="graph-status-note">{expandNote()}</em>
+              </Show>
               <Show when={(snapshot() as GraphSnapshot | undefined)?.truncated}>
-                <em>Đồ thị đã bị cắt bớt, tăng “Số node” để xem thêm.</em>
+                <em>Lớp nền đã bị cắt bớt, tăng “Số node” hoặc bấm đúp từng node để đào thêm.</em>
               </Show>
             </div>
           </Show>
@@ -468,7 +621,7 @@ export function GraphView(props: { workspaceId: string; workspaceName: string })
             fallback={
               <p class="graph-hint">
                 <Share2 size={16} /> Kéo node để sắp lại chỗ. Bấm một node hoặc một đường nối để xem
-                chi tiết, bấm đúp vào node để chỉ xem lân cận của nó.
+                chi tiết, bấm đúp vào node để mở thêm một lớp lân cận quanh nó.
               </p>
             }
           >
@@ -486,14 +639,30 @@ export function GraphView(props: { workspaceId: string; workspaceName: string })
                   </header>
                   <p class="graph-detail-meta">
                     {node().degree} quan hệ
+                    <Show when={node().layer > 0}> · mở ở lớp {node().layer + 1}</Show>
                     <Show when={node().file}> · nguồn: {node().file}</Show>
                   </p>
                   <Show when={node().description}>
                     <p class="graph-detail-body">{node().description}</p>
                   </Show>
-                  <button class="button button-secondary" type="button" onClick={() => focusEntity(node().id)}>
-                    <Focus size={17} /> Chỉ xem lân cận
-                  </button>
+                  <div class="graph-detail-actions">
+                    <button
+                      class="button button-secondary"
+                      type="button"
+                      disabled={Boolean(expanding()) || expandedIds().has(node().id)}
+                      onClick={() => void expandNode(node().id)}
+                    >
+                      <Plus size={17} />
+                      {expanding() === node().id
+                        ? "Đang mở lớp…"
+                        : expandedIds().has(node().id)
+                          ? "Đã mở lớp này"
+                          : "Mở rộng lân cận"}
+                    </button>
+                    <button class="button button-secondary" type="button" onClick={() => focusEntity(node().id)}>
+                      <Focus size={17} /> Chỉ xem lân cận
+                    </button>
+                  </div>
                 </article>
               )}
             </Match>

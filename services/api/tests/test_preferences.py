@@ -8,17 +8,101 @@ import pytest
 from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 
+from private_ai_api.config import Settings
+from private_ai_api.main import create_app
 from private_ai_api.schemas import ModelInfo
+
+PREFERENCE_DEFAULTS = {
+    "ocr_enabled": True,
+    "rag_mode": "simple",
+    "graph_model": "",
+    "embedding_batch_size": 32,
+    "embedding_concurrency": 4,
+    # Web search is the one feature that can leave the machine, so it starts switched off.
+    "web_search_enabled": False,
+    "web_search_backend": "duckduckgo",
+    "web_search_base_url": "",
+    "web_search_model": "gpt-5",
+    "web_search_max_results": 5,
+    "web_search_has_api_key": False,
+}
 
 
 def test_ocr_is_on_until_it_is_turned_off(client: TestClient) -> None:
-    assert client.get("/api/v1/preferences").json() == {"ocr_enabled": True}
+    defaults = PREFERENCE_DEFAULTS
+    assert client.get("/api/v1/preferences").json() == defaults
 
     turned_off = client.patch("/api/v1/preferences", json={"ocr_enabled": False})
     assert turned_off.status_code == 200
-    assert turned_off.json() == {"ocr_enabled": False}
-    assert client.get("/api/v1/preferences").json() == {"ocr_enabled": False}
+    assert turned_off.json() == {**defaults, "ocr_enabled": False}
+    assert client.get("/api/v1/preferences").json() == {**defaults, "ocr_enabled": False}
     assert client.app.state.services.document_processor.ocr_enabled() is False
+
+
+def test_rag_preferences_are_persisted_and_applied(client: TestClient) -> None:
+    updated = client.patch(
+        "/api/v1/preferences",
+        json={
+            "rag_mode": "graph",
+            "graph_model": "qwen3:4b",
+            "embedding_batch_size": 64,
+            "embedding_concurrency": 8,
+        },
+    )
+
+    assert updated.status_code == 200
+    assert updated.json() == {
+        **PREFERENCE_DEFAULTS,
+        "rag_mode": "graph",
+        "graph_model": "qwen3:4b",
+        "embedding_batch_size": 64,
+        "embedding_concurrency": 8,
+    }
+    assert client.get("/api/v1/preferences").json() == updated.json()
+    index = client.app.state.services.lightrag
+    assert index.embedding_batch_size == 64
+    assert index.embedding_concurrency == 8
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (("embedding_batch_size", 0), ("embedding_batch_size", 257), ("embedding_concurrency", 33)),
+)
+def test_rag_preferences_reject_unsafe_limits(
+    client: TestClient,
+    field: str,
+    value: int,
+) -> None:
+    assert client.patch("/api/v1/preferences", json={field: value}).status_code == 422
+
+
+def test_rag_preferences_survive_an_app_restart(tmp_path: Path) -> None:
+    settings = Settings(
+        data_dir=tmp_path,
+        frontend_dist=tmp_path / "missing-web",
+        embedding_enabled=False,
+    )
+    with TestClient(create_app(settings)) as first:
+        response = first.patch(
+            "/api/v1/preferences",
+            json={
+                "rag_mode": "graph",
+                "graph_model": "qwen3:4b",
+                "embedding_batch_size": 48,
+                "embedding_concurrency": 6,
+            },
+        )
+        assert response.status_code == 200
+
+    with TestClient(create_app(settings)) as restarted:
+        preferences = restarted.get("/api/v1/preferences").json()
+        assert preferences["rag_mode"] == "graph"
+        assert preferences["graph_model"] == "qwen3:4b"
+        assert preferences["embedding_batch_size"] == 48
+        assert preferences["embedding_concurrency"] == 6
+        index = restarted.app.state.services.lightrag
+        assert index.embedding_batch_size == 48
+        assert index.embedding_concurrency == 6
 
 
 def test_turning_ocr_off_drops_the_markitdown_plugins(client: TestClient) -> None:

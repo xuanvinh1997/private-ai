@@ -10,7 +10,7 @@ export function WorkspacesView(props: {
   activeId: string;
   loading: boolean;
   onOpen: (id: string) => void;
-  onSaved: (workspace: WorkspaceRecord) => void;
+  onSaved: (workspace: WorkspaceRecord, created: boolean) => void;
   onDeleted: (id: string) => void;
 }) {
   const [search, setSearch] = createSignal("");

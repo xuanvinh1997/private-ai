@@ -3,7 +3,7 @@ import { AlertCircle, Check, FileUp, LoaderCircle, RotateCw, X } from "lucide-so
 import { For, Show, createEffect, createMemo, createSignal, on } from "solid-js";
 import { api } from "../api";
 import { formatFileSize } from "../format";
-import type { DocumentRecord, DocumentStatus } from "../types";
+import type { DocumentRecord, DocumentStatus, IngestionProgress } from "../types";
 
 const ACCEPTED_EXTENSIONS = [
   ".pdf",
@@ -40,6 +40,11 @@ type Staged = {
   progress: number;
   documentId?: string;
   error?: string;
+  detail?: string;
+  step?: IngestionProgress["step"];
+  embeddedVectors?: number;
+  vectorsPerSecond?: number;
+  elapsedSeconds?: number;
 };
 
 const DOCUMENT_PROGRESS: Record<DocumentStatus, number> = {
@@ -54,6 +59,12 @@ const isInFlight = (status: StagedStatus) =>
   status === "uploading" || status === "queued" || status === "processing" || status === "indexing";
 
 const statusLabel = (item: Staged) => {
+  const rate = item.vectorsPerSecond
+    ? ` · ${item.vectorsPerSecond < 10 ? item.vectorsPerSecond.toFixed(1) : Math.round(item.vectorsPerSecond)} vector/s`
+    : "";
+  if (isInFlight(item.status) && item.detail) {
+    return `${item.detail} · ${item.progress}%${rate}`;
+  }
   switch (item.status) {
     case "pending": return "Sẵn sàng tải lên";
     case "uploading": return `Đang tải lên · ${item.progress}%`;
@@ -68,12 +79,29 @@ const statusLabel = (item: Staged) => {
 };
 
 const documentPatch = (document: DocumentRecord): Partial<Staged> => {
-  const indexing = document.status === "ready" && !document.indexed_at;
+  const ingestion = document.ingestion;
+  const indexing = ingestion?.status === "processing" && (
+    ingestion.step === "chunking" ||
+    ingestion.step === "embedding" ||
+    ingestion.step === "graph" ||
+    ingestion.step === "multimodal" ||
+    ingestion.step === "finalizing"
+  );
+  const inFlight = ingestion?.status === "processing";
   return {
     documentId: document.id,
-    status: indexing ? "indexing" : document.status,
-    progress: indexing ? 92 : DOCUMENT_PROGRESS[document.status],
-    error: document.error || undefined,
+    status: indexing ? "indexing" : inFlight ? "processing" : document.status,
+    progress: ingestion
+      ? Math.round(ingestion.progress * 100)
+      : document.status === "ready" && !document.indexed_at
+        ? 42
+        : DOCUMENT_PROGRESS[document.status],
+    error: ingestion?.error || document.error || undefined,
+    detail: ingestion?.detail,
+    step: ingestion?.step,
+    embeddedVectors: ingestion?.embedded_vectors,
+    vectorsPerSecond: ingestion?.vectors_per_second,
+    elapsedSeconds: ingestion?.elapsed_seconds,
   };
 };
 
@@ -150,7 +178,9 @@ export function UploadDialog(props: {
   createEffect(on(
     () => props.open,
     (open) => {
-      if (!open) return;
+      // A dismissed upload keeps running in this mounted component. If the dialog is reopened
+      // before it finishes, preserve the queue so its captured indexes remain valid.
+      if (!open || busy()) return;
       const { added, skipped } = stageFiles(props.initialFiles ?? [], props.defaultOcr);
       setError("");
       setNotice(skipped ? `${skipped} tệp trùng đã được bỏ qua.` : "");
@@ -177,7 +207,7 @@ export function UploadDialog(props: {
     staged().filter((item) => item.status === "invalid").length,
   );
 
-  const confirm = async () => {
+  const executeUpload = async () => {
     if (busy()) return;
     if (!props.workspaceId) {
       setError("Hãy tạo một không gian làm việc trước khi thêm tài liệu.");
@@ -286,6 +316,15 @@ export function UploadDialog(props: {
     }
   };
 
+  const confirm = async () => {
+    try {
+      await executeUpload();
+    } finally {
+      // Never leave every close path locked if polling or a completion callback throws.
+      setBusy(false);
+    }
+  };
+
   const actionLabel = () => {
     if (busy()) return `Đang xử lý ${progress().current}/${progress().total}`;
     if (failedCount()) return `Thử lại ${actionable().length} tệp`;
@@ -293,7 +332,7 @@ export function UploadDialog(props: {
   };
 
   return (
-    <Dialog open={props.open} onOpenChange={(open) => !open && !busy() && props.onClose()}>
+    <Dialog open={props.open} onOpenChange={(open) => !open && props.onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay class="dialog-overlay" />
         <div class="dialog-positioner">
@@ -442,9 +481,8 @@ export function UploadDialog(props: {
               <button
                 class="button button-secondary"
                 type="button"
-                disabled={busy()}
                 onClick={props.onClose}
-              >Hủy</button>
+              >{busy() ? "Đóng · tiếp tục nền" : "Hủy"}</button>
               <button
                 class="button button-primary"
                 type="button"
@@ -468,7 +506,7 @@ export function UploadDialog(props: {
                 event.currentTarget.value = "";
               }}
             />
-            <Dialog.CloseButton class="icon-button dialog-close" disabled={busy()} aria-label="Đóng">
+            <Dialog.CloseButton class="icon-button dialog-close" aria-label="Đóng">
               <X size={20} aria-hidden="true" />
             </Dialog.CloseButton>
           </Dialog.Content>

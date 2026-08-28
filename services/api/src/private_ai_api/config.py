@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
 from functools import lru_cache
@@ -89,6 +90,11 @@ class Settings(BaseSettings):
     gpu_model_overhead_ratio: float = Field(default=1.1, ge=1.0, le=3.0)
     asr_vram_reservation_bytes: int = Field(default=2 * 1024**3, ge=0)
     request_timeout_seconds: float = Field(default=60.0, gt=0)
+    web_search_timeout_seconds: float = Field(default=20.0, gt=0)
+    # Folders the file tools may read without asking. Empty means every path needs the
+    # user's approval at the moment it is first requested.
+    file_roots: str = ""
+    file_read_max_bytes: int = Field(default=1024 * 1024, gt=0)
     max_upload_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
 
     @field_validator("data_dir", mode="after")
@@ -100,6 +106,15 @@ class Settings(BaseSettings):
     @classmethod
     def resolve_frontend_dist(cls, value: Path) -> Path:
         return value.expanduser().resolve()
+
+    @property
+    def file_root_paths(self) -> list[Path]:
+        """Split on the platform's path separator so Windows drive letters survive."""
+        return [
+            Path(item).expanduser().resolve()
+            for item in self.file_roots.split(os.pathsep)
+            if item.strip()
+        ]
 
     @property
     def database_path(self) -> Path:

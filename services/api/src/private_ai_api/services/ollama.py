@@ -247,7 +247,7 @@ class OllamaClient:
     async def chat(self, request: ChatRequest) -> dict[str, Any]:
         owner = await self._reserve_model(request.model)
         try:
-            result = await self._post("/api/chat", request.model_dump())
+            result = await self._post("/api/chat", request.model_dump(exclude_none=True))
         except OllamaUnavailable:
             await self._reconcile_after_failure(owner)
             raise
@@ -256,7 +256,7 @@ class OllamaClient:
 
     async def chat_stream(self, request: ChatRequest) -> AsyncIterator[dict[str, Any]]:
         owner = await self._reserve_model(request.model)
-        payload = request.model_dump()
+        payload = request.model_dump(exclude_none=True)
         payload["stream"] = True
         connected = False
         try:

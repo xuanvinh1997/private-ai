@@ -10,6 +10,11 @@ def _workspace(client: TestClient) -> str:
 
 
 def _upload(client: TestClient, workspace_id: str, text: str) -> None:
+    selected = client.patch(
+        "/api/v1/preferences",
+        json={"rag_mode": "graph", "graph_model": "test-graph"},
+    )
+    assert selected.status_code == 200
     response = client.post(
         "/api/v1/documents",
         data={"workspace_id": workspace_id},

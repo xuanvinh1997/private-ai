@@ -6,11 +6,11 @@ import {
   ChevronDown,
   Clipboard,
   FileUp,
+  Globe,
   HardDrive,
   LayoutGrid,
   Menu,
   MessageSquareText,
-  Mic2,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -59,7 +59,12 @@ import type {
   ConversationDetail,
   DocumentRecord,
   ModelInfo,
+  Preferences,
+  PreferencesUpdate,
+  RagMode,
   ServiceState,
+  WebSearchBackend,
+  WebSearchProbeResult,
   WorkspaceRecord,
 } from "./types";
 
@@ -87,6 +92,29 @@ const settingsTabs = [
   { id: "memory" as const, label: "Bộ nhớ", icon: BrainCircuit },
   { id: "providers" as const, label: "Nhà cung cấp", icon: HardDrive },
 ];
+
+// Nguồn tìm kiếm xếp từ riêng tư nhất tới ít riêng tư nhất.
+const webSearchBackends = [
+  {
+    id: "searxng" as const,
+    label: "SearXNG",
+    hint: "Máy chủ meta-search bạn tự dựng. Không cần API key, câu hỏi chỉ đi tới máy chủ của bạn.",
+  },
+  {
+    id: "duckduckgo" as const,
+    label: "DuckDuckGo",
+    hint: "Chạy được ngay, không cần cấu hình. DuckDuckGo không có API chính thức nên có thể bị chặn tạm thời khi hỏi quá nhiều.",
+  },
+  {
+    id: "openai" as const,
+    label: "OpenAI web search",
+    hint: "Chất lượng cao nhất, có trả phí theo lượt tìm. Câu hỏi và API key được gửi tới api.openai.com.",
+  },
+];
+
+function webSearchBackendLabel(backend: WebSearchBackend) {
+  return webSearchBackends.find((item) => item.id === backend)?.label ?? backend;
+}
 
 const starterPrompts = [
   "Tóm tắt các tài liệu mới trong thư viện",
@@ -129,9 +157,14 @@ function modelActionLabel(action: string) {
 }
 
 const isDocumentBusy = (document: DocumentRecord) =>
-  document.status === "queued" || document.status === "processing";
+  document.status === "queued" ||
+  document.status === "processing" ||
+  document.ingestion?.status === "processing";
 
 const documentStatusLabel = (document: DocumentRecord) => {
+  if (document.ingestion?.status === "processing") {
+    return `${document.ingestion.detail} · ${Math.round(document.ingestion.progress * 100)}%`;
+  }
   switch (document.status) {
     case "queued": return "Đang chờ xử lý";
     case "processing": return "Đang OCR";
@@ -312,6 +345,7 @@ function AddModelDialog(props: { onCompleted: () => void }) {
 }
 
 function App() {
+  let composerInput: HTMLTextAreaElement | undefined;
   const [view, setView] = createSignal<View>("chat");
   const [settingsTab, setSettingsTab] = createSignal<SettingsTab>("general");
   const [theme, setTheme] = createSignal<Theme>(getStoredPreference("private-ai-theme", ["light", "dark"], "light"));
@@ -333,6 +367,7 @@ function App() {
   const [draft, setDraft] = createSignal("");
   const [selectedModel, setSelectedModel] = createSignal("");
   const [sending, setSending] = createSignal(false);
+  const [activeTool, setActiveTool] = createSignal("");
   const [chatError, setChatError] = createSignal("");
   // dragenter/dragleave also fire for children, so depth decides when the overlay drops.
   const [chatDragDepth, setChatDragDepth] = createSignal(0);
@@ -352,6 +387,31 @@ function App() {
   const [workspaceList, { refetch: refetchWorkspaces }] = createResource(api.workspaces);
   const [preferences, { mutate: mutatePreferences }] = createResource(api.preferences);
   const [profiles, { refetch: refetchProfiles }] = createResource(api.profiles);
+  const ragMode = createMemo<RagMode>(() => preferences()?.rag_mode ?? "simple");
+  const graphModel = createMemo(() => preferences()?.graph_model ?? "");
+  const webSearchEnabled = createMemo(() => preferences()?.web_search_enabled ?? false);
+  const webSearchBackend = createMemo<WebSearchBackend>(
+    () => preferences()?.web_search_backend ?? "duckduckgo",
+  );
+  const [webSearchUrlDraft, setWebSearchUrlDraft] = createSignal("");
+  const [webSearchKeyDraft, setWebSearchKeyDraft] = createSignal("");
+  const [webSearchModelDraft, setWebSearchModelDraft] = createSignal("");
+  const [webSearchProbing, setWebSearchProbing] = createSignal(false);
+  const [webSearchProbe, setWebSearchProbe] = createSignal<WebSearchProbeResult>();
+  const [preferencesSaving, setPreferencesSaving] = createSignal(false);
+  const [preferencesError, setPreferencesError] = createSignal("");
+  const [preferencesNotice, setPreferencesNotice] = createSignal("");
+  const [embeddingBatchDraft, setEmbeddingBatchDraft] = createSignal("32");
+  const [embeddingConcurrencyDraft, setEmbeddingConcurrencyDraft] = createSignal("4");
+
+  createEffect(() => {
+    const current = preferences();
+    if (!current) return;
+    setEmbeddingBatchDraft(String(current.embedding_batch_size));
+    setEmbeddingConcurrencyDraft(String(current.embedding_concurrency));
+    setWebSearchUrlDraft(current.web_search_base_url);
+    setWebSearchModelDraft(current.web_search_model);
+  });
 
   const activeProfile = createMemo(() => profiles()?.find((profile) => profile.active));
   const profileName = createMemo(() => activeProfile()?.display_name?.trim() ?? "");
@@ -364,18 +424,130 @@ function App() {
     setStagedFiles(files);
     setUploadOpen(true);
   };
-  const [ocrError, setOcrError] = createSignal("");
-
-  const toggleOcr = async (enabled: boolean) => {
+  const savePreferences = async (changes: PreferencesUpdate, notice: string) => {
     const previous = preferences();
-    setOcrError("");
-    mutatePreferences({ ...previous, ocr_enabled: enabled });
+    // The raw key is write-only, so the optimistic copy carries only the flag the UI reads.
+    const { web_search_api_key: apiKey, ...visible } = changes;
+    const optimistic: Preferences = {
+      ocr_enabled: true,
+      rag_mode: "simple",
+      graph_model: "",
+      embedding_batch_size: 32,
+      embedding_concurrency: 4,
+      web_search_enabled: false,
+      web_search_backend: "duckduckgo",
+      web_search_base_url: "",
+      web_search_model: "",
+      web_search_max_results: 5,
+      web_search_has_api_key: false,
+      ...previous,
+      ...visible,
+      ...(apiKey === undefined ? {} : { web_search_has_api_key: Boolean(apiKey.trim()) }),
+    };
+    setPreferencesError("");
+    setPreferencesNotice("");
+    setPreferencesSaving(true);
+    mutatePreferences(optimistic);
     try {
-      mutatePreferences(await api.updatePreferences({ ocr_enabled: enabled }));
+      mutatePreferences(await api.updatePreferences(changes));
+      setPreferencesNotice(notice);
     } catch (cause) {
       mutatePreferences(previous);
-      setOcrError(cause instanceof Error ? cause.message : "Không lưu được lựa chọn OCR");
+      setPreferencesError(cause instanceof Error ? cause.message : "Không lưu được cài đặt");
+    } finally {
+      setPreferencesSaving(false);
     }
+  };
+
+  const toggleOcr = (enabled: boolean) =>
+    savePreferences({ ocr_enabled: enabled }, "Đã lưu lựa chọn OCR");
+
+  const selectRagMode = (mode: RagMode) =>
+    savePreferences(
+      { rag_mode: mode },
+      mode === "simple" ? "Đã chọn RAG nhanh" : "Đã chọn Graph RAG",
+    );
+
+  const selectGraphModel = (model: string) =>
+    savePreferences(
+      { graph_model: model },
+      model ? `Graph RAG sẽ dùng ${model}` : "Graph RAG sẽ dùng mô hình chat mặc định",
+    );
+
+  const toggleWebSearch = (enabled: boolean) => {
+    setWebSearchProbe(undefined);
+    return savePreferences(
+      { web_search_enabled: enabled },
+      enabled
+        ? "Đã bật tìm kiếm web: câu hỏi sẽ được gửi ra ngoài máy"
+        : "Đã tắt tìm kiếm web",
+    );
+  };
+
+  const selectWebSearchBackend = (backend: WebSearchBackend) => {
+    setWebSearchProbe(undefined);
+    return savePreferences({ web_search_backend: backend }, "Đã chọn nguồn tìm kiếm");
+  };
+
+  const saveWebSearchUrl = () =>
+    savePreferences({ web_search_base_url: webSearchUrlDraft().trim() }, "Đã lưu địa chỉ SearXNG");
+
+  const saveWebSearchModel = () =>
+    savePreferences({ web_search_model: webSearchModelDraft().trim() }, "Đã lưu mô hình tìm kiếm");
+
+  const saveWebSearchKey = async () => {
+    const key = webSearchKeyDraft().trim();
+    if (!key) return;
+    await savePreferences({ web_search_api_key: key }, "Đã lưu API key");
+    setWebSearchKeyDraft("");
+  };
+
+  const clearWebSearchKey = () =>
+    savePreferences({ web_search_api_key: "" }, "Đã xóa API key đã lưu");
+
+  // The probe runs against the drafts on screen, so a wrong host shows up here and not
+  // in the middle of a conversation.
+  const runWebSearchProbe = async () => {
+    setWebSearchProbing(true);
+    setWebSearchProbe(undefined);
+    try {
+      setWebSearchProbe(await api.probeWebSearch({
+        backend: webSearchBackend(),
+        base_url: webSearchUrlDraft().trim(),
+        api_key: webSearchKeyDraft().trim(),
+        model: webSearchModelDraft().trim(),
+      }));
+    } catch (cause) {
+      setWebSearchProbe({
+        reachable: false,
+        result_count: 0,
+        host: "",
+        on_device: false,
+        detail: cause instanceof Error ? cause.message : "Không kiểm tra được kết nối",
+      });
+    } finally {
+      setWebSearchProbing(false);
+    }
+  };
+
+  const commitEmbeddingSetting = (
+    key: "embedding_batch_size" | "embedding_concurrency",
+    rawValue: string,
+  ) => {
+    const value = Number(rawValue);
+    const [minimum, maximum] = key === "embedding_batch_size" ? [1, 256] : [1, 32];
+    if (!Number.isInteger(value) || value < minimum || value > maximum) {
+      const current = preferences();
+      setEmbeddingBatchDraft(String(current?.embedding_batch_size ?? 32));
+      setEmbeddingConcurrencyDraft(String(current?.embedding_concurrency ?? 4));
+      setPreferencesError(`Giá trị phải là số nguyên từ ${minimum} đến ${maximum}`);
+      setPreferencesNotice("");
+      return;
+    }
+    void savePreferences(
+      { [key]: value },
+      "Đã áp dụng cấu hình embedding cho lần lập chỉ mục tiếp theo",
+    );
   };
   // createResource only skips a fetch for false/null/undefined, so an empty id would be
   // sent as a real request and leave both resources stuck in an error state.
@@ -471,6 +643,19 @@ function App() {
     chatModels().filter((model) => model.state !== "failed" && model.state !== "downloading"),
   );
   const serviceState = (name: string): ServiceState => health()?.services[name] ?? "offline";
+  const voiceModelLoaded = createMemo(() =>
+    Boolean(models()?.some((model) => model.model_type === "asr" && model.state === "loaded")),
+  );
+  const voiceReady = createMemo(() =>
+    serviceState("asr") === "online" && voiceModelLoaded(),
+  );
+  const voiceControlLabel = createMemo(() => {
+    if (recording()) return "Dừng ghi âm";
+    if (transcribing()) return "Đang nhận dạng giọng nói";
+    if (voiceReady()) return "Giọng nói sẵn sàng — bắt đầu ghi âm";
+    if (serviceState("asr") === "online") return "Nạp mô hình giọng nói để bắt đầu";
+    return "Giọng nói chưa sẵn sàng";
+  });
   const providerOnDevice = createMemo(() => Boolean(health()?.provider?.on_device));
   const providerStatus = createMemo(() => {
     const provider = health()?.provider;
@@ -555,11 +740,16 @@ function App() {
       });
     }
     if (summary.indexing) {
+      const firstIndexing = documentItems().find((document) =>
+        document.ingestion?.status === "processing"
+      );
       list.push({
         id: "documents-indexing",
         tone: "info",
         title: `${summary.indexing} tài liệu đang vào kho tri thức`,
-        detail: "OCR đã xong; LightRAG đang tạo embedding và graph memory.",
+        detail: firstIndexing
+          ? `${firstIndexing.filename}: ${documentStatusLabel(firstIndexing)}`
+          : "Đang tạo embedding và graph memory.",
         actionLabel: "Theo dõi tài liệu",
         onAction: () => setView("library"),
       });
@@ -674,6 +864,10 @@ function App() {
     setSidebarOpen(false);
   };
 
+  const focusComposer = () => {
+    window.requestAnimationFrame(() => composerInput?.focus());
+  };
+
   const newConversation = async () => {
     if (!activeWorkspace()) {
       setChatError("Hãy tạo một không gian làm việc trước.");
@@ -689,23 +883,44 @@ function App() {
       setActiveConversation(conversation.id);
       refetchConversations();
       refetchWorkspaces();
+      focusComposer();
     } catch (cause) {
       setChatError(cause instanceof Error ? cause.message : "Không thể tạo cuộc trò chuyện");
     }
   };
 
-  const handleWorkspaceSaved = (workspace: WorkspaceRecord) => {
+  const activateCreatedWorkspace = async (workspace: WorkspaceRecord) => {
+    // Start refreshing first so the workspace-selection effect does not compare against a
+    // stale list and jump back to the previous workspace.
+    const workspaceRefresh = refetchWorkspaces();
     setActiveWorkspace(workspace.id);
     setActiveConversation("");
     setMessages([]);
+    setDraft("");
+    setChatError("");
     setView("chat");
-    refetchWorkspaces();
+    setSidebarOpen(false);
+    changeDocumentFilter("", "");
+    try {
+      const conversation = await api.createConversation(workspace.id, selectedModel());
+      setActiveConversation(conversation.id);
+      await Promise.allSettled([workspaceRefresh, refetchConversations()]);
+    } catch (cause) {
+      await Promise.allSettled([workspaceRefresh]);
+      setChatError(
+        cause instanceof Error ? cause.message : "Không thể tạo cuộc trò chuyện đầu tiên",
+      );
+    } finally {
+      focusComposer();
+    }
   };
 
-  // Trong màn hình quản lý, lưu xong thì ở lại danh sách thay vì nhảy về chat.
-  const handleWorkspaceManaged = (workspace: WorkspaceRecord) => {
-    refetchWorkspaces();
-    if (!activeWorkspace()) setActiveWorkspace(workspace.id);
+  const handleWorkspaceSaved = (workspace: WorkspaceRecord, created: boolean) => {
+    if (created) {
+      void activateCreatedWorkspace(workspace);
+      return;
+    }
+    void refetchWorkspaces();
   };
 
   const handleWorkspaceDeleted = async (id: string) => {
@@ -756,7 +971,11 @@ function App() {
 
   createEffect(() => {
     const items = workspaceList();
-    if (!items || items.some((workspace) => workspace.id === activeWorkspace())) return;
+    if (
+      !items ||
+      workspaceList.loading ||
+      items.some((workspace) => workspace.id === activeWorkspace())
+    ) return;
     setActiveWorkspace(items[0]?.id ?? "");
   });
 
@@ -820,6 +1039,7 @@ function App() {
     setMessages([...nextMessages, { role: "assistant", content: "" }]);
     setDraft("");
     setChatError("");
+    setActiveTool("");
     setSending(true);
     const controller = new AbortController();
     let renderFrame: number | undefined;
@@ -830,6 +1050,8 @@ function App() {
         conversationId,
         selectedModel(),
         text,
+        ragMode(),
+        webSearchEnabled(),
         (content) => {
           streamedAnswer += content;
           if (renderFrame === undefined) {
@@ -841,6 +1063,12 @@ function App() {
             });
           }
         },
+        (message) => notify({
+          tone: "info",
+          title: "Tìm kiếm web không dùng được",
+          description: message,
+        }),
+        (name) => setActiveTool(name),
         controller.signal,
       );
       if (renderFrame !== undefined) window.cancelAnimationFrame(renderFrame);
@@ -861,6 +1089,7 @@ function App() {
     } finally {
       if (renderFrame !== undefined) window.cancelAnimationFrame(renderFrame);
       if (activeChatController === controller) activeChatController = undefined;
+      setActiveTool("");
       setSending(false);
       refetchHealth();
       refetchConversations();
@@ -1030,6 +1259,7 @@ function App() {
           streaming?: boolean;
         };
         if (result.type === "ready") {
+          void refetchModels();
           void beginVoiceCapture(Boolean(result.streaming));
         } else if (result.type === "partial") {
           setDraft(voiceText(result.display ?? ""));
@@ -1262,7 +1492,7 @@ function App() {
                             <div class="message-author"><span>{message().role === "user" ? initialsOf(profileName() || "Bạn") : "AI"}</span><strong>{message().role === "user" ? (profileName() || "Bạn") : "Private AI"}</strong></div>
                             <Show
                               when={message().content}
-                              fallback={<div class="thinking"><i /><i /><i /><span>Đang suy nghĩ</span></div>}
+                              fallback={<div class="thinking"><i /><i /><i /><span>{activeTool() ? `Đang dùng ${activeTool()}` : "Đang suy nghĩ"}</span></div>}
                             >
                               <div class="message-content">
                                 <Markdown content={message().content} />
@@ -1286,7 +1516,7 @@ function App() {
                   <div class="composer-wrap">
                     <Show when={chatError()}><div class="inline-error" role="alert">{chatError()}</div></Show>
                     <form class="composer" onSubmit={(event) => { event.preventDefault(); void submitMessage(); }}>
-                      <textarea value={draft()} onInput={(event) => setDraft(event.currentTarget.value)} onKeyDown={handleComposerKeyDown} placeholder="Nhập câu hỏi cho Private AI…" aria-label="Tin nhắn" rows={2} />
+                      <textarea ref={(element) => { composerInput = element; }} value={draft()} onInput={(event) => setDraft(event.currentTarget.value)} onKeyDown={handleComposerKeyDown} placeholder="Nhập câu hỏi cho Private AI…" aria-label="Tin nhắn" rows={2} />
                       <div class="composer-tools">
                         <div>
                           <ModelPicker
@@ -1296,17 +1526,57 @@ function App() {
                             onSelect={chooseChatModel}
                             onManage={() => { setView("settings"); setSettingsTab("models"); }}
                           />
-                          <button type="button" onClick={() => openUpload()} aria-label="Đính kèm tài liệu"><Paperclip size={20} /><span>Đính kèm</span></button>
+                          <label
+                            class="rag-mode-control"
+                            title={ragMode() === "simple"
+                              ? "Tìm trực tiếp theo các đoạn gần nghĩa; phản hồi nhanh hơn"
+                              : "Kết hợp đoạn văn với thực thể và quan hệ trong knowledge graph"}
+                          >
+                            <Waypoints size={17} aria-hidden="true" />
+                            <select
+                              value={ragMode()}
+                              disabled={sending()}
+                              aria-label="Chế độ truy xuất tài liệu"
+                              onChange={(event) => void selectRagMode(event.currentTarget.value as RagMode)}
+                            >
+                              <option value="simple">RAG nhanh</option>
+                              <option value="graph">Graph RAG</option>
+                            </select>
+                          </label>
                           <button
                             type="button"
-                            classList={{ "recording-button": recording() }}
-                            disabled={sending() || transcribing()}
-                            onClick={() => void toggleRecording()}
-                            aria-label={recording() ? "Dừng ghi âm" : "Nhập bằng giọng nói"}
-                            aria-pressed={recording()}
+                            classList={{ "web-search-toggle": true, active: webSearchEnabled() }}
+                            disabled={sending() || preferences.loading || preferencesSaving()}
+                            aria-pressed={webSearchEnabled()}
+                            aria-label={webSearchEnabled() ? "Tắt tìm kiếm web" : "Bật tìm kiếm web"}
+                            title={webSearchEnabled()
+                              ? "Câu hỏi sẽ được gửi tới nguồn tìm kiếm đã chọn trong Cài đặt"
+                              : "Tra cứu trên web trước khi trả lời. Câu hỏi sẽ rời khỏi máy này."}
+                            onClick={() => void toggleWebSearch(!webSearchEnabled())}
                           >
-                            {recording() ? <Square size={17} fill="currentColor" /> : <Mic2 size={20} />}
-                            <span>{recording() ? "Dừng ghi" : transcribing() ? "Đang nhận dạng" : "Giọng nói"}</span>
+                            <Globe size={19} aria-hidden="true" />
+                            <span>{webSearchEnabled() ? "Web: bật" : "Tìm web"}</span>
+                          </button>
+                          <button type="button" onClick={() => openUpload()} aria-label="Đính kèm tài liệu"><Paperclip size={20} /></button>
+                          <button
+                            type="button"
+                            classList={{
+                              "voice-button": true,
+                              // "voice-ready": voiceReady() && !recording() && !transcribing(),
+                              "voice-recording": recording(),
+                              "voice-processing": transcribing(),
+                              "voice-unavailable": serviceState("asr") !== "online",
+                            }}
+                            disabled={sending() || transcribing() || serviceState("asr") !== "online"}
+                            onClick={() => void toggleRecording()}
+                            aria-label={voiceControlLabel()}
+                            aria-busy={transcribing()}
+                            aria-pressed={recording()}
+                            title={voiceControlLabel()}
+                          >
+                            <span class="voice-wave" aria-hidden="true">
+                              <i /><i /><i /><i /><i />
+                            </span>
                           </button>
                         </div>
                         <Show
@@ -1317,7 +1587,14 @@ function App() {
                         </Show>
                       </div>
                     </form>
-                    <p>Enter để gửi · Shift + Enter để xuống dòng</p>
+                    <p>
+                      Enter để gửi · Shift + Enter để xuống dòng · {ragMode() === "simple"
+                        ? "RAG nhanh tìm theo đoạn"
+                        : "Graph RAG suy luận theo quan hệ"}
+                      <Show when={webSearchEnabled()}>
+                        {" · "}<strong>Tìm kiếm web đang bật: câu hỏi được gửi tới {webSearchBackendLabel(webSearchBackend())}</strong>
+                      </Show>
+                    </p>
                   </div>
                 </section>
 
@@ -1357,7 +1634,16 @@ function App() {
                             <strong>{document.filename}</strong>
                             <small>{documentStatusLabel(document)}</small>
                             <Show when={isDocumentBusy(document)}>
-                              <i class="context-document-progress" aria-hidden="true" />
+                              <i
+                                class="context-document-progress"
+                                role="progressbar"
+                                aria-label={`Tiến độ ${document.filename}`}
+                                aria-valuemin="0"
+                                aria-valuemax="100"
+                                aria-valuenow={Math.round((document.ingestion?.progress ?? 0.08) * 100)}
+                              >
+                                <span style={{ transform: `scaleX(${document.ingestion?.progress ?? 0.08})` }} />
+                              </i>
                             </Show>
                           </span>
                         </button>
@@ -1400,9 +1686,6 @@ function App() {
                   </section>
                   <section class="context-block"><h2>Trạng thái hệ thống</h2><dl class="service-list">
                     <div><dt><StatusPip state={serviceState("provider")} /> Nhà cung cấp AI</dt><dd>{providerStatus()}</dd></div>
-                    <Show when={providerOnDevice()}>
-                      <div><dt><StatusPip state={serviceState("local_runtime")} /> Máy chủ cục bộ</dt><dd>{serviceState("local_runtime") === "online" ? "Sẵn sàng" : "Ngoại tuyến"}</dd></div>
-                    </Show>
                     <div><dt><StatusPip state={serviceState("knowledge_graph")} /> Kho tri thức</dt><dd>{serviceState("knowledge_graph") === "online" ? "Sẵn sàng" : "Chưa dựng"}</dd></div>
                     <div><dt><StatusPip state={serviceState("asr")} /> Giọng nói</dt><dd>{serviceState("asr") === "online" ? "Sẵn sàng" : "Chưa cấu hình"}</dd></div>
                   </dl></section>
@@ -1435,7 +1718,7 @@ function App() {
                 activeId={activeWorkspace()}
                 loading={workspaceList.loading}
                 onOpen={(id) => { chooseWorkspace(id); setView("chat"); }}
-                onSaved={handleWorkspaceManaged}
+                onSaved={handleWorkspaceSaved}
                 onDeleted={(id) => void handleWorkspaceDeleted(id)}
               />
             </Match>
@@ -1483,23 +1766,230 @@ function App() {
                     <Switch>
                       <Match when={settingsTab() === "general"}>
                         <div class="settings-sections">
+                          <Show when={preferencesError() || preferencesNotice()}>
+                            <div
+                              classList={{
+                                "settings-feedback": true,
+                                error: Boolean(preferencesError()),
+                              }}
+                              role={preferencesError() ? "alert" : "status"}
+                            >{preferencesError() || preferencesNotice()}</div>
+                          </Show>
                           <section><div><strong>Giao diện</strong><span>Chọn nền sáng dễ đọc hoặc nền tối.</span></div><div class="segmented-control settings-control"><button classList={{ active: theme() === "light" }} onClick={() => setTheme("light")}>Sáng</button><button classList={{ active: theme() === "dark" }} onClick={() => setTheme("dark")}>Tối</button></div></section>
                           <section><div><strong>Cỡ chữ</strong><span>Tăng toàn bộ chữ và vùng điều khiển.</span></div><button classList={{ "button": true, "button-secondary": true, active: fontScale() === "large" }} onClick={() => setFontScale(fontScale() === "large" ? "normal" : "large")}><Type size={18} />{fontScale() === "large" ? "Đang dùng chữ lớn" : "Bật chữ lớn"}</button></section>
                           <section>
                             <div>
                               <strong>Đọc văn bản bằng OCR</strong>
                               <span>Bật plugin OCR, mô hình OCR và Tesseract khi tệp không có lớp văn bản. Tắt thì chỉ đọc văn bản có sẵn, nhanh hơn nhưng bỏ qua tài liệu scan.</span>
-                              <Show when={ocrError()}><span class="settings-error">{ocrError()}</span></Show>
                             </div>
                             <label class="settings-checkbox">
                               <input
                                 type="checkbox"
                                 checked={preferences()?.ocr_enabled ?? true}
-                                disabled={preferences.loading}
+                                disabled={preferences.loading || preferencesSaving()}
                                 onChange={(event) => void toggleOcr(event.currentTarget.checked)}
                               />
                               <span>{(preferences()?.ocr_enabled ?? true) ? "Đang bật" : "Đang tắt"}</span>
                             </label>
+                          </section>
+                          <section>
+                            <div>
+                              <strong>Chế độ RAG mặc định</strong>
+                              <span>RAG nhanh chỉ tạo vector, không gọi LLM. Graph RAG thêm thực thể và quan hệ để trả lời câu hỏi nhiều bước.</span>
+                            </div>
+                            <div class="rag-settings-control">
+                              <div class="segmented-control settings-control" role="group" aria-label="Chế độ RAG mặc định">
+                                <button
+                                  type="button"
+                                  classList={{ active: ragMode() === "simple" }}
+                                  disabled={preferences.loading || preferencesSaving()}
+                                  aria-pressed={ragMode() === "simple"}
+                                  onClick={() => void selectRagMode("simple")}
+                                >RAG nhanh</button>
+                                <button
+                                  type="button"
+                                  classList={{ active: ragMode() === "graph" }}
+                                  disabled={preferences.loading || preferencesSaving()}
+                                  aria-pressed={ragMode() === "graph"}
+                                  onClick={() => void selectRagMode("graph")}
+                                >Graph RAG</button>
+                              </div>
+                              <Show when={ragMode() === "graph"}>
+                                <div class="rag-graph-config">
+                                  <label class="field-label" for="graph-rag-model">LLM trích xuất graph</label>
+                                  <select
+                                    id="graph-rag-model"
+                                    class="text-input"
+                                    value={graphModel()}
+                                    disabled={preferences.loading || preferencesSaving() || usableChatModels().length === 0}
+                                    onChange={(event) => void selectGraphModel(event.currentTarget.value)}
+                                  >
+                                    <option value="">Mô hình chat mặc định</option>
+                                    <Show when={graphModel() && !usableChatModels().some((model) => model.name === graphModel())}>
+                                      <option value={graphModel()}>{graphModel()} · hiện không khả dụng</option>
+                                    </Show>
+                                    <For each={usableChatModels()}>{(model) => (
+                                      <option value={model.name}>{model.name}</option>
+                                    )}</For>
+                                  </select>
+                                  <p>Chọn model nhỏ cho bước trích xuất thực thể. Model trả lời chat không bị thay đổi.</p>
+                                </div>
+                              </Show>
+                            </div>
+                          </section>
+                          <section class="web-search-section">
+                            <div>
+                              <strong>Tìm kiếm web</strong>
+                              <span>
+                                Đây là tính năng duy nhất khiến câu hỏi rời khỏi máy này: nội dung tin nhắn
+                                được gửi tới nguồn tìm kiếm bên dưới. Tài liệu, bộ nhớ và tri thức vẫn ở lại máy.
+                              </span>
+                              <label class="settings-checkbox">
+                                <input
+                                  type="checkbox"
+                                  checked={webSearchEnabled()}
+                                  disabled={preferences.loading || preferencesSaving()}
+                                  onChange={(event) => void toggleWebSearch(event.currentTarget.checked)}
+                                />
+                                <span>{webSearchEnabled() ? "Đang bật" : "Đang tắt"}</span>
+                              </label>
+                            </div>
+                            <div class="web-search-config">
+                              <div class="segmented-control settings-control" role="group" aria-label="Nguồn tìm kiếm web">
+                                <For each={webSearchBackends}>{(backend) => (
+                                  <button
+                                    type="button"
+                                    classList={{ active: webSearchBackend() === backend.id }}
+                                    disabled={preferences.loading || preferencesSaving()}
+                                    aria-pressed={webSearchBackend() === backend.id}
+                                    onClick={() => void selectWebSearchBackend(backend.id)}
+                                  >{backend.label}</button>
+                                )}</For>
+                              </div>
+                              <p class="web-search-hint">
+                                {webSearchBackends.find((item) => item.id === webSearchBackend())?.hint}
+                              </p>
+                              <Show when={webSearchBackend() === "searxng"}>
+                                <label class="field-label" for="web-search-url">Địa chỉ SearXNG</label>
+                                <input
+                                  id="web-search-url"
+                                  class="text-input"
+                                  type="url"
+                                  placeholder="http://127.0.0.1:8888"
+                                  value={webSearchUrlDraft()}
+                                  disabled={preferences.loading || preferencesSaving()}
+                                  onInput={(event) => setWebSearchUrlDraft(event.currentTarget.value)}
+                                  onChange={() => void saveWebSearchUrl()}
+                                />
+                                <p class="web-search-hint">
+                                  SearXNG chỉ trả HTML cho tới khi bạn thêm <code>json</code> vào
+                                  <code> search.formats</code> trong <code>settings.yml</code>.
+                                </p>
+                              </Show>
+                              <Show when={webSearchBackend() === "openai"}>
+                                <label class="field-label" for="web-search-key">OpenAI API key</label>
+                                <div class="web-search-key-row">
+                                  <input
+                                    id="web-search-key"
+                                    class="text-input"
+                                    type="password"
+                                    autocomplete="off"
+                                    placeholder={preferences()?.web_search_has_api_key ? "Đã lưu một API key" : "sk-…"}
+                                    value={webSearchKeyDraft()}
+                                    disabled={preferences.loading || preferencesSaving()}
+                                    onInput={(event) => setWebSearchKeyDraft(event.currentTarget.value)}
+                                  />
+                                  <button
+                                    class="button button-secondary"
+                                    type="button"
+                                    disabled={!webSearchKeyDraft().trim() || preferencesSaving()}
+                                    onClick={() => void saveWebSearchKey()}
+                                  >Lưu key</button>
+                                  <Show when={preferences()?.web_search_has_api_key}>
+                                    <button
+                                      class="button button-secondary"
+                                      type="button"
+                                      disabled={preferencesSaving()}
+                                      onClick={() => void clearWebSearchKey()}
+                                    >Xóa key</button>
+                                  </Show>
+                                </div>
+                                <label class="field-label field-spaced" for="web-search-model">Mô hình chạy tìm kiếm</label>
+                                <input
+                                  id="web-search-model"
+                                  class="text-input"
+                                  placeholder="gpt-5"
+                                  value={webSearchModelDraft()}
+                                  disabled={preferences.loading || preferencesSaving()}
+                                  onInput={(event) => setWebSearchModelDraft(event.currentTarget.value)}
+                                  onChange={() => void saveWebSearchModel()}
+                                />
+                                <p class="web-search-hint">
+                                  OpenAI tính khoảng 10 USD cho mỗi 1.000 lượt tìm, chưa kể token của nội dung trả về.
+                                </p>
+                              </Show>
+                              <div class="web-search-actions">
+                                <button
+                                  class="button button-secondary"
+                                  type="button"
+                                  disabled={webSearchProbing() || preferences.loading}
+                                  onClick={() => void runWebSearchProbe()}
+                                >{webSearchProbing() ? "Đang kiểm tra…" : "Kiểm tra kết nối"}</button>
+                                <Show when={webSearchProbe()}>
+                                  <span
+                                    classList={{ "field-status": Boolean(webSearchProbe()?.reachable), "field-error": !webSearchProbe()?.reachable }}
+                                    role="status"
+                                  >
+                                    {webSearchProbe()?.reachable
+                                      ? `${webSearchProbe()?.host} trả về ${webSearchProbe()?.result_count} kết quả` +
+                                        (webSearchProbe()?.on_device ? " · chạy trên máy này" : " · dữ liệu rời khỏi máy")
+                                      : webSearchProbe()?.detail ?? "Không kết nối được"}
+                                  </span>
+                                </Show>
+                              </div>
+                            </div>
+                          </section>
+                          <section>
+                            <div>
+                              <strong>Hiệu năng embedding</strong>
+                              <span>Tăng dần nếu máy còn RAM/VRAM. Giá trị quá cao có thể làm mô hình chậm hoặc hết bộ nhớ.</span>
+                            </div>
+                            <div class="settings-number-grid">
+                              <label for="embedding-batch-size">
+                                <span>Kích thước lô</span>
+                                <input
+                                  id="embedding-batch-size"
+                                  type="number"
+                                  min="1"
+                                  max="256"
+                                  step="1"
+                                  inputmode="numeric"
+                                  value={embeddingBatchDraft()}
+                                  disabled={preferences.loading || preferencesSaving()}
+                                  aria-describedby="embedding-batch-help"
+                                  onInput={(event) => setEmbeddingBatchDraft(event.currentTarget.value)}
+                                  onChange={() => commitEmbeddingSetting("embedding_batch_size", embeddingBatchDraft())}
+                                />
+                                <small id="embedding-batch-help">1–256 đoạn mỗi lô</small>
+                              </label>
+                              <label for="embedding-concurrency">
+                                <span>Tác vụ song song</span>
+                                <input
+                                  id="embedding-concurrency"
+                                  type="number"
+                                  min="1"
+                                  max="32"
+                                  step="1"
+                                  inputmode="numeric"
+                                  value={embeddingConcurrencyDraft()}
+                                  disabled={preferences.loading || preferencesSaving()}
+                                  aria-describedby="embedding-concurrency-help"
+                                  onInput={(event) => setEmbeddingConcurrencyDraft(event.currentTarget.value)}
+                                  onChange={() => commitEmbeddingSetting("embedding_concurrency", embeddingConcurrencyDraft())}
+                                />
+                                <small id="embedding-concurrency-help">1–32 yêu cầu đồng thời</small>
+                              </label>
+                            </div>
                           </section>
                           <section><div><strong>Nhà cung cấp đang dùng</strong><span>Nơi mô hình thực sự chạy cho phiên làm việc này.</span></div><div class="settings-control"><StatusPip state={health()?.services.provider ?? "offline"} /> {health.loading ? "Đang kiểm tra…" : (health()?.provider?.name ?? "Chưa cấu hình")}</div></section>
                         </div>

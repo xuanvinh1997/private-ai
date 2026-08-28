@@ -14,10 +14,14 @@ import type {
   ModelInfo,
   ModelEvent,
   Preferences,
+  PreferencesUpdate,
   ProviderDraft,
   ProviderProbeResult,
   ProviderRecord,
   ProfileRecord,
+  RagMode,
+  WebSearchDraft,
+  WebSearchProbeResult,
   WorkspaceRecord,
 } from "./types";
 
@@ -69,7 +73,7 @@ export const api = {
   deleteProfile: (id: string) =>
     request<void>(`/profiles/${id}?confirmed=true`, { method: "DELETE" }),
   preferences: () => request<Preferences>("/preferences"),
-  updatePreferences: (changes: Partial<Preferences>) =>
+  updatePreferences: (changes: PreferencesUpdate) =>
     request<Preferences>("/preferences", {
       method: "PATCH",
       headers: { "content-type": "application/json" },
@@ -246,23 +250,39 @@ export const api = {
       body: JSON.stringify({ title: "Cuộc trò chuyện mới", model: model || null }),
     }),
   conversation: (id: string) => request<ConversationDetail>(`/conversations/${id}`),
-  chatConversation: (id: string, model: string, content: string) =>
+  chatConversation: (
+    id: string,
+    model: string,
+    content: string,
+    ragMode: RagMode = "simple",
+    webSearch = false,
+  ) =>
     request<ConversationDetail>(`/conversations/${id}/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model, content }),
+      body: JSON.stringify({ model, content, rag_mode: ragMode, web_search: webSearch }),
+    }),
+  probeWebSearch: (draft: WebSearchDraft) =>
+    request<WebSearchProbeResult>("/preferences/web-search/probe", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(draft),
     }),
   streamConversation: async (
     id: string,
     model: string,
     content: string,
+    ragMode: RagMode,
+    webSearch: boolean,
     onDelta: (content: string) => void,
+    onNotice: (message: string) => void,
+    onTool: (name: string) => void,
     signal: AbortSignal,
   ): Promise<ConversationDetail> => {
     const response = await fetch(`/api/v1/conversations/${id}/chat/stream`, {
       method: "POST",
       headers: { "content-type": "application/json", accept: "text/event-stream" },
-      body: JSON.stringify({ model, content }),
+      body: JSON.stringify({ model, content, rag_mode: ragMode, web_search: webSearch }),
       signal,
     });
     if (!response.ok) {
@@ -283,12 +303,18 @@ export const api = {
         .join("\n");
       if (!data) return;
       const event = JSON.parse(data) as {
-        type: "delta" | "done" | "error";
+        type: "delta" | "done" | "error" | "notice" | "tool";
         content?: string;
         message?: string;
+        name?: string;
         conversation?: ConversationDetail;
       };
       if (event.type === "delta" && event.content) onDelta(event.content);
+      // A notice means something optional failed — web search, so far — and the answer
+      // still arrives, so it must not abort the stream the way an error does.
+      if (event.type === "notice" && event.message) onNotice(event.message);
+      // The model reached for a local tool; say so, or the pause looks like a hang.
+      if (event.type === "tool" && event.name) onTool(event.name);
       if (event.type === "done" && event.conversation) completed = event.conversation;
       if (event.type === "error") throw new Error(event.message ?? "Chat stream failed");
     };

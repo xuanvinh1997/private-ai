@@ -36,6 +36,37 @@ export interface ProfileRecord {
 
 export interface Preferences {
   ocr_enabled: boolean;
+  rag_mode: RagMode;
+  graph_model: string;
+  embedding_batch_size: number;
+  embedding_concurrency: number;
+  web_search_enabled: boolean;
+  web_search_backend: WebSearchBackend;
+  web_search_base_url: string;
+  web_search_model: string;
+  web_search_max_results: number;
+  web_search_has_api_key: boolean;
+}
+
+/** The PATCH body: everything in the record, plus the key the record only reports on. */
+export type PreferencesUpdate = Partial<Preferences> & { web_search_api_key?: string };
+
+/** Ordered from most to least private: a server you run, then DuckDuckGo, then OpenAI. */
+export type WebSearchBackend = "searxng" | "duckduckgo" | "openai";
+
+export interface WebSearchDraft {
+  backend: WebSearchBackend;
+  base_url: string;
+  api_key: string;
+  model: string;
+}
+
+export interface WebSearchProbeResult {
+  reachable: boolean;
+  result_count: number;
+  host: string;
+  on_device: boolean;
+  detail?: string | null;
 }
 
 export type ProviderKind = "ollama" | "openai";
@@ -138,6 +169,25 @@ export interface ConversationDetail extends ConversationRecord {
   messages: PersistedMessage[];
 }
 
+export type RagMode = "simple" | "graph";
+
+export interface IngestionProgress {
+  id: string;
+  status: "processing" | "completed" | "failed" | "needs_ocr";
+  progress: number;
+  step: "queued" | "extracting" | "normalizing" | "chunking" | "embedding" | "graph" | "multimodal" | "finalizing" | "completed" | "failed" | "needs_ocr";
+  detail: string;
+  index_mode: RagMode;
+  graph_model?: string;
+  engine?: "rag-anything" | "lightrag" | "vector";
+  embedded_vectors: number;
+  estimated_chunks: number;
+  vectors_per_second: number;
+  elapsed_seconds: number;
+  error?: string | null;
+  updated_at: string;
+}
+
 export interface DocumentRecord {
   id: string;
   workspace_id: string;
@@ -148,10 +198,13 @@ export interface DocumentRecord {
   status: "queued" | "processing" | "ready" | "needs_ocr" | "failed";
   extracted_text?: string;
   use_ocr?: boolean | null;
+  index_mode: RagMode;
+  graph_model?: string | null;
   error?: string;
   indexed_at?: string | null;
   created_at: string;
   updated_at: string;
+  ingestion?: IngestionProgress;
 }
 
 export interface DocumentPage {

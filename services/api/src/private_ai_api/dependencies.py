@@ -13,6 +13,8 @@ from private_ai_api.services.lightrag_store import LightRagStore
 from private_ai_api.services.memory_service import MemoryService
 from private_ai_api.services.ollama import OllamaClient
 from private_ai_api.services.provider_registry import ProviderRegistry, ProviderRouter
+from private_ai_api.services.tool_calling import McpToolBridge
+from private_ai_api.services.web_search import WebSearchService
 
 
 @dataclass(slots=True)
@@ -27,6 +29,9 @@ class AppServices:
     lightrag: LightRagStore
     memory_service: MemoryService
     asr: AsrService
+    web_search: WebSearchService
+    # Filled in after the services exist, because the tool server is built on top of them.
+    tools: McpToolBridge | None = None
 
 
 def get_services(request: Request) -> AppServices:

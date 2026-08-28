@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 from datetime import UTC, datetime
 from pathlib import Path
@@ -21,6 +22,7 @@ from fastapi import (
 )
 
 from private_ai_api.dependencies import AppServices, get_services
+from private_ai_api.services.app_preferences import read_app_preferences
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -39,6 +41,61 @@ def _require_workspace(services: AppServices, workspace_id: str) -> None:
     )
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+
+def _with_ingestion(
+    services: AppServices,
+    documents: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not documents:
+        return []
+    document_ids = [str(document["id"]) for document in documents]
+    placeholders = ",".join("?" for _ in document_ids)
+    jobs = services.database.fetch_all(
+        f"SELECT * FROM jobs WHERE document_id IN ({placeholders}) "  # noqa: S608
+        "ORDER BY updated_at DESC",
+        tuple(document_ids),
+    )
+    latest: dict[str, dict[str, Any]] = {}
+    for job in jobs:
+        document_id = str(job.get("document_id") or "")
+        if document_id and document_id not in latest:
+            latest[document_id] = job
+
+    decorated: list[dict[str, Any]] = []
+    for document in documents:
+        item = dict(document)
+        job = latest.get(str(item["id"]))
+        if job:
+            try:
+                payload = json.loads(str(job.get("payload_json") or "{}"))
+            except json.JSONDecodeError:
+                payload = {}
+            item["ingestion"] = {
+                "id": job["id"],
+                "status": job["status"],
+                "progress": float(job["progress"]),
+                "step": payload.get("step", "queued"),
+                "detail": payload.get("detail", ""),
+                "index_mode": payload.get("index_mode", item.get("index_mode", "simple")),
+                "graph_model": payload.get("graph_model", item.get("graph_model") or ""),
+                "engine": payload.get("engine", "lightrag"),
+                "embedded_vectors": int(payload.get("embedded_vectors", 0) or 0),
+                "estimated_chunks": int(payload.get("estimated_chunks", 0) or 0),
+                "vectors_per_second": float(payload.get("vectors_per_second", 0) or 0),
+                "elapsed_seconds": float(payload.get("elapsed_seconds", 0) or 0),
+                "error": job.get("error"),
+                "updated_at": job["updated_at"],
+            }
+        decorated.append(item)
+    return decorated
+
+
+def _with_document_ingestion(
+    services: AppServices,
+    document: dict[str, Any],
+) -> dict[str, Any]:
+    return _with_ingestion(services, [document])[0]
 
 
 @router.get("")
@@ -81,10 +138,13 @@ def list_documents(
         """,
         (workspace_id,),
     )
-    items = services.database.fetch_all(
-        f"SELECT * FROM documents WHERE {where} "  # noqa: S608
-        "ORDER BY created_at DESC LIMIT ? OFFSET ?",
-        (*parameters, page_size, start),
+    items = _with_ingestion(
+        services,
+        services.database.fetch_all(
+            f"SELECT * FROM documents WHERE {where} "  # noqa: S608
+            "ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            (*parameters, page_size, start),
+        ),
     )
     return {
         "items": items,
@@ -116,7 +176,7 @@ def get_document(
     document = services.database.fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,))
     if not document:
         raise HTTPException(status_code=404, detail="Document not found")
-    return document
+    return _with_document_ingestion(services, document)
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -160,7 +220,7 @@ async def upload_document(
     )
     if duplicate:
         shutil.rmtree(target_dir, ignore_errors=True)
-        return duplicate
+        return _with_document_ingestion(services, duplicate)
 
     extension = target_path.suffix.lower()
     extracted_text: str | None = None
@@ -169,13 +229,16 @@ async def upload_document(
         extracted_text = target_path.read_text(encoding="utf-8", errors="replace")
         document_status = "ready"
 
+    preferences = read_app_preferences(services.database)
+    index_mode = preferences.rag_mode.value
+    graph_model = preferences.graph_model if index_mode == "graph" else None
     now = datetime.now(UTC).isoformat()
     services.database.execute(
         """
         INSERT INTO documents(
             id, workspace_id, filename, media_type, sha256, byte_size, status, source_path,
-            extracted_text, use_ocr, error, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+            extracted_text, use_ocr, index_mode, graph_model, error, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
         """,
         (
             document_id,
@@ -188,6 +251,8 @@ async def upload_document(
             str(target_path),
             extracted_text,
             None if use_ocr is None else int(use_ocr),
+            index_mode,
+            graph_model,
             now,
             now,
         ),
@@ -196,7 +261,8 @@ async def upload_document(
         background_tasks.add_task(services.document_processor.index_document, document_id)
     if document_status == "queued":
         background_tasks.add_task(services.document_processor.process, document_id)
-    return services.database.fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,)) or {}
+    created = services.database.fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,))
+    return _with_document_ingestion(services, created) if created else {}
 
 
 @router.post("/{document_id}/process", status_code=status.HTTP_202_ACCEPTED)

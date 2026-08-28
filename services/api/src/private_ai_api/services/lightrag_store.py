@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import re
 from collections.abc import Callable
+from contextvars import ContextVar
+from dataclasses import dataclass
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 import numpy as np
@@ -16,11 +20,68 @@ from private_ai_api.database import Database
 from private_ai_api.schemas import ChatMessage, ChatRequest
 from private_ai_api.services.provider import ProviderUnavailable
 from private_ai_api.services.provider_registry import ProviderRouter
+from private_ai_api.services.rag_anything import (
+    RagAnythingOrchestrator,
+    RagAnythingUnavailable,
+)
 
 logger = logging.getLogger(__name__)
 
 WORKSPACE_SAFE = re.compile(r"[^A-Za-z0-9_-]+")
 PROBE_TEXT = "private ai"
+ProgressCallback = Callable[[dict[str, object]], None]
+
+
+@dataclass(slots=True)
+class _IndexTracker:
+    callback: ProgressCallback
+    estimated_chunks: int
+    started_at: float
+    embedded_vectors: int = 0
+    graph_calls: int = 0
+    progress: float = 0.45
+
+    def emit(self, step: str, progress: float, detail: str) -> None:
+        self.progress = max(self.progress, progress)
+        elapsed = max(monotonic() - self.started_at, 0.001)
+        self.callback(
+            {
+                "step": step,
+                "progress": min(self.progress, 0.97),
+                "detail": detail,
+                "embedded_vectors": self.embedded_vectors,
+                "estimated_chunks": self.estimated_chunks,
+                "vectors_per_second": self.embedded_vectors / elapsed,
+                "elapsed_seconds": elapsed,
+            }
+        )
+
+    def embedded(self, count: int) -> None:
+        self.embedded_vectors += count
+        ratio = min(self.embedded_vectors / max(self.estimated_chunks, 1), 1.0)
+        self.emit(
+            "embedding",
+            0.5 + ratio * 0.24,
+            f"Đã tạo {self.embedded_vectors} vector embedding",
+        )
+
+    def graph_started(self) -> None:
+        self.graph_calls += 1
+        self.emit(
+            "graph",
+            min(0.78 + self.graph_calls * 0.015, 0.94),
+            f"Đang trích xuất thực thể và quan hệ · lượt {self.graph_calls}",
+        )
+
+
+_ACTIVE_INDEX: ContextVar[_IndexTracker | None] = ContextVar(
+    "private_ai_active_index",
+    default=None,
+)
+_ACTIVE_GRAPH_MODEL: ContextVar[str] = ContextVar(
+    "private_ai_active_graph_model",
+    default="",
+)
 
 
 def default_model(database: Database, task: str, fallback: str = "") -> str:
@@ -42,6 +103,9 @@ def _make_embed(ai: ProviderRouter, model: str) -> Callable[[list[str]], Any]:
 
     async def embed(texts: list[str]) -> np.ndarray:
         vectors = await ai.embed(model, list(texts))
+        tracker = _ACTIVE_INDEX.get()
+        if tracker is not None:
+            tracker.embedded(len(texts))
         return np.array(vectors, dtype=np.float32)
 
     return embed
@@ -54,6 +118,9 @@ def _make_complete(ai: ProviderRouter, resolve_model: Callable[[], str]) -> Call
         history_messages: list[dict[str, Any]] | None = None,
         **_: Any,
     ) -> str:
+        tracker = _ACTIVE_INDEX.get()
+        if tracker is not None:
+            tracker.graph_started()
         messages = [
             *([ChatMessage(role="system", content=system_prompt)] if system_prompt else []),
             *(
@@ -62,8 +129,9 @@ def _make_complete(ai: ProviderRouter, resolve_model: Callable[[], str]) -> Call
             ),
             ChatMessage(role="user", content=prompt),
         ]
+        model = _ACTIVE_GRAPH_MODEL.get() or resolve_model()
         result = await ai.chat(
-            ChatRequest(model=resolve_model(), messages=messages, options={"temperature": 0})
+            ChatRequest(model=model, messages=messages, options={"temperature": 0})
         )
         return str(result.get("message", {}).get("content", ""))
 
@@ -91,20 +159,27 @@ class LightRagStore:
         *,
         embedding_model: str,
         resolve_chat_model: Callable[[], str],
+        resolve_graph_model: Callable[[], str] | None = None,
         enabled: bool = True,
         top_k: int = 40,
         chunk_top_k: int = 20,
+        embedding_batch_size: int = 32,
+        embedding_concurrency: int = 4,
     ) -> None:
         self.working_dir = data_dir / "lightrag"
         self.ai = ai
         self.embedding_model = embedding_model
-        self.resolve_chat_model = resolve_chat_model
+        # Keep resolve_chat_model for callers created before Graph RAG had its own model.
+        self.resolve_graph_model = resolve_graph_model or resolve_chat_model
         self.enabled = enabled
         self.top_k = top_k
         self.chunk_top_k = chunk_top_k
+        self.embedding_batch_size = embedding_batch_size
+        self.embedding_concurrency = embedding_concurrency
         self._instances: dict[str, LightRAG] = {}
         self._dimension: int | None = None
         self._lock = asyncio.Lock()
+        self.rag_anything = RagAnythingOrchestrator(self.working_dir / "rag-anything")
 
     async def _embedding_dimension(self) -> int:
         if self._dimension is None:
@@ -132,10 +207,12 @@ class LightRagStore:
                         func=_make_embed(self.ai, self.embedding_model),
                         model_name=self.embedding_model,
                     ),
-                    llm_model_func=_make_complete(self.ai, self.resolve_chat_model),
-                    llm_model_name=self.resolve_chat_model(),
+                    llm_model_func=_make_complete(self.ai, self.resolve_graph_model),
+                    llm_model_name=self.resolve_graph_model(),
                     top_k=self.top_k,
                     chunk_top_k=self.chunk_top_k,
+                    embedding_batch_num=self.embedding_batch_size,
+                    embedding_func_max_async=self.embedding_concurrency,
                 )
                 await instance.initialize_storages()
                 await initialize_pipeline_status()
@@ -154,6 +231,15 @@ class LightRagStore:
             self.embedding_model = name
             self._dimension = None
 
+    async def configure_indexing(self, *, batch_size: int, concurrency: int) -> None:
+        """Apply UI-managed embedding limits to newly created LightRAG instances."""
+        if batch_size == self.embedding_batch_size and concurrency == self.embedding_concurrency:
+            return
+        await self.close()
+        async with self._lock:
+            self.embedding_batch_size = batch_size
+            self.embedding_concurrency = concurrency
+
     async def health(self) -> bool:
         return bool(self.enabled and self._instances)
 
@@ -163,17 +249,41 @@ class LightRagStore:
         document_id: str,
         filename: str,
         text: str,
+        on_progress: ProgressCallback | None = None,
+        graph_model: str = "",
     ) -> bool:
         if not text.strip():
             return False
         instance = await self._instance(workspace_id)
         if instance is None:
             return False
+        tracker = _IndexTracker(
+            callback=on_progress or (lambda _event: None),
+            estimated_chunks=max(1, math.ceil(len(text) / 3000)),
+            started_at=monotonic(),
+        )
+        tracker.emit("chunking", 0.45, "Đang chia nội dung thành các đoạn có thể tìm kiếm")
+        token = _ACTIVE_INDEX.set(tracker)
+        model_token = _ACTIVE_GRAPH_MODEL.set(graph_model.strip())
         try:
-            await instance.ainsert(text, ids=document_id, file_paths=filename)
+            try:
+                await self.rag_anything.index_text(
+                    namespace=_namespace(workspace_id),
+                    lightrag=instance,
+                    document_id=document_id,
+                    filename=filename,
+                    text=text,
+                    on_progress=tracker.callback,
+                )
+            except RagAnythingUnavailable:
+                await instance.ainsert(text, ids=document_id, file_paths=filename)
         except Exception as exc:  # LightRAG surfaces provider and storage errors alike
             logger.warning("Could not index %s: %s", document_id, exc)
             return False
+        finally:
+            _ACTIVE_GRAPH_MODEL.reset(model_token)
+            _ACTIVE_INDEX.reset(token)
+        tracker.emit("finalizing", 0.97, "Đang lưu chỉ mục và hoàn tất")
         return True
 
     async def delete_document(self, workspace_id: str, document_id: str) -> bool:
@@ -293,6 +403,7 @@ class LightRagStore:
     async def close(self) -> None:
         instances = list(self._instances.values())
         self._instances.clear()
+        self.rag_anything.clear()
         for instance in instances:
             try:
                 await instance.finalize_storages()

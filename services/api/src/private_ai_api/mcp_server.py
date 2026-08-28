@@ -13,21 +13,38 @@ from uuid import uuid4
 
 from mcp.server.auth.provider import AccessToken
 from mcp.server.auth.settings import AuthSettings
-from mcp.server.mcpserver import MCPServer
+from mcp.server.elicitation import AcceptedElicitation
+from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
+from pydantic import BaseModel, Field
 
 from private_ai_api.config import Settings, get_settings
 from private_ai_api.database import Database
 from private_ai_api.routers.profiles import active_profile_id
 from private_ai_api.schemas import MemoryType
+from private_ai_api.services.app_preferences import read_app_preferences, read_web_search_config
 from private_ai_api.services.asr import ASR_MODEL_NAME, AsrService
 from private_ai_api.services.document_processor import DocumentProcessor
+from private_ai_api.services.file_access import FileAccessError, FileAccessService
 from private_ai_api.services.gpu_lease import GpuLeaseManager
 from private_ai_api.services.lightrag_store import LightRagStore, default_model
 from private_ai_api.services.memory_service import MemoryService
 from private_ai_api.services.ollama import OllamaClient
 from private_ai_api.services.provider import ProviderUnavailable
 from private_ai_api.services.provider_registry import ProviderRegistry, ProviderRouter
+from private_ai_api.services.system_info import machine_snapshot, time_snapshot
+from private_ai_api.services.web_search import WebSearchService, WebSearchUnavailable
+
+
+class FileAccessDecision(BaseModel):
+    """What the user is asked when a tool reaches for a path they have not allowed yet."""
+
+    allow: bool = Field(description="Cho phép Private AI đọc đường dẫn này")
+    remember_folder: bool = Field(
+        default=False,
+        description="Nhớ thư mục này để lần sau không phải hỏi lại",
+    )
 
 
 def _safe_filename(value: str) -> str:
@@ -65,52 +82,99 @@ class StaticTokenVerifier:
 def create_mcp_server(
     settings: Settings | None = None,
     lightrag: LightRagStore | None = None,
+    *,
+    shared: Any = None,
 ) -> MCPServer:
+    """Build the tool server, either standalone or on top of the API's live services.
+
+    ``shared`` is the running ``AppServices``. Passing it matters: a second
+    ``GpuLeaseManager`` would double-count every reservation, and a second ``LightRagStore``
+    would open the same files twice. The standalone process passes nothing and builds its own.
+    """
     configured = settings or get_settings()
     configured.data_dir.mkdir(parents=True, exist_ok=True)
     configured.documents_dir.mkdir(parents=True, exist_ok=True)
-    database = Database(configured.database_path)
-    # Either process can win the race to migrate, so both have to clear the orphaned files.
-    for purged in database.initialize():
-        shutil.rmtree(Path(purged).parent, ignore_errors=True)
-    gpu_leases = GpuLeaseManager(configured.gpu_capacity_bytes)
-    ollama = OllamaClient(
-        configured.ollama_url,
-        configured.request_timeout_seconds,
-        gpu_leases=gpu_leases,
-        model_overhead_ratio=configured.gpu_model_overhead_ratio,
-    )
-    ai = ProviderRouter(
-        ProviderRegistry(
-            database,
-            ollama=ollama,
-            ollama_url=configured.ollama_url,
-            timeout=configured.request_timeout_seconds,
+    database = shared.database if shared else Database(configured.database_path)
+    if shared is None:
+        # Either process can win the race to migrate, so both have to clear orphaned files.
+        for purged in database.initialize():
+            shutil.rmtree(Path(purged).parent, ignore_errors=True)
+    app_preferences = read_app_preferences(database)
+    gpu_leases = shared.gpu_leases if shared else GpuLeaseManager(configured.gpu_capacity_bytes)
+    ollama = (
+        shared.ollama
+        if shared
+        else OllamaClient(
+            configured.ollama_url,
+            configured.request_timeout_seconds,
+                gpu_leases=gpu_leases,
+            model_overhead_ratio=configured.gpu_model_overhead_ratio,
         )
     )
-    lightrag = lightrag or LightRagStore(
+    ai = (
+        shared.ai
+        if shared
+        else ProviderRouter(
+            ProviderRegistry(
+                database,
+                ollama=ollama,
+                ollama_url=configured.ollama_url,
+                timeout=configured.request_timeout_seconds,
+            )
+        )
+    )
+    lightrag = lightrag or (shared.lightrag if shared else None) or LightRagStore(
         configured.data_dir,
         ai,
         embedding_model=configured.embedding_model,
         resolve_chat_model=lambda: default_model(database, "chat"),
+        resolve_graph_model=lambda: (
+            read_app_preferences(database).graph_model or default_model(database, "chat")
+        ),
         enabled=configured.embedding_enabled,
+        embedding_batch_size=app_preferences.embedding_batch_size,
+        embedding_concurrency=app_preferences.embedding_concurrency,
     )
-    documents = DocumentProcessor(database, lightrag, ai=ai)
-    memories = MemoryService(
+    documents = (
+        shared.document_processor if shared else DocumentProcessor(database, lightrag, ai=ai)
+    )
+    memories = (
+        shared.memory_service
+        if shared
+        else MemoryService(
+            database,
+            ai,
+            embedding_model=configured.embedding_model,
+            embedding_enabled=configured.embedding_enabled,
+        )
+    )
+    files = FileAccessService(
         database,
-        ai,
-        embedding_model=configured.embedding_model,
-        embedding_enabled=configured.embedding_enabled,
+        roots=configured.file_root_paths,
+        protected=[configured.mcp_token_path],
+        max_read_bytes=configured.file_read_max_bytes,
     )
-    asr = AsrService(
-        data_dir=configured.asr_dir,
-        executable=configured.asr_executable,
-        model_path=configured.asr_model or configured.default_asr_model_path,
-        language=configured.asr_language,
-        ffmpeg_executable=configured.ffmpeg_executable,
-        enabled=configured.asr_enabled,
+    web_search = (
+        shared.web_search
+        if shared
+        else WebSearchService(
+            lambda: read_web_search_config(database),
+            timeout=configured.web_search_timeout_seconds,
+        )
+    )
+    asr = (
+        shared.asr
+        if shared
+        else AsrService(
+            data_dir=configured.asr_dir,
+            executable=configured.asr_executable,
+            model_path=configured.asr_model or configured.default_asr_model_path,
+            language=configured.asr_language,
+            ffmpeg_executable=configured.ffmpeg_executable,
+            enabled=configured.asr_enabled,
         gpu_leases=gpu_leases,
-        vram_reservation_bytes=configured.asr_vram_reservation_bytes,
+            vram_reservation_bytes=configured.asr_vram_reservation_bytes,
+        )
     )
     default_timestamp = datetime.now(UTC).isoformat()
     database.execute_many(
@@ -148,7 +212,7 @@ def create_mcp_server(
             (workspace_id,),
         )
         if not workspace:
-            raise ValueError("Workspace not found; call workspaces.list for valid IDs")
+            raise ToolError("Workspace not found; call workspaces.list for valid IDs")
         return workspace_id
 
     @server.tool(name="workspaces.list")
@@ -190,7 +254,7 @@ def create_mcp_server(
             (document_id,),
         )
         if not document:
-            raise ValueError("Document not found")
+            raise ToolError("Document not found")
         counts = database.fetch_one(
             """
             SELECT COUNT(*) AS chunks,
@@ -212,10 +276,16 @@ def create_mcp_server(
         return await documents.search(query, max(1, min(limit, 20)), workspace_id=workspace_id)
 
     @server.tool(name="documents.ingest_text")
-    async def ingest_text(filename: str, content: str, workspace_id: str) -> dict[str, Any]:
-        """Store, chunk, and index user-provided Markdown or plain text in one workspace."""
+    async def ingest_text(
+        filename: str,
+        content: str,
+        workspace_id: str,
+        rag_mode: str = "",
+        graph_model: str = "",
+    ) -> dict[str, Any]:
+        """Store and index text with fast vector RAG or the optional graph pipeline."""
         if not content.strip():
-            raise ValueError("Document content cannot be empty")
+            raise ToolError("Document content cannot be empty")
         _require_workspace(workspace_id)
         safe_name = _safe_filename(filename)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -230,13 +300,20 @@ def create_mcp_server(
         target_dir.mkdir(parents=True, exist_ok=False)
         target_path = target_dir / safe_name
         target_path.write_text(content, encoding="utf-8")
+        preferences = read_app_preferences(database)
+        index_mode = rag_mode.strip() or preferences.rag_mode.value
+        if index_mode not in {"simple", "graph"}:
+            raise ToolError("rag_mode must be simple or graph")
+        selected_graph_model = (
+            graph_model.strip() or preferences.graph_model if index_mode == "graph" else ""
+        )
         now = datetime.now(UTC).isoformat()
         database.execute(
             """
             INSERT INTO documents(
                 id, workspace_id, filename, media_type, sha256, byte_size, status, source_path,
-                extracted_text, error, created_at, updated_at
-            ) VALUES (?, ?, ?, 'text/markdown', ?, ?, 'ready', ?, ?, NULL, ?, ?)
+                extracted_text, index_mode, graph_model, error, created_at, updated_at
+            ) VALUES (?, ?, ?, 'text/markdown', ?, ?, 'ready', ?, ?, ?, ?, NULL, ?, ?)
             """,
             (
                 document_id,
@@ -246,6 +323,8 @@ def create_mcp_server(
                 len(content.encode("utf-8")),
                 str(target_path),
                 content,
+                index_mode,
+                selected_graph_model or None,
                 now,
                 now,
             ),
@@ -257,9 +336,9 @@ def create_mcp_server(
     async def delete_document(document_id: str, confirmed: bool = False) -> dict[str, bool]:
         """Delete a local document only after explicit confirmation."""
         if not confirmed:
-            raise ValueError("Document deletion requires confirmed=true")
+            raise ToolError("Document deletion requires confirmed=true")
         if not await documents.delete(document_id):
-            raise ValueError("Document not found")
+            raise ToolError("Document not found")
         return {"deleted": True}
 
     @server.tool(name="graph.search")
@@ -304,6 +383,90 @@ def create_mcp_server(
         entities = await lightrag.find_entities(query, workspace_id, 10)
         return {"query": query, "sources": search_results, "entities": entities}
 
+    @server.tool(name="web.search")
+    async def search_web(query: str, limit: int = 5) -> dict[str, Any]:
+        """Search the public web through the host the user configured in settings.
+
+        This is the only tool here that sends anything off this machine, so it stays off
+        until the user picks a search host. Results are untrusted third-party text.
+        """
+        try:
+            found = await web_search.search(query, max(1, min(limit, 10)))
+        except WebSearchUnavailable as exc:
+            raise ToolError(str(exc)) from exc
+        return found.public()
+
+    @server.tool(name="system.info")
+    def system_info() -> dict[str, Any]:
+        """Report this machine: OS, CPU, memory, GPU budget and free disk. Stays local."""
+        return machine_snapshot(configured, gpu_leases)
+
+    @server.tool(name="system.time")
+    def system_time() -> dict[str, Any]:
+        """Return the current local and UTC date and time. Ask before assuming today's date."""
+        return time_snapshot()
+
+    @server.tool(name="files.allowed")
+    def allowed_files() -> dict[str, Any]:
+        """List the folders that are readable right now, and where each permission came from."""
+        return {
+            "configured_roots": [str(root) for root in files.roots],
+            "granted": [grant.public() for grant in files.grants()],
+        }
+
+    async def _authorize(path: Path, action: str, ctx: Context) -> None:
+        """Open a path only if the user allowed it, asking them right now when they have not.
+
+        The ask rides MCP elicitation, which the 2026-07-28 revision carries inside the tool
+        result, so it works on this stateless HTTP transport. A client too old to answer gets
+        a refusal that names the setting which pre-approves a folder instead.
+        """
+        if files.is_protected(path):
+            raise ToolError("This path holds the MCP token and is never readable")
+        if files.is_allowed(path):
+            return
+        try:
+            outcome = await ctx.elicit(
+                message=(
+                    f"Private AI muốn {action}: {path}\n"
+                    "Đường dẫn này chưa được cấp quyền. Cho phép?"
+                ),
+                schema=FileAccessDecision,
+            )
+        except Exception as exc:  # noqa: BLE001 - any transport failure means nobody was asked
+            raise ToolError(
+                f"Cannot reach {path}: it is outside the allowed folders and this client "
+                "cannot ask for permission. Pre-approve a folder with PRIVATE_AI_FILE_ROOTS."
+            ) from exc
+        if not isinstance(outcome, AcceptedElicitation) or not outcome.data.allow:
+            raise ToolError(f"The user declined access to {path}")
+        if outcome.data.remember_folder:
+            files.remember(path)
+
+    @server.tool(name="files.list")
+    async def list_files(path: str, ctx: Context, limit: int = 50) -> dict[str, Any]:
+        """List one folder on this machine, asking the user when it is not allowed yet."""
+        try:
+            target = files.resolve(path)
+            await _authorize(target, "liệt kê thư mục", ctx)
+            return files.list_directory(target, limit)
+        except FileAccessError as exc:
+            raise ToolError(str(exc)) from exc
+
+    @server.tool(name="files.read")
+    async def read_file(path: str, ctx: Context, max_bytes: int = 0) -> dict[str, Any]:
+        """Read one text file on this machine, asking the user when it is not allowed yet.
+
+        Binary files are refused rather than returned as replacement characters, and a long
+        file comes back truncated with the flag set.
+        """
+        try:
+            target = files.resolve(path)
+            await _authorize(target, "đọc tệp", ctx)
+            return files.read_file(target, max_bytes)
+        except FileAccessError as exc:
+            raise ToolError(str(exc)) from exc
+
     @server.tool(name="memory.list")
     def list_memory(include_disabled: bool = False) -> list[dict[str, Any]]:
         """List user-approved personal memory entries."""
@@ -324,7 +487,7 @@ def create_mcp_server(
         """Store a user-approved preference, fact, or episodic memory."""
         normalized_type = MemoryType(memory_type).value
         if not content.strip():
-            raise ValueError("Memory content cannot be empty")
+            raise ToolError("Memory content cannot be empty")
         memory_id = str(uuid4())
         now = datetime.now(UTC).isoformat()
         database.execute(
@@ -345,11 +508,14 @@ def create_mcp_server(
             ),
         )
         await memories.sync_memory(memory_id)
-        return database.fetch_one(
-            "SELECT id, user_id, type, content, source, confidence, enabled, "
-            "created_at, updated_at, expires_at FROM memories WHERE id = ?",
-            (memory_id,),
-        ) or {}
+        return (
+            database.fetch_one(
+                "SELECT id, user_id, type, content, source, confidence, enabled, "
+                "created_at, updated_at, expires_at FROM memories WHERE id = ?",
+                (memory_id,),
+            )
+            or {}
+        )
 
     @server.tool(name="memory.search")
     async def search_memory(query: str, limit: int = 5) -> list[dict[str, Any]]:
@@ -368,30 +534,33 @@ def create_mcp_server(
     ) -> dict[str, Any]:
         """Update content and enabled state for an existing memory entry."""
         if not content.strip():
-            raise ValueError("Memory content cannot be empty")
+            raise ToolError("Memory content cannot be empty")
         existing = database.fetch_one("SELECT id FROM memories WHERE id = ?", (memory_id,))
         if not existing:
-            raise ValueError("Memory not found")
+            raise ToolError("Memory not found")
         database.execute(
             "UPDATE memories SET content = ?, enabled = ?, updated_at = ?, "
             "embedding_json = NULL, embedding_model = NULL WHERE id = ?",
             (content.strip(), int(enabled), datetime.now(UTC).isoformat(), memory_id),
         )
         await memories.sync_memory(memory_id)
-        return database.fetch_one(
-            "SELECT id, user_id, type, content, source, confidence, enabled, "
-            "created_at, updated_at, expires_at FROM memories WHERE id = ?",
-            (memory_id,),
-        ) or {}
+        return (
+            database.fetch_one(
+                "SELECT id, user_id, type, content, source, confidence, enabled, "
+                "created_at, updated_at, expires_at FROM memories WHERE id = ?",
+                (memory_id,),
+            )
+            or {}
+        )
 
     @server.tool(name="memory.forget")
     async def forget_memory(memory_id: str, confirmed: bool = False) -> dict[str, bool]:
         """Permanently forget a memory only after explicit confirmation."""
         if not confirmed:
-            raise ValueError("Forgetting memory requires confirmed=true")
+            raise ToolError("Forgetting memory requires confirmed=true")
         existing = database.fetch_one("SELECT id FROM memories WHERE id = ?", (memory_id,))
         if not existing:
-            raise ValueError("Memory not found")
+            raise ToolError("Memory not found")
         await memories.delete_memory(memory_id)
         return {"forgotten": True}
 
@@ -454,7 +623,7 @@ def create_mcp_server(
         """Return lifecycle, disk, VRAM, runtime, and integrity status for one model."""
         model = next((item for item in await model_inventory() if item["name"] == name), None)
         if not model:
-            raise ValueError("Model not found")
+            raise ToolError("Model not found")
         return model
 
     @server.tool(name="models.capabilities")
@@ -472,11 +641,11 @@ def create_mcp_server(
     async def select_default_model(task: str, name: str) -> dict[str, str]:
         """Select a default model for chat, embedding, vision, or ASR."""
         if task not in {"chat", "embedding", "vision", "asr"}:
-            raise ValueError("Unsupported model task")
+            raise ToolError("Unsupported model task")
         model = await model_status(name)
         expected = {"chat": "language", "embedding": "embedding", "asr": "asr"}.get(task)
         if expected and model["model_type"] != expected:
-            raise ValueError(f"Task {task} requires a {expected} model")
+            raise ToolError(f"Task {task} requires a {expected} model")
         database.execute(
             """
             INSERT INTO model_defaults(task, model_name, updated_at) VALUES (?, ?, ?)

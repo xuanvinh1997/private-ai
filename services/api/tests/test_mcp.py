@@ -62,6 +62,7 @@ async def test_mcp_tools_share_documents_and_memory(tmp_path: Path) -> None:
             "filename": "mcp-notes.md",
             "content": "MCP local knowledge contains the violet-lantern marker.",
             "workspace_id": "personal",
+            "rag_mode": "graph",
         },
     )
     assert ingested.structured_content["status"] == "ready"

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import math
 import re
 import shutil
 import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from uuid import uuid4
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
@@ -16,6 +19,8 @@ from openai import OpenAI
 from pypdf import PdfReader
 
 from private_ai_api.database import Database
+from private_ai_api.services.app_preferences import OCR_ENABLED_KEY
+from private_ai_api.services.gpu_lease import InsufficientVram
 from private_ai_api.services.lightrag_store import LightRagStore
 from private_ai_api.services.provider import ProviderUnavailable
 from private_ai_api.services.provider_registry import ProviderRouter
@@ -29,9 +34,6 @@ IMAGE_OCR_PROMPT = (
     "Extract every visible word from this image. Preserve headings, lists and tables as "
     "Markdown. Do not summarize, translate or invent missing text."
 )
-
-
-OCR_ENABLED_KEY = "ocr_enabled"
 
 
 class UnsupportedDocument(RuntimeError):
@@ -65,7 +67,7 @@ class DocumentProcessor:
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def process_pending(self) -> None:
-        """Finish anything the last run left behind, then index whatever is not in the graph."""
+        """Finish interrupted extraction and index each document in its saved RAG mode."""
         pending = self.database.fetch_all(
             """
             SELECT id FROM documents
@@ -88,9 +90,17 @@ class DocumentProcessor:
     async def process(self, document_id: str) -> None:
         lock = self._locks.setdefault(document_id, asyncio.Lock())
         async with lock:
+            job_id, created_at = self._create_job(document_id)
             vision_model = await self.resolve_vision_model()
-            await asyncio.to_thread(self._process_sync, document_id, vision_model)
-        await self.index_document(document_id)
+            extracted = await asyncio.to_thread(
+                self._process_sync,
+                document_id,
+                vision_model,
+                job_id,
+                created_at,
+            )
+            if extracted:
+                await self._index_document_unlocked(document_id, job_id, created_at)
 
     async def resolve_vision_model(self) -> str:
         """The model OCR reads with: the explicit pick, else any vision model on offer.
@@ -114,27 +124,275 @@ class DocumentProcessor:
         return next((model.name for model in models if "vision" in model.capabilities), "")
 
     async def index_document(self, document_id: str) -> bool:
-        """Hand the extracted text to LightRAG, which chunks, embeds and builds the graph."""
+        """Index extracted text as vectors only or as a full LightRAG graph."""
         lock = self._locks.setdefault(document_id, asyncio.Lock())
         async with lock:
-            document = self.database.fetch_one(
-                "SELECT workspace_id, filename, extracted_text, status "
-                "FROM documents WHERE id = ?",
-                (document_id,),
+            job_id, created_at = self._create_job(
+                document_id,
+                step="chunking",
+                progress=0.4,
+                detail="Đã đọc nội dung · chuẩn bị chia đoạn",
             )
-            if not document or document["status"] != "ready":
-                return False
+            return await self._index_document_unlocked(document_id, job_id, created_at)
+
+    async def _index_document_unlocked(
+        self,
+        document_id: str,
+        job_id: str,
+        created_at: str,
+    ) -> bool:
+        document = self.database.fetch_one(
+            "SELECT workspace_id, filename, extracted_text, status, index_mode, graph_model "
+            "FROM documents WHERE id = ?",
+            (document_id,),
+        )
+        if not document or document["status"] != "ready":
+            return False
+
+        index_mode = str(document["index_mode"] or "simple")
+        graph_model = str(document["graph_model"] or "").strip()
+        if index_mode == "graph" and not graph_model:
+            resolver = getattr(self.lightrag, "resolve_graph_model", None)
+            graph_model = str(resolver() if callable(resolver) else "").strip()
+        if index_mode == "graph" and graph_model and graph_model != document["graph_model"]:
+            self.database.execute(
+                "UPDATE documents SET graph_model = ?, updated_at = ? WHERE id = ?",
+                (graph_model, datetime.now(UTC).isoformat(), document_id),
+            )
+        latest: dict[str, object] = {
+            "step": "chunking",
+            "detail": "Đang chia nội dung thành các đoạn có thể tìm kiếm",
+            "index_mode": index_mode,
+            **({"graph_model": graph_model} if graph_model else {}),
+        }
+
+        def report(event: dict[str, object]) -> None:
+            latest.update(event)
+            self._write_job(
+                job_id,
+                document_id,
+                created_at,
+                status="processing",
+                progress=float(event.get("progress", 0.45)),
+                payload=latest,
+            )
+
+        if index_mode == "simple":
+            indexed = await self._index_simple_document(
+                document_id,
+                str(document["extracted_text"] or ""),
+                on_progress=report,
+            )
+        else:
             indexed = await self.lightrag.index_document(
                 str(document["workspace_id"]),
                 document_id,
                 str(document["filename"]),
                 str(document["extracted_text"] or ""),
+                on_progress=report,
+                graph_model=graph_model,
             )
-            self.database.execute(
-                "UPDATE documents SET indexed_at = ? WHERE id = ?",
-                (datetime.now(UTC).isoformat() if indexed else None, document_id),
+        indexed_at = datetime.now(UTC).isoformat() if indexed else None
+        self.database.execute(
+            "UPDATE documents SET indexed_at = ?, status = ?, error = ?, updated_at = ? "
+            "WHERE id = ?",
+            (
+                indexed_at,
+                "ready" if indexed else "failed",
+                (
+                    None
+                    if indexed
+                    else "Không thể tạo chỉ mục. Kiểm tra mô hình embedding rồi thử lại."
+                ),
+                datetime.now(UTC).isoformat(),
+                document_id,
+            ),
+        )
+        self._write_job(
+            job_id,
+            document_id,
+            created_at,
+            status="completed" if indexed else "failed",
+            progress=1.0,
+            payload={
+                **latest,
+                "step": "completed" if indexed else "failed",
+                "detail": (
+                    (
+                        "Đã tạo xong chỉ mục vector · không dùng LLM"
+                        if index_mode == "simple"
+                        else "Đã tạo xong embedding và graph memory"
+                        + (f" · {graph_model}" if graph_model else "")
+                    )
+                    if indexed
+                    else "Không thể tạo chỉ mục"
+                ),
+            },
+            error=None if indexed else "Không thể tạo chỉ mục",
+        )
+        return indexed
+
+    async def _index_simple_document(
+        self,
+        document_id: str,
+        text: str,
+        *,
+        on_progress: Callable[[dict[str, object]], None],
+    ) -> bool:
+        """Build only chunk embeddings. This path never calls a language model."""
+        records = self._chunk_records(text)
+        if not records or self.ai is None:
+            return False
+        embedding_model = str(getattr(self.lightrag, "embedding_model", "")).strip()
+        if not embedding_model:
+            return False
+
+        self._replace_simple_chunks(document_id, records)
+        total = len(records)
+        on_progress(
+            {
+                "step": "embedding",
+                "progress": 0.48,
+                "detail": f"Đang tạo embedding cho {total} đoạn · không chạy LLM",
+                "estimated_chunks": total,
+                "embedded_vectors": 0,
+                "engine": "vector",
+            }
+        )
+        chunks = self.database.fetch_all(
+            "SELECT id, content FROM document_chunks WHERE document_id = ? ORDER BY chunk_index",
+            (document_id,),
+        )
+        batch_size = max(1, int(getattr(self.lightrag, "embedding_batch_size", 32) or 32))
+        concurrency = max(
+            1,
+            int(getattr(self.lightrag, "embedding_concurrency", 4) or 4),
+        )
+        started_at = monotonic()
+        embedded = 0
+        progress_lock = asyncio.Lock()
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def embed_batch(batch: list[dict[str, object]]) -> None:
+            nonlocal embedded
+            async with semaphore:
+                vectors = await self.ai.embed(
+                    embedding_model,
+                    [str(chunk["content"]) for chunk in batch],
+                )
+            self.database.execute_many(
+                "UPDATE document_chunks SET embedding_json = ?, embedding_model = ? "
+                "WHERE id = ?",
+                (
+                    (
+                        json.dumps(vector, separators=(",", ":")),
+                        embedding_model,
+                        chunk["id"],
+                    )
+                    for chunk, vector in zip(batch, vectors, strict=True)
+                ),
             )
-            return indexed
+            async with progress_lock:
+                embedded += len(batch)
+                elapsed = max(monotonic() - started_at, 0.001)
+                on_progress(
+                    {
+                        "step": "embedding",
+                        "progress": 0.48 + (embedded / total) * 0.48,
+                        "detail": f"Đã tạo {embedded}/{total} vector · không chạy LLM",
+                        "estimated_chunks": total,
+                        "embedded_vectors": embedded,
+                        "vectors_per_second": embedded / elapsed,
+                        "elapsed_seconds": elapsed,
+                        "engine": "vector",
+                    }
+                )
+
+        try:
+            await asyncio.gather(
+                *(
+                    embed_batch(chunks[offset : offset + batch_size])
+                    for offset in range(0, len(chunks), batch_size)
+                )
+            )
+        except (InsufficientVram, ProviderUnavailable, IndexError, TypeError, ValueError):
+            return False
+        return embedded == total
+
+    def _replace_simple_chunks(
+        self,
+        document_id: str,
+        records: list[dict[str, object]],
+    ) -> None:
+        created_at = datetime.now(UTC).isoformat()
+        sections: dict[int, dict[str, object]] = {}
+        for record in records:
+            section_index = int(record["section_index"])
+            section = sections.setdefault(
+                section_index,
+                {
+                    "id": f"{document_id}:section:{section_index}",
+                    "title": record["section_title"],
+                    "level": record["section_level"],
+                    "pages": [],
+                },
+            )
+            if record["page_number"] is not None:
+                pages = section["pages"]
+                if isinstance(pages, list):
+                    pages.append(int(record["page_number"]))
+        with self.database.connection() as connection:
+            connection.execute(
+                "DELETE FROM document_chunks WHERE document_id = ?",
+                (document_id,),
+            )
+            connection.execute(
+                "DELETE FROM document_sections WHERE document_id = ?",
+                (document_id,),
+            )
+            connection.executemany(
+                """
+                INSERT INTO document_sections(
+                    id, document_id, section_index, title, level, page_start, page_end, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        section["id"],
+                        document_id,
+                        section_index,
+                        section["title"],
+                        section["level"],
+                        min(section["pages"]) if section["pages"] else None,
+                        max(section["pages"]) if section["pages"] else None,
+                        created_at,
+                    )
+                    for section_index, section in sorted(sections.items())
+                ),
+            )
+            connection.executemany(
+                """
+                INSERT INTO document_chunks(
+                    id, document_id, chunk_index, content, section_id, section_title,
+                    section_level, page_number, embedding_json, embedding_model, graph_model,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+                """,
+                (
+                    (
+                        str(uuid4()),
+                        document_id,
+                        index,
+                        record["content"],
+                        sections[int(record["section_index"])]["id"],
+                        record["section_title"],
+                        record["section_level"],
+                        record["page_number"],
+                        created_at,
+                    )
+                    for index, record in enumerate(records)
+                ),
+            )
 
     async def delete(self, document_id: str) -> bool:
         lock = self._locks.setdefault(document_id, asyncio.Lock())
@@ -153,13 +411,108 @@ class DocumentProcessor:
         limit: int = 5,
         *,
         workspace_id: str,
+        mode: str = "simple",
     ) -> list[dict[str, object]]:
         """Search one workspace. Never returns another workspace's content."""
-        return await self.lightrag.search(query, workspace_id, limit)
+        local = await self._search_simple(query, workspace_id, max(limit, 10))
+        retrieval_mode = "naive" if mode == "simple" else "mix"
+        graph = await self.lightrag.search(
+            query,
+            workspace_id,
+            max(limit, 10),
+            mode=retrieval_mode,
+        )
+        ordered = [*local, *graph] if mode == "simple" else [*graph, *local]
+        return self._deduplicate_results(ordered, limit)
 
+    async def _search_simple(
+        self,
+        query: str,
+        workspace_id: str,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        rows = self.database.fetch_all(
+            """
+            SELECT c.id AS chunk_id, c.content, c.chunk_index, c.embedding_json,
+                   c.embedding_model, d.id AS document_id, d.filename
+            FROM document_chunks AS c
+            JOIN documents AS d ON d.id = c.document_id
+            WHERE d.workspace_id = ? AND d.status = 'ready' AND d.index_mode = 'simple'
+            ORDER BY d.created_at DESC, c.chunk_index
+            """,
+            (workspace_id,),
+        )
+        if not rows:
+            return []
+        tokens = list(dict.fromkeys(self._search_tokens(query)))[:32]
+        query_vector: list[float] = []
+        embedding_model = str(getattr(self.lightrag, "embedding_model", "")).strip()
+        if self.ai is not None and embedding_model and query.strip():
+            try:
+                query_vector = (await self.ai.embed(embedding_model, [query]))[0]
+            except (InsufficientVram, ProviderUnavailable, IndexError, TypeError, ValueError):
+                query_vector = []
 
+        ranked: list[tuple[float, dict[str, object]]] = []
+        for row in rows:
+            searchable = self._search_tokens(f"{row['filename']} {row['content']}")
+            matched = len(set(tokens) & set(searchable))
+            keyword_score = matched / max(1, len(tokens))
+            semantic_score = -1.0
+            if (
+                query_vector
+                and row["embedding_model"] == embedding_model
+                and row["embedding_json"]
+            ):
+                semantic_score = self._cosine_similarity(
+                    query_vector,
+                    json.loads(str(row["embedding_json"])),
+                )
+            if keyword_score <= 0 and semantic_score < 0.3:
+                continue
+            score = max(keyword_score, 0.0) + max(semantic_score, 0.0)
+            ranked.append(
+                (
+                    score,
+                    {
+                        "chunk_id": row["chunk_id"],
+                        "document_id": row["document_id"],
+                        "filename": row["filename"],
+                        "content": row["content"],
+                        "score": round(score, 4),
+                    },
+                )
+            )
+        ranked.sort(key=lambda item: -item[0])
+        return [record for _, record in ranked[: max(1, min(limit, 20))]]
 
+    @staticmethod
+    def _deduplicate_results(
+        rows: list[dict[str, object]],
+        limit: int,
+    ) -> list[dict[str, object]]:
+        selected: list[dict[str, object]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in rows:
+            key = (str(row.get("filename") or ""), str(row.get("content") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            selected.append(row)
+            if len(selected) >= max(1, min(limit, 20)):
+                break
+        return selected
 
+    @staticmethod
+    def _cosine_similarity(left: list[float], right: list[float]) -> float:
+        if not left or len(left) != len(right):
+            return -1.0
+        dot = sum(a * b for a, b in zip(left, right, strict=True))
+        left_norm = math.sqrt(sum(value * value for value in left))
+        right_norm = math.sqrt(sum(value * value for value in right))
+        if not left_norm or not right_norm:
+            return -1.0
+        return dot / (left_norm * right_norm)
 
     def _delete_sync(self, document_id: str) -> bool:
         document = self.database.fetch_one(
@@ -173,45 +526,120 @@ class DocumentProcessor:
         shutil.rmtree(source_path.parent, ignore_errors=True)
         return True
 
+    @staticmethod
+    def _split_text(text: str, size: int = 1400, overlap: int = 180) -> list[str]:
+        normalized = re.sub(r"[ \t]+", " ", text).strip()
+        if not normalized:
+            return []
+        chunks: list[str] = []
+        start = 0
+        while start < len(normalized):
+            end = min(start + size, len(normalized))
+            if end < len(normalized):
+                boundary = max(
+                    normalized.rfind("\n", start, end),
+                    normalized.rfind(". ", start, end),
+                )
+                if boundary > start + size // 2:
+                    end = boundary + 1
+            chunk = normalized[start:end].strip()
+            if chunk:
+                chunks.append(chunk)
+            if end >= len(normalized):
+                break
+            start = max(start + 1, end - overlap)
+        return chunks
 
+    @classmethod
+    def _chunk_records(
+        cls,
+        text: str,
+        size: int = 1400,
+        overlap: int = 180,
+    ) -> list[dict[str, object]]:
+        records: list[dict[str, object]] = []
+        section_index = 0
+        section_title = "Nội dung"
+        section_level = 0
+        page_number: int | None = None
+        buffer: list[str] = []
 
+        def flush() -> None:
+            content = "\n".join(buffer).strip()
+            buffer.clear()
+            for chunk in cls._split_text(content, size=size, overlap=overlap):
+                records.append(
+                    {
+                        "content": chunk,
+                        "section_index": section_index,
+                        "section_title": section_title,
+                        "section_level": section_level,
+                        "page_number": page_number,
+                    }
+                )
 
+        for raw_line in text.splitlines():
+            line = raw_line.rstrip()
+            page_match = PAGE_MARKER.fullmatch(line.strip())
+            if page_match:
+                flush()
+                page_number = int(page_match.group(1))
+                continue
+            heading = re.match(r"^(#{1,6})\s+(.+?)\s*$", line)
+            if heading:
+                flush()
+                if records or section_title != "Nội dung":
+                    section_index += 1
+                section_title = heading.group(2).strip()[:240]
+                section_level = len(heading.group(1))
+                buffer.append(line)
+                continue
+            buffer.append(line)
+        flush()
+        return records
 
+    @staticmethod
+    def _search_tokens(value: str) -> list[str]:
+        return [
+            token
+            for token in re.findall(r"[^\W_]+", value.casefold(), flags=re.UNICODE)
+            if len(token) > 1
+        ]
 
-
-
-
-
-
-
-
-    def _process_sync(self, document_id: str, vision_model: str = "") -> None:
+    def _process_sync(
+        self,
+        document_id: str,
+        vision_model: str,
+        job_id: str,
+        created_at: str,
+    ) -> bool:
         document = self.database.fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,))
         if not document:
-            return
-        job_id = str(uuid4())
-        created_at = datetime.now(UTC).isoformat()
-        self.database.upsert_job(
-            {
-                "id": job_id,
-                "kind": "document_ingestion",
-                "status": "processing",
-                "progress": 0.1,
-                "payload": {"document_id": document_id},
-                "created_at": created_at,
-                "updated_at": created_at,
-            }
+            return False
+        self._write_job(
+            job_id,
+            document_id,
+            created_at,
+            status="processing",
+            progress=0.12,
+            payload={"step": "extracting", "detail": "Đang đọc và trích xuất nội dung"},
         )
         self._update_document(document_id, status="processing", error=None)
         try:
             source_path = Path(document["source_path"])
             ocr_allowed = self.ocr_enabled(document_id)
             text = self._extract(source_path, ocr_allowed, vision_model)
+            self._write_job(
+                job_id,
+                document_id,
+                created_at,
+                status="processing",
+                progress=0.34,
+                payload={"step": "normalizing", "detail": "Đang làm sạch nội dung đã trích xuất"},
+            )
             normalized = "\n".join(line.rstrip() for line in text.splitlines()).strip()
             meaningful = "\n".join(
-                line
-                for line in normalized.splitlines()
-                if not PAGE_MARKER.fullmatch(line.strip())
+                line for line in normalized.splitlines() if not PAGE_MARKER.fullmatch(line.strip())
             ).strip()
             if meaningful:
                 self._update_document(
@@ -220,9 +648,15 @@ class DocumentProcessor:
                     extracted_text=normalized,
                     error=None,
                 )
-                job_status = "completed"
-                progress = 1.0
-                error = None
+                self._write_job(
+                    job_id,
+                    document_id,
+                    created_at,
+                    status="processing",
+                    progress=0.4,
+                    payload={"step": "chunking", "detail": "Đã đọc nội dung · chuẩn bị chia đoạn"},
+                )
+                return True
             else:
                 error = self._ocr_gap(ocr_allowed, vision_model)
                 self._update_document(
@@ -232,7 +666,6 @@ class DocumentProcessor:
                     error=error,
                 )
                 job_status = "needs_ocr"
-                progress = 1.0
         except Exception as exc:
             self._update_document(
                 document_id,
@@ -241,25 +674,73 @@ class DocumentProcessor:
                 error=str(exc),
             )
             job_status = "failed"
-            progress = 1.0
             error = str(exc)
-        updated_at = datetime.now(UTC).isoformat()
+        self._write_job(
+            job_id,
+            document_id,
+            created_at,
+            status=job_status,
+            progress=1.0,
+            payload={"step": job_status, "detail": error},
+            error=error,
+        )
+        return False
+
+    def _create_job(
+        self,
+        document_id: str,
+        *,
+        step: str = "queued",
+        progress: float = 0.05,
+        detail: str = "Đã nhận tệp · đang chờ xử lý",
+    ) -> tuple[str, str]:
+        job_id = str(uuid4())
+        created_at = datetime.now(UTC).isoformat()
+        self._write_job(
+            job_id,
+            document_id,
+            created_at,
+            status="processing",
+            progress=progress,
+            payload={"step": step, "detail": detail},
+        )
+        return job_id, created_at
+
+    def _write_job(
+        self,
+        job_id: str,
+        document_id: str,
+        created_at: str,
+        *,
+        status: str,
+        progress: float,
+        payload: dict[str, object],
+        error: str | None = None,
+    ) -> None:
+        job_payload = {"document_id": document_id, **payload}
+        if "index_mode" not in job_payload:
+            document = self.database.fetch_one(
+                "SELECT index_mode, graph_model FROM documents WHERE id = ?",
+                (document_id,),
+            )
+            job_payload["index_mode"] = (
+                str(document["index_mode"] or "simple") if document else "simple"
+            )
+            if document and document["graph_model"]:
+                job_payload["graph_model"] = str(document["graph_model"])
         self.database.upsert_job(
             {
                 "id": job_id,
+                "document_id": document_id,
                 "kind": "document_ingestion",
-                "status": job_status,
-                "progress": progress,
-                "payload": {"document_id": document_id},
+                "status": status,
+                "progress": max(0.0, min(progress, 1.0)),
+                "payload": job_payload,
                 "error": error,
                 "created_at": created_at,
-                "updated_at": updated_at,
+                "updated_at": datetime.now(UTC).isoformat(),
             }
         )
-
-
-
-
 
     def _update_document(
         self,

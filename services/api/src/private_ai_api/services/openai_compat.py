@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from private_ai_api.schemas import ChatRequest, ModelInfo, ModelState
+from private_ai_api.schemas import ChatMessage, ChatRequest, ModelInfo, ModelState
 from private_ai_api.services.provider import (
     ProviderReadOnly,
     ProviderUnavailable,
@@ -129,6 +129,7 @@ class OpenAICompatClient:
             done=True,
             finish_reason=choice.get("finish_reason"),
             usage=response.get("usage"),
+            tool_calls=self._read_tool_calls(message),
         )
 
     async def chat_stream(self, request: ChatRequest) -> AsyncIterator[dict[str, Any]]:
@@ -203,14 +204,67 @@ class OpenAICompatClient:
     def _chat_payload(self, request: ChatRequest, *, stream: bool) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "model": request.model,
-            "messages": [message.model_dump() for message in request.messages],
+            "messages": [self._openai_message(message) for message in request.messages],
             "stream": stream,
         }
+        if request.tools:
+            payload["tools"] = request.tools
         for key, value in request.options.items():
             alias = OPTION_ALIASES.get(key)
             if alias:
                 payload[alias] = value
         return payload
+
+    @staticmethod
+    def _openai_message(message: ChatMessage) -> dict[str, Any]:
+        """Translate one message into the OpenAI dialect.
+
+        A tool result is addressed by ``tool_call_id`` here, and an assistant turn that asked
+        for tools carries its arguments as a JSON string rather than an object.
+        """
+        if message.role == "tool":
+            return {
+                "role": "tool",
+                "tool_call_id": message.tool_call_id or "",
+                "content": message.content,
+            }
+        payload: dict[str, Any] = {"role": message.role, "content": message.content}
+        if message.tool_calls:
+            payload["tool_calls"] = [
+                {
+                    "id": call.id or call.name,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                    },
+                }
+                for call in message.tool_calls
+            ]
+        return payload
+
+    @staticmethod
+    def _read_tool_calls(message: dict[str, Any]) -> list[dict[str, Any]]:
+        """Return Ollama-shaped tool calls, parsing the JSON string OpenAI sends."""
+        calls = []
+        for raw in message.get("tool_calls") or []:
+            function = raw.get("function") or {}
+            arguments = function.get("arguments")
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments or "{}")
+                except json.JSONDecodeError:
+                    arguments = {}
+            calls.append(
+                {
+                    "id": raw.get("id") or "",
+                    "function": {
+                        "name": function.get("name") or "",
+                        "arguments": arguments if isinstance(arguments, dict) else {},
+                    },
+                }
+            )
+        return calls
 
     @staticmethod
     def _ollama_message(
@@ -220,11 +274,15 @@ class OpenAICompatClient:
         done: bool,
         finish_reason: str | None = None,
         usage: dict[str, Any] | None = None,
+        tool_calls: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": "assistant", "content": content}
+        if tool_calls:
+            message["tool_calls"] = tool_calls
         event: dict[str, Any] = {
             "model": model,
             "created_at": datetime.now(UTC).isoformat(),
-            "message": {"role": "assistant", "content": content},
+            "message": message,
             "done": done,
         }
         if finish_reason:

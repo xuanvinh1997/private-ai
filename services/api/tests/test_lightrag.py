@@ -16,6 +16,7 @@ class StubProvider:
     def __init__(self) -> None:
         self.embed_calls = 0
         self.chat_calls = 0
+        self.chat_models: list[str] = []
 
     async def embed(self, model: str, inputs: list[str]) -> list[list[float]]:
         self.embed_calls += 1
@@ -24,6 +25,7 @@ class StubProvider:
 
     async def chat(self, request: ChatRequest) -> dict[str, Any]:
         self.chat_calls += 1
+        self.chat_models.append(request.model)
         return {"message": {"role": "assistant", "content": ""}, "done": True}
 
 
@@ -48,6 +50,7 @@ def test_lightrag_indexes_scopes_and_deletes_in_process(tmp_path: Path) -> None:
                 "doc-1",
                 "ke-hoach.md",
                 "Máy chủ Ollama chạy trong WSL2 và phục vụ mô hình cho Private AI.",
+                graph_model="stub-graph",
             )
             await store.index_document(
                 "research",
@@ -58,6 +61,7 @@ def test_lightrag_indexes_scopes_and_deletes_in_process(tmp_path: Path) -> None:
             return {
                 "indexed": indexed,
                 "embed_calls": provider.embed_calls,
+                "chat_models": provider.chat_models,
                 "hits": await store.search("Ollama WSL2", "personal", limit=3),
                 "other_workspace": await store.search("Ollama WSL2", "research", limit=3),
                 "after_delete": (
@@ -72,6 +76,7 @@ def test_lightrag_indexes_scopes_and_deletes_in_process(tmp_path: Path) -> None:
 
     assert result["indexed"] is True
     assert result["embed_calls"] > 0
+    assert "stub-graph" in result["chat_models"]
 
     hits = result["hits"]
     assert hits, "the freshly indexed document should be retrievable"

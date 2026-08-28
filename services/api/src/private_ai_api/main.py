@@ -26,6 +26,10 @@ from private_ai_api.routers import (
     providers,
     workspaces,
 )
+from private_ai_api.services.app_preferences import (
+    read_app_preferences,
+    read_web_search_config,
+)
 from private_ai_api.services.asr import AsrService
 from private_ai_api.services.document_processor import DocumentProcessor
 from private_ai_api.services.gpu_lease import GpuLeaseManager
@@ -34,6 +38,8 @@ from private_ai_api.services.memory_service import MemoryService
 from private_ai_api.services.ollama import OllamaClient
 from private_ai_api.services.provider import ProviderUnavailable
 from private_ai_api.services.provider_registry import ProviderRegistry, ProviderRouter
+from private_ai_api.services.tool_calling import McpToolBridge
+from private_ai_api.services.web_search import WebSearchService
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -46,6 +52,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         database = Database(configured.database_path)
         for purged in database.initialize():
             shutil.rmtree(Path(purged).parent, ignore_errors=True)
+        app_preferences = read_app_preferences(database)
         gpu_leases = GpuLeaseManager(capacity_bytes=configured.gpu_capacity_bytes)
         ollama = OllamaClient(
             configured.ollama_url,
@@ -73,7 +80,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ai,
             embedding_model=embedding_model,
             resolve_chat_model=lambda: default_model(database, "chat"),
+            resolve_graph_model=lambda: (
+                read_app_preferences(database).graph_model or default_model(database, "chat")
+            ),
             enabled=configured.embedding_enabled,
+            embedding_batch_size=app_preferences.embedding_batch_size,
+            embedding_concurrency=app_preferences.embedding_concurrency,
         )
         asr = AsrService(
             data_dir=configured.asr_dir,
@@ -85,6 +97,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             gpu_leases=gpu_leases,
             vram_reservation_bytes=configured.asr_vram_reservation_bytes,
         )
+
         def vision_endpoint() -> tuple[str, str]:
             """Where markitdown should send images: the provider the user selected."""
             provider = provider_registry.active_config()
@@ -107,6 +120,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             embedding_model=embedding_model,
             embedding_enabled=configured.embedding_enabled,
         )
+        # Resolved per call, so switching search host in settings needs no restart.
+        web_search = WebSearchService(
+            lambda: read_web_search_config(database),
+            timeout=configured.web_search_timeout_seconds,
+        )
         app.state.services = AppServices(
             settings=configured,
             database=database,
@@ -118,6 +136,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             lightrag=lightrag,
             memory_service=memory_service,
             asr=asr,
+            web_search=web_search,
+        )
+        # The same tool server the MCP endpoint exposes, built in-process on these very
+        # services so chat can call the tools without a second process or a network hop.
+        from private_ai_api.mcp_server import create_mcp_server
+
+        app.state.services.tools = McpToolBridge(
+            create_mcp_server(configured, lightrag, shared=app.state.services)
         )
         ingestion_task = asyncio.create_task(document_processor.process_pending())
         memory_task = asyncio.create_task(memory_service.sync_all())

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -16,6 +16,20 @@ class FakeIndex:
     def __init__(self) -> None:
         self.documents: dict[tuple[str, str], dict[str, str]] = {}
         self.embedding_model = "test-embedding"
+        self.embedding_batch_size = 32
+        self.embedding_concurrency = 4
+        self.last_search_mode = "mix"
+        self.index_document_calls = 0
+        self.last_graph_model = ""
+
+    async def list_models(self) -> list[object]:
+        return []
+
+    async def embed(self, _model: str, inputs: list[str]) -> list[list[float]]:
+        return [
+            [float(len(value)), float(sum(ord(char) for char in value) % 997)]
+            for value in inputs
+        ]
 
     async def index_document(
         self,
@@ -23,9 +37,25 @@ class FakeIndex:
         document_id: str,
         filename: str,
         text: str,
+        on_progress: Callable[[dict[str, object]], None] | None = None,
+        graph_model: str = "",
     ) -> bool:
         if not text.strip():
             return False
+        self.index_document_calls += 1
+        self.last_graph_model = graph_model
+        if on_progress:
+            on_progress(
+                {
+                    "step": "embedding",
+                    "progress": 0.72,
+                    "detail": "Đã tạo 1 vector embedding",
+                    "embedded_vectors": 1,
+                    "estimated_chunks": 1,
+                    "vectors_per_second": 12.5,
+                    "elapsed_seconds": 0.08,
+                }
+            )
         self.documents[(workspace_id, document_id)] = {"filename": filename, "text": text}
         return True
 
@@ -37,13 +67,15 @@ class FakeIndex:
         query: str,
         workspace_id: str,
         limit: int = 5,
+        *,
+        mode: str = "mix",
     ) -> list[dict[str, object]]:
+        self.last_search_mode = mode
         tokens = [token for token in query.casefold().split() if token]
         matched = [
             {"content": item["text"], "filename": item["filename"], "chunk_id": document_id}
             for (owner, document_id), item in self.documents.items()
-            if owner == workspace_id
-            and any(token in item["text"].casefold() for token in tokens)
+            if owner == workspace_id and any(token in item["text"].casefold() for token in tokens)
         ]
         return matched[:limit]
 
@@ -98,6 +130,10 @@ class FakeIndex:
     async def use_embedding_model(self, name: str) -> None:
         self.embedding_model = name
 
+    async def configure_indexing(self, *, batch_size: int, concurrency: int) -> None:
+        self.embedding_batch_size = batch_size
+        self.embedding_concurrency = concurrency
+
     async def health(self) -> bool:
         return True
 
@@ -116,4 +152,5 @@ def client(tmp_path: Path) -> Iterator[TestClient]:
         index = FakeIndex()
         test_client.app.state.services.lightrag = index
         test_client.app.state.services.document_processor.lightrag = index
+        test_client.app.state.services.document_processor.ai = index
         yield test_client

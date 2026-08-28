@@ -28,7 +28,7 @@ import type {
 
 interface WorkspaceDialogProps {
   workspace?: WorkspaceRecord;
-  onSaved: (workspace: WorkspaceRecord) => void;
+  onSaved: (workspace: WorkspaceRecord, created: boolean) => void;
   onDeleted?: (id: string) => void;
   trigger: "add" | "edit";
   /** Cho phép màn hình khác dùng lại hộp thoại này với nút bấm riêng. */
@@ -66,8 +66,8 @@ export function WorkspaceDialog(props: WorkspaceDialogProps) {
       const workspace = props.workspace
         ? await api.updateWorkspace(props.workspace.id, name().trim(), description().trim())
         : await api.createWorkspace(name().trim(), description().trim());
-      props.onSaved(workspace);
       setOpen(false);
+      props.onSaved(workspace, !props.workspace);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Không thể lưu không gian làm việc");
     } finally {
@@ -158,7 +158,25 @@ function fileKind(filename: string): string {
 }
 
 const documentIsBusy = (document: DocumentRecord) =>
-  document.status === "queued" || document.status === "processing";
+  document.status === "queued" ||
+  document.status === "processing" ||
+  document.ingestion?.status === "processing";
+
+const documentProgress = (document: DocumentRecord) =>
+  Math.round((document.ingestion?.progress ?? 0.08) * 100);
+
+const documentStatusText = (document: DocumentRecord) => {
+  const step = document.ingestion?.step;
+  if (document.ingestion?.status === "processing") {
+    if (step === "embedding") return "Embedding";
+    if (step === "graph") return "Graph RAG";
+    if (step === "multimodal") return "Đa phương thức";
+    if (step === "chunking") return "Chia đoạn";
+    if (step === "finalizing") return "Hoàn tất";
+    return "Trích xuất";
+  }
+  return STATUS_LABELS[document.status];
+};
 
 export function DocumentViewer(props: {
   documentId: string;
@@ -404,12 +422,41 @@ export function LibraryView(props: {
                     <em>·</em> {formatRelativeTime(document.created_at)}
                     <Show when={document.error}><em>·</em> <b>{document.error}</b></Show>
                   </span>
-                </div>
-                <span classList={{ "document-status": true, [`document-${document.status}`]: true }}>
-                  <i aria-hidden="true" />{STATUS_LABELS[document.status]}
-                  <Show when={documentIsBusy(document)}>
-                    <span class="document-status-progress" aria-hidden="true" />
+                  <Show when={documentIsBusy(document) && document.ingestion}>
+                    <div
+                      class="document-index-progress"
+                      role="progressbar"
+                      aria-label={`Tiến độ lập chỉ mục ${document.filename}`}
+                      aria-valuemin="0"
+                      aria-valuemax="100"
+                      aria-valuenow={documentProgress(document)}
+                      aria-valuetext={document.ingestion?.detail}
+                    >
+                      <div>
+                        <span>{document.ingestion?.detail}</span>
+                        <strong>{documentProgress(document)}%</strong>
+                      </div>
+                      <span class="document-index-track" aria-hidden="true">
+                        <i style={{ transform: `scaleX(${document.ingestion?.progress ?? 0.08})` }} />
+                      </span>
+                      <Show when={(document.ingestion?.embedded_vectors ?? 0) > 0}>
+                        <small>
+                          {document.ingestion?.embedded_vectors} vector
+                          <em>·</em> {(document.ingestion?.vectors_per_second ?? 0) < 10
+                            ? (document.ingestion?.vectors_per_second ?? 0).toFixed(1)
+                            : Math.round(document.ingestion?.vectors_per_second ?? 0)} vector/s
+                          <em>·</em> {Math.round(document.ingestion?.elapsed_seconds ?? 0)} giây
+                        </small>
+                      </Show>
+                    </div>
                   </Show>
+                </div>
+                <span classList={{
+                  "document-status": true,
+                  [`document-${documentIsBusy(document) ? "processing" : document.status}`]: true,
+                }}>
+                  <i aria-hidden="true" />{documentStatusText(document)}
+                  <Show when={documentIsBusy(document)}><b>{documentProgress(document)}%</b></Show>
                 </span>
                 <div class="document-actions">
                   <Show when={document.status === "needs_ocr"}>

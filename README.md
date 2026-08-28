@@ -41,10 +41,40 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - Màn hình chính Chat Workspaces, light mode mặc định, dark mode tùy chọn và chế độ chữ lớn; lựa chọn được lưu cục bộ trên thiết bị.
 - `pywebview` desktop launcher với API local chạy trong cùng Python/Conda environment.
 - MCP Python SDK v2 server tại `http://127.0.0.1:8010/mcp`, có bearer token cục bộ,
-  Origin/Host validation và 21 tool cho document, GraphRAG, memory, model inventory/default.
+  Origin/Host validation và 25 tool cho document, GraphRAG, memory, model inventory/default,
+  tìm kiếm web, thông số máy và đọc file cục bộ.
+- `system.info` trả OS, CPU, RAM, ngân sách GPU và dung lượng đĩa còn trống; `system.time` trả
+  ngày giờ local lẫn UTC kèm múi giờ, để mô hình không phải đoán hôm nay là ngày mấy. Cả hai
+  luôn bật, không cần cấu hình và không gửi gì ra khỏi máy.
+- Chat trong ứng dụng gọi được chính các tool đó. API dựng MCP server ngay trong tiến trình của
+  mình trên đúng bộ service đang chạy, nên không cần tiến trình thứ hai và không đi qua mạng —
+  bản desktop đóng gói vẫn dùng được dù không chạy cổng 8010. Model nhận tool spec kèm mỗi lượt,
+  máy chủ thực thi `tool_calls` rồi hỏi lại, tối đa 4 vòng; vòng cuối không đưa tool nữa để buộc
+  ra câu trả lời. Câu hỏi không cần tool thì không phát sinh vòng nào. Tên tool có dấu chấm được
+  đổi thành `__` vì tên function trên wire format không cho phép dấu chấm.
+- Chat chỉ được đưa **19 tool chỉ-đọc**. Ingest, xóa tài liệu, ghi/xóa memory và đổi model mặc
+  định không nằm trong danh sách: chúng chỉ chạy khi người dùng tự bấm trong UI, nên một tài
+  liệu độc hại không thể dụ mô hình xóa dữ liệu.
+- `files.list` và `files.read` đọc file cục bộ nhưng chỉ trong phạm vi người dùng cho phép.
+  Thư mục duyệt sẵn khai báo qua `PRIVATE_AI_FILE_ROOTS`; đường dẫn nằm ngoài thì tool hỏi
+  người dùng ngay lúc đó bằng MCP elicitation, và người dùng có thể chọn nhớ thư mục để lần
+  sau khỏi hỏi lại (quyền đã nhớ lưu trong SQLite, xem bằng `files.allowed`). Đường dẫn được
+  resolve trước mọi lần kiểm tra nên `..` và symlink không thoát ra khỏi thư mục được phép;
+  file nhị phân bị từ chối thay vì trả về ký tự rác; file token MCP không bao giờ đọc được.
+- Tìm kiếm web là tính năng duy nhất gửi nội dung ra khỏi máy, nên mặc định tắt và chỉ chạy khi
+  người dùng tự bật nút **Tìm web** ở khung soạn tin. Ba nguồn được hỗ trợ, xếp theo mức riêng
+  tư giảm dần: SearXNG tự dựng (không API key, phải bật `json` trong `search.formats` của
+  `settings.yml`), DuckDuckGo không cần cấu hình (không có API chính thức nên có thể bị chặn
+  tạm thời khi hỏi dày) và OpenAI web search có trả phí (~10 USD cho mỗi 1.000 lượt, chưa kể
+  token). Kết quả được đưa vào prompt như dữ liệu không đáng tin cậy kèm yêu cầu dẫn nguồn theo
+  URL; link quảng cáo của DuckDuckGo bị loại trước khi mô hình nhìn thấy. Nguồn tìm kiếm hỏng
+  chỉ tạo một thông báo trên luồng SSE chứ không làm hỏng câu trả lời. Cùng khả năng này được
+  mở cho MCP client qua tool `web.search`, và API key lưu trong SQLite không bao giờ được API
+  trả ngược ra ngoài.
 - Knowledge graph chạy bằng LightRAG nhúng thẳng trong tiến trình API, lưu graph/vector/KV
   bằng file dưới `.local-data/lightrag`. Không có database server nào phải chạy kèm. LLM và
-  embedding của LightRAG đi qua đúng nhà cung cấp AI đang bật.
+  embedding của LightRAG đi qua đúng nhà cung cấp AI đang bật. RAG-Anything điều phối content
+  block và insertion; callback của cả hai tầng được đưa vào tiến độ xử lý tài liệu.
 - Màn hình Tri thức vẽ đồ thị của không gian đang mở: `GET /api/v1/graph` trả node/edge từ
   LightRAG (`*` cho toàn bộ, hoặc một thực thể kèm độ sâu), `GET /api/v1/graph/entities` cấp
   gợi ý cho ô tìm kiếm. UI tự sắp xếp bằng force layout vẽ trên SVG, không thêm thư viện đồ
@@ -123,13 +153,16 @@ powershell -ExecutionPolicy Bypass -File .\tools\install-windows.ps1
 ```
 
 Script mặc định tạo hoặc cập nhật Conda environment `private-ai` với Python 3.12 và Node.js 22;
-cài API/desktop/frontend, chạy test + lint + typecheck, build frontend và
+cài API kèm RAG-Anything, desktop và frontend, chạy test + lint + typecheck, build frontend và
 tạo wheel Python trong `dist\python`. Có thể tùy chỉnh:
 
 ```text
 .\tools\install-windows.ps1 -EnvironmentName private-ai-dev -PythonVersion 3.13
 .\tools\install-windows.ps1 -SkipChecks
 ```
+
+Chỉ dùng Python 3.12 hoặc 3.13 cho bản có RAG-Anything; dependency MinerU hiện chưa hỗ trợ
+Python 3.14.
 
 Sau khi build, chạy development services hoặc desktop shell mà không cần activate environment:
 
@@ -182,7 +215,11 @@ Khi API không khởi động được, launcher in nguyên nhân kèm phần cu
 Không cần cài gì thêm. LightRAG chạy trong tiến trình API và ghi chỉ mục xuống
 `.local-data/lightrag/<workspace>`. Chỉ mục dùng model embedding đang đặt mặc định cho tác vụ
 `embedding` và model chat đang đặt mặc định cho tác vụ `chat`; đổi model embedding sẽ dựng lại
-chỉ mục vì số chiều vector thay đổi. Đặt `PRIVATE_AI_EMBEDDING_ENABLED=false` để tắt hẳn.
+chỉ mục vì số chiều vector thay đổi. Hộp soạn tin có hai retrieval mode: `RAG nhanh` dùng vector
+search (`naive`), còn `Graph RAG` kết hợp vector và knowledge graph (`mix`). Bản cài Windows bật
+RAG-Anything mặc định; môi trường phát triển khác có thể cài bằng `pip install -e
+'services/api[rag]'`. Nếu extra chưa có, ingestion tự dùng LightRAG trực tiếp. Đặt
+`PRIVATE_AI_EMBEDDING_ENABLED=false` để tắt hẳn.
 
 ## Voice-to-text
 

@@ -114,6 +114,7 @@ def test_conversation_injects_relevant_local_document(client: TestClient) -> Non
     )
     assert response.status_code == 200
     assert fake_ollama.last_request is not None
+    assert client.app.state.services.lightrag.last_search_mode == "naive"
     assert fake_ollama.last_request.messages[0].role == "system"
     assert "Starfruit-Delta" in fake_ollama.last_request.messages[0].content
     assert "private-notes.md" in fake_ollama.last_request.messages[0].content
@@ -122,6 +123,17 @@ def test_conversation_injects_relevant_local_document(client: TestClient) -> Non
         for message in fake_ollama.last_request.messages
         if message.role == "system"
     )
+
+    graph_response = client.post(
+        f"/api/v1/conversations/{conversation['id']}/chat",
+        json={
+            "model": "test-model",
+            "content": "Use relationships for the launch codename",
+            "rag_mode": "graph",
+        },
+    )
+    assert graph_response.status_code == 200
+    assert client.app.state.services.lightrag.last_search_mode == "mix"
 
 
 def test_conversation_streams_and_persists_assistant_message(client: TestClient) -> None:
