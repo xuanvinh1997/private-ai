@@ -45,6 +45,12 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - Knowledge graph chạy bằng LightRAG nhúng thẳng trong tiến trình API, lưu graph/vector/KV
   bằng file dưới `.local-data/lightrag`. Không có database server nào phải chạy kèm. LLM và
   embedding của LightRAG đi qua đúng nhà cung cấp AI đang bật.
+- Màn hình Tri thức vẽ đồ thị của không gian đang mở: `GET /api/v1/graph` trả node/edge từ
+  LightRAG (`*` cho toàn bộ, hoặc một thực thể kèm độ sâu), `GET /api/v1/graph/entities` cấp
+  gợi ý cho ô tìm kiếm. UI tự sắp xếp bằng force layout vẽ trên SVG, không thêm thư viện đồ
+  thị nào: kéo/thả node, lăn chuột để phóng to, bấm để xem mô tả và nguồn, bấm đúp để chỉ
+  xem lân cận, chú giải cho phép tắt bớt loại thực thể. Đồ thị bị cắt vì giới hạn số node thì
+  có cảnh báo ngay dưới khung vẽ.
 - Nút microphone ưu tiên AudioWorklet, resample trực tiếp thành PCM float32 mono 16 kHz và gửi
   khung 320 ms qua binary WebSocket. FastAPI dùng binding shared-library của `transcribe.cpp`,
   cache Nemotron trong tiến trình và trả committed/tentative partial cùng transcript cuối vào

@@ -53,7 +53,39 @@ class FakeIndex:
         workspace_id: str,
         limit: int = 20,
     ) -> list[dict[str, object]]:
-        return []
+        needle = query.casefold().strip()
+        names = sorted(
+            {
+                word.strip(".,").capitalize()
+                for (owner, _), item in self.documents.items()
+                if owner == workspace_id
+                for word in item["text"].split()
+                if len(word) > 3
+            }
+        )
+        return [{"name": name} for name in names if not needle or needle in name.casefold()][:limit]
+
+    async def knowledge_graph(
+        self,
+        workspace_id: str,
+        entity: str = "*",
+        depth: int = 2,
+        limit: int = 200,
+    ) -> dict[str, object]:
+        entities = await self.find_entities("" if entity == "*" else entity, workspace_id, limit)
+        names = [str(item["name"]) for item in entities]
+        return {
+            "entity": entity,
+            "nodes": [
+                {"id": name, "labels": [name], "properties": {"entity_type": "word"}}
+                for name in names
+            ],
+            "edges": [
+                {"source": names[0], "target": name, "type": "related", "properties": {}}
+                for name in names[1:]
+            ],
+            "truncated": False,
+        }
 
     async def neighborhood(
         self,

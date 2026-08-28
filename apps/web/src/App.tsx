@@ -3,18 +3,21 @@ import {
   BookOpenText,
   Boxes,
   BrainCircuit,
+  ChevronDown,
+  Clipboard,
   FileUp,
   HardDrive,
   LayoutGrid,
+  Menu,
   MessageSquareText,
   Mic2,
-  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Paperclip,
   Plus,
+  RefreshCw,
   Send,
   Settings2,
   ShieldCheck,
@@ -22,6 +25,7 @@ import {
   Square,
   Trash2,
   Type,
+  Waypoints,
   X,
 } from "lucide-solid";
 import {
@@ -40,6 +44,7 @@ import { api } from "./api";
 import { formatBytes, formatRelativeTime } from "./format";
 import { DocumentViewer, LibraryView, MemoryView, WorkspaceDialog } from "./components/DataViews";
 import { WorkspacesView } from "./components/WorkspacesView";
+import { GraphView } from "./components/GraphView";
 import { ProfileNameDialog, ProfileSwitcher, initialsOf } from "./components/Profiles";
 import { UploadDialog } from "./components/UploadDialog";
 import { notify, ToastViewport } from "./components/AppToast";
@@ -57,7 +62,7 @@ import type {
   WorkspaceRecord,
 } from "./types";
 
-type View = "chat" | "workspaces" | "library" | "settings";
+type View = "chat" | "workspaces" | "library" | "graph" | "settings";
 type SettingsTab = "general" | "models" | "memory" | "providers";
 const DOCUMENTS_PER_PAGE = 20;
 
@@ -68,6 +73,7 @@ const navigation = [
   { id: "chat" as const, label: "Trò chuyện", icon: MessageSquareText },
   { id: "workspaces" as const, label: "Không gian", icon: LayoutGrid },
   { id: "library" as const, label: "Tài liệu", icon: BookOpenText },
+  { id: "graph" as const, label: "Tri thức", icon: Waypoints },
 ];
 
 // Cấu hình nâng cao gom hết vào trang Cài đặt thay vì chiếm chỗ ở thanh bên.
@@ -101,6 +107,16 @@ const MODEL_ACTIONS: Record<string, string> = {
   unload: "Đã dỡ mô hình",
   update: "Đã cập nhật mô hình",
   delete: "Đã xoá mô hình",
+};
+
+const modelStateLabel = (state: ModelInfo["state"]) => {
+  switch (state) {
+    case "loaded": return "Đang nằm trong bộ nhớ";
+    case "installed": return "Đã cài đặt";
+    case "unloaded": return "Chưa nạp vào bộ nhớ";
+    case "downloading": return "Đang tải";
+    case "failed": return "Lỗi";
+  }
 };
 
 function modelActionLabel(action: string) {
@@ -147,9 +163,13 @@ function ModelRow(props: { model: ModelInfo; onRefresh: () => void }) {
 
   const unload = async () => {
     setWorking(true);
+    setStatusText("Đang dỡ khỏi bộ nhớ…");
     try {
       await api.unloadModel(props.model.name);
       props.onRefresh();
+      setStatusText("");
+    } catch (cause) {
+      setStatusText(cause instanceof Error ? cause.message : "Không thể dỡ mô hình");
     } finally {
       setWorking(false);
     }
@@ -161,9 +181,12 @@ function ModelRow(props: { model: ModelInfo; onRefresh: () => void }) {
       return;
     }
     setWorking(true);
+    setStatusText("Đang xóa mô hình…");
     try {
       await api.deleteModel(props.model.name);
       props.onRefresh();
+    } catch (cause) {
+      setStatusText(cause instanceof Error ? cause.message : "Không thể xóa mô hình");
     } finally {
       setWorking(false);
     }
@@ -206,7 +229,7 @@ function ModelRow(props: { model: ModelInfo; onRefresh: () => void }) {
       <div class="model-glyph">{initials()}</div>
       <div class="model-identity"><strong>{props.model.name}</strong><span>{props.model.runtime} · {props.model.capabilities.join(" · ") || props.model.model_type}</span><Show when={props.model.default_for.length}><small>Mặc định: {props.model.default_for.join(", ")}</small></Show><Show when={statusText()}><small>{statusText()}</small></Show></div>
       <div class="model-metric"><span>Dung lượng</span><strong>{formatBytes(props.model.size_bytes)}</strong><Show when={props.model.sha256}><small>SHA {props.model.sha256?.slice(0, 12)}…</small></Show></div>
-      <div class="model-state"><StatusPip state={props.model.state === "loaded" ? "online" : "idle"} />{props.model.state === "loaded" ? "Đang dùng" : "Sẵn sàng"}</div>
+      <div class="model-state"><span class={`status-pip model-status-${props.model.state}`} aria-hidden="true" />{modelStateLabel(props.model.state)}</div>
       <div class="model-actions">
         <Show when={props.model.model_type === "asr" && props.model.state === "unloaded"}><button disabled={working()} onClick={load}>Nạp</button></Show>
         <Show when={props.model.state === "loaded"}><button disabled={working()} onClick={unload}>Dỡ khỏi bộ nhớ</button></Show>
@@ -296,6 +319,12 @@ function App() {
   const [sidebarOpen, setSidebarOpen] = createSignal(false);
   const [sidebarCollapsed, setSidebarCollapsed] = createSignal(getStoredFlag("private-ai-sidebar-collapsed"));
   const [railCollapsed, setRailCollapsed] = createSignal(getStoredFlag("private-ai-rail-collapsed"));
+  const [contextOpen, setContextOpen] = createSignal(
+    typeof window === "undefined" ? true : window.innerWidth > 1180 && !getStoredFlag("private-ai-rail-collapsed"),
+  );
+  const [compactLayout, setCompactLayout] = createSignal(
+    typeof window !== "undefined" && window.innerWidth <= 1180,
+  );
   const [messages, setMessages] = createSignal<ChatMessage[]>([]);
   const [draft, setDraft] = createSignal("");
   const [selectedModel, setSelectedModel] = createSignal("");
@@ -309,6 +338,10 @@ function App() {
   // The file picker is a separate element, so the choice has to survive the round trip.
   const [recording, setRecording] = createSignal(false);
   const [transcribing, setTranscribing] = createSignal(false);
+  const [showScrollToBottom, setShowScrollToBottom] = createSignal(false);
+  const [onboardingDismissed, setOnboardingDismissed] = createSignal(
+    getStoredFlag("private-ai-onboarding-dismissed"),
+  );
   const [health, { refetch: refetchHealth }] = createResource(api.health);
   const [models, { refetch: refetchModels }] = createResource(api.models);
   const [modelEvents, { refetch: refetchModelEvents }] = createResource(api.modelEvents);
@@ -320,7 +353,7 @@ function App() {
   const profileName = createMemo(() => activeProfile()?.display_name?.trim() ?? "");
   // An empty name means nobody has introduced themselves yet, which is the onboarding cue.
   const needsOnboarding = createMemo(() =>
-    Boolean(!profiles.loading && activeProfile() && !profileName()),
+    Boolean(!onboardingDismissed() && !profiles.loading && activeProfile() && !profileName()),
   );
 
   const openUpload = (files: File[] = []) => {
@@ -397,6 +430,22 @@ function App() {
   let audioMute: GainNode | undefined;
   let voiceMode: "native" | "batch" | undefined;
   let voiceDraftBase = "";
+  let followLatestMessages = true;
+
+  const isNearMessageBottom = () =>
+    !messageList || messageList.scrollHeight - messageList.scrollTop - messageList.clientHeight < 80;
+
+  const scrollToLatest = (behavior: ScrollBehavior = "smooth") => {
+    followLatestMessages = true;
+    setShowScrollToBottom(false);
+    messageList?.scrollTo({ top: messageList.scrollHeight, behavior });
+  };
+
+  const toggleContext = () => {
+    const next = !contextOpen();
+    setContextOpen(next);
+    setRailCollapsed(!next);
+  };
 
   const currentWorkspace = createMemo<WorkspaceRecord>(() =>
     workspaceList()?.find((workspace) => workspace.id === activeWorkspace()) ?? {
@@ -413,6 +462,9 @@ function App() {
   );
   const chatModels = createMemo(() =>
     (models() ?? []).filter((model) => model.model_type === "language"),
+  );
+  const usableChatModels = createMemo(() =>
+    chatModels().filter((model) => model.state !== "failed" && model.state !== "downloading"),
   );
   const serviceState = (name: string): ServiceState => health()?.services[name] ?? "offline";
   const vramPercent = createMemo(() => {
@@ -437,22 +489,28 @@ function App() {
     return `${models} · dùng chung ${formatBytes(gpu.total_memory_bytes)} RAM của SoC`;
   });
 
+  const openSettingsTab = (tab: SettingsTab) => {
+    setView("settings");
+    setSettingsTab(tab);
+    setSidebarOpen(false);
+  };
+
   const notices = createMemo<Notice[]>(() => {
     const list: Notice[] = [];
     const state = (name: string) => health()?.services[name];
     if (state("provider") === "not_configured") {
-      list.push({ id: "provider-missing", tone: "warn", title: "Chưa chọn nhà cung cấp AI", detail: "Thêm Ollama hoặc một endpoint tương thích OpenAI trong Cài đặt." });
+      list.push({ id: "provider-missing", tone: "warn", title: "Chưa chọn nhà cung cấp AI", detail: "Thêm Ollama hoặc một endpoint tương thích OpenAI trong Cài đặt.", actionLabel: "Mở nhà cung cấp", onAction: () => openSettingsTab("providers") });
     } else if (state("provider") === "offline") {
-      list.push({ id: "provider-offline", tone: "alert", title: "Nhà cung cấp AI không phản hồi", detail: "Không gọi được endpoint đang chọn, cuộc trò chuyện sẽ lỗi." });
+      list.push({ id: "provider-offline", tone: "alert", title: "Nhà cung cấp AI không phản hồi", detail: "Không gọi được endpoint đang chọn, cuộc trò chuyện sẽ lỗi.", actionLabel: "Kiểm tra nhà cung cấp", onAction: () => openSettingsTab("providers") });
     }
     if (state("ollama") === "offline") {
-      list.push({ id: "ollama-offline", tone: "alert", title: "Ollama đã ngoại tuyến", detail: "Máy chủ mô hình cục bộ không chạy trên máy này." });
+      list.push({ id: "ollama-offline", tone: "alert", title: "Ollama đã ngoại tuyến", detail: "Máy chủ mô hình cục bộ không chạy trên máy này.", actionLabel: "Mở mô hình", onAction: () => openSettingsTab("models") });
     }
     if (state("knowledge_graph") === "not_configured") {
-      list.push({ id: "graph-missing", tone: "warn", title: "Kho tri thức chưa dựng", detail: "Tải tài liệu lên để Private AI lập chỉ mục và trả lời theo ngữ cảnh." });
+      list.push({ id: "graph-missing", tone: "warn", title: "Kho tri thức chưa dựng", detail: "Tải tài liệu lên để Private AI lập chỉ mục và trả lời theo ngữ cảnh.", actionLabel: "Mở tài liệu", onAction: () => setView("library") });
     }
     if (state("asr") === "offline") {
-      list.push({ id: "asr-offline", tone: "warn", title: "Nhập bằng giọng nói chưa sẵn sàng", detail: "Cài mô hình nhận dạng giọng nói trong Cài đặt → Mô hình." });
+      list.push({ id: "asr-offline", tone: "warn", title: "Nhập bằng giọng nói chưa sẵn sàng", detail: "Cài mô hình nhận dạng giọng nói trong Cài đặt → Mô hình.", actionLabel: "Mở mô hình", onAction: () => openSettingsTab("models") });
     }
     const summary = documentSummary();
     if (summary.failed) {
@@ -466,6 +524,8 @@ function App() {
         detail: firstFailure
           ? `${firstFailure.filename}: ${firstFailure.error ?? documentStatusLabel(firstFailure)}`
           : "Mở Thư viện để xem nguyên nhân và thử xử lý lại.",
+        actionLabel: "Mở tài liệu",
+        onAction: () => setView("library"),
       });
     }
     if (summary.pending) {
@@ -477,6 +537,8 @@ function App() {
         detail: firstPending
           ? `${firstPending.filename}: ${documentStatusLabel(firstPending)}`
           : "Nội dung sẽ vào kho tri thức khi trích xuất xong.",
+        actionLabel: "Theo dõi tài liệu",
+        onAction: () => setView("library"),
       });
     }
     if (summary.indexing) {
@@ -485,9 +547,11 @@ function App() {
         tone: "info",
         title: `${summary.indexing} tài liệu đang vào kho tri thức`,
         detail: "OCR đã xong; LightRAG đang tạo embedding và graph memory.",
+        actionLabel: "Theo dõi tài liệu",
+        onAction: () => setView("library"),
       });
     }
-    for (const event of (modelEvents() ?? []).slice(0, 6)) {
+    for (const event of (modelEvents() ?? []).filter((item) => item.status === "failed").slice(0, 6)) {
       const failed = event.status === "failed";
       list.push({
         id: event.id,
@@ -495,6 +559,8 @@ function App() {
         title: `${modelActionLabel(event.action)}${failed ? " thất bại" : ""}`,
         detail: failed && event.detail ? `${event.model_name} — ${event.detail}` : event.model_name,
         at: event.created_at,
+        actionLabel: "Mở mô hình",
+        onAction: () => openSettingsTab("models"),
       });
     }
     return list;
@@ -515,10 +581,17 @@ function App() {
   const refreshVisibleHealth = () => {
     if (document.visibilityState === "visible") void refetchHealth();
   };
+  const refreshCompactLayout = () => {
+    const compact = window.innerWidth <= 1180;
+    setCompactLayout(compact);
+    setContextOpen(compact ? false : !railCollapsed());
+  };
+  window.addEventListener("resize", refreshCompactLayout);
   document.addEventListener("visibilitychange", refreshVisibleHealth);
   onCleanup(() => {
     window.clearInterval(healthPoll);
     window.clearInterval(documentPoll);
+    window.removeEventListener("resize", refreshCompactLayout);
     document.removeEventListener("visibilitychange", refreshVisibleHealth);
   });
 
@@ -539,9 +612,13 @@ function App() {
   });
 
   createEffect(() => {
-    const available = chatModels();
+    const available = usableChatModels();
     // Switching provider replaces the whole inventory, so a stale pick has to be dropped.
-    if (!available.length || available.some((model) => model.name === selectedModel())) return;
+    if (!available.length) {
+      setSelectedModel("");
+      return;
+    }
+    if (available.some((model) => model.name === selectedModel())) return;
     const preferred = available.find((model) => model.default_for.includes("chat")) ?? available[0];
     setSelectedModel(preferred.name);
   });
@@ -676,6 +753,31 @@ function App() {
     void openConversation(items[0].id);
   });
 
+  const copyMessage = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      notify({ tone: "success", title: "Đã sao chép", description: "Câu trả lời đã được chép vào bộ nhớ tạm." });
+    } catch {
+      notify({ tone: "error", title: "Không thể sao chép", description: "Trình duyệt không cho phép truy cập bộ nhớ tạm." });
+    }
+  };
+
+  const regenerateMessage = async (index: number) => {
+    if (sending()) return;
+    const current = messages();
+    let userIndex = -1;
+    for (let position = index - 1; position >= 0; position -= 1) {
+      if (current[position]?.role === "user") {
+        userIndex = position;
+        break;
+      }
+    }
+    const prompt = userIndex >= 0 ? current[userIndex]?.content : undefined;
+    if (!prompt) return;
+    setMessages(current.slice(0, userIndex));
+    await submitMessage(prompt);
+  };
+
   const submitMessage = async (content = draft()) => {
     const text = content.trim();
     if (!text || sending()) return;
@@ -698,6 +800,8 @@ function App() {
         return;
       }
     }
+    followLatestMessages = isNearMessageBottom();
+    setShowScrollToBottom(false);
     const nextMessages: ChatMessage[] = [...messages(), { role: "user", content: text }];
     let streamedAnswer = "";
     setMessages([...nextMessages, { role: "assistant", content: "" }]);
@@ -707,7 +811,7 @@ function App() {
     const controller = new AbortController();
     let renderFrame: number | undefined;
     activeChatController = controller;
-    queueMicrotask(() => messageList?.scrollTo({ top: messageList.scrollHeight, behavior: "smooth" }));
+    if (followLatestMessages) queueMicrotask(() => scrollToLatest());
     try {
       const response: ConversationDetail = await api.streamConversation(
         conversationId,
@@ -718,7 +822,8 @@ function App() {
           if (renderFrame === undefined) {
             renderFrame = window.requestAnimationFrame(() => {
               setMessages([...nextMessages, { role: "assistant", content: streamedAnswer }]);
-              messageList?.scrollTo({ top: messageList.scrollHeight });
+              if (followLatestMessages) scrollToLatest("auto");
+              else setShowScrollToBottom(true);
               renderFrame = undefined;
             });
           }
@@ -730,7 +835,7 @@ function App() {
       setMessages(response.messages);
       refetchConversations();
       refetchWorkspaces();
-      queueMicrotask(() => messageList?.scrollTo({ top: messageList.scrollHeight, behavior: "smooth" }));
+      if (followLatestMessages) queueMicrotask(() => scrollToLatest());
     } catch (cause) {
       if (cause instanceof DOMException && cause.name === "AbortError") {
         setMessages(streamedAnswer
@@ -1043,19 +1148,19 @@ function App() {
         <main class="main-stage" id="main-content">
           <header class="topbar">
             <div class="topbar-title">
-              <button class="icon-button mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Mở menu"><MoreHorizontal size={22} /></button>
+              <button class="icon-button mobile-menu" onClick={() => setSidebarOpen(true)} aria-label="Mở menu" title="Mở menu"><Menu size={22} /></button>
               <div><strong>{view() === "chat" ? (hasWorkspace() ? currentWorkspace().name : "Chưa có không gian") : view() === "settings" ? "Cài đặt" : navigation.find((item) => item.id === view())?.label}</strong><span><StatusPip state={health()?.status === "ok" ? "online" : "offline"} /> Trên thiết bị</span></div>
             </div>
             <div class="topbar-actions">
               <Show when={view() === "chat"}>
                 <button
                   class="icon-button context-toggle"
-                  onClick={() => setRailCollapsed(!railCollapsed())}
-                  aria-label={railCollapsed() ? "Hiện bảng ngữ cảnh" : "Ẩn bảng ngữ cảnh"}
-                  aria-expanded={!railCollapsed()}
-                  title={railCollapsed() ? "Hiện bảng ngữ cảnh" : "Ẩn bảng ngữ cảnh"}
+                  onClick={toggleContext}
+                  aria-label={contextOpen() ? "Ẩn bảng ngữ cảnh" : "Hiện bảng ngữ cảnh"}
+                  aria-expanded={contextOpen()}
+                  title={contextOpen() ? "Ẩn bảng ngữ cảnh" : "Hiện bảng ngữ cảnh"}
                 >
-                  {railCollapsed() ? <PanelRightOpen size={19} /> : <PanelRightClose size={19} />}
+                  {contextOpen() ? <PanelRightClose size={19} /> : <PanelRightOpen size={19} />}
                 </button>
               </Show>
               <NotificationsMenu notices={notices()} onOpen={() => void refresh()} />
@@ -1065,7 +1170,7 @@ function App() {
           <Switch>
             <Match when={view() === "chat"}>
               <div
-                class="chat-workspace"
+                classList={{ "chat-workspace": true, "context-open": contextOpen() }}
                 onDragEnter={(event) => {
                   if (!event.dataTransfer?.types.includes("Files")) return;
                   event.preventDefault();
@@ -1092,26 +1197,73 @@ function App() {
                     </div>
                   </div>
                 </Show>
-                <section class="conversation" aria-label="Cuộc trò chuyện">
-                  <div class="message-list" ref={messageList} aria-live="polite">
+                <section class="conversation" aria-label="Cuộc trò chuyện" aria-busy={sending()}>
+                  <div
+                    class="message-list"
+                    ref={messageList}
+                    onScroll={() => {
+                      followLatestMessages = isNearMessageBottom();
+                      setShowScrollToBottom(!followLatestMessages);
+                    }}
+                  >
+                    <Show when={showScrollToBottom()}>
+                      <button class="scroll-latest-button" type="button" onClick={() => scrollToLatest()}>
+                        <ChevronDown size={17} aria-hidden="true" /> Cuộn tới trả lời mới nhất
+                      </button>
+                    </Show>
+                    <Show when={sending()}>
+                      <div class="sr-only" aria-live="polite">Private AI đang tạo câu trả lời.</div>
+                    </Show>
                     <Show when={messages().length > 0} fallback={
                       <div class="chat-welcome">
                         <div class="welcome-mark"><Sparkles size={28} /></div>
                         <p>{profileName() ? `Chào bạn, ${profileName()}` : "Chào bạn"}</p>
                         <h1>Hôm nay bạn muốn làm gì?</h1>
                         <span>Hỏi bằng ngôn ngữ tự nhiên. Private AI sẽ dùng mô hình và tài liệu trên máy để trả lời.</span>
-                        <div class="starter-prompts"><For each={starterPrompts}>{(prompt) => <button onClick={() => void submitMessage(prompt)}>{prompt}<Send size={17} /></button>}</For></div>
+                        <Show when={!workspaceList.loading && (!hasWorkspace() || !selectedModel())}>
+                          <div class="chat-setup-card">
+                            <strong>Thiết lập trước khi trò chuyện</strong>
+                            <span>Tạo nơi lưu dữ liệu và chọn một mô hình có thể trả lời.</span>
+                            <div>
+                              <Show when={!hasWorkspace()}>
+                                <button class="button button-secondary" type="button" onClick={() => { setView("workspaces"); setSidebarOpen(false); }}>
+                                  <Plus size={17} aria-hidden="true" /> Tạo không gian
+                                </button>
+                              </Show>
+                              <Show when={!selectedModel()}>
+                                <button class="button button-secondary" type="button" onClick={() => { setView("settings"); setSettingsTab("models"); setSidebarOpen(false); }}>
+                                  <Boxes size={17} aria-hidden="true" /> Chọn mô hình
+                                </button>
+                              </Show>
+                            </div>
+                          </div>
+                        </Show>
+                        <Show when={hasWorkspace() && Boolean(selectedModel())}>
+                          <div class="starter-prompts"><For each={starterPrompts}>{(prompt) => <button type="button" onClick={() => void submitMessage(prompt)}>{prompt}<Send size={17} aria-hidden="true" /></button>}</For></div>
+                        </Show>
                       </div>
                     }>
                       <div class="message-stream">
-                        <Index each={messages()}>{(message) => (
+                        <Index each={messages()}>{(message, index) => (
                           <article class={`message message-${message().role}`}>
                             <div class="message-author"><span>{message().role === "user" ? initialsOf(profileName() || "Bạn") : "AI"}</span><strong>{message().role === "user" ? (profileName() || "Bạn") : "Private AI"}</strong></div>
                             <Show
                               when={message().content}
                               fallback={<div class="thinking"><i /><i /><i /><span>Đang suy nghĩ</span></div>}
                             >
-                              <Markdown content={message().content} />
+                              <div class="message-content">
+                                <Markdown content={message().content} />
+                                <Show when={message().role === "assistant" && Boolean(message().content) && index === messages().length - 1}>
+                                  <div class="message-actions" aria-label="Thao tác với câu trả lời">
+                                    <button type="button" onClick={() => void copyMessage(message().content)} title="Sao chép câu trả lời">
+                                      <Clipboard size={15} aria-hidden="true" /> <span>Sao chép</span>
+                                    </button>
+                                    <button type="button" disabled={sending()} onClick={() => void regenerateMessage(index)} title="Tạo lại câu trả lời">
+                                      <RefreshCw size={15} aria-hidden="true" /> <span>Tạo lại</span>
+                                    </button>
+                                  </div>
+                                </Show>
+                              </div>
                             </Show>
                           </article>
                         )}</Index>
@@ -1156,6 +1308,9 @@ function App() {
                   </div>
                 </section>
 
+                <Show when={compactLayout() && contextOpen()}>
+                  <button class="context-scrim" type="button" onClick={() => { setContextOpen(false); setRailCollapsed(true); }} aria-label="Đóng bảng ngữ cảnh" />
+                </Show>
                 <aside class="context-rail" aria-label="Ngữ cảnh không gian làm việc">
                   <div class="context-heading">
                     <div><span>Ngữ cảnh</span><strong>{hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"}</strong></div>
@@ -1194,6 +1349,9 @@ function App() {
                           </span>
                         </button>
                       )}</For></div>
+                    </Show>
+                    <Show when={hasWorkspace() && documentSummary().total > 3}>
+                      <button class="context-view-all" type="button" onClick={() => setView("library")}>Xem toàn bộ {documentSummary().total} tài liệu</button>
                     </Show>
                     <Show
                       when={hasWorkspace()}
@@ -1244,7 +1402,13 @@ function App() {
                     ><i style={{ transform: `scaleX(${vramPercent() / 100})` }} /></div>
                     <small>{vramDetail()}</small>
                   </section>
-                  {/* <div class="local-note"><ShieldCheck size={22} /><div><strong>Riêng tư trên thiết bị</strong><span>Nội dung trò chuyện không rời khỏi máy này.</span></div></div> */}
+                  <div classList={{ "local-note": true, "local-note-remote": Boolean(health()?.provider && !health()?.provider?.builtin) }}>
+                    <ShieldCheck size={22} aria-hidden="true" />
+                    <div>
+                      <strong>{health()?.provider?.builtin ? "Đang chạy trên thiết bị" : "Đang dùng máy chủ đã chọn"}</strong>
+                      <span>{health()?.provider?.builtin ? "Nội dung được gửi tới runtime cục bộ." : "Nội dung trò chuyện và tài liệu liên quan có thể rời khỏi máy này."}</span>
+                    </div>
+                  </div>
                 </aside>
               </div>
             </Match>
@@ -1275,6 +1439,12 @@ function App() {
                 loading={documents.loading}
                 onUpload={() => openUpload()}
                 onRefresh={refetchDocuments}
+              />
+            </Match>
+            <Match when={view() === "graph"}>
+              <GraphView
+                workspaceId={activeWorkspace()}
+                workspaceName={hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"}
               />
             </Match>
             <Match when={view() === "settings"}>
@@ -1372,7 +1542,11 @@ function App() {
         open={needsOnboarding()}
         mode="onboarding"
         profile={activeProfile()}
-        onClose={() => refetchProfiles()}
+        onClose={() => {
+          setOnboardingDismissed(true);
+          window.localStorage.setItem("private-ai-onboarding-dismissed", "1");
+          refetchProfiles();
+        }}
         onDone={() => refetchProfiles()}
       />
       <UploadDialog

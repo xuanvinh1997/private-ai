@@ -89,3 +89,30 @@ def test_lightrag_indexes_scopes_and_deletes_in_process(tmp_path: Path) -> None:
 
     # Everything lives in files beside the database; no server was involved.
     assert (tmp_path / "lightrag").is_dir()
+
+
+def test_knowledge_graph_reads_an_empty_workspace_without_failing(tmp_path: Path) -> None:
+    """A space that has never been indexed answers with an empty graph, not an error."""
+
+    async def scenario() -> dict[str, Any]:
+        store = LightRagStore(
+            tmp_path,
+            StubProvider(),  # type: ignore[arg-type]
+            embedding_model="stub-embed",
+            resolve_chat_model=lambda: "stub-chat",
+        )
+        try:
+            return {
+                "all": await store.knowledge_graph("personal"),
+                "entity": await store.knowledge_graph("personal", entity="Ollama", depth=2),
+                "neighborhood": await store.neighborhood("Ollama", "personal"),
+            }
+        finally:
+            await store.close()
+
+    result = asyncio.run(scenario())
+
+    assert result["all"] == {"entity": "*", "nodes": [], "edges": [], "truncated": False}
+    assert result["entity"]["entity"] == "Ollama"
+    assert result["entity"]["nodes"] == []
+    assert result["neighborhood"] == {"entity": "Ollama", "nodes": [], "edges": []}

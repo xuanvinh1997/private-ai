@@ -109,6 +109,9 @@ export function ProfileNameDialog(props: {
               <Show when={props.mode !== "onboarding"}>
                 <button class="button button-secondary" type="button" onClick={props.onClose}>Hủy</button>
               </Show>
+              <Show when={props.mode === "onboarding"}>
+                <button class="button button-secondary" type="button" onClick={props.onClose}>Để sau</button>
+              </Show>
               <button class="button button-primary" type="button" disabled={saving()} onClick={save}>
                 {saving() ? "Đang lưu…" : COPY[props.mode].action}
               </button>

@@ -6,6 +6,8 @@ import type {
   ConversationRecord,
   DocumentPage,
   DocumentRecord,
+  GraphEntity,
+  GraphSnapshot,
   Health,
   MemoryRecord,
   MemoryType,
@@ -324,4 +326,14 @@ export const api = {
     request<MemoryRecord>(`/memory/${id}/enable`, { method: "POST" }),
   deleteMemory: (id: string) =>
     request<void>(`/memory/${id}?confirmed=true`, { method: "DELETE" }),
+  graph: (workspaceId: string, entity = "*", depth = 2, limit = 150) =>
+    request<GraphSnapshot>(
+      `/graph?workspace_id=${encodeURIComponent(workspaceId)}&entity=${encodeURIComponent(entity)}` +
+        `&depth=${depth}&limit=${limit}`,
+    ),
+  graphEntities: (workspaceId: string, query = "", limit = 50) =>
+    request<GraphEntity[]>(
+      `/graph/entities?workspace_id=${encodeURIComponent(workspaceId)}` +
+        `&q=${encodeURIComponent(query)}&limit=${limit}`,
+    ),
 };

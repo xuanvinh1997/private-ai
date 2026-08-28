@@ -236,35 +236,59 @@ class LightRagStore:
         matched = [label for label in labels if not needle or needle in str(label).casefold()]
         return [{"name": str(label)} for label in matched[: max(1, min(limit, 100))]]
 
+    async def knowledge_graph(
+        self,
+        workspace_id: str,
+        entity: str = "*",
+        depth: int = 2,
+        limit: int = 200,
+    ) -> dict[str, object]:
+        """Read a slice of the graph: one entity's neighbourhood, or `*` for the whole space."""
+        label = entity.strip() or "*"
+        empty: dict[str, object] = {"entity": label, "nodes": [], "edges": [], "truncated": False}
+        instance = await self._instance(workspace_id)
+        if instance is None:
+            return empty
+        try:
+            graph = await instance.get_knowledge_graph(
+                label,
+                max_depth=max(1, min(depth, 5)),
+                max_nodes=max(1, min(limit, 500)),
+            )
+        except Exception as exc:
+            logger.warning("Could not read the graph of %s: %s", workspace_id, exc)
+            return empty
+        return {
+            "entity": label,
+            "nodes": [
+                {"id": node.id, "labels": list(node.labels), "properties": node.properties}
+                for node in graph.nodes
+            ],
+            "edges": [
+                {
+                    "source": edge.source,
+                    "target": edge.target,
+                    "type": edge.type,
+                    "properties": edge.properties,
+                }
+                for edge in graph.edges
+            ],
+            "truncated": bool(graph.is_truncated),
+        }
+
     async def neighborhood(
         self,
         entity: str,
         workspace_id: str,
         limit: int = 30,
     ) -> dict[str, object]:
-        instance = await self._instance(workspace_id)
-        if instance is None:
-            return {"entity": entity, "nodes": [], "edges": []}
-        try:
-            graph = await instance.get_knowledge_graph(
-                entity,
-                max_depth=2,
-                max_nodes=max(1, min(limit, 200)),
-            )
-        except Exception as exc:
-            logger.warning("Could not read the neighbourhood of %s: %s", entity, exc)
-            return {"entity": entity, "nodes": [], "edges": []}
-        return {
-            "entity": entity,
-            "nodes": [
-                {"id": node.id, "labels": list(node.labels), "properties": node.properties}
-                for node in graph.nodes
-            ],
-            "edges": [
-                {"source": edge.source, "target": edge.target, "type": edge.type}
-                for edge in graph.edges
-            ],
-        }
+        # The MCP tool answers a language model, so edges stay at source/target/type.
+        graph = await self.knowledge_graph(workspace_id, entity, depth=2, limit=limit)
+        edges = [
+            {"source": edge["source"], "target": edge["target"], "type": edge["type"]}
+            for edge in graph["edges"]  # type: ignore[union-attr]
+        ]
+        return {"entity": entity, "nodes": graph["nodes"], "edges": edges}
 
     async def close(self) -> None:
         instances = list(self._instances.values())

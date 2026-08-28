@@ -183,3 +183,27 @@ export interface MemoryRecord {
   updated_at: string;
   expires_at?: string;
 }
+
+export interface GraphNode {
+  id: string;
+  labels: string[];
+  properties: Record<string, unknown>;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  type: string | null;
+  properties: Record<string, unknown>;
+}
+
+export interface GraphSnapshot {
+  entity: string;
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  truncated: boolean;
+}
+
+export interface GraphEntity {
+  name: string;
+}

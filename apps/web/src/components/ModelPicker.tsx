@@ -6,11 +6,22 @@ import type { ModelInfo } from "../types";
 
 const shortName = (name: string) => name.replace(/:latest$/, "");
 
+const stateLabel = (state: ModelInfo["state"]) => {
+  switch (state) {
+    case "loaded": return "đang trong bộ nhớ";
+    case "installed": return "đã cài đặt";
+    case "unloaded": return "chưa nạp";
+    case "downloading": return "đang tải";
+    case "failed": return "lỗi";
+  }
+};
+
 const modelMeta = (model: ModelInfo) => {
   const parts = [model.runtime];
   if (model.size_bytes) parts.push(formatBytes(model.size_bytes));
   if (model.quantization) parts.push(model.quantization);
   if (model.capabilities.includes("vision")) parts.push("Đọc ảnh");
+  parts.push(stateLabel(model.state));
   return parts.join(" · ");
 };
 
@@ -56,7 +67,13 @@ export function ModelPicker(props: {
               onChange={props.onSelect}
             >
               <For each={props.models}>{(model) => (
-                <DropdownMenu.RadioItem class="model-option" value={model.name} closeOnSelect>
+                <DropdownMenu.RadioItem
+                  class="model-option"
+                  value={model.name}
+                  closeOnSelect
+                  disabled={model.state === "failed" || model.state === "downloading"}
+                  aria-label={`${shortName(model.name)}, ${modelMeta(model)}`}
+                >
                   <span class="model-option-copy">
                     <strong>{shortName(model.name)}</strong>
                     <small>{modelMeta(model)}</small>

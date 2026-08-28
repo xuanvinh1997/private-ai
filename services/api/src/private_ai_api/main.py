@@ -17,6 +17,7 @@ from private_ai_api.routers import (
     audio,
     chat,
     documents,
+    graph,
     health,
     memory,
     models,
@@ -159,6 +160,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(memory.router, prefix="/api/v1")
     app.include_router(documents.router, prefix="/api/v1")
     app.include_router(workspaces.router, prefix="/api/v1")
+    app.include_router(graph.router, prefix="/api/v1")
     app.include_router(audio.router, prefix="/api/v1")
     if configured.frontend_dist.is_dir():
         app.mount("/", StaticFiles(directory=configured.frontend_dist, html=True), name="web")

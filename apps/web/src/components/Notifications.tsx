@@ -12,6 +12,8 @@ export interface Notice {
   detail: string;
   /** Set for one-off events; status alerts stay unread while the problem lasts. */
   at?: string;
+  actionLabel?: string;
+  onAction?: () => void;
 }
 
 const SEEN_KEY = "private-ai-notifications-seen";
@@ -73,6 +75,9 @@ export function NotificationsMenu(props: { notices: Notice[]; onOpen: () => void
                   <div class="notification-copy">
                     <strong>{notice.title}</strong>
                     <small>{notice.detail}</small>
+                    <Show when={notice.onAction && notice.actionLabel}>
+                      <button class="notification-action" type="button" onClick={notice.onAction}>{notice.actionLabel}</button>
+                    </Show>
                   </div>
                   <Show when={notice.at}>
                     <time datetime={notice.at}>{formatRelativeTime(notice.at!)}</time>
