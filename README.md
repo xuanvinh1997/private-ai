@@ -1,6 +1,6 @@
 # Private AI
 
-Private AI là desktop control plane cho mô hình, tài liệu và memory chạy cục bộ. UI native nằm trên máy người dùng; AI runtime có thể chạy local khi phát triển trên macOS hoặc trong Ubuntu WSL2 khi phát hành cho Windows.
+Private AI là desktop control plane cho mô hình, tài liệu và memory chạy cục bộ. UI native và AI runtime cùng chạy trên máy người dùng.
 
 ## Phần đã chạy được
 
@@ -39,7 +39,7 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - SolidJS dashboard responsive, hiển thị health/model/VRAM; các màn hình Chat Workspaces,
   Library, Memory, Models và Settings đều nối với API.
 - Màn hình chính Chat Workspaces, light mode mặc định, dark mode tùy chọn và chế độ chữ lớn; lựa chọn được lưu cục bộ trên thiết bị.
-- `pywebview` desktop launcher với runtime adapter local/WSL.
+- `pywebview` desktop launcher với API local chạy trong cùng Python/Conda environment.
 - MCP Python SDK v2 server tại `http://127.0.0.1:8010/mcp`, có bearer token cục bộ,
   Origin/Host validation và 21 tool cho document, GraphRAG, memory, model inventory/default.
 - Knowledge graph chạy bằng LightRAG nhúng thẳng trong tiến trình API, lưu graph/vector/KV
@@ -77,10 +77,10 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - Thanh GPU phản ánh reservation và `size_vram` từ Ollama, nhưng chưa đọc temperature hay
   utilization phần cứng. Hai process API/MCP đều kiểm tra inventory thật, song chưa có
   distributed lock để loại bỏ hoàn toàn race khi chúng cùng load model đúng một thời điểm.
-- Desktop shell hiện có cửa sổ pywebview và runtime adapter; file picker, system tray và native
+- Desktop shell hiện có cửa sổ pywebview và local runtime; file picker, system tray và native
   notification của Windows chưa được triển khai vì các thao tác chính đang dùng web UI/API.
-- Adapter Windows/WSL dùng argument list và đã có unit test, nhưng chưa được chạy end-to-end
-  trên máy Windows trong đợt kiểm thử macOS này.
+- Local runtime dùng argument list và đã có unit test, nhưng chưa được chạy end-to-end trên máy
+  Windows trong đợt kiểm thử macOS này.
 
 PDF scan chỉ được đánh dấu `needs_ocr` khi công cụ OCR chưa được cài hoặc không nhận ra chữ;
 health luôn phản ánh trạng thái runtime thật, không giả lập service đang online.
@@ -150,18 +150,27 @@ Trên Windows dùng `conda run --no-capture-output -n private-ai private-ai-mcp`
 `Authorization: Bearer <token>`. Server không expose `models.delete`; xóa document hoặc memory
 đều yêu cầu `confirmed=true`.
 
-## Chạy desktop Windows với API trong WSL2
+## Chạy desktop Windows với API local
 
-Cài project và virtualenv vào filesystem Linux, ví dụ `/opt/private-ai`, rồi đặt biến môi trường trên Windows:
+Sau khi cài các package vào Conda environment `private-ai`, desktop launcher tự khởi động API
+local bằng chính Python executable của environment đó:
 
 ```text
-PRIVATE_AI_DESKTOP_RUNTIME=wsl
-PRIVATE_AI_WSL_DISTRO=Ubuntu-24.04
-PRIVATE_AI_WSL_PROJECT_DIR=/opt/private-ai
-PRIVATE_AI_WSL_API_EXECUTABLE=/opt/private-ai/.venv/bin/private-ai-api
+conda run --no-capture-output -n private-ai private-ai-desktop
 ```
 
-Launcher gọi trực tiếp `wsl.exe --distribution ... --cd ... -- executable`, không tạo command string qua `cmd.exe` hay Bash. Trên macOS, `auto` luôn chọn runtime `local`.
+Launcher yêu cầu **Microsoft Edge WebView2 Runtime**. Thiếu runtime này pywebview tự hạ xuống
+engine Internet Explorer (MSHTML) và không chạy được giao diện, nên launcher dừng sớm kèm link
+tải thay vì mở một cửa sổ trắng.
+
+Launcher chỉ đợi `GET /api/v1/health/live`, không đợi `GET /api/v1/health`: endpoint đầy đủ còn
+gọi sang Ollama và provider đang chọn nên có thể mất vài giây khi các service đó chưa sẵn sàng.
+Probe cũng bỏ qua system proxy, vì proxy Windows không tự loại trừ `127.0.0.1` (`<local>` chỉ
+khớp host không có dấu chấm) và sẽ nuốt luôn request tới API local.
+
+Khi API không khởi động được, launcher in nguyên nhân kèm phần cuối log
+`.local-data/desktop-api.log`. Biến môi trường liên quan: `PRIVATE_AI_HOST`, `PRIVATE_AI_PORT`,
+`PRIVATE_AI_PROJECT_DIR`, `PRIVATE_AI_DATA_DIR`, `PRIVATE_AI_FRONTEND_DIST`.
 
 ## Knowledge graph
 

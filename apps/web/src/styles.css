@@ -605,14 +605,10 @@ select.text-input { appearance: none; padding-right: 34px; background-image: lin
 .graph-zoom { display: inline-flex; gap: 8px; }
 .graph-layout { width: min(100%, 1240px); margin-top: 18px; display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
 .graph-canvas { position: relative; min-height: 420px; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; background: var(--surface); }
-.graph-svg { display: block; width: 100%; height: min(64vh, 640px); touch-action: none; cursor: grab; }
-.graph-svg:active { cursor: grabbing; }
-.graph-edges line { stroke: var(--line-strong); stroke-width: 1.4; }
-.graph-node { cursor: pointer; }
-.graph-node circle { stroke: var(--surface); stroke-width: 2; transition: stroke 150ms ease; }
-.graph-node.selected circle { stroke: var(--ink); stroke-width: 3; }
-.graph-node text { fill: var(--text); font-size: 11px; font-weight: 620; pointer-events: none; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
-.graph-empty { margin: 0; padding: 80px 28px; color: var(--muted); text-align: center; font-size: var(--text-base); line-height: 1.7; }
+.graph-stage { width: 100%; height: min(64vh, 640px); touch-action: none; }
+.graph-boot { margin: 0; color: var(--muted); font-size: var(--text-base); }
+.graph-stage.busy { opacity: .55; }
+.graph-empty { position: absolute; inset: 0; margin: 0; display: grid; place-content: center; padding: 40px 28px; color: var(--muted); text-align: center; font-size: var(--text-base); line-height: 1.7; background: var(--surface); }
 .graph-status { position: absolute; left: 14px; bottom: 12px; display: flex; flex-wrap: wrap; gap: 4px 12px; border: 1px solid var(--line); border-radius: 9px; padding: 6px 11px; color: var(--muted); background: color-mix(in srgb, var(--surface) 88%, transparent); font-size: var(--text-2xs); }
 .graph-status em { color: var(--danger); font-style: normal; }
 .graph-side { display: flex; flex-direction: column; gap: 14px; }
@@ -632,6 +628,11 @@ select.text-input { appearance: none; padding-right: 34px; background-image: lin
 .graph-detail h2 { margin: 4px 0 0; color: var(--ink); font-size: var(--text-lg); line-height: 1.25; overflow-wrap: anywhere; }
 .graph-detail header .icon-button { width: 34px; height: 34px; flex: none; }
 .graph-detail-meta { margin: 10px 0 0; color: var(--faint); font-size: var(--text-2xs); overflow-wrap: anywhere; }
+.graph-relation-ends { margin-top: 12px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; color: var(--faint); font-size: var(--text-sm); }
+.graph-relation-ends button { min-width: 0; max-width: 100%; border: 1px solid var(--line); border-radius: 8px; display: inline-flex; align-items: center; gap: 7px; padding: 5px 9px; color: var(--text); background: var(--surface-soft); cursor: pointer; font-size: var(--text-sm); }
+.graph-relation-ends button:hover { border-color: var(--accent); color: var(--accent-ink); }
+.graph-relation-ends button i { width: 10px; height: 10px; flex: none; border-radius: 3px; }
+.graph-relation-ends button { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .graph-detail-body { margin: 10px 0 14px; max-height: 240px; overflow-y: auto; color: var(--muted); font-size: var(--text-sm); line-height: 1.7; }
 .graph-detail .button { width: 100%; }
 @keyframes think { 0%, 70%, 100% { opacity: .28; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
@@ -665,7 +666,7 @@ select.text-input { appearance: none; padding-right: 34px; background-image: lin
 
 @media (max-width: 1180px) {
   .graph-layout { grid-template-columns: minmax(0, 1fr); }
-  .graph-svg { height: min(56vh, 520px); }
+  .graph-stage { height: min(56vh, 520px); }
   .chat-workspace { grid-template-columns: minmax(0, 1fr); }
   .context-rail { display: none; }
   .context-toggle { display: grid; }

@@ -10,6 +10,12 @@ from private_ai_api.dependencies import AppServices, get_services
 router = APIRouter(tags=["system"])
 
 
+@router.get("/health/live")
+async def liveness() -> dict[str, str]:
+    """Liveness only: launchers poll this while the runtime services are still waking up."""
+    return {"status": "ok"}
+
+
 @router.get("/health")
 async def health(services: Annotated[AppServices, Depends(get_services)]) -> dict[str, object]:
     provider = services.providers.active_config()

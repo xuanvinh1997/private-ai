@@ -33,18 +33,19 @@ import {
   Index,
   Match,
   Show,
+  Suspense,
   Switch,
   createEffect,
   createMemo,
   createResource,
   createSignal,
+  lazy,
   onCleanup,
 } from "solid-js";
 import { api } from "./api";
 import { formatBytes, formatRelativeTime } from "./format";
 import { DocumentViewer, LibraryView, MemoryView, WorkspaceDialog } from "./components/DataViews";
 import { WorkspacesView } from "./components/WorkspacesView";
-import { GraphView } from "./components/GraphView";
 import { ProfileNameDialog, ProfileSwitcher, initialsOf } from "./components/Profiles";
 import { UploadDialog } from "./components/UploadDialog";
 import { notify, ToastViewport } from "./components/AppToast";
@@ -61,6 +62,9 @@ import type {
   ServiceState,
   WorkspaceRecord,
 } from "./types";
+
+// Cytoscape chỉ cần cho màn hình Tri thức, nên nó nằm ngoài bundle khởi động.
+const GraphView = lazy(() => import("./components/GraphView"));
 
 type View = "chat" | "workspaces" | "library" | "graph" | "settings";
 type SettingsTab = "general" | "models" | "memory" | "providers";
@@ -1442,10 +1446,12 @@ function App() {
               />
             </Match>
             <Match when={view() === "graph"}>
-              <GraphView
-                workspaceId={activeWorkspace()}
-                workspaceName={hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"}
-              />
+              <Suspense fallback={<section class="page-view"><p class="graph-boot">Đang mở đồ thị…</p></section>}>
+                <GraphView
+                  workspaceId={activeWorkspace()}
+                  workspaceName={hasWorkspace() ? currentWorkspace().name : "Chưa có không gian"}
+                />
+              </Suspense>
             </Match>
             <Match when={view() === "settings"}>
               <section class="page-view settings-page">

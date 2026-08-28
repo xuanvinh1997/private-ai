@@ -4,7 +4,6 @@ import platform
 import subprocess
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -89,7 +88,6 @@ class Settings(BaseSettings):
     gpu_capacity_bytes: int = Field(default_factory=detect_gpu_capacity_bytes, gt=0)
     gpu_model_overhead_ratio: float = Field(default=1.1, ge=1.0, le=3.0)
     asr_vram_reservation_bytes: int = Field(default=2 * 1024**3, ge=0)
-    desktop_runtime: Literal["auto", "local", "wsl"] = "auto"
     request_timeout_seconds: float = Field(default=60.0, gt=0)
     max_upload_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
 
