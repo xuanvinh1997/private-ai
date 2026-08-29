@@ -71,7 +71,7 @@ async def create_memory(
     record = MemoryRecord(
         **{**payload.model_dump(), "user_id": active_profile_id(services.database)}
     )
-    services.database.execute(
+    await services.database.execute_async(
         """
         INSERT INTO memories(
             id, user_id, type, content, source, confidence, enabled,
@@ -90,7 +90,10 @@ async def update_memory(
     payload: MemoryCreate,
     services: Annotated[AppServices, Depends(get_services)],
 ) -> MemoryRecord:
-    existing = services.database.fetch_one("SELECT * FROM memories WHERE id = ?", (memory_id,))
+    existing = await services.database.fetch_one_async(
+        "SELECT * FROM memories WHERE id = ?",
+        (memory_id,),
+    )
     if not existing:
         raise HTTPException(status_code=404, detail="Memory not found")
     record = MemoryRecord(
@@ -100,7 +103,7 @@ async def update_memory(
         created_at=existing["created_at"],
         updated_at=datetime.now(UTC),
     )
-    services.database.execute(
+    await services.database.execute_async(
         """
         UPDATE memories SET user_id=?, type=?, content=?, source=?, confidence=?,
         enabled=?, created_at=?, updated_at=?, expires_at=?,
@@ -118,10 +121,13 @@ async def disable_memory(
     services: Annotated[AppServices, Depends(get_services)],
 ) -> MemoryRecord:
     now = datetime.now(UTC).isoformat()
-    services.database.execute(
+    await services.database.execute_async(
         "UPDATE memories SET enabled = 0, updated_at = ? WHERE id = ?", (now, memory_id)
     )
-    row = services.database.fetch_one("SELECT * FROM memories WHERE id = ?", (memory_id,))
+    row = await services.database.fetch_one_async(
+        "SELECT * FROM memories WHERE id = ?",
+        (memory_id,),
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Memory not found")
     await services.memory_service.sync_memory(memory_id)
@@ -134,10 +140,13 @@ async def enable_memory(
     services: Annotated[AppServices, Depends(get_services)],
 ) -> MemoryRecord:
     now = datetime.now(UTC).isoformat()
-    services.database.execute(
+    await services.database.execute_async(
         "UPDATE memories SET enabled = 1, updated_at = ? WHERE id = ?", (now, memory_id)
     )
-    row = services.database.fetch_one("SELECT * FROM memories WHERE id = ?", (memory_id,))
+    row = await services.database.fetch_one_async(
+        "SELECT * FROM memories WHERE id = ?",
+        (memory_id,),
+    )
     if not row:
         raise HTTPException(status_code=404, detail="Memory not found")
     await services.memory_service.sync_memory(memory_id)

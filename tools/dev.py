@@ -97,6 +97,11 @@ def mcp_command(environment: dict[str, str]) -> tuple[list[str], dict[str, str]]
     return ([sys.executable, "-m", "private_ai_api.mcp_server"], environment.copy())
 
 
+def worker_command(environment: dict[str, str]) -> tuple[list[str], dict[str, str]]:
+    """Ingestion runs where it cannot stall the API, the same as in the desktop build."""
+    return ([sys.executable, "-m", "private_ai_api.worker"], environment.copy())
+
+
 def web_command() -> list[str]:
     pnpm = shutil.which("pnpm") or (shutil.which("pnpm.cmd") if os.name == "nt" else None)
     if pnpm:
@@ -117,6 +122,11 @@ def main() -> None:
     parser.add_argument("--api-only", action="store_true")
     parser.add_argument("--web-only", action="store_true")
     parser.add_argument("--no-mcp", action="store_true")
+    parser.add_argument(
+        "--no-worker",
+        action="store_true",
+        help="Read documents inside the API process, as a bare uvicorn run does",
+    )
     args = parser.parse_args()
     if args.api_only and args.web_only:
         parser.error("--api-only and --web-only cannot be combined")
@@ -145,7 +155,14 @@ def main() -> None:
                     f"'{lookup}'.\n",
                 )
             command, environment = api_command()
-            processes.append(spawn(command, ROOT, environment))
+            api_environment = environment.copy()
+            if not args.no_worker:
+                api_environment["PRIVATE_AI_INLINE_INGESTION"] = "0"
+            processes.append(spawn(command, ROOT, api_environment))
+            if not args.no_worker:
+                # It waits for the API's migrations, so the start order does not matter.
+                command, worker_environment = worker_command(environment)
+                processes.append(spawn(command, ROOT, worker_environment))
             if not args.no_mcp:
                 command, mcp_environment = mcp_command(environment)
                 processes.append(spawn(command, ROOT, mcp_environment))

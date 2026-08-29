@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from private_ai_api.database import Database
 from private_ai_api.schemas import ChatRequest
 from private_ai_api.services import long_document_summary as summary
+from private_ai_api.services.provider import ProviderUnavailable
 
 
 def _insert_document(
@@ -157,6 +158,64 @@ async def test_map_reduce_reads_every_scoped_batch_in_source_order(
     assert combined.index("BOOK_ONE_EVENT_A") < combined.index("BOOK_ONE_EVENT_B")
     assert "BOOK_TWO_EVENT" not in combined
     assert events[-1] == {"type": "result", "answer": "Tóm tắt hoàn chỉnh [harrypotter.pdf]"}
+
+
+class FlakySummaryAI(SummaryAI):
+    def __init__(self, failures: int, error: str = "connection reset") -> None:
+        super().__init__()
+        self.failures = failures
+        self.error = error
+
+    async def chat(self, request: ChatRequest) -> dict[str, Any]:
+        if self.failures > 0:
+            self.requests.append(request)
+            self.failures -= 1
+            raise ProviderUnavailable(self.error)
+        return await super().chat(request)
+
+
+@pytest.mark.asyncio
+async def test_map_step_retries_a_temporarily_unavailable_provider(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _insert_document(database)
+    monkeypatch.setattr(summary, "PROVIDER_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    plan = summary.build_summary_plan(
+        database,
+        "research",
+        "Tóm tắt phần 1 truyện Harry Potter",
+    )
+    assert plan is not None
+    ai = FlakySummaryAI(failures=2)
+
+    events = [event async for event in summary.summarize_steps(plan, ai, "test-model")]
+
+    retries = [event for event in events if event["type"] == "retry"]
+    assert [event["attempt"] for event in retries] == [1, 2]
+    assert events[-1]["type"] == "result"
+    assert len(ai.requests) == 4
+
+
+@pytest.mark.asyncio
+async def test_map_step_does_not_retry_a_permanent_provider_rejection(
+    database: Database,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _insert_document(database)
+    monkeypatch.setattr(summary, "PROVIDER_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    plan = summary.build_summary_plan(
+        database,
+        "research",
+        "Tóm tắt phần 1 truyện Harry Potter",
+    )
+    assert plan is not None
+    ai = FlakySummaryAI(failures=5, error="HTTP 401 from provider")
+
+    with pytest.raises(ProviderUnavailable, match="HTTP 401"):
+        _ = [event async for event in summary.summarize_steps(plan, ai, "test-model")]
+
+    assert len(ai.requests) == 1
 
 
 def test_streaming_chat_routes_long_summary_away_from_top_k_rag(client: TestClient) -> None:

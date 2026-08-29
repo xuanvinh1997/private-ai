@@ -39,10 +39,19 @@ Private AI là desktop control plane cho mô hình, tài liệu và memory chạ
 - SolidJS dashboard responsive, hiển thị health/model/VRAM; các màn hình Chat Workspaces,
   Library, Memory, Models và Settings đều nối với API.
 - Màn hình chính Chat Workspaces, light mode mặc định, dark mode tùy chọn và chế độ chữ lớn; lựa chọn được lưu cục bộ trên thiết bị.
+- Đọc tài liệu chạy ở tiến trình riêng (`private-ai-worker`). Parse PDF/Office, chunking và
+  merge graph đều là Python thuần nên giữ GIL suốt thời gian xử lý một tệp; để chung tiến trình
+  API thì mọi request phía sau phải chờ, kể cả một truy vấn SQLite. `asyncio.to_thread` không
+  cứu được vì thứ bị tranh là GIL chứ không phải thread. API chỉ ghi `status='queued'`, worker
+  poll hàng đợi đó và giành quyền xử lý qua `document_claims` — đúng cơ chế vốn đã có để hai
+  tiến trình không giẫm chân nhau. Đo với một PDF 1200 trang: độ trễ trung vị của `GET
+  /workspaces` trong lúc ingest giảm từ 108 ms xuống 0,8 ms. Chạy `uvicorn` trần không có
+  worker thì `PRIVATE_AI_INLINE_INGESTION` vẫn để API tự đọc như cũ.
 - `pywebview` desktop launcher với API local chạy trong cùng Python/Conda environment. Đóng
-  cửa sổ chính là tắt hẳn: API được sinh ra trong process group riêng (Windows dùng Job Object
-  `KILL_ON_JOB_CLOSE`) nên `stop()` giết cả cây tiến trình, kể cả FFmpeg và bộ nhận dạng giọng
-  nói mà API tự sinh ra — `terminate()` riêng uvicorn sẽ bỏ sót chúng. Có ba đường dọn dẹp độc
+  cửa sổ chính là tắt hẳn: API và worker đều được sinh ra trong process group riêng (Windows
+  dùng chung một Job Object `KILL_ON_JOB_CLOSE`) nên `stop()` giết cả cây tiến trình, kể cả
+  FFmpeg và bộ nhận dạng giọng nói mà API tự sinh ra — `terminate()` riêng uvicorn sẽ bỏ sót
+  chúng. Worker tắt trước để nhả claim, tránh lần khởi động sau phải chờ claim hết hạn. Có ba đường dọn dẹp độc
   lập vì không đường nào phủ hết: sự kiện `closed` của cửa sổ, handler SIGINT/SIGTERM (tín hiệu
   không bao giờ chạy tới khối `finally`), và `atexit`. Hết hạn chờ 8 giây thì leo thang sang
   SIGKILL.

@@ -141,16 +141,34 @@ class FakeIndex:
         return None
 
 
-@pytest.fixture
-def client(tmp_path: Path) -> Iterator[TestClient]:
-    settings = Settings(
-        data_dir=tmp_path,
-        frontend_dist=tmp_path / "missing-web",
-        embedding_enabled=False,
-    )
+def _client(settings: Settings) -> Iterator[TestClient]:
     with TestClient(create_app(settings)) as test_client:
         index = FakeIndex()
         test_client.app.state.services.lightrag = index
         test_client.app.state.services.document_processor.lightrag = index
         test_client.app.state.services.document_processor.ai = index
         yield test_client
+
+
+@pytest.fixture
+def client(tmp_path: Path) -> Iterator[TestClient]:
+    yield from _client(
+        Settings(
+            data_dir=tmp_path,
+            frontend_dist=tmp_path / "missing-web",
+            embedding_enabled=False,
+        )
+    )
+
+
+@pytest.fixture
+def queue_only_client(tmp_path: Path) -> Iterator[TestClient]:
+    """The API as the desktop build runs it: ingestion belongs to a separate process."""
+    yield from _client(
+        Settings(
+            data_dir=tmp_path,
+            frontend_dist=tmp_path / "missing-web",
+            embedding_enabled=False,
+            inline_ingestion=False,
+        )
+    )

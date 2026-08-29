@@ -28,6 +28,40 @@ def test_command_always_starts_local_api() -> None:
     assert (cwd / "services" / "api" / "src").is_dir()
 
 
+def test_the_api_hands_ingestion_to_a_separate_process() -> None:
+    """Reading a file holds the GIL, so it must not happen where requests are served."""
+    controller = RuntimeController()
+    _, _, api_environment = controller.command()
+    command, cwd, worker_environment = controller.worker_command()
+
+    assert api_environment["PRIVATE_AI_INLINE_INGESTION"] == "0"
+    assert command == [sys.executable, "-m", "private_ai_api.worker"]
+    assert cwd is not None
+    assert "PRIVATE_AI_INLINE_INGESTION" not in worker_environment
+
+
+def test_stop_takes_the_worker_down_with_the_api() -> None:
+    import subprocess
+
+    controller = RuntimeController()
+    sleeper = [sys.executable, "-c", "import time; time.sleep(120)"]
+    controller.process = subprocess.Popen(sleeper, **RuntimeController._containment())  # noqa: S603
+    controller.worker = subprocess.Popen(sleeper, **RuntimeController._containment())  # noqa: S603
+    worker = controller.worker
+    api = controller.process
+    try:
+        controller.stop()
+
+        assert controller.process is None
+        assert controller.worker is None
+        assert worker.poll() is not None, "the ingestion worker outlived the window"
+        assert api.poll() is not None
+    finally:
+        for process in (api, worker):
+            with contextlib.suppress(Exception):
+                process.kill()
+
+
 def test_command_follows_the_configured_host_and_port(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("PRIVATE_AI_PORT", "8123")
     controller = RuntimeController()

@@ -118,14 +118,16 @@ class RuntimeController:
     host: str = field(default_factory=lambda: os.getenv("PRIVATE_AI_HOST", "127.0.0.1"))
     port: int = field(default_factory=lambda: int(os.getenv("PRIVATE_AI_PORT", "8000")))
     process: subprocess.Popen[bytes] | None = field(default=None, init=False)
+    worker: subprocess.Popen[bytes] | None = field(default=None, init=False)
     log_path: Path | None = field(default=None, init=False)
+    worker_log_path: Path | None = field(default=None, init=False)
     job: int | None = field(default=None, init=False)
 
     @property
     def api_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
-    def command(self) -> tuple[list[str], Path | None, dict[str, str]]:
+    def _environment(self) -> tuple[Path, dict[str, str]]:
         environment = os.environ.copy()
         root = workspace_root()
         api_source = root / "services" / "api" / "src"
@@ -133,6 +135,13 @@ class RuntimeController:
         environment["PYTHONPATH"] = os.pathsep.join(
             part for part in (str(api_source), existing_pythonpath) if part
         )
+        return root, environment
+
+    def command(self) -> tuple[list[str], Path | None, dict[str, str]]:
+        root, environment = self._environment()
+        # Document parsing holds the GIL for as long as a file takes, so the API must not
+        # be the process doing it: worker_command() below runs that work instead.
+        environment["PRIVATE_AI_INLINE_INGESTION"] = "0"
         return (
             [
                 sys.executable,
@@ -147,6 +156,10 @@ class RuntimeController:
             root,
             environment,
         )
+
+    def worker_command(self) -> tuple[list[str], Path | None, dict[str, str]]:
+        root, environment = self._environment()
+        return ([sys.executable, "-m", "private_ai_api.worker"], root, environment)
 
     def preflight(self) -> None:
         """Fail with an actionable message instead of an empty window."""
@@ -182,17 +195,10 @@ class RuntimeController:
             )
         command, cwd, environment = self.command()
         self.log_path = data_dir(cwd or Path.cwd()) / "desktop-api.log"
+        self.worker_log_path = data_dir(cwd or Path.cwd()) / "desktop-worker.log"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         # The window has no console on Windows, so the API needs somewhere to explain itself.
-        with self.log_path.open("wb") as log:
-            self.process = subprocess.Popen(  # noqa: S603
-                command,
-                cwd=cwd,
-                env=environment,
-                stdout=log,
-                stderr=log,
-                **self._containment(),
-            )
+        self.process = self._spawn(command, cwd, environment, self.log_path)
         self._contain(self.process)
         deadline = time.monotonic() + timeout_seconds
         while time.monotonic() < deadline:
@@ -202,6 +208,7 @@ class RuntimeController:
                     f"before it accepted connections."
                 )
             if self.is_ready():
+                self._start_worker()
                 return
             time.sleep(0.2)
         self.stop()
@@ -209,6 +216,38 @@ class RuntimeController:
             f"The Private AI API did not answer {self.api_url}/api/v1/health/live "
             f"within {timeout_seconds:.0f} seconds."
         )
+
+    def _spawn(
+        self,
+        command: list[str],
+        cwd: Path | None,
+        environment: dict[str, str],
+        log: Path,
+    ) -> subprocess.Popen[bytes]:
+        with log.open("wb") as handle:
+            return subprocess.Popen(  # noqa: S603
+                command,
+                cwd=cwd,
+                env=environment,
+                stdout=handle,
+                stderr=handle,
+                **self._containment(),
+            )
+
+    def _start_worker(self) -> None:
+        """Start ingestion only once the API is up, because the API owns the migrations.
+
+        A worker that cannot start is not fatal: the queue simply waits, and the user sees
+        documents sitting at "queued" rather than an app that refuses to open.
+        """
+        command, cwd, environment = self.worker_command()
+        log = self.worker_log_path or data_dir(cwd or Path.cwd()) / "desktop-worker.log"
+        try:
+            self.worker = self._spawn(command, cwd, environment, log)
+        except OSError:
+            self.worker = None
+            return
+        self._contain(self.worker)
 
     def is_ready(self) -> bool:
         """Probe liveness, not /health: that endpoint waits on Ollama and the active provider."""
@@ -233,19 +272,19 @@ class RuntimeController:
     def _contain(self, process: subprocess.Popen[bytes]) -> None:
         if os.name != "nt":
             return
-        self.job = windows_kill_on_close_job()
+        # One job holds every process we start, so closing its handle takes them all down.
+        if self.job is None:
+            self.job = windows_kill_on_close_job()
         if not self.job:
             return
         import ctypes
 
         kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        if not kernel32.AssignProcessToJobObject(self.job, int(process._handle)):  # noqa: SLF001
-            kernel32.CloseHandle(self.job)
-            self.job = None
+        kernel32.AssignProcessToJobObject(self.job, int(process._handle))  # noqa: SLF001
 
-    def _signal_tree(self, number: int) -> None:
+    def _signal_tree(self, number: int, process: subprocess.Popen[bytes] | None = None) -> None:
         """Signal the whole group, falling back to the single process when that fails."""
-        process = self.process
+        process = process if process is not None else self.process
         if process is None:
             return
         if os.name == "nt":
@@ -266,19 +305,23 @@ class RuntimeController:
         ctypes.WinDLL("kernel32", use_last_error=True).CloseHandle(self.job)
         self.job = None
 
-    def stop(self) -> None:
-        """Take the API and everything it started down. Safe to call more than once."""
-        process = self.process
+    def _terminate(self, process: subprocess.Popen[bytes] | None, grace: float) -> None:
         if process is None or process.poll() is not None:
-            self._release_job()
-            self.process = None
             return
-        self._signal_tree(signal.SIGTERM)
+        self._signal_tree(signal.SIGTERM, process)
         try:
-            process.wait(timeout=8)
+            process.wait(timeout=grace)
         except subprocess.TimeoutExpired:
-            self._signal_tree(signal.SIGKILL)
+            self._signal_tree(signal.SIGKILL, process)
             with suppress(subprocess.TimeoutExpired):
                 process.wait(timeout=3)
+
+    def stop(self) -> None:
+        """Take the API, the worker and everything they started down. Safe to call twice."""
+        # The worker goes first: it releases its document claim on the way out, so the next
+        # launch sees a free queue instead of one that has to time the claim out.
+        self._terminate(self.worker, grace=8)
+        self.worker = None
+        self._terminate(self.process, grace=8)
         self._release_job()
         self.process = None

@@ -170,7 +170,7 @@ async def select_default_model(
     if task == "vision" and "vision" not in selected.capabilities:
         raise HTTPException(status_code=422, detail="Task vision requires a vision-capable model")
     now = datetime.now(UTC).isoformat()
-    services.database.execute(
+    await services.database.execute_async(
         """
         INSERT INTO model_defaults(task, model_name, updated_at) VALUES (?, ?, ?)
         ON CONFLICT(task) DO UPDATE SET model_name=excluded.model_name,

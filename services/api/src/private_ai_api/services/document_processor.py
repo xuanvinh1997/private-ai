@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
 import re
 import shutil
@@ -17,6 +16,7 @@ from uuid import uuid4
 from xml.etree import ElementTree
 from zipfile import BadZipFile, ZipFile
 
+import numpy as np
 from markitdown import MarkItDown
 from openai import OpenAI
 from pypdf import PdfReader
@@ -41,6 +41,30 @@ IMAGE_OCR_PROMPT = (
 # stale window belonged to a process that was killed and is free to take over.
 CLAIM_HEARTBEAT_SECONDS = 10.0
 CLAIM_STALE_SECONDS = 45.0
+
+
+def _pack_vector(vector: list[float]) -> bytes:
+    """Store an embedding as raw float32.
+
+    JSON text cost roughly six bytes per dimension and a parse on every single search;
+    the packed form is four bytes and numpy reads it without copying.
+    """
+    return np.asarray(vector, dtype=np.float32).tobytes()
+
+
+def _unpack_vector(packed: object, legacy_json: object) -> np.ndarray | None:
+    """Read either storage form, so indexes built before the change still rank."""
+    if isinstance(packed, bytes | bytearray | memoryview):
+        buffer = bytes(packed)
+        if not buffer or len(buffer) % 4:
+            return None
+        return np.frombuffer(buffer, dtype=np.float32)
+    if isinstance(legacy_json, str) and legacy_json:
+        try:
+            return np.asarray(json.loads(legacy_json), dtype=np.float32)
+        except (ValueError, TypeError):
+            return None
+    return None
 
 
 class UnsupportedDocument(RuntimeError):
@@ -161,9 +185,15 @@ class DocumentProcessor:
                 ("Tiến trình xử lý dừng giữa chừng, đã xếp lại hàng đợi", now.isoformat()),
             )
 
-    async def process_pending(self) -> None:
-        """Finish interrupted extraction and index each document in its saved RAG mode."""
-        self._recover_orphaned_jobs()
+    async def process_pending(self, *, recover: bool = True) -> None:
+        """Finish interrupted extraction and index each document in its saved RAG mode.
+
+        ``recover`` belongs to the first sweep after start-up. The worker calls this on a
+        poll loop, and re-running the orphan sweep every tick would keep rewriting job rows
+        that nothing is wrong with.
+        """
+        if recover:
+            self._recover_orphaned_jobs()
         pending = self.database.fetch_all(
             """
             SELECT id FROM documents
@@ -185,7 +215,8 @@ class DocumentProcessor:
                     d.indexed_at IS NULL
                     OR (d.index_mode = 'simple' AND EXISTS (
                             SELECT 1 FROM document_chunks c
-                            WHERE c.document_id = d.id AND c.embedding_json IS NULL
+                            WHERE c.document_id = d.id
+                              AND COALESCE(c.embedding_vector, c.embedding_json) IS NULL
                     ))
               )
             ORDER BY d.created_at
@@ -390,11 +421,12 @@ class DocumentProcessor:
                     [str(chunk["content"]) for chunk in batch],
                 )
             self.database.execute_many(
-                "UPDATE document_chunks SET embedding_json = ?, embedding_model = ? "
+                "UPDATE document_chunks "
+                "SET embedding_vector = ?, embedding_json = NULL, embedding_model = ? "
                 "WHERE id = ?",
                 (
                     (
-                        json.dumps(vector, separators=(",", ":")),
+                        _pack_vector(vector),
                         embedding_model,
                         chunk["id"],
                     )
@@ -432,7 +464,7 @@ class DocumentProcessor:
         # caller stamp indexed_at, so a half-embedded document can never read as ready.
         missing = self.database.fetch_one(
             "SELECT COUNT(*) AS missing FROM document_chunks "
-            "WHERE document_id = ? AND embedding_json IS NULL",
+            "WHERE document_id = ? AND COALESCE(embedding_vector, embedding_json) IS NULL",
             (document_id,),
         )
         return int(missing["missing"]) == 0 if missing else False
@@ -492,9 +524,9 @@ class DocumentProcessor:
                 """
                 INSERT INTO document_chunks(
                     id, document_id, chunk_index, content, section_id, section_title,
-                    section_level, page_number, embedding_json, embedding_model, graph_model,
-                    created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+                    section_level, page_number, embedding_json, embedding_vector,
+                    embedding_model, graph_model, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?)
                 """,
                 (
                     (
@@ -549,10 +581,11 @@ class DocumentProcessor:
         workspace_id: str,
         limit: int,
     ) -> list[dict[str, object]]:
-        rows = self.database.fetch_all(
+        rows = await asyncio.to_thread(
+            self.database.fetch_all,
             """
             SELECT c.id AS chunk_id, c.content, c.chunk_index, c.embedding_json,
-                   c.embedding_model, d.id AS document_id, d.filename
+                   c.embedding_vector, c.embedding_model, d.id AS document_id, d.filename
             FROM document_chunks AS c
             JOIN documents AS d ON d.id = c.document_id
             WHERE d.workspace_id = ? AND d.status = 'ready' AND d.index_mode = 'simple'
@@ -562,7 +595,6 @@ class DocumentProcessor:
         )
         if not rows:
             return []
-        tokens = list(dict.fromkeys(self._search_tokens(query)))[:32]
         query_vector: list[float] = []
         embedding_model = str(getattr(self.lightrag, "embedding_model", "")).strip()
         if self.ai is not None and embedding_model and query.strip():
@@ -570,22 +602,34 @@ class DocumentProcessor:
                 query_vector = (await self.ai.embed(embedding_model, [query]))[0]
             except (InsufficientVram, ProviderUnavailable, IndexError, TypeError, ValueError):
                 query_vector = []
+        # Scoring touches every chunk in the workspace. Left on the event loop it froze the
+        # UI for the length of the scan, and no part of it awaits, so it belongs in a thread.
+        return await asyncio.to_thread(
+            self._rank_chunks,
+            rows,
+            query,
+            query_vector,
+            embedding_model,
+            limit,
+        )
 
+    def _rank_chunks(
+        self,
+        rows: list[dict[str, object]],
+        query: str,
+        query_vector: list[float],
+        embedding_model: str,
+        limit: int,
+    ) -> list[dict[str, object]]:
+        tokens = list(dict.fromkeys(self._search_tokens(query)))[:32]
+        token_set = set(tokens)
+        semantic = self._semantic_scores(rows, query_vector, embedding_model)
         ranked: list[tuple[float, dict[str, object]]] = []
-        for row in rows:
+        for position, row in enumerate(rows):
             searchable = self._search_tokens(f"{row['filename']} {row['content']}")
-            matched = len(set(tokens) & set(searchable))
+            matched = len(token_set & set(searchable))
             keyword_score = matched / max(1, len(tokens))
-            semantic_score = -1.0
-            if (
-                query_vector
-                and row["embedding_model"] == embedding_model
-                and row["embedding_json"]
-            ):
-                semantic_score = self._cosine_similarity(
-                    query_vector,
-                    json.loads(str(row["embedding_json"])),
-                )
+            semantic_score = semantic[position]
             if keyword_score <= 0 and semantic_score < 0.3:
                 continue
             score = max(keyword_score, 0.0) + max(semantic_score, 0.0)
@@ -605,6 +649,46 @@ class DocumentProcessor:
         return [record for _, record in ranked[: max(1, min(limit, 20))]]
 
     @staticmethod
+    def _semantic_scores(
+        rows: list[dict[str, object]],
+        query_vector: list[float],
+        embedding_model: str,
+    ) -> list[float]:
+        """Cosine similarity for every row at once, as a single matrix-vector product.
+
+        Rows whose embedding is missing, stale or a different width score -1, which is what
+        the caller reads as "no semantic opinion".
+        """
+        scores = [-1.0] * len(rows)
+        if not query_vector or not embedding_model:
+            return scores
+        query = np.asarray(query_vector, dtype=np.float32)
+        query_norm = float(np.linalg.norm(query))
+        if not query_norm:
+            return scores
+        usable: list[int] = []
+        vectors: list[np.ndarray] = []
+        for position, row in enumerate(rows):
+            if row["embedding_model"] != embedding_model:
+                continue
+            vector = _unpack_vector(row["embedding_vector"], row["embedding_json"])
+            if vector is None or vector.shape != query.shape:
+                continue
+            usable.append(position)
+            vectors.append(vector)
+        if not usable:
+            return scores
+        matrix = np.vstack(vectors)
+        norms = np.linalg.norm(matrix, axis=1)
+        safe = norms.copy()
+        safe[safe == 0.0] = 1.0
+        similarity = (matrix @ query) / (safe * query_norm)
+        similarity[norms == 0.0] = -1.0
+        for position, value in zip(usable, similarity.tolist(), strict=True):
+            scores[position] = float(value)
+        return scores
+
+    @staticmethod
     def _deduplicate_results(
         rows: list[dict[str, object]],
         limit: int,
@@ -620,17 +704,6 @@ class DocumentProcessor:
             if len(selected) >= max(1, min(limit, 20)):
                 break
         return selected
-
-    @staticmethod
-    def _cosine_similarity(left: list[float], right: list[float]) -> float:
-        if not left or len(left) != len(right):
-            return -1.0
-        dot = sum(a * b for a, b in zip(left, right, strict=True))
-        left_norm = math.sqrt(sum(value * value for value in left))
-        right_norm = math.sqrt(sum(value * value for value in right))
-        if not left_norm or not right_norm:
-            return -1.0
-        return dot / (left_norm * right_norm)
 
     def _delete_sync(self, document_id: str) -> bool:
         document = self.database.fetch_one(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Annotated
 
 from fastapi import APIRouter, Depends
@@ -124,7 +125,7 @@ async def probe_web_search(
     services: Annotated[AppServices, Depends(get_services)],
 ) -> WebSearchProbeResult:
     """Run one throwaway query, so a bad host shows up in settings and not mid-chat."""
-    stored = read_web_search_config(services.database)
+    stored = await asyncio.to_thread(read_web_search_config, services.database)
     draft = WebSearchConfig(
         backend=payload.backend.value,
         base_url=payload.base_url.strip() or stored.base_url,

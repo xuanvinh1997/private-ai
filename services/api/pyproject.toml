@@ -9,6 +9,7 @@ dependencies = [
   "markitdown[docx,pdf,pptx,xlsx]>=0.1.7,<0.2",
   "markitdown-ocr>=0.1,<0.2",
   "mcp>=2,<3",
+  "numpy>=1.26,<3",
   "lightrag-hku>=1.4.16,<1.5",
   "orjson>=3.10,<4",
   "openai>=2,<4",
@@ -31,6 +32,7 @@ rag = ["raganything==1.3.1"]
 private-ai-api = "private_ai_api.main:run"
 private-ai-mcp = "private_ai_api.mcp_server:run"
 private-ai-asr = "private_ai_api.asr_manager:run"
+private-ai-worker = "private_ai_api.worker:run"
 
 [build-system]
 requires = ["hatchling"]

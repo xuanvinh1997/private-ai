@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
+import threading
 from collections.abc import Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -79,6 +81,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     section_level INTEGER NOT NULL DEFAULT 0,
     page_number INTEGER,
     embedding_json TEXT,
+    embedding_vector BLOB,
     embedding_model TEXT,
     graph_model TEXT,
     created_at TEXT NOT NULL,
@@ -223,6 +226,10 @@ ON messages(conversation_id, created_at ASC);
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
+        # One connection per thread, kept open. FastAPI runs sync endpoints on an anyio
+        # worker thread and the ingestion process has threads of its own, so reconnecting
+        # per query paid the open/PRAGMA cost thousands of times over a single ingestion.
+        self._local = threading.local()
 
     def initialize(self) -> list[str]:
         """Create or migrate the schema, returning document paths the caller must delete."""
@@ -231,6 +238,9 @@ class Database:
         with self.connection() as connection:
             connection.executescript(SCHEMA)
             self._ensure_column(connection, "document_chunks", "embedding_json", "TEXT")
+            # Ranking used to json.loads every stored embedding and score it in pure Python.
+            # Packed float32 lets one numpy call replace that whole loop.
+            self._ensure_column(connection, "document_chunks", "embedding_vector", "BLOB")
             self._ensure_column(connection, "document_chunks", "embedding_model", "TEXT")
             self._ensure_column(connection, "document_chunks", "graph_model", "TEXT")
             self._ensure_column(connection, "document_chunks", "section_id", "TEXT")
@@ -421,12 +431,37 @@ class Database:
             defaults,
         )
 
-    @contextmanager
-    def connection(self) -> Iterable[sqlite3.Connection]:
+    def _thread_connection(self) -> sqlite3.Connection:
+        connection = getattr(self._local, "connection", None)
+        if connection is not None:
+            return connection
         connection = sqlite3.connect(self.path, timeout=30)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA foreign_keys=ON")
+        # WAL already survives a process crash at NORMAL; only an OS-level crash can lose
+        # the last commits, which is the right trade for a local index we can rebuild.
+        connection.execute("PRAGMA synchronous=NORMAL")
+        # The API and the ingestion worker write to the same file, so a writer that arrives
+        # mid-transaction has to wait rather than fail the request outright.
+        connection.execute("PRAGMA busy_timeout=30000")
+        self._local.connection = connection
+        self._local.depth = 0
+        return connection
+
+    @contextmanager
+    def connection(self) -> Iterable[sqlite3.Connection]:
+        connection = self._thread_connection()
+        # Nesting has to reuse the outer transaction: committing here would publish the
+        # caller's half-written batch, and closing would strand it.
+        if getattr(self._local, "depth", 0):
+            self._local.depth += 1
+            try:
+                yield connection
+            finally:
+                self._local.depth -= 1
+            return
+        self._local.depth = 1
         try:
             yield connection
             connection.commit()
@@ -434,7 +469,16 @@ class Database:
             connection.rollback()
             raise
         finally:
-            connection.close()
+            self._local.depth = 0
+
+    def close(self) -> None:
+        """Drop this thread's connection. Other threads keep theirs."""
+        connection = getattr(self._local, "connection", None)
+        if connection is None:
+            return
+        self._local.connection = None
+        self._local.depth = 0
+        connection.close()
 
     def fetch_all(self, query: str, parameters: tuple[Any, ...] = ()) -> list[dict[str, Any]]:
         with self.connection() as connection:
@@ -453,6 +497,26 @@ class Database:
     def execute_many(self, query: str, parameters: Iterable[tuple[Any, ...]]) -> None:
         with self.connection() as connection:
             connection.executemany(query, parameters)
+
+    # SQLite is synchronous, so every call above blocks whichever thread runs it. Inside an
+    # `async def` that thread is the event loop, which then serves nobody until the query
+    # returns. These wrappers are what async handlers should reach for instead.
+    async def fetch_all_async(
+        self,
+        query: str,
+        parameters: tuple[Any, ...] = (),
+    ) -> list[dict[str, Any]]:
+        return await asyncio.to_thread(self.fetch_all, query, parameters)
+
+    async def fetch_one_async(
+        self,
+        query: str,
+        parameters: tuple[Any, ...] = (),
+    ) -> dict[str, Any] | None:
+        return await asyncio.to_thread(self.fetch_one, query, parameters)
+
+    async def execute_async(self, query: str, parameters: tuple[Any, ...] = ()) -> None:
+        await asyncio.to_thread(self.execute, query, parameters)
 
     def upsert_job(self, job: dict[str, Any]) -> None:
         self.execute(

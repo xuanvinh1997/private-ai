@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 import unicodedata
 from collections.abc import AsyncIterator, Sequence
@@ -9,11 +10,13 @@ from typing import Any
 
 from private_ai_api.database import Database
 from private_ai_api.schemas import ChatMessage, ChatRequest
+from private_ai_api.services.provider import NoProviderConfigured, ProviderUnavailable
 
 SOURCE_BATCH_CHARS = 24_000
 REDUCE_BATCH_CHARS = 24_000
 MAX_INTERMEDIATE_CHARS = 8_000
 CHUNK_PAGE_SIZE = 200
+PROVIDER_RETRY_DELAYS = (1.0, 2.0, 4.0, 8.0)
 
 _SUMMARY_WORDS = ("tom tat", "summarize", "summarise", "summary")
 _DOCUMENT_SCOPE_WORDS = (
@@ -370,20 +373,52 @@ def _group_summaries(summaries: Sequence[str]) -> list[tuple[str, ...]]:
     return groups
 
 
-async def _chat_text(ai: Any, model: str, system: str, user: str) -> str:
-    result = await ai.chat(
-        ChatRequest(
-            model=model,
-            messages=[
-                ChatMessage(role="system", content=system),
-                ChatMessage(role="user", content=user),
-            ],
-        )
+def _retryable_provider_error(error: ProviderUnavailable) -> bool:
+    if isinstance(error, NoProviderConfigured):
+        return False
+    matched = re.search(r"\bHTTP\s+(\d{3})\b", str(error), flags=re.IGNORECASE)
+    if not matched:
+        return True
+    status = int(matched.group(1))
+    return status in {408, 425, 429} or status >= 500
+
+
+async def _chat_steps(
+    ai: Any,
+    model: str,
+    system: str,
+    user: str,
+) -> AsyncIterator[dict[str, object]]:
+    request = ChatRequest(
+        model=model,
+        messages=[
+            ChatMessage(role="system", content=system),
+            ChatMessage(role="user", content=user),
+        ],
     )
-    answer = str(result.get("message", {}).get("content", "")).strip()
-    if not answer:
-        raise SummaryScopeError("Mô hình trả về bản tóm tắt rỗng.")
-    return answer
+    for attempt in range(len(PROVIDER_RETRY_DELAYS) + 1):
+        try:
+            result = await ai.chat(request)
+        except ProviderUnavailable as exc:
+            if attempt >= len(PROVIDER_RETRY_DELAYS) or not _retryable_provider_error(exc):
+                raise
+            delay = PROVIDER_RETRY_DELAYS[attempt]
+            yield {
+                "type": "retry",
+                "message": (
+                    f"AI provider mất kết nối, thử lại sau {delay:g}s "
+                    f"({attempt + 1}/{len(PROVIDER_RETRY_DELAYS)})"
+                ),
+                "attempt": attempt + 1,
+                "delay_seconds": delay,
+            }
+            await asyncio.sleep(delay)
+            continue
+        answer = str(result.get("message", {}).get("content", "")).strip()
+        if not answer:
+            raise SummaryScopeError("Mô hình trả về bản tóm tắt rỗng.")
+        yield {"type": "result", "answer": answer}
+        return
 
 
 def _batch_text(batch: Sequence[SourceChunk]) -> str:
@@ -415,13 +450,18 @@ async def summarize_steps(
             "current": index,
             "total": len(batches),
         }
-        partial = await _chat_text(
+        partial = ""
+        async for chat_event in _chat_steps(
             ai,
             model,
             map_system,
             f"Yêu cầu cuối của người dùng: {plan.request}\n"
             f"Nguồn: {plan.source_label}\n\n{_batch_text(batch)}",
-        )
+        ):
+            if chat_event["type"] == "retry":
+                yield chat_event
+            else:
+                partial = str(chat_event["answer"])
         partials.append(partial[:MAX_INTERMEDIATE_CHARS])
 
     level = 0
@@ -440,31 +480,37 @@ async def summarize_steps(
                 f"[Tóm tắt phần {item_index}]\n{summary}"
                 for item_index, summary in enumerate(group, start=1)
             )
-            reduced.append(
-                (
-                    await _chat_text(
-                        ai,
-                        model,
-                        "Hợp nhất các bản tóm tắt trung gian theo đúng thứ tự nguồn. Loại bỏ "
-                        "trùng lặp nhưng không bỏ mất diễn biến, nhân vật hoặc kết luận "
-                        "quan trọng. "
-                        "Không thêm kiến thức ngoài các bản tóm tắt được cung cấp.",
-                        joined,
-                    )
-                )[:MAX_INTERMEDIATE_CHARS]
-            )
+            combined = ""
+            async for chat_event in _chat_steps(
+                ai,
+                model,
+                "Hợp nhất các bản tóm tắt trung gian theo đúng thứ tự nguồn. Loại bỏ "
+                "trùng lặp nhưng không bỏ mất diễn biến, nhân vật hoặc kết luận "
+                "quan trọng. Không thêm kiến thức ngoài các bản tóm tắt được cung cấp.",
+                joined,
+            ):
+                if chat_event["type"] == "retry":
+                    yield chat_event
+                else:
+                    combined = str(chat_event["answer"])
+            reduced.append(combined[:MAX_INTERMEDIATE_CHARS])
         partials = reduced
 
     joined = "\n\n".join(
         f"[Tóm tắt phần {index}]\n{summary}" for index, summary in enumerate(partials, start=1)
     )
     yield {"type": "progress", "message": "Hoàn thiện câu trả lời", "current": 1, "total": 1}
-    answer = await _chat_text(
+    answer = ""
+    async for chat_event in _chat_steps(
         ai,
         model,
         "Viết câu trả lời cuối cùng bằng ngôn ngữ của người dùng, dựa hoàn toàn trên các bản "
         "tóm tắt trung gian. Trình bày mạch lạc, không nói rằng thiếu trích đoạn, không thêm kiến "
         "thức ngoài nguồn và dẫn nguồn bằng đúng tên tệp trong ngoặc vuông.",
         f"Yêu cầu: {plan.request}\nNguồn phải dẫn: [{plan.filename}]\n\n{joined}",
-    )
+    ):
+        if chat_event["type"] == "retry":
+            yield chat_event
+        else:
+            answer = str(chat_event["answer"])
     yield {"type": "result", "answer": answer}

@@ -162,7 +162,7 @@ async def delete_workspace(
 ) -> Response:
     if not confirmed:
         raise HTTPException(status_code=409, detail="Workspace deletion requires confirmation")
-    existing = services.database.fetch_one(
+    existing = await services.database.fetch_one_async(
         "SELECT id FROM workspaces WHERE id = ?",
         (workspace_id,),
     )
@@ -170,13 +170,13 @@ async def delete_workspace(
         raise HTTPException(status_code=404, detail="Workspace not found")
     # Conversations cascade in SQLite, but a document also owns files on disk and nodes in
     # the knowledge index, so each one goes through the processor before the row is gone.
-    documents = services.database.fetch_all(
+    documents = await services.database.fetch_all_async(
         "SELECT id FROM documents WHERE workspace_id = ?",
         (workspace_id,),
     )
     for document in documents:
         await services.document_processor.delete(str(document["id"]))
-    services.database.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+    await services.database.execute_async("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -294,22 +294,25 @@ async def _prepare_chat(
     *,
     stream: bool,
 ) -> tuple[dict[str, Any], ChatRequest, str, SummaryPlan | None]:
-    conversation = _conversation_row(services, conversation_id)
+    conversation = await asyncio.to_thread(_conversation_row, services, conversation_id)
     try:
-        summary_plan = build_summary_plan(
+        # Planning a long summary walks the document's sections; that is a read the loop
+        # should not be sitting through.
+        summary_plan = await asyncio.to_thread(
+            build_summary_plan,
             services.database,
             str(conversation["workspace_id"]),
             payload.content,
         )
     except SummaryScopeError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    existing_messages = services.database.fetch_all(
+    existing_messages = await services.database.fetch_all_async(
         "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
         (conversation_id,),
     )
     user_message_id = str(uuid4())
     now = datetime.now(UTC).isoformat()
-    services.database.execute(
+    await services.database.execute_async(
         """
         INSERT INTO messages(id, conversation_id, role, content, created_at)
         VALUES (?, ?, 'user', ?, ?)
@@ -519,7 +522,7 @@ async def stream_chat_in_conversation(
         try:
             if summary_plan is not None:
                 async for event in summarize_steps(summary_plan, services.ai, payload.model):
-                    if event["type"] == "progress":
+                    if event["type"] in {"progress", "retry"}:
                         yield _sse({"type": "tool", "name": str(event["message"])})
                     elif event["type"] == "result":
                         content = str(event["answer"])

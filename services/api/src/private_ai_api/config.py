@@ -96,6 +96,12 @@ class Settings(BaseSettings):
     file_roots: str = ""
     file_read_max_bytes: int = Field(default=1024 * 1024, gt=0)
     max_upload_bytes: int = Field(default=100 * 1024 * 1024, gt=0)
+    # Ingestion is CPU-bound Python: parsing, chunking and graph merging all hold the GIL,
+    # so running it in the API process stalls every request for as long as a file takes.
+    # The desktop launcher turns this off and starts private-ai-worker instead; it stays on
+    # for a bare `uvicorn private_ai_api.main:app`, where there is no second process.
+    inline_ingestion: bool = True
+    worker_poll_seconds: float = Field(default=2.0, gt=0)
 
     @field_validator("data_dir", mode="after")
     @classmethod

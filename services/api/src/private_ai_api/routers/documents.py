@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import shutil
@@ -41,6 +42,11 @@ def _require_workspace(services: AppServices, workspace_id: str) -> None:
     )
     if not workspace:
         raise HTTPException(status_code=404, detail="Workspace not found")
+
+
+async def _require_workspace_async(services: AppServices, workspace_id: str) -> None:
+    """The same check, off the event loop. SQLite blocks whichever thread calls it."""
+    await asyncio.to_thread(_require_workspace, services, workspace_id)
 
 
 def _with_ingestion(
@@ -89,6 +95,27 @@ def _with_ingestion(
             }
         decorated.append(item)
     return decorated
+
+
+def _queue_ingestion(
+    services: AppServices,
+    background_tasks: BackgroundTasks,
+    document_id: str,
+    *,
+    indexed_only: bool,
+) -> None:
+    """Hand a document to whoever does the reading.
+
+    The row's own ``status`` is the queue, so with a separate worker running there is
+    nothing else to do: it polls, claims the document and reads it in its own process.
+    Only the single-process setup has to run the work here, behind the response.
+    """
+    if not services.settings.inline_ingestion:
+        return
+    if indexed_only:
+        background_tasks.add_task(services.document_processor.index_document, document_id)
+    else:
+        background_tasks.add_task(services.document_processor.process, document_id)
 
 
 def _with_document_ingestion(
@@ -162,7 +189,7 @@ async def search_documents(
     services: Annotated[AppServices, Depends(get_services)],
     limit: int = 5,
 ) -> list[dict[str, object]]:
-    _require_workspace(services, workspace_id)
+    await _require_workspace_async(services, workspace_id)
     if not q.strip():
         return []
     return await services.document_processor.search(q, limit, workspace_id=workspace_id)
@@ -187,11 +214,11 @@ async def upload_document(
     workspace_id: Annotated[str, Form()],
     use_ocr: Annotated[bool | None, Form()] = None,
 ) -> dict[str, Any]:
-    _require_workspace(services, workspace_id)
+    await _require_workspace_async(services, workspace_id)
     filename = _safe_filename(file.filename or "document")
     document_id = str(uuid4())
     target_dir = services.settings.documents_dir / document_id
-    target_dir.mkdir(parents=True, exist_ok=False)
+    await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=False)
     target_path = target_dir / filename
     digest = hashlib.sha256()
     byte_size = 0
@@ -208,32 +235,38 @@ async def upload_document(
                 digest.update(chunk)
                 output.write(chunk)
     except Exception:
-        shutil.rmtree(target_dir, ignore_errors=True)
+        await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
         raise
     finally:
         await file.close()
 
     sha256 = digest.hexdigest()
-    duplicate = services.database.fetch_one(
+    duplicate = await services.database.fetch_one_async(
         "SELECT * FROM documents WHERE workspace_id = ? AND sha256 = ?",
         (workspace_id, sha256),
     )
     if duplicate:
-        shutil.rmtree(target_dir, ignore_errors=True)
-        return _with_document_ingestion(services, duplicate)
+        await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
+        return await asyncio.to_thread(_with_document_ingestion, services, duplicate)
 
     extension = target_path.suffix.lower()
     extracted_text: str | None = None
     document_status = "queued"
     if extension in TEXT_EXTENSIONS:
-        extracted_text = target_path.read_text(encoding="utf-8", errors="replace")
+        # A text upload can be as large as the upload cap allows, so reading it whole is
+        # not something the loop should be doing.
+        extracted_text = await asyncio.to_thread(
+            target_path.read_text,
+            encoding="utf-8",
+            errors="replace",
+        )
         document_status = "ready"
 
-    preferences = read_app_preferences(services.database)
+    preferences = await asyncio.to_thread(read_app_preferences, services.database)
     index_mode = preferences.rag_mode.value
     graph_model = preferences.graph_model if index_mode == "graph" else None
     now = datetime.now(UTC).isoformat()
-    services.database.execute(
+    await services.database.execute_async(
         """
         INSERT INTO documents(
             id, workspace_id, filename, media_type, sha256, byte_size, status, source_path,
@@ -257,12 +290,14 @@ async def upload_document(
             now,
         ),
     )
-    if extracted_text:
-        background_tasks.add_task(services.document_processor.index_document, document_id)
-    if document_status == "queued":
-        background_tasks.add_task(services.document_processor.process, document_id)
-    created = services.database.fetch_one("SELECT * FROM documents WHERE id = ?", (document_id,))
-    return _with_document_ingestion(services, created) if created else {}
+    _queue_ingestion(services, background_tasks, document_id, indexed_only=bool(extracted_text))
+    created = await services.database.fetch_one_async(
+        "SELECT * FROM documents WHERE id = ?",
+        (document_id,),
+    )
+    if not created:
+        return {}
+    return await asyncio.to_thread(_with_document_ingestion, services, created)
 
 
 @router.post("/{document_id}/process", status_code=status.HTTP_202_ACCEPTED)
@@ -285,7 +320,7 @@ def process_document(
         "UPDATE documents SET status = 'queued', error = NULL, indexed_at = NULL WHERE id = ?",
         (document_id,),
     )
-    background_tasks.add_task(services.document_processor.process, document_id)
+    _queue_ingestion(services, background_tasks, document_id, indexed_only=False)
     return {"id": document_id, "status": "queued"}
 
 

@@ -459,7 +459,8 @@ def test_a_half_embedded_document_is_not_marked_indexed(client: TestClient) -> N
     document_id = uploaded.json()["id"]
     # Simulate a competing run having wiped the embeddings this document was credited for.
     processor.database.execute(
-        "UPDATE document_chunks SET embedding_json = NULL WHERE document_id = ?",
+        "UPDATE document_chunks SET embedding_json = NULL, embedding_vector = NULL "
+        "WHERE document_id = ?",
         (document_id,),
     )
     processor.database.execute(
@@ -476,7 +477,8 @@ def test_a_half_embedded_document_is_not_marked_indexed(client: TestClient) -> N
                 d.indexed_at IS NULL
                 OR (d.index_mode = 'simple' AND EXISTS (
                         SELECT 1 FROM document_chunks c
-                        WHERE c.document_id = d.id AND c.embedding_json IS NULL
+                        WHERE c.document_id = d.id
+                          AND COALESCE(c.embedding_vector, c.embedding_json) IS NULL
                 ))
           )
         """
