@@ -1,50 +1,73 @@
+"""Run Private AI in development.
+
+There is no API server, no bundler and no dev server any more: the desktop process owns
+the event loop and calls the service layer directly. What is left to supervise is two
+processes — the Qt app and the ingestion worker — and the reason they are separate is
+the GIL, not a network boundary.
+
+The process-group handling below is the part worth keeping from the old launcher. Each
+child is started in its own group (a Job-friendly ``CREATE_NEW_PROCESS_GROUP`` on
+Windows) so that stopping this script kills the whole tree, including anything the app
+spawned itself, rather than leaving orphans holding an ingestion claim.
+"""
+
 from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import signal
-import socket
 import subprocess
 import sys
 import time
 from pathlib import Path
-from urllib.error import URLError
-from urllib.request import ProxyHandler, build_opener
 
 ROOT = Path(__file__).resolve().parent.parent
-API_HOST = "127.0.0.1"
-API_PORT = 8000
+SOURCE = ROOT / "src"
+
+# Each RAG strategy is its own MCP server, and every one of them is runnable on stdio.
+# ``core`` is the non-retrieval half: workspaces, documents, memory, models, files.
+MCP_SERVERS: dict[str, str] = {
+    "core": "private_ai.mcp.servers.core_server",
+    "vector": "private_ai.mcp.servers.rag_vector",
+    "keyword": "private_ai.mcp.servers.rag_keyword",
+    "hybrid": "private_ai.mcp.servers.rag_hybrid",
+    "graph": "private_ai.mcp.servers.rag_graph",
+    "summary": "private_ai.mcp.servers.rag_summary",
+    "web": "private_ai.mcp.servers.rag_web",
+}
+
+SHUTDOWN_GRACE_SECONDS = 8
+POLL_SECONDS = 0.25
 
 
-def executable(name: str) -> str:
-    found = shutil.which(name)
-    if found:
-        return found
+def environment(**overrides: str) -> dict[str, str]:
+    """The child's environment, with ``src`` on the path for a non-installed checkout."""
+    values = os.environ.copy()
+    values["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(SOURCE), values.get("PYTHONPATH")) if part
+    )
+    values.update(overrides)
+    return values
+
+
+def spawn(command: list[str], env: dict[str, str]) -> subprocess.Popen[bytes]:
+    """Give each child its own process group so nothing it starts can outlive us."""
     if os.name == "nt":
-        found = shutil.which(f"{name}.cmd")
-        if found:
-            return found
-    raise RuntimeError(f"Required executable is not installed: {name}")
-
-
-def spawn(
-    command: list[str],
-    cwd: Path,
-    environment: dict[str, str] | None = None,
-) -> subprocess.Popen[bytes]:
-    """Give each service its own process group so reload workers cannot outlive us."""
-    if os.name == "nt":
-        return subprocess.Popen(
-            command, cwd=cwd, env=environment, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+        return subprocess.Popen(  # noqa: S603
+            command,
+            cwd=ROOT,
+            env=env,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         )
-    return subprocess.Popen(command, cwd=cwd, env=environment, start_new_session=True)
+    return subprocess.Popen(command, cwd=ROOT, env=env, start_new_session=True)  # noqa: S603
 
 
 def signal_group(process: subprocess.Popen[bytes], number: int) -> None:
     if process.poll() is not None:
         return
     if os.name == "nt":
+        # Windows has no process-group signalling worth the name; terminate the root and
+        # let the group go with it.
         process.kill() if number == signal.SIGKILL else process.terminate()
         return
     try:
@@ -53,139 +76,99 @@ def signal_group(process: subprocess.Popen[bytes], number: int) -> None:
         process.kill() if number == signal.SIGKILL else process.terminate()
 
 
-def port_holder(host: str, port: int) -> str | None:
-    """Name whatever already listens, so a clash is not just 'Address already in use'."""
-    try:
-        with socket.create_connection((host, port), timeout=1.0):
-            pass
-    except OSError:
-        return None
-    # A system proxy must never be consulted for a loopback address.
-    opener = build_opener(ProxyHandler({}))
-    try:
-        with opener.open(f"http://{host}:{port}/api/v1/health/live", timeout=2.0) as response:
-            if response.status == 200:
-                return "a Private AI API is already running there"
-    except (URLError, OSError):
-        pass
-    return "another application is holding it"
+def shut_down(processes: list[subprocess.Popen[bytes]]) -> None:
+    """Stop the worker first so it releases its ingestion claims before the app goes."""
+    for process in reversed(processes):
+        signal_group(process, signal.SIGTERM)
+    for process in reversed(processes):
+        try:
+            process.wait(timeout=SHUTDOWN_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            signal_group(process, signal.SIGKILL)
 
 
-def api_command() -> tuple[list[str], dict[str, str]]:
-    environment = os.environ.copy()
-    source = ROOT / "services" / "api" / "src"
-    environment["PYTHONPATH"] = os.pathsep.join(
-        part for part in (str(source), environment.get("PYTHONPATH")) if part
-    )
-    return (
-        [
-            sys.executable,
-            "-m",
-            "uvicorn",
-            "private_ai_api.main:app",
-            "--host",
-            "127.0.0.1",
-            "--port",
-            "8000",
-            "--reload",
-        ],
-        environment,
-    )
+def serve_one_mcp_server(strategy: str) -> int:
+    """Speak MCP on this process's own stdin/stdout, for an inspector or a client config.
+
+    Run in process rather than spawned: stdio *is* the transport, so a supervising parent
+    would only have to proxy the pipes it already owns.
+    """
+    from importlib import import_module
+
+    if str(SOURCE) not in sys.path:
+        sys.path.insert(0, str(SOURCE))
+    module = import_module(MCP_SERVERS[strategy])
+    module.run()
+    return 0
 
 
-def mcp_command(environment: dict[str, str]) -> tuple[list[str], dict[str, str]]:
-    return ([sys.executable, "-m", "private_ai_api.mcp_server"], environment.copy())
-
-
-def worker_command(environment: dict[str, str]) -> tuple[list[str], dict[str, str]]:
-    """Ingestion runs where it cannot stall the API, the same as in the desktop build."""
-    return ([sys.executable, "-m", "private_ai_api.worker"], environment.copy())
-
-
-def web_command() -> list[str]:
-    pnpm = shutil.which("pnpm") or (shutil.which("pnpm.cmd") if os.name == "nt" else None)
-    if pnpm:
-        return [pnpm, "dev"]
-    corepack = shutil.which("corepack") or (
-        shutil.which("corepack.cmd") if os.name == "nt" else None
-    )
-    if corepack:
-        return [corepack, "pnpm", "dev"]
-    npx = shutil.which("npx") or (shutil.which("npx.cmd") if os.name == "nt" else None)
-    if npx:
-        return [npx, "--yes", "pnpm@10.17.1", "dev"]
-    raise RuntimeError("Install pnpm, Corepack, or npm/npx to run the web application")
-
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run Private AI development services")
-    parser.add_argument("--api-only", action="store_true")
-    parser.add_argument("--web-only", action="store_true")
-    parser.add_argument("--no-mcp", action="store_true")
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Chạy Private AI ở chế độ phát triển")
     parser.add_argument(
         "--no-worker",
         action="store_true",
-        help="Read documents inside the API process, as a bare uvicorn run does",
+        help="Không sinh tiến trình đọc tài liệu; ứng dụng tự đọc trong tiến trình của nó",
     )
-    args = parser.parse_args()
-    if args.api_only and args.web_only:
-        parser.error("--api-only and --web-only cannot be combined")
+    parser.add_argument(
+        "--mcp",
+        choices=sorted(MCP_SERVERS),
+        help="Chạy riêng một MCP server trên stdio để gỡ lỗi, thay vì mở ứng dụng",
+    )
+    parser.add_argument(
+        "--worker-only",
+        action="store_true",
+        help="Chỉ chạy tiến trình đọc tài liệu, để bám vào một cơ sở dữ liệu đang có",
+    )
+    arguments = parser.parse_args()
+
+    if arguments.mcp:
+        if arguments.no_worker or arguments.worker_only:
+            parser.error("--mcp không đi cùng --no-worker hoặc --worker-only")
+        return serve_one_mcp_server(arguments.mcp)
+    if arguments.worker_only and arguments.no_worker:
+        parser.error("--worker-only và --no-worker loại trừ nhau")
 
     def interrupt(number: int, frame: object) -> None:
         raise KeyboardInterrupt
 
-    # Register both explicitly: a child of a non-interactive shell inherits SIGINT as SIG_IGN,
-    # and detached process groups no longer receive the terminal's signals on our behalf.
+    # Registered explicitly: a child of a non-interactive shell inherits SIGINT as
+    # SIG_IGN, and a detached process group no longer receives the terminal's signals on
+    # our behalf.
     signal.signal(signal.SIGINT, interrupt)
     signal.signal(signal.SIGTERM, interrupt)
 
     processes: list[subprocess.Popen[bytes]] = []
     try:
-        if not args.web_only:
-            if holder := port_holder(API_HOST, API_PORT):
-                lookup = (
-                    f"netstat -ano | findstr :{API_PORT}"
-                    if os.name == "nt"
-                    else f"lsof -nP -iTCP:{API_PORT} -sTCP:LISTEN"
+        run_worker = not arguments.no_worker
+        if run_worker:
+            # The worker waits for the app's migrations, so the start order does not matter.
+            processes.append(
+                spawn([sys.executable, "-m", "private_ai.worker"], environment())
+            )
+        if not arguments.worker_only:
+            processes.append(
+                spawn(
+                    [sys.executable, "-m", "private_ai"],
+                    environment(PRIVATE_AI_INLINE_INGESTION="0" if run_worker else "1"),
                 )
-                parser.exit(
-                    1,
-                    f"Port {API_PORT} is busy: {holder}. Stop it and retry, run "
-                    f"'{sys.executable} tools/dev.py --web-only', or find the process with "
-                    f"'{lookup}'.\n",
-                )
-            command, environment = api_command()
-            api_environment = environment.copy()
-            if not args.no_worker:
-                api_environment["PRIVATE_AI_INLINE_INGESTION"] = "0"
-            processes.append(spawn(command, ROOT, api_environment))
-            if not args.no_worker:
-                # It waits for the API's migrations, so the start order does not matter.
-                command, worker_environment = worker_command(environment)
-                processes.append(spawn(command, ROOT, worker_environment))
-            if not args.no_mcp:
-                command, mcp_environment = mcp_command(environment)
-                processes.append(spawn(command, ROOT, mcp_environment))
-        if not args.api_only:
-            processes.append(spawn(web_command(), ROOT / "apps" / "web"))
+            )
+
         while processes:
-            if exited := next(
+            exited = next(
                 (process for process in processes if process.poll() is not None),
                 None,
-            ):
-                raise SystemExit(exited.returncode)
-            time.sleep(0.25)
+            )
+            if exited is not None:
+                # Either child going down takes the session with it: a worker that
+                # crashed leaves uploads stuck, and a closed window means we are done.
+                return exited.returncode or 0
+            time.sleep(POLL_SECONDS)
     except KeyboardInterrupt:
         pass
     finally:
-        for process in processes:
-            signal_group(process, signal.SIGTERM)
-        for process in processes:
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                signal_group(process, signal.SIGKILL)
+        shut_down(processes)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

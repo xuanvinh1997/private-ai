@@ -1,10 +1,27 @@
+<#
+.SYNOPSIS
+    Create or update the Conda environment for Private AI on Windows, then build it.
+
+.DESCRIPTION
+    One Python package, no Node.js. The SolidJS front end and the FastAPI service are
+    gone: the application is a single PySide6 process plus an ingestion worker, so the
+    whole install is `pip install --editable .[dev]`.
+
+    On the Python version: the old script pinned 3.12/3.13 because RAG-Anything pulled in
+    MinerU, which had no 3.14 wheels. RAG-Anything is no longer a dependency of this
+    project — the current set is LangChain/LangGraph, PySide6, qasync, mcp, lightrag-hku,
+    markitdown, pypdf and numpy — so that reason is gone and 3.14 is allowed. The whole
+    set was verified installed and running under CPython 3.14 on macOS/arm64; the
+    equivalent cp314 wheels have NOT been verified on Windows in this pass, so 3.13
+    remains selectable with -PythonVersion if a wheel turns out to be missing.
+#>
 [CmdletBinding()]
 param(
     [ValidatePattern("^[A-Za-z0-9_.-]+$")]
     [string]$EnvironmentName = "private-ai",
 
-    [ValidatePattern("^3\.(12|13)$")]
-    [string]$PythonVersion = "3.12",
+    [ValidatePattern("^3\.(12|13|14)$")]
+    [string]$PythonVersion = "3.14",
 
     [switch]$SkipChecks
 )
@@ -33,6 +50,17 @@ function Invoke-Conda {
     if ($LASTEXITCODE -ne 0) {
         throw "Command failed with exit code $LASTEXITCODE`: conda $($Arguments -join ' ')"
     }
+}
+
+function Invoke-InEnvironment {
+    param(
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    Invoke-Conda -Description $Description -Arguments (
+        @("run", "--no-capture-output", "--name", $EnvironmentName) + $Arguments
+    )
 }
 
 $conda = Get-Command conda.exe -CommandType Application -ErrorAction SilentlyContinue
@@ -75,7 +103,8 @@ try {
         (Split-Path $_ -Leaf) -eq $EnvironmentName
     }
 
-    $condaPackages = @("python=$PythonVersion", "nodejs=22", "pip")
+    # Python and pip only. Nothing in this project needs Node.js any more.
+    $condaPackages = @("python=$PythonVersion", "pip")
 
     if ($environmentExists) {
         Invoke-Conda `
@@ -87,76 +116,35 @@ try {
             -Arguments (@("create", "--yes", "--name", $EnvironmentName, "--channel", "conda-forge") + $condaPackages)
     }
 
-    Invoke-Conda `
+    Invoke-InEnvironment `
         -Description "Updating Python packaging tools" `
-        -Arguments @(
-            "run", "--no-capture-output", "--name", $EnvironmentName,
-            "python", "-m", "pip", "install", "--upgrade", "pip", "build"
-        )
+        -Arguments @("python", "-m", "pip", "install", "--upgrade", "pip", "build")
 
-    Invoke-Conda `
-        -Description "Installing API and desktop packages" `
-        -Arguments @(
-            "run", "--no-capture-output", "--name", $EnvironmentName,
-            "python", "-m", "pip", "install",
-            "--editable", "services/api[dev,rag]",
-            "--editable", "apps/desktop[dev]"
-        )
-
-    Invoke-Conda `
-        -Description "Installing locked frontend dependencies" `
-        -Arguments @(
-            "run", "--no-capture-output", "--name", $EnvironmentName,
-            "npx", "--yes", "pnpm@10.17.1", "--dir", "apps/web",
-            "install", "--frozen-lockfile"
-        )
+    Invoke-InEnvironment `
+        -Description "Installing Private AI" `
+        -Arguments @("python", "-m", "pip", "install", "--editable", ".[dev]")
 
     if (-not $SkipChecks) {
-        Invoke-Conda `
-            -Description "Running Python tests" `
-            -Arguments @(
-                "run", "--no-capture-output", "--name", $EnvironmentName,
-                "python", "-m", "pytest"
-            )
+        Invoke-InEnvironment `
+            -Description "Running tests" `
+            -Arguments @("python", "-m", "pytest")
 
-        Invoke-Conda `
-            -Description "Running Python lint checks" `
-            -Arguments @(
-                "run", "--no-capture-output", "--name", $EnvironmentName,
-                "python", "-m", "ruff", "check", "."
-            )
-
-        Invoke-Conda `
-            -Description "Running frontend type checks" `
-            -Arguments @(
-                "run", "--no-capture-output", "--name", $EnvironmentName,
-                "npx", "--yes", "pnpm@10.17.1", "--dir", "apps/web", "typecheck"
-            )
+        Invoke-InEnvironment `
+            -Description "Running lint checks" `
+            -Arguments @("python", "-m", "ruff", "check", "src", "tests", "tools")
     }
-
-    Invoke-Conda `
-        -Description "Building frontend production assets" `
-        -Arguments @(
-            "run", "--no-capture-output", "--name", $EnvironmentName,
-            "npx", "--yes", "pnpm@10.17.1", "--dir", "apps/web", "build"
-        )
 
     New-Item -ItemType Directory -Force -Path $PythonDist | Out-Null
-    foreach ($package in @("services/api", "apps/desktop")) {
-        Invoke-Conda `
-            -Description "Building Python wheel for $package" `
-            -Arguments @(
-                "run", "--no-capture-output", "--name", $EnvironmentName,
-                "python", "-m", "build", "--wheel", "--outdir", $PythonDist, $package
-            )
-    }
+    Invoke-InEnvironment `
+        -Description "Building the Python wheel" `
+        -Arguments @("python", "-m", "build", "--wheel", "--outdir", $PythonDist, ".")
 
     Write-Host ""
     Write-Host "Windows installation and build completed." -ForegroundColor Green
-    Write-Host "Frontend: $RepoRoot\apps\web\dist"
-    Write-Host "Python wheels: $PythonDist"
-    Write-Host "Start development: conda run --no-capture-output -n $EnvironmentName python tools\dev.py"
-    Write-Host "Start desktop: conda run --no-capture-output -n $EnvironmentName private-ai-desktop"
+    Write-Host "Python wheel: $PythonDist"
+    Write-Host "Start the app:   conda run --no-capture-output -n $EnvironmentName private-ai"
+    Write-Host "Start dev mode:  conda run --no-capture-output -n $EnvironmentName python tools\dev.py"
+    Write-Host "One MCP server:  conda run --no-capture-output -n $EnvironmentName python tools\dev.py --mcp vector"
 } finally {
     Pop-Location
 }

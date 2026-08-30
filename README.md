@@ -1,164 +1,200 @@
 # Private AI
 
-Private AI là desktop control plane cho mô hình, tài liệu và memory chạy cục bộ. UI native và AI runtime cùng chạy trên máy người dùng.
+Trợ lý AI chạy hoàn toàn trên máy người dùng: một ứng dụng desktop PySide6, một tiến trình
+đọc tài liệu, và không có gì ở giữa. Mô hình, tài liệu, bộ nhớ cá nhân và chỉ mục tri thức
+đều nằm trong `.local-data`.
 
-## Phần đã chạy được
+Bản này là bản viết lại. Kiến trúc cũ (FastAPI + SolidJS + pywebview, nói chuyện với nhau
+qua HTTP/SSE trên `127.0.0.1:8000`) đã bị bỏ hẳn. Không còn uvicorn, không còn pnpm, không
+còn WebView2, không còn `/api/v1`.
 
-- FastAPI gateway bind mặc định vào `127.0.0.1`.
-- Ollama health, model inventory, pull stream, unload, delete có xác nhận và chat không stream.
-- SQLite lưu workspace, hội thoại, message, memory, document, chunk và background job.
-- Workspace và lịch sử chat có CRUD thật; chat stream token từ Ollama qua SSE, cho phép dừng
-  generation và lưu lại câu hỏi cùng câu trả lời đã hoàn thành.
-- Tài liệu thuộc về đúng một workspace: thư viện, tìm kiếm, ngữ cảnh chat và các tool MCP
-  đều bị giới hạn trong workspace đang mở, và xóa workspace sẽ xóa luôn tài liệu, file trên
-  đĩa và node graph của nó.
-- Upload theo luồng, giới hạn kích thước, SHA-256 và deduplicate trong phạm vi workspace; PDF, DOCX, PPTX,
-  XLSX, JPG/JPEG, PNG, WebP, TIFF, BMP, GIF, Markdown và text được trích xuất bởi worker cục bộ.
-- Tài liệu được chia đoạn, tìm kiếm cục bộ và tự đưa các đoạn liên quan vào chat kèm yêu cầu
-  dẫn nguồn. Retrieval kết hợp keyword và embedding bằng reciprocal-rank fusion; vector được
-  lưu trong SQLite nên không cần extension native riêng trên macOS hoặc Windows.
-- LightRAG lo chunking, embedding, trích xuất entity/quan hệ và truy xuất; mỗi không gian làm
-  việc là một namespace riêng nên không gian này không bao giờ trả lời bằng tài liệu của không
-  gian kia. Citation trong chat dẫn theo tên tệp nguồn.
-- `embeddinggemma` là embedding model mặc định. Có thể đổi bằng
-  `PRIVATE_AI_EMBEDDING_MODEL`; khi model không sẵn sàng, hệ thống tự fallback về keyword.
-- MarkItDown và plugin `markitdown-ocr` được bật trong worker. OCR **chỉ chạy bằng LLM
-  vision**, không dùng engine OCR cổ điển: plugin gọi model vision qua OpenAI-compatible API
-  của nhà cung cấp đang bật, giữ heading/list/table, đọc ảnh nhúng trong PDF/Office và OCR cả
-  trang cho bản scan; JPG/PNG cũng đi qua đường này. Tick OCR là đủ: nếu chưa đặt mặc định cho
-  tác vụ `vision`, worker tự lấy model có khả năng đọc ảnh trong kho của nhà cung cấp đang
-  bật. Không có model nào đọc được ảnh thì tài liệu vào `needs_ocr` kèm lý do, chứ không đoán
-  bừa.
-- Memory có tạo, sửa, bật/tắt, xóa và semantic search. SQLite giữ bản chuẩn cùng embedding
-  cache và tự xếp hạng bằng vector đã lưu. Chat chỉ lấy top-k memory liên quan và fallback về
-  keyword/recent khi nhà cung cấp ngoại tuyến; UI cho phép xuất toàn bộ memory thành JSON.
-- `GpuLeaseManager` đồng bộ model Ollama đang chạy từ `/api/ps`, reserve trước chat/embedding.
-  ASR batch giữ 2 GiB trong lúc transcription; ASR streaming giữ lease trong lúc native model
-  được cache và giải phóng khi API shutdown. Request mới bị từ chối trước khi load nếu vượt
-  capacity cấu hình.
-- SolidJS dashboard responsive, hiển thị health/model/VRAM; các màn hình Chat Workspaces,
-  Library, Memory, Models và Settings đều nối với API.
-- Màn hình chính Chat Workspaces, light mode mặc định, dark mode tùy chọn và chế độ chữ lớn; lựa chọn được lưu cục bộ trên thiết bị.
-- Đọc tài liệu chạy ở tiến trình riêng (`private-ai-worker`). Parse PDF/Office, chunking và
-  merge graph đều là Python thuần nên giữ GIL suốt thời gian xử lý một tệp; để chung tiến trình
-  API thì mọi request phía sau phải chờ, kể cả một truy vấn SQLite. `asyncio.to_thread` không
-  cứu được vì thứ bị tranh là GIL chứ không phải thread. API chỉ ghi `status='queued'`, worker
-  poll hàng đợi đó và giành quyền xử lý qua `document_claims` — đúng cơ chế vốn đã có để hai
-  tiến trình không giẫm chân nhau. Đo với một PDF 1200 trang: độ trễ trung vị của `GET
-  /workspaces` trong lúc ingest giảm từ 108 ms xuống 0,8 ms. Chạy `uvicorn` trần không có
-  worker thì `PRIVATE_AI_INLINE_INGESTION` vẫn để API tự đọc như cũ.
-- `pywebview` desktop launcher với API local chạy trong cùng Python/Conda environment. Đóng
-  cửa sổ chính là tắt hẳn: API và worker đều được sinh ra trong process group riêng (Windows
-  dùng chung một Job Object `KILL_ON_JOB_CLOSE`) nên `stop()` giết cả cây tiến trình, kể cả
-  FFmpeg và bộ nhận dạng giọng nói mà API tự sinh ra — `terminate()` riêng uvicorn sẽ bỏ sót
-  chúng. Worker tắt trước để nhả claim, tránh lần khởi động sau phải chờ claim hết hạn. Có ba đường dọn dẹp độc
-  lập vì không đường nào phủ hết: sự kiện `closed` của cửa sổ, handler SIGINT/SIGTERM (tín hiệu
-  không bao giờ chạy tới khối `finally`), và `atexit`. Hết hạn chờ 8 giây thì leo thang sang
-  SIGKILL.
-- MCP Python SDK v2 server tại `http://127.0.0.1:8010/mcp`, có bearer token cục bộ,
-  Origin/Host validation và 25 tool cho document, GraphRAG, memory, model inventory/default,
-  tìm kiếm web, thông số máy và đọc file cục bộ.
-- `system.info` trả OS, CPU, RAM, ngân sách GPU và dung lượng đĩa còn trống; `system.time` trả
-  ngày giờ local lẫn UTC kèm múi giờ, để mô hình không phải đoán hôm nay là ngày mấy. Cả hai
-  luôn bật, không cần cấu hình và không gửi gì ra khỏi máy.
-- Chat trong ứng dụng gọi được chính các tool đó. API dựng MCP server ngay trong tiến trình của
-  mình trên đúng bộ service đang chạy, nên không cần tiến trình thứ hai và không đi qua mạng —
-  bản desktop đóng gói vẫn dùng được dù không chạy cổng 8010. Model nhận tool spec kèm mỗi lượt,
-  máy chủ thực thi `tool_calls` rồi hỏi lại, tối đa 4 vòng; vòng cuối không đưa tool nữa để buộc
-  ra câu trả lời. Câu hỏi không cần tool thì không phát sinh vòng nào. Tên tool có dấu chấm được
-  đổi thành `__` vì tên function trên wire format không cho phép dấu chấm.
-- Chat chỉ được đưa **19 tool chỉ-đọc**. Ingest, xóa tài liệu, ghi/xóa memory và đổi model mặc
-  định không nằm trong danh sách: chúng chỉ chạy khi người dùng tự bấm trong UI, nên một tài
-  liệu độc hại không thể dụ mô hình xóa dữ liệu.
-- `files.list` và `files.read` đọc file cục bộ nhưng chỉ trong phạm vi người dùng cho phép.
-  Thư mục duyệt sẵn khai báo qua `PRIVATE_AI_FILE_ROOTS`; đường dẫn nằm ngoài thì tool hỏi
-  người dùng ngay lúc đó bằng MCP elicitation, và người dùng có thể chọn nhớ thư mục để lần
-  sau khỏi hỏi lại (quyền đã nhớ lưu trong SQLite, xem bằng `files.allowed`). Đường dẫn được
-  resolve trước mọi lần kiểm tra nên `..` và symlink không thoát ra khỏi thư mục được phép;
-  file nhị phân bị từ chối thay vì trả về ký tự rác; file token MCP không bao giờ đọc được.
-- Tìm kiếm web là tính năng duy nhất gửi nội dung ra khỏi máy, nên mặc định tắt và chỉ chạy khi
-  người dùng tự bật nút **Tìm web** ở khung soạn tin. Ba nguồn được hỗ trợ, xếp theo mức riêng
-  tư giảm dần: SearXNG tự dựng (không API key, phải bật `json` trong `search.formats` của
-  `settings.yml`), DuckDuckGo không cần cấu hình (không có API chính thức nên có thể bị chặn
-  tạm thời khi hỏi dày) và OpenAI web search có trả phí (~10 USD cho mỗi 1.000 lượt, chưa kể
-  token). Kết quả được đưa vào prompt như dữ liệu không đáng tin cậy kèm yêu cầu dẫn nguồn theo
-  URL; link quảng cáo của DuckDuckGo bị loại trước khi mô hình nhìn thấy. Nguồn tìm kiếm hỏng
-  chỉ tạo một thông báo trên luồng SSE chứ không làm hỏng câu trả lời. Cùng khả năng này được
-  mở cho MCP client qua tool `web.search`, và API key lưu trong SQLite không bao giờ được API
-  trả ngược ra ngoài.
-- Knowledge graph chạy bằng LightRAG nhúng thẳng trong tiến trình API, lưu graph/vector/KV
-  bằng file dưới `.local-data/lightrag`. Không có database server nào phải chạy kèm. LLM và
-  embedding của LightRAG đi qua đúng nhà cung cấp AI đang bật. RAG-Anything điều phối content
-  block và insertion; callback của cả hai tầng được đưa vào tiến độ xử lý tài liệu.
-- Màn hình Tri thức vẽ đồ thị của không gian đang mở: `GET /api/v1/graph` trả node/edge từ
-  LightRAG (`*` cho toàn bộ, hoặc một thực thể kèm độ sâu), `GET /api/v1/graph/entities` cấp
-  gợi ý cho ô tìm kiếm. UI tự sắp xếp bằng force layout vẽ trên SVG, không thêm thư viện đồ
-  thị nào: kéo/thả node, lăn chuột để phóng to, bấm để xem mô tả và nguồn, bấm đúp để chỉ
-  xem lân cận, chú giải cho phép tắt bớt loại thực thể. Đồ thị bị cắt vì giới hạn số node thì
-  có cảnh báo ngay dưới khung vẽ.
-- Nút microphone ưu tiên AudioWorklet, resample trực tiếp thành PCM float32 mono 16 kHz và gửi
-  khung 320 ms qua binary WebSocket. FastAPI dùng binding shared-library của `transcribe.cpp`,
-  cache Nemotron trong tiến trình và trả committed/tentative partial cùng transcript cuối vào
-  composer. Webview cũ tự fallback về MediaRecorder + FFmpeg + CLI batch.
-- Tải model Ollama có parser SSE chịu được network chunk bị chia nhỏ, hiển thị tiến trình và
-  hủy request thật khi người dùng đóng hoặc bấm Hủy.
-- Model Manager gộp model Ollama và Nemotron ASR, lưu default theo tác vụ, trạng thái
-  load/unload, update/delete có xác nhận, SHA-256 của ASR và lịch sử thao tác/lỗi. UI chỉ đưa
-  language model vào hộp chọn chat và hiển thị runtime/default/checksum tương ứng.
-- Cài đặt có mục Nhà cung cấp AI: ngoài Ollama cục bộ dựng sẵn, người dùng thêm được máy chủ
-  nói chuẩn OpenAI API (vLLM, LM Studio, LiteLLM, OpenAI…) kèm base URL và API key, kiểm tra
-  kết nối trước khi lưu rồi chuyển sang dùng. Chat, embedding và trích xuất tri thức đều đi
-  qua nhà cung cấp đang bật; model default cho embedding lưu trong SQLite nên giữ sau khi
-  khởi động lại. Model từ xa không cho pull/unload/delete và trả 422 kèm lý do. Ollama cục bộ
-  chỉ là bản ghi được seed sẵn ở lần chạy đầu: sửa tên, đổi địa chỉ (WSL2 hoặc máy khác trong
-  mạng) hay xóa hẳn đều được, xóa rồi thì không seed lại. Đổi địa chỉ thì GPU lease và health
-  đi theo host mới. Xóa hết nhà cung cấp thì health trả `not_configured` và chat trả 503 "No
-  AI provider is configured" thay vì báo mất kết nối.
-- Trạng thái hệ thống nói theo nhà cung cấp đang bật, không lấy Ollama làm đại diện cho AI:
-  `services.provider` là trạng thái của endpoint đang dùng, còn `services.local_runtime` là máy
-  chủ mô hình cục bộ và chỉ hiện trên bảng khi nhà cung cấp thật sự chạy trên máy. Nhãn "trên
-  thiết bị" đọc từ `provider.on_device`, tính theo base URL có phải loopback hay không, nên bản
-  ghi Ollama cục bộ trỏ sang WSL2 hoặc máy khác vẫn được cảnh báo là dữ liệu rời khỏi máy.
+## Kiến trúc
 
-## Phần chưa hoàn tất so với `GOAL.md`
+```mermaid
+flowchart TB
+    subgraph app["Tiến trình ứng dụng — python -m private_ai"]
+        ui["PySide6 UI<br/>chat · thư viện · workspace · đồ thị · cài đặt"]
+        loop["qasync: một vòng lặp asyncio duy nhất"]
+        runner["AgentRunner → LangGraph<br/>plan → retrieve → agent ⇄ tools"]
+        hub["McpHub<br/>mount 7 MCP server ngay trong tiến trình"]
+        svc["AppServices<br/>database · models · vectors · graph<br/>strategies · memory · skills · files · asr"]
+        ui --> loop --> runner --> hub --> svc
+        ui -.gọi thẳng, không qua HTTP.-> svc
+    end
 
-- ASR microphone đã stream PCM 16 kHz trực tiếp vào shared library và trả partial/final thật,
-  nhưng chưa có VAD/endpoint detector riêng hoặc jitter buffer thích nghi như pipeline đích.
-- Thanh GPU phản ánh reservation và `size_vram` từ Ollama, nhưng chưa đọc temperature hay
-  utilization phần cứng. Hai process API/MCP đều kiểm tra inventory thật, song chưa có
-  distributed lock để loại bỏ hoàn toàn race khi chúng cùng load model đúng một thời điểm.
-- Desktop shell hiện có cửa sổ pywebview và local runtime; file picker, system tray và native
-  notification của Windows chưa được triển khai vì các thao tác chính đang dùng web UI/API.
-- Local runtime dùng argument list và đã có unit test, nhưng chưa được chạy end-to-end trên máy
-  Windows trong đợt kiểm thử macOS này.
+    subgraph worker["Tiến trình đọc tài liệu — private-ai-worker"]
+        pipe["IngestionPipeline<br/>trích xuất · chia đoạn · embedding · graph"]
+    end
 
-PDF scan chỉ được đánh dấu `needs_ocr` khi công cụ OCR chưa được cài hoặc không nhận ra chữ;
-health luôn phản ánh trạng thái runtime thật, không giả lập service đang online.
+    subgraph store["Trên đĩa"]
+        db[("SQLite<br/>private-ai.db")]
+        files[("documents/")]
+        lr[("lightrag/")]
+    end
+
+    subgraph out["Ra khỏi máy chỉ khi được bật"]
+        prov["Nhà cung cấp mô hình<br/>Ollama · OpenAI-compatible"]
+        web["Tìm kiếm web<br/>SearXNG · DuckDuckGo · OpenAI"]
+    end
+
+    svc --> db
+    svc --> lr
+    pipe --> db
+    pipe --> files
+    pipe --> lr
+    svc --> prov
+    pipe --> prov
+    svc -.chỉ khi bật nút Tìm web.-> web
+    db -. document_claims .-> pipe
+```
+
+Ba quyết định định hình toàn bộ phần còn lại.
+
+**Một tiến trình, gọi thẳng.** UI sở hữu vòng lặp asyncio qua `qasync` và gọi thẳng vào
+tầng dịch vụ: `services.agent.stream(...)`, `services.ingestion.add_file(...)`,
+`private_ai.core.repositories.*`. Không có `fetch`, không có bộ phân tích SSE, không có
+CORS, không có cổng nào phải mở. Cái mất đi là khả năng chạy giao diện trên máy khác; cái
+được là mỗi lượt chat bớt một chặng serialize và toàn bộ tầng xử lý lỗi HTTP biến mất.
+
+**Tiến trình đọc tài liệu vẫn tách riêng.** Không phải vì ranh giới mạng mà vì GIL:
+markitdown và pypdf parse bằng Python thuần, splitter chia đoạn bằng Python thuần, LightRAG
+merge đồ thị bằng Python thuần — tất cả giữ GIL suốt thời gian xử lý một tệp.
+`asyncio.to_thread` không cứu được vì thứ bị tranh là GIL chứ không phải thread. Ứng dụng
+chỉ ghi `status='queued'`; worker poll hàng đợi đó và giành quyền xử lý qua bảng
+`document_claims` (một upsert có điều kiện để giành, heartbeat 10 giây để chứng minh còn
+sống, claim im lặng quá 45 giây là của tiến trình đã chết và được phép tiếp quản).
+
+**Toàn bộ tầng AI là LangChain/LangGraph.** Loader, splitter, vector store, memory, chat
+model, retriever và vòng lặp agent đều là interface của LangChain. Hai engine được giữ lại
+nhưng bọc lại vì LangChain không có thứ tương đương: LightRAG (đồ thị thực thể) nằm sau một
+`BaseRetriever`, và OCR bằng LLM thị giác nằm sau một `BaseLoader`.
+
+## Bảy chiến lược truy hồi, mỗi chiến lược một MCP server
+
+Mỗi chiến lược là một đối tượng có `name` và `description`, và `description` chính là đoạn
+văn duy nhất mô hình đọc khi quyết định dùng chiến lược nào. Mỗi chiến lược cũng là một MCP
+server chạy độc lập được trên stdio, nên một MCP client bên ngoài (hoặc bạn, khi gỡ lỗi) có
+thể gọi đúng một chiến lược mà không phải dựng cả ứng dụng.
+
+| Chiến lược | MCP server / tool | Dùng khi |
+| --- | --- | --- |
+| `vector` | `rag.vector.search` | Người hỏi diễn đạt lại ý bằng từ ngữ của mình; câu hỏi về khái niệm, chủ đề. Không hợp khi cần khớp đúng một tên riêng hay mã số. |
+| `keyword` | `rag.keyword.search` | Câu hỏi chứa tên riêng, số hiệu văn bản, tên hàm/biến, hoặc một cụm đặt trong ngoặc kép cần khớp đúng chữ. |
+| `hybrid` | `rag.hybrid.search` | Chưa rõ điều quyết định là cách dùng từ hay ý nghĩa. Chạy cả hai nhánh rồi hợp nhất bằng reciprocal rank fusion. |
+| `graph` | `rag.graph.search`, `rag.graph.entities`, `rag.graph.neighborhood` | Câu hỏi nhiều bước về quan hệ giữa các thực thể, chuỗi sự kiện đi qua nhiều tài liệu. Chỉ dùng được với tài liệu đã lập chỉ mục ở chế độ `graph`. |
+| `summary` | `rag.summary.outline`, `rag.summary.digest` | Yêu cầu tóm tắt / kể lại **toàn bộ** một tài liệu được gọi tên. Đọc mọi đoạn theo đúng thứ tự nguồn rồi map-reduce, không lấy top-k. Đắt hơn nhiều lần so với tìm kiếm thường. |
+| `web` | `rag.web.search` | Cần thông tin thời sự, hoặc chắc chắn tài liệu trong workspace không chứa câu trả lời. |
+| `auto` | `rag.auto.search` (trên server `core`) | Mặc định. Chọn một trong các chiến lược trên theo hình dạng câu hỏi. |
+
+`auto` định tuyến bằng luật, không gọi mô hình: hỏi một mô hình nên dùng retriever nào tốn
+một vòng round-trip trước khi truy hồi bắt đầu, và cùng một câu hỏi có thể định tuyến hai
+kiểu ở hai lượt, khiến một câu trả lời sai trở nên không giải thích được. Thứ tự xét là:
+yêu cầu tóm tắt toàn bộ tài liệu → `summary`; câu hỏi về quan hệ giữa các thực thể (cụm từ
+quan hệ, hoặc từ hai danh từ riêng trở lên) → `graph`; có cụm trong ngoặc kép hoặc mã/định
+danh → `keyword`; còn lại → `hybrid`. Lý do được ghi vào metadata của mọi kết quả
+(`routed_by`, `routing_reason`) nên UI hiển thị được vì sao.
+
+Reciprocal rank fusion (`score += 1 / (60 + rank)`) hợp nhất theo **thứ hạng** chứ không
+theo điểm. Bản cũ cộng thẳng cosine similarity với số từ khóa trùng — hai thang đo không so
+sánh được — nên nhánh nào sinh số lớn hơn thì nhánh đó thắng, và một ngưỡng cứng lặng lẽ vứt
+bỏ các kết quả dense đúng với câu hỏi ngắn. Hợp nhất theo thứ hạng bỏ được cả hai vấn đề và
+không cần ngưỡng.
+
+### Ranh giới chỉ-đọc
+
+Agent chỉ được đưa các tool không thay đổi và không xóa được gì. Sáu tool
+`documents.ingest_text`, `documents.delete`, `memory.remember`, `memory.update`,
+`memory.forget`, `models.select_default` vẫn tồn tại cho UI và cho MCP client bên ngoài,
+nhưng bị loại khỏi danh sách của agent ở **hai tầng**: khi liệt kê tool, và một lần nữa lúc
+gọi sau khi đã đổi tên ngược lại. Lọc ở tầng liệt kê thôi là không đủ, vì một mô hình đoán
+được tên đã mã hóa (`documents__delete`) sẽ đi thẳng vào hàm gọi. Tên tool có dấu chấm được
+đổi thành `__` vì tên function trên wire format của OpenAI không cho phép dấu chấm.
+
+Trích đoạn tài liệu, kết quả web và dữ liệu đồ thị là **dữ liệu không đáng tin cậy**. Mọi
+prompt nhúng chúng đều kèm câu cảnh báo bằng tiếng Việt, và mọi tool truy hồi lặp lại cảnh
+báo đó ngay trong phần mô tả của mình — vì mô tả tool là thứ duy nhất mô hình đọc đúng vào
+lúc nó quyết định làm gì với đoạn văn bản trả về.
+
+## Skills
+
+Skill là một quy trình được đóng gói sẵn: một thư mục có `SKILL.md` mở đầu bằng khối
+frontmatter YAML, phần còn lại là markdown hướng dẫn. Bốn gói dựng sẵn đi kèm ứng dụng
+(`tom-tat-tai-lieu`, `truy-van-tri-thuc`, `nghien-cuu-web`, `phan-tich-du-lieu`).
+
+Tiết lộ dần (progressive disclosure) là điểm chính: prompt hệ thống luôn mang **danh sách
+tên + mô tả một dòng** của mọi skill đang bật; **toàn văn hướng dẫn** chỉ được chèn vào khi
+skill đó được kích hoạt cho lượt hiện tại. Một trăm skill vì thế tốn một trăm dòng tóm tắt,
+không phải một trăm tài liệu. Việc chọn skill nào cho một lượt cũng làm bằng trùng lặp từ
+khóa, không tốn một lần gọi mô hình.
+
+Skill do người vận hành viết nên nội dung của nó được chèn vào như **chỉ dẫn đáng tin cậy** —
+đúng hình ảnh phản chiếu của cảnh báo dành cho trích đoạn tài liệu. Vì vậy không có đường nào
+từ ingestion hay retrieval được phép tạo, đặt tên hay sửa một skill.
+
+### Viết một SKILL.md
+
+Đặt thư mục vào `.local-data/skills/<tên-skill>/SKILL.md`, hoặc vào bất kỳ thư mục nào khai
+báo trong `PRIVATE_AI_SKILL_PATHS`.
+
+```markdown
+---
+name: tra-cuu-hop-dong          # bắt buộc dạng chữ thường, số, '.', '-', '_'
+title: Tra cứu hợp đồng         # tên hiển thị, mặc định lấy theo name
+description: Tìm điều khoản trong hợp đồng và trích dẫn đúng số điều.
+version: 1.0.0
+tools: [rag.keyword.search, documents.list]   # gợi ý, không phải quyền
+strategy: keyword               # chiến lược truy hồi nên dùng
+keywords: [hợp đồng, điều khoản, phụ lục]     # tăng khả năng được chọn đúng lượt
+---
+
+## Quy trình
+1. Tìm điều khoản bằng `rag.keyword.search` với đúng cụm từ người dùng nêu.
+2. Nếu không thấy, thử lại bằng `rag.hybrid.search`.
+3. Luôn dẫn nguồn theo tên tệp và số điều.
+```
+
+`description` và phần thân đều bắt buộc: thiếu một trong hai thì gói bị bỏ qua chứ không làm
+hỏng ứng dụng. Các tệp khác trong cùng thư mục (`reference.md`, `scripts/`, `templates/`)
+chỉ được **liệt kê** cho mô hình; nó tự mở bằng file tool khi thực sự cần. Một gói của người
+dùng trùng `name` với gói dựng sẵn sẽ **thay thế** gói dựng sẵn. Cờ bật/tắt là quyết định của
+người dùng và được giữ nguyên qua mỗi lần quét lại; mọi thứ khác của một skill được dựng lại
+từ đĩa.
 
 ## Yêu cầu
 
-- Python 3.12 trở lên.
-- Node.js 22 trở lên và Corepack (hoặc pnpm).
-- Ollama nếu cần model local.
-- Một model đọc được ảnh nếu cần OCR; worker tự nhận ra, hoặc chỉ định bằng nút "Dùng cho OCR".
+- Python 3.12 trở lên. Môi trường phát triển của bản này là CPython 3.14.
+- Ollama nếu muốn dùng mô hình cục bộ, hoặc bất kỳ máy chủ nào nói chuẩn OpenAI API
+  (vLLM, LM Studio, LiteLLM, OpenAI…).
+- Một mô hình đọc được ảnh nếu cần OCR. Không có thì tài liệu vào trạng thái `needs_ocr` kèm
+  lý do, chứ không đoán bừa.
 - Git, CMake và FFmpeg nếu dùng voice-to-text; Windows cần Visual Studio Build Tools có C++.
 
-Không cần Bash, Make, symlink hay đường dẫn cố định để chạy development workflow.
+Không cần Node.js. Không cần database server: LightRAG ghi graph/vector/KV bằng file dưới
+`.local-data/lightrag`.
 
-## Phát triển trên macOS
+## Chạy trên macOS / Linux
 
 ```text
 python3 -m venv .venv
-.venv/bin/python -m pip install -e "services/api[dev]" -e "apps/desktop[dev]"
-npx --yes pnpm@10.17.1 --dir apps/web install
+.venv/bin/python -m pip install -e ".[dev]"
 .venv/bin/python tools/dev.py
 ```
 
-Mở `http://127.0.0.1:5173`. Chạy desktop shell sau khi build web:
+`tools/dev.py` khởi động tiến trình đọc tài liệu rồi mở ứng dụng, giám sát cả hai và tắt cả
+cây tiến trình khi một trong hai dừng. Mỗi tiến trình con nằm trong process group riêng nên
+không có gì sống sót sau khi bạn Ctrl+C.
 
 ```text
-npx --yes pnpm@10.17.1 --dir apps/web build
-.venv/bin/private-ai-desktop
+.venv/bin/python tools/dev.py --no-worker     # ứng dụng tự đọc tài liệu trong tiến trình
+.venv/bin/python tools/dev.py --worker-only   # chỉ chạy worker, bám vào DB đang có
+.venv/bin/python tools/dev.py --mcp vector    # chạy riêng một MCP server trên stdio
+```
+
+Chạy thẳng không qua script:
+
+```text
+.venv/bin/private-ai              # hoặc: .venv/bin/python -m private_ai
+.venv/bin/private-ai-worker
 ```
 
 ## Cài đặt và build trên Windows PowerShell
@@ -167,132 +203,97 @@ npx --yes pnpm@10.17.1 --dir apps/web build
 powershell -ExecutionPolicy Bypass -File .\tools\install-windows.ps1
 ```
 
-Script mặc định tạo hoặc cập nhật Conda environment `private-ai` với Python 3.12 và Node.js 22;
-cài API kèm RAG-Anything, desktop và frontend, chạy test + lint + typecheck, build frontend và
-tạo wheel Python trong `dist\python`. Có thể tùy chỉnh:
+Script tạo hoặc cập nhật Conda environment `private-ai`, cài đúng một package
+(`pip install --editable .[dev]`), chạy test + lint rồi build wheel vào `dist\python`.
 
 ```text
 .\tools\install-windows.ps1 -EnvironmentName private-ai-dev -PythonVersion 3.13
 .\tools\install-windows.ps1 -SkipChecks
 ```
 
-Chỉ dùng Python 3.12 hoặc 3.13 cho bản có RAG-Anything; dependency MinerU hiện chưa hỗ trợ
-Python 3.14.
+Ràng buộc Python 3.12/3.13 của bản cũ tồn tại **chỉ vì** RAG-Anything kéo theo MinerU, mà
+MinerU khi đó chưa có wheel cho 3.14. RAG-Anything không còn là dependency của dự án nữa
+(danh sách hiện tại: LangChain/LangGraph, PySide6, qasync, mcp, lightrag-hku, markitdown,
+pypdf, numpy), nên ràng buộc đó đã được nới lên 3.12–3.14 với mặc định 3.14.
 
-Sau khi build, chạy development services hoặc desktop shell mà không cần activate environment:
+Sau khi cài:
 
 ```text
+conda run --no-capture-output -n private-ai private-ai
 conda run --no-capture-output -n private-ai python tools\dev.py
-conda run --no-capture-output -n private-ai private-ai-desktop
 ```
 
-`tools/dev.py` gọi process bằng argument list, dùng `os.pathsep` và `pathlib`, nên tên thư mục
-có khoảng trắng không bị lỗi shell quoting. Lệnh development khởi động cả API, MCP và frontend;
-dùng `--no-mcp` nếu chỉ cần API + web.
+## MCP cho client bên ngoài
 
-## MCP local
+Trong ứng dụng, bảy server nội bộ được mount **ngay trong tiến trình** trên đúng bộ
+`AppServices` đang chạy — không sinh tiến trình thứ hai, không đi qua mạng, nên bản đóng gói
+vẫn hoạt động dù không cổng nào được mở.
 
-MCP server dùng Streamable HTTP và chỉ bind loopback:
+Một client MCP bên ngoài kết nối bằng stdio qua console script:
 
 ```text
-.venv/bin/private-ai-mcp
+.venv/bin/private-ai-mcp            # core: workspaces, documents, memory, models, files
+.venv/bin/private-ai-mcp-vector
+.venv/bin/private-ai-mcp-keyword
+.venv/bin/private-ai-mcp-hybrid
+.venv/bin/private-ai-mcp-graph
+.venv/bin/private-ai-mcp-summary
+.venv/bin/private-ai-mcp-web
 ```
 
-Trên Windows dùng `conda run --no-capture-output -n private-ai private-ai-mcp`. Bearer token được tạo một lần tại
-`.local-data/mcp-token`; MCP client kết nối tới `http://127.0.0.1:8010/mcp` và gửi header
-`Authorization: Bearer <token>`. Server không expose `models.delete`; xóa document hoặc memory
-đều yêu cầu `confirmed=true`.
+Bearer token dùng cho chế độ Streamable HTTP được tạo một lần tại `.local-data/mcp-token`;
+tệp này không bao giờ đọc được qua `files.read`. Xóa tài liệu hoặc memory đều đòi
+`confirmed=true`.
 
-## Chạy desktop Windows với API local
+Ngược lại, ứng dụng cũng gắn được MCP server của bên thứ ba: thêm trong **Cài đặt → MCP**
+(ghi vào bảng `mcp_servers`), hoặc qua `PRIVATE_AI_MCP_EXTERNAL_SERVERS` cho bản cài không có
+UI. Tool của server ngoài được đặt tiền tố `ext.<tên-server>.` trước khi agent nhìn thấy, nên
+không thể trùng tên hay giả dạng một tool nội bộ.
 
-Sau khi cài các package vào Conda environment `private-ai`, desktop launcher tự khởi động API
-local bằng chính Python executable của environment đó:
+## Cấu hình
 
-```text
-conda run --no-capture-output -n private-ai private-ai-desktop
-```
-
-Launcher yêu cầu **Microsoft Edge WebView2 Runtime**. Thiếu runtime này pywebview tự hạ xuống
-engine Internet Explorer (MSHTML) và không chạy được giao diện, nên launcher dừng sớm kèm link
-tải thay vì mở một cửa sổ trắng.
-
-Launcher chỉ đợi `GET /api/v1/health/live`, không đợi `GET /api/v1/health`: endpoint đầy đủ còn
-gọi sang Ollama và provider đang chọn nên có thể mất vài giây khi các service đó chưa sẵn sàng.
-Probe cũng bỏ qua system proxy, vì proxy Windows không tự loại trừ `127.0.0.1` (`<local>` chỉ
-khớp host không có dấu chấm) và sẽ nuốt luôn request tới API local.
-
-Khi API không khởi động được, launcher in nguyên nhân kèm phần cuối log
-`.local-data/desktop-api.log`. Biến môi trường liên quan: `PRIVATE_AI_HOST`, `PRIVATE_AI_PORT`,
-`PRIVATE_AI_PROJECT_DIR`, `PRIVATE_AI_DATA_DIR`, `PRIVATE_AI_FRONTEND_DIST`.
-
-## Knowledge graph
-
-Không cần cài gì thêm. LightRAG chạy trong tiến trình API và ghi chỉ mục xuống
-`.local-data/lightrag/<workspace>`. Chỉ mục dùng model embedding đang đặt mặc định cho tác vụ
-`embedding` và model chat đang đặt mặc định cho tác vụ `chat`; đổi model embedding sẽ dựng lại
-chỉ mục vì số chiều vector thay đổi. Hộp soạn tin có hai retrieval mode: `RAG nhanh` dùng vector
-search (`naive`), còn `Graph RAG` kết hợp vector và knowledge graph (`mix`). Bản cài Windows bật
-RAG-Anything mặc định; môi trường phát triển khác có thể cài bằng `pip install -e
-'services/api[rag]'`. Nếu extra chưa có, ingestion tự dùng LightRAG trực tiếp. Đặt
-`PRIVATE_AI_EMBEDDING_ENABLED=false` để tắt hẳn.
-
-## Voice-to-text
-
-Sau khi cài package API, build `transcribe.cpp` và tải model Nemotron Q4 bằng một lệnh:
-
-```text
-.venv/bin/private-ai-asr setup
-```
-
-Trên Windows dùng `conda run --no-capture-output -n private-ai private-ai-asr setup`. Lệnh dùng CMake bằng argument
-list, tự nhận Metal trên Apple Silicon, tạo CLI batch và một build shared riêng cho binding
-Python; MSVC đặt DLL trong thư mục `bin/Release`. Runtime/model được lưu trong
-`.local-data/asr`; `private-ai-asr status` báo riêng trạng thái batch và native streaming.
-Ngôn ngữ mặc định là `vi-VN`, có thể đổi qua `PRIVATE_AI_ASR_LANGUAGE`.
-
-Capacity GPU được nhận diện theo máy. Trên Apple Silicon không có VRAM riêng nên ngân sách
-lấy từ `iogpu.wired_limit_mb` nếu được đặt, ngược lại là phần RAM macOS dành mặc định cho GPU
-(khoảng 75% với máy nhiều RAM). Các nền tảng khác giữ mặc định 96 GiB. Có thể ép giá trị khác:
-
-```text
-PRIVATE_AI_GPU_CAPACITY_BYTES=103079215104
-PRIVATE_AI_GPU_MODEL_OVERHEAD_RATIO=1.1
-PRIVATE_AI_ASR_VRAM_RESERVATION_BYTES=2147483648
-```
-
-Entity/relation extraction bằng LLM là tùy chọn vì có thể tốn thời gian với tài liệu dài:
-
-```text
-PRIVATE_AI_GRAPH_ENTITY_MODEL=qwen3.8:27b-mlx
-```
-
-Để OCR vision cho ảnh và ảnh nhúng trong PDF/Office, cài một model Ollama có capability
-`vision`, bấm **Dùng cho OCR** trong màn hình Models hoặc đặt:
-
-```text
-PRIVATE_AI_VISION_MODEL=qwen3-vl:8b
-```
-
-Chưa chọn vision model thì JPG/PNG và PDF scan vào `needs_ocr` kèm lý do; tài liệu không bị
-báo `Unsupported document type`.
-
-Structured output được validate, có một lần retry JSON cho model không tuân thủ schema hoàn
-toàn; chunk thất bại được ghi vào job `graph_extraction` và sẽ được thử lại thay vì thay bằng
-dữ liệu giả.
+Mọi biến trong `.env.example` tương ứng với đúng một trường trong `src/private_ai/config.py`.
+Copy thành `.env` để dùng. Ứng dụng, worker và mọi MCP server đọc cùng một object `Settings`.
 
 ## Kiểm tra
 
-Lần kiểm tra runtime gần nhất trên macOS (2026-08-27) đạt 43 test, Ruff, TypeScript
-typecheck và Vite production build. Smoke test qua HTTP/WebSocket đã xác nhận workspace/chat
-với Qwen, lưu lại message, upload/search/xóa document, CRUD/search memory, health,
-Nemotron load/unload, ASR partial/final và JPG OCR qua vision model; dữ liệu tạm của smoke
-test được xóa sau khi chạy.
-
 ```text
 .venv/bin/python -m pytest
-.venv/bin/python -m ruff check .
-npx --yes pnpm@10.17.1 --dir apps/web typecheck
-npx --yes pnpm@10.17.1 --dir apps/web build
+.venv/bin/python -m ruff check src tests tools
 ```
 
-Trên Windows, chạy các lệnh Python qua `conda run --no-capture-output -n private-ai python ...`.
+Lần chạy gần nhất trên macOS/arm64, CPython 3.14.7: **227 test pass, 1 xfail**. Bộ test dùng
+mô hình chat giả và embedding giả (đều tất định), nên không cần Ollama và không chạm mạng.
+Test xfail duy nhất được mô tả ngay dưới đây.
+
+## Phần chưa hoàn tất
+
+Phần này cố ý liệt kê cả những thứ *chưa được kiểm chứng*, không chỉ những thứ đã biết là
+thiếu.
+
+- **Chưa chạy thử end-to-end.** Những gì viết ở trên về luồng chat thật, ingestion thật với
+  một PDF thật, OCR, ASR, lập chỉ mục LightRAG và màn hình đồ thị tri thức đều **chưa được
+  xác nhận bằng một lần chạy ứng dụng**. Chúng được xác nhận ở mức test đơn vị/tích hợp và
+  đọc mã. Cụ thể `python -m private_ai` chưa được mở lên trong đợt này.
+- **Ngân sách vòng gọi công cụ lệch một bước với số lẻ.** `agent_config` đặt
+  `recursion_limit = agent_max_iterations + 2`, nhưng một lượt dùng hết ngân sách cần
+  `plan + retrieve + (2 × số vòng + 1)` superstep. Với `agent_max_iterations` là số **lẻ**
+  (3, 5, 7, 9…) con số này thiếu đúng một bước và vòng gọi công cụ cuối cùng bị
+  `GraphRecursionError` nuốt mất. Mặc định là 10 (số chẵn) nên bản cài mặc định không bị;
+  nhưng cài đặt cho phép chọn 1–64. Đã ghi lại bằng test xfail
+  `test_an_odd_iteration_budget_can_use_all_of_its_tool_rounds`.
+- **Windows chưa được kiểm chứng.** `tools/install-windows.ps1` đã được viết lại nhưng chưa
+  chạy trên máy Windows, và cũng chưa được kiểm tra cú pháp bằng PowerShell. Cụ thể hơn:
+  toàn bộ dependency đã được xác nhận cài và chạy dưới CPython 3.14 trên macOS/arm64, nhưng
+  **wheel cp314 trên Windows cho PySide6 và lightrag-hku thì chưa** — nếu thiếu, dùng
+  `-PythonVersion 3.13`.
+- **Chưa có ASR streaming hoàn chỉnh.** Khung 320 ms PCM float32 mono 16 kHz và bước flush
+  vẫn được giữ từ bản cũ, nhưng chưa có VAD/endpoint detector riêng hay jitter buffer thích
+  nghi.
+- **Thanh GPU** phản ánh reservation và inventory từ nhà cung cấp, chưa đọc temperature hay
+  utilization phần cứng. Hai tiến trình cùng load model đúng một thời điểm vẫn còn khe race
+  vì chưa có distributed lock.
+- **Màn hình đồ thị tri thức** được dựng lại trên `QGraphicsView` với force layout tự viết
+  thay cho Cytoscape.js. Hành vi đã port (gộp dần khi mở rộng node, bung lân cận theo vòng
+  tròn, cỡ node theo bậc, spotlight khi hover) chưa được so sánh trực quan với bản cũ.
+- **System tray và native notification** của Windows chưa được triển khai.

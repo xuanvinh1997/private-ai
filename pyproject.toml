@@ -1,21 +1,70 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
-name = "private-ai-workspace"
-version = "0.1.0"
+name = "private-ai"
+version = "0.2.0"
+description = "Trợ lý AI cục bộ: PySide6, LangChain/LangGraph, MCP và RAG đa chiến lược"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "langchain>=1.3,<2",
+    "langchain-core>=1.6,<2",
+    "langgraph>=1.2,<2",
+    "langchain-openai",
+    "langchain-ollama",
+    "langchain-text-splitters",
+    "mcp>=2,<3",
+    "PySide6>=6.8",
+    "qasync>=0.27",
+    "lightrag-hku>=1.5,<1.6",
+    "markitdown[docx,pdf,pptx,xlsx]",
+    "markitdown-ocr",
+    "pypdf",
+    "numpy",
+    "httpx",
+    "openai",
+    "pydantic-settings",
+    "pyyaml",
+]
 
-[tool.uv.workspace]
-members = ["services/api", "apps/desktop"]
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio", "pytest-qt", "ruff"]
 
-[tool.pytest.ini_options]
-testpaths = ["services/api/tests", "apps/desktop/tests"]
-addopts = "-q"
+[project.scripts]
+private-ai = "private_ai.ui.app:main"
+private-ai-worker = "private_ai.worker.loop:run"
+private-ai-asr = "private_ai.asr.manager:run"
+private-ai-mcp = "private_ai.mcp.servers.core_server:run"
+private-ai-mcp-vector = "private_ai.mcp.servers.rag_vector:run"
+private-ai-mcp-keyword = "private_ai.mcp.servers.rag_keyword:run"
+private-ai-mcp-hybrid = "private_ai.mcp.servers.rag_hybrid:run"
+private-ai-mcp-graph = "private_ai.mcp.servers.rag_graph:run"
+private-ai-mcp-summary = "private_ai.mcp.servers.rag_summary:run"
+private-ai-mcp-web = "private_ai.mcp.servers.rag_web:run"
+
+[tool.hatch.build]
+# Hatchling ships everything inside the package directory, which is what the built-in
+# skill packs need: ``agent/skills/builtin/*/SKILL.md`` is data the registry reads at
+# runtime, not source, and an installed app with no SKILL.md has no skills at all.
+exclude = ["**/__pycache__", "**/*.pyc"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/private_ai"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/private_ai", "tests", "README.md"]
 
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-src = ["services/api/src", "apps/desktop/src"]
-extend-exclude = [".local-data"]
+src = ["src"]
+extend-exclude = [".local-data", "services", "apps"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"
