@@ -34,6 +34,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest", "pytest-asyncio", "pytest-qt", "ruff"]
+# macOS/Windows bundling. Not a runtime dependency: nothing in the app imports it.
+package = ["pyinstaller>=6.16"]
 
 [project.scripts]
 private-ai = "private_ai.ui.app:main"

@@ -23,9 +23,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
+    from collections.abc import Callable
+
+if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.core.gpu_lease import GpuLeaseManager
 
 ASR_MODEL_NAME = "nemotron-3.5-asr-streaming-0.6b"
+
+# What the download weighs, for a progress bar that has to show a total before the
+# first byte arrives. Only ever a label: the transfer itself trusts Content-Length,
+# and the file is validated against the digest the server declares.
+ASR_MODEL_BYTES = 495_831_520
 # How long ``close`` waits for a session to give the lock back before taking the model
 # down regardless. Long enough for a finalize in flight, short enough to quit on.
 CLOSE_TIMEOUT_SECONDS = 5.0
@@ -135,6 +143,22 @@ class AsrStream:
             self._session.close()
 
 
+def bundled_asr_source() -> Path | None:
+    """The transcribe.cpp tree shipped inside a packaged build, if there is one.
+
+    A source checkout builds this itself into ``data_dir/asr/source`` and that copy always
+    wins: it was compiled on and for this machine. The bundled one exists so a packaged app
+    on a machine with no compiler — the normal case for anyone who did not build it — still
+    has a working microphone. Both are the same layout, so the resolvers below only need to
+    look in one more place.
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+    root = Path(getattr(sys, "_MEIPASS", "") or Path(sys.executable).resolve().parent)
+    candidate = root / "asr" / "source"
+    return candidate if candidate.is_dir() else None
+
+
 class AsrService:
     def __init__(
         self,
@@ -161,17 +185,25 @@ class AsrService:
         self._native_model: Any | None = None
         self._native_lease_owner = f"asr-native:{self.model_path.name}"
 
+    def source_roots(self) -> list[Path]:
+        """Every transcribe.cpp tree to consider, most specific first."""
+        roots = [self.data_dir / "source"]
+        bundled = bundled_asr_source()
+        if bundled is not None:
+            roots.append(bundled)
+        return roots
+
     def resolve_executable(self) -> Path | None:
         candidates: list[Path] = []
         if self.configured_executable:
             candidates.append(self.configured_executable.expanduser())
-        source = self.data_dir / "source"
-        candidates.extend(
-            [
-                source / "build" / "bin" / "transcribe-cli",
-                source / "build" / "bin" / "Release" / "transcribe-cli.exe",
-            ]
-        )
+        for source in self.source_roots():
+            candidates.extend(
+                [
+                    source / "build" / "bin" / "transcribe-cli",
+                    source / "build" / "bin" / "Release" / "transcribe-cli.exe",
+                ]
+            )
         for name in ("transcribe-cli", "transcribe-cli.exe"):
             found = shutil.which(name)
             if found:
@@ -179,23 +211,26 @@ class AsrService:
         return next((path.resolve() for path in candidates if path.is_file()), None)
 
     def resolve_native_library(self) -> Path | None:
-        source = self.data_dir / "source"
         override = os.environ.get("TRANSCRIBE_LIBRARY")
         candidates = [Path(override).expanduser()] if override else []
-        candidates.extend(
-            [
-                source / "build-shared" / "src" / "libtranscribe.dylib",
-                source / "build-shared" / "src" / "libtranscribe.so",
-                source / "build-shared" / "bin" / "transcribe.dll",
-                source / "build-shared" / "bin" / "Release" / "transcribe.dll",
-                source / "build-shared" / "src" / "Release" / "transcribe.dll",
-            ]
-        )
+        for source in self.source_roots():
+            candidates.extend(
+                [
+                    source / "build-shared" / "src" / "libtranscribe.dylib",
+                    source / "build-shared" / "src" / "libtranscribe.so",
+                    source / "build-shared" / "bin" / "transcribe.dll",
+                    source / "build-shared" / "bin" / "Release" / "transcribe.dll",
+                    source / "build-shared" / "src" / "Release" / "transcribe.dll",
+                ]
+            )
         return next((path.resolve() for path in candidates if path.is_file()), None)
 
     def resolve_binding_source(self) -> Path | None:
-        source = self.data_dir / "source" / "bindings" / "python" / "src"
-        return source.resolve() if (source / "transcribe_cpp" / "__init__.py").is_file() else None
+        for source in self.source_roots():
+            binding = source / "bindings" / "python" / "src"
+            if (binding / "transcribe_cpp" / "__init__.py").is_file():
+                return binding.resolve()
+        return None
 
     def resolve_ffmpeg(self) -> str | None:
         if self.ffmpeg_executable:
@@ -248,6 +283,30 @@ class AsrService:
             "sha256": checksum,
             "ffmpeg": ffmpeg,
         }
+
+    async def download_model(
+        self,
+        *,
+        on_progress: Callable[[int, int], None] | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> Path:
+        """Fetch the ASR model into this install's model directory.
+
+        The one thing a packaged app can do about a missing voice model: the native
+        library ships inside the bundle, but half a gigabyte of weights does not, and
+        downloading it needs no compiler — only a network.
+        """
+        from private_ai.asr.download import MODEL_URL, download
+
+        target = self.model_path.expanduser()
+        await asyncio.to_thread(
+            download,
+            MODEL_URL,
+            target,
+            on_progress=on_progress,
+            should_cancel=should_cancel,
+        )
+        return target
 
     async def load(self) -> None:
         if not self.enabled or not self._streaming_available():

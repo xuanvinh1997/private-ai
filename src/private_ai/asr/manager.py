@@ -8,32 +8,18 @@ same checkout, because the batch path shells out and the streaming path links in
 from __future__ import annotations
 
 import argparse
-import hashlib
 import shutil
 import subprocess
-import urllib.request
-from pathlib import Path
 
+from private_ai.asr.download import MODEL_URL, checksum_path, download, file_sha256
 from private_ai.asr.service import AsrService
 from private_ai.config import Settings, get_settings
 
 SOURCE_URL = "https://github.com/handy-computer/transcribe.cpp.git"
-MODEL_URL = (
-    "https://huggingface.co/handy-computer/nemotron-3.5-asr-streaming-0.6b-gguf/"
-    "resolve/main/nemotron-3.5-asr-streaming-0.6b-Q4_K_M.gguf"
-)
 
-
-def checksum_path(target: Path) -> Path:
-    return target.with_suffix(f"{target.suffix}.sha256")
-
-
-def file_sha256(target: Path) -> str:
-    digest = hashlib.sha256()
-    with target.open("rb") as source:
-        while chunk := source.read(1024 * 1024):
-            digest.update(chunk)
-    return digest.hexdigest()
+# Re-exported so ``private_ai.asr.manager`` stays the one name for the setup surface even
+# though the download itself is now shared with the desktop app.
+__all__ = ["MODEL_URL", "checksum_path", "download", "file_sha256", "run", "setup"]
 
 
 def required_executable(name: str) -> str:
@@ -43,39 +29,9 @@ def required_executable(name: str) -> str:
     return found
 
 
-def download(url: str, target: Path, *, force: bool = False) -> None:
-    if not force and target.is_file() and target.stat().st_size > 100_000_000:
-        digest = file_sha256(target)
-        manifest = checksum_path(target)
-        if manifest.is_file() and manifest.read_text(encoding="ascii").strip() != digest:
-            raise RuntimeError("Existing ASR model failed SHA-256 integrity validation")
-        manifest.write_text(f"{digest}\n", encoding="ascii")
-        return
-    target.parent.mkdir(parents=True, exist_ok=True)
-    partial = target.with_suffix(f"{target.suffix}.part")
-    digest = hashlib.sha256()
-    with urllib.request.urlopen(url) as response, partial.open("wb") as destination:  # noqa: S310
-        total = int(response.headers.get("content-length", "0"))
-        # Hugging Face publishes the file's SHA-256 as its ETag, so the download validates
-        # itself without a second request for a manifest.
-        etag = response.headers.get("etag", "").strip('"').casefold()
-        expected = (
-            etag if len(etag) == 64 and all(char in "0123456789abcdef" for char in etag) else ""
-        )
-        copied = 0
-        while chunk := response.read(1024 * 1024):
-            destination.write(chunk)
-            digest.update(chunk)
-            copied += len(chunk)
-            if total:
-                print(f"\rDownloading ASR model: {copied / total:.0%}", end="", flush=True)
-    print()
-    actual = digest.hexdigest()
-    if expected and actual != expected:
-        partial.unlink(missing_ok=True)
-        raise RuntimeError("Downloaded ASR model failed SHA-256 integrity validation")
-    partial.replace(target)
-    checksum_path(target).write_text(f"{actual}\n", encoding="ascii")
+def _print_progress(copied: int, total: int) -> None:
+    if total:
+        print(f"\rDownloading ASR model: {copied / total:.0%}", end="", flush=True)
 
 
 def setup(settings: Settings) -> None:
@@ -131,7 +87,8 @@ def setup(settings: Settings) -> None:
         ],
         check=True,
     )
-    download(MODEL_URL, settings.default_asr_model_path)
+    download(MODEL_URL, settings.default_asr_model_path, on_progress=_print_progress)
+    print()
 
 
 def run() -> None:

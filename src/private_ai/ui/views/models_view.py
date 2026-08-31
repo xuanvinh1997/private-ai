@@ -5,21 +5,23 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import httpx
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QVBoxLayout,
     QWidget,
 )
 
+from private_ai.asr.service import ASR_MODEL_BYTES, ASR_MODEL_NAME
 from private_ai.core import repositories
 from private_ai.llm.admin import pull_fraction
 from private_ai.ui.dialogs.add_model_dialog import AddModelDialog
-from private_ai.ui.format import format_bytes
+from private_ai.ui.format import format_bytes, format_file_size
 from private_ai.ui.icons import icon, pixmap
 from private_ai.ui.models.models_model import (
     TASK_LABELS,
@@ -34,6 +36,7 @@ from private_ai.ui.theme import (
     PAGE_SPACING,
     SPACE,
     TOOLBAR_SPACING,
+    restyle,
     token,
 )
 from private_ai.ui.widgets.confirm_button import ConfirmToolButton
@@ -222,6 +225,198 @@ class _ModelRow(QFrame):
             button.setEnabled(not working)
 
 
+class _VoiceRow(QFrame):
+    """The speech model, in the list where a user goes looking for models.
+
+    It is not an Ollama model and has no lifecycle to speak of, but it is the thing that
+    decides whether the microphone in the composer lights up, and a packaged build ships
+    the native runtime while leaving half a gigabyte of weights to be fetched. Putting the
+    fetch anywhere else means the answer to "why is dictation greyed out" lives somewhere
+    the user has no reason to look.
+    """
+
+    #: ``(copied, total)``. Emitted from the download thread, so it must be a signal.
+    progressed = Signal(int, int)
+
+    def __init__(self, view: ModelsView, status: dict, parent=None) -> None:
+        super().__init__(parent)
+        self._view = view
+        self._cancelled = False
+        self._downloading = False
+        self.setProperty("class", "card")
+
+        self._library_ready = bool(status.get("native_library") and status.get("binding_source"))
+        self._model_ready = bool(status.get("model"))
+        detail = [f"Thư viện: {status.get('native_library') or 'chưa có'}"]
+        if status.get("sha256"):
+            detail.append(f"SHA256 {status['sha256']}")
+        self.setToolTip("\n".join(detail))
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(*CARD_MARGINS)
+        layout.setSpacing(CARD_SPACING)
+
+        avatar = QLabel()
+        avatar.setProperty("class", "avatar-lg")
+        avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        avatar.setPixmap(pixmap("mic", size=SPACE["xl"], color=token("accent")))
+        layout.addWidget(avatar, 0, Qt.AlignmentFlag.AlignTop)
+
+        identity = QVBoxLayout()
+        identity.setSpacing(SPACE["2xs"])
+        title = QHBoxLayout()
+        title.setSpacing(SPACE["sm"])
+        name = QLabel("Nhận dạng giọng nói")
+        name.setProperty("class", "card-title")
+        title.addWidget(name)
+        badge = QLabel(TASK_LABELS["asr"])
+        badge.setProperty("class", "chip")
+        title.addWidget(badge)
+        title.addStretch(1)
+        identity.addLayout(title)
+
+        traits = QHBoxLayout()
+        traits.setSpacing(SPACE["sm"])
+        runtime = QLabel(ASR_MODEL_NAME)
+        runtime.setProperty("class", "code")
+        runtime.setToolTip("Mô hình đang dùng")
+        traits.addWidget(runtime)
+        traits.addWidget(glyph_label("cpu", "Chạy trên máy này"))
+        traits.addStretch(1)
+        identity.addLayout(traits)
+
+        self._status = QLabel("")
+        self._status.setWordWrap(True)
+        self._status.setProperty("class", "muted")
+        self._status.hide()
+        identity.addWidget(self._status)
+
+        self._bar = QProgressBar()
+        self._bar.setRange(0, 100)
+        self._bar.setTextVisible(False)
+        self._bar.hide()
+        identity.addWidget(self._bar)
+        layout.addLayout(identity, 1)
+
+        size = QLabel(format_bytes(status.get("size_bytes") or ASR_MODEL_BYTES))
+        size.setProperty("class", "body-strong")
+        size.setToolTip("Dung lượng")
+        size_row = QHBoxLayout()
+        size_row.setSpacing(SPACE["xs"])
+        size_row.addStretch(1)
+        size_row.addWidget(glyph_label("hard-drive", "Dung lượng", size=SPACE["md"] + 2))
+        size_row.addWidget(size)
+        metric_box = QWidget()
+        metric_box.setLayout(size_row)
+        size_row.setContentsMargins(0, 0, 0, 0)
+        metric_box.setFixedWidth(_METRIC_WIDTH)
+        layout.addWidget(metric_box, 0, Qt.AlignmentFlag.AlignTop)
+
+        self._pip = StatusPip("unknown")
+        self._state_text = QLabel("")
+        self._state_text.setProperty("class", "muted")
+        state = QHBoxLayout()
+        state.setSpacing(SPACE["xs"])
+        state.setContentsMargins(0, 0, 0, 0)
+        state.addWidget(self._pip)
+        state.addWidget(self._state_text)
+        state.addStretch(1)
+        state_box = QWidget()
+        state_box.setLayout(state)
+        state_box.setFixedWidth(_STATE_WIDTH)
+        layout.addWidget(state_box, 0, Qt.AlignmentFlag.AlignTop)
+
+        self._action = QPushButton()
+        self._action.clicked.connect(self._on_action)
+        layout.addWidget(self._action, 0, Qt.AlignmentFlag.AlignTop)
+
+        self.progressed.connect(self._on_progress)
+        self._paint()
+
+    # --- presentation -----------------------------------------------------
+
+    def _paint(self) -> None:
+        if self._downloading:
+            self._pip.set_state("downloading")
+            self._state_text.setText("Đang tải")
+            self._action.setText("Huỷ")
+            self._action.setProperty("class", "")
+            self._action.setEnabled(True)
+            self._action.show()
+        elif not self._library_ready:
+            self._pip.set_state("not_configured")
+            self._state_text.setText("Chưa cài")
+            # Downloading weights would not help: without the native runtime the composer's
+            # microphone stays dark either way.
+            self._status.setText("Bản này thiếu thư viện transcribe.cpp.")
+            self._status.setToolTip("Chạy 'private-ai-asr setup' trên máy này rồi mở lại.")
+            self._status.show()
+            self._action.hide()
+        elif not self._model_ready:
+            self._pip.set_state("not_configured")
+            self._state_text.setText("Chưa tải")
+            self._action.setText("Tải model")
+            self._action.setProperty("class", "primary")
+            self._action.setEnabled(True)
+            self._action.show()
+        else:
+            self._pip.set_state("online")
+            self._state_text.setText("Sẵn sàng")
+            self._action.hide()
+        self._action.setAccessibleName(self._action.text())
+        restyle(self._action)
+
+    def _on_progress(self, copied: int, total: int) -> None:
+        # format_file_size, not format_bytes: the size column is GB-only so rows compare,
+        # but this is one number moving, and half a gigabyte reported in GB shows about
+        # five distinct values for the whole download.
+        expected = total or ASR_MODEL_BYTES
+        readout = f"{format_file_size(copied)} / {format_file_size(expected)}"
+        if total:
+            self._bar.setRange(0, 100)
+            self._bar.setValue(int(copied / total * 100))
+            self._status.setText(f"{copied / total:.0%} · {readout}")
+        else:
+            # No Content-Length: an indeterminate bar is honest, a fake percentage is not.
+            self._bar.setRange(0, 0)
+            self._status.setText(readout)
+
+    # --- actions ----------------------------------------------------------
+
+    def _on_action(self) -> None:
+        if self._downloading:
+            self._cancelled = True
+            self._action.setEnabled(False)
+            self._status.setText("Đang dừng…")
+            return
+        self._downloading = True
+        self._cancelled = False
+        self._bar.setValue(0)
+        self._bar.show()
+        self._status.setText("Đang kết nối…")
+        self._status.show()
+        self._paint()
+        self._view.download_voice_model(self)
+
+    def finish(self, error: BaseException | None) -> None:
+        self._downloading = False
+        self._bar.hide()
+        if error is None:
+            self._status.hide()
+            return
+        self._status.setText(
+            "Đã huỷ tải mô hình."
+            if isinstance(error, InterruptedError)
+            else "Không tải được mô hình. Kiểm tra mạng rồi thử lại."
+        )
+        self._status.setToolTip(str(error))
+        self._status.show()
+        self._paint()
+
+    def should_cancel(self) -> bool:
+        return self._cancelled
+
+
 class ModelsView(QWidget):
     def __init__(self, ctx: AppContext, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -330,20 +525,47 @@ class ModelsView(QWidget):
             if widget is not None:
                 widget.deleteLater()
         records = self._model.records()
-        if not records:
-            self._empty.setText(
-                "Chưa tìm thấy mô hình.\nKhởi động Ollama rồi thêm mô hình đầu tiên."
-            )
-            self._empty.setToolTip("")
-            self._empty.show()
-            self._scroll.hide()
-            return
         self._empty.hide()
         self._scroll.show()
+        # The speech model comes first and is always present: it is not served by Ollama,
+        # so an empty provider library says nothing about whether dictation works, and the
+        # old early return took the one row that answers that question away with it.
+        self._rows.insertWidget(
+            self._rows.count() - 1,
+            _VoiceRow(self, self._ctx.services.asr.status(), self._canvas),
+        )
+        if not records:
+            missing = QLabel("Chưa tìm thấy mô hình.\nKhởi động Ollama rồi thêm mô hình đầu tiên.")
+            missing.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            missing.setWordWrap(True)
+            missing.setProperty("class", "empty")
+            self._rows.insertWidget(self._rows.count() - 1, missing)
+            return
         for record in records:
             self._rows.insertWidget(self._rows.count() - 1, _ModelRow(self, record, self._canvas))
 
     # --- actions ----------------------------------------------------------
+
+    def download_voice_model(self, row: _VoiceRow) -> None:
+        """Fetch the ASR weights, reporting into the row that asked for them."""
+
+        async def pull() -> None:
+            await self._ctx.services.asr.download_model(
+                # Fired from the download thread; the row turns it into a Qt signal so the
+                # bar is only ever touched on the GUI thread.
+                on_progress=lambda copied, total: row.progressed.emit(copied, total),
+                should_cancel=row.should_cancel,
+            )
+
+        def done(_: object) -> None:
+            row.finish(None)
+            self._ctx.toast("Đã tải xong mô hình giọng nói.", "info")
+            self.refresh()
+
+        def failed(error: BaseException) -> None:
+            row.finish(error)
+
+        self._ctx.run(pull(), on_result=done, on_error=failed)
 
     def _on_add(self) -> None:
         dialog = AddModelDialog(self._ctx, self)

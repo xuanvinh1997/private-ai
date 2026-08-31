@@ -17,3 +17,9 @@ dist/
 htmlcov/
 source.zip
 .local-data*
+
+# PyInstaller. The icon is generated from packaging/make_icon.py on every build, so it is
+# an output like the rest of these, not an asset to keep in the tree.
+build/
+packaging/PrivateAI.icns
+packaging/*.iconset/

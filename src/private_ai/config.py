@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import platform
 import subprocess
+import sys
 from functools import lru_cache
 from pathlib import Path
 
@@ -17,6 +18,27 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 FALLBACK_GPU_CAPACITY_BYTES = 96 * 1024**3
+
+# Where a packaged build keeps its state, under the user's home directory. One name on
+# every platform rather than the three each platform would prefer: this is a single-user
+# local application whose data a person genuinely does open a terminal to inspect, back up
+# with a script, or delete outright, and one path that is the same everywhere and needs no
+# shell escaping is worth more here than matching each OS's filing convention.
+BUNDLED_DATA_FOLDER = ".private-ai"
+
+
+def default_data_dir() -> Path:
+    """Where state lives when nothing sets ``PRIVATE_AI_DATA_DIR``.
+
+    A source checkout keeps it beside the source as ``.local-data``, which is what makes a
+    clone self-contained and a reset a single ``rm -rf``. A packaged app cannot: it is
+    launched with the working directory set to ``/``, and its own directory is inside a
+    read-only, code-signed bundle. So a frozen build resolves under the home directory
+    instead, and the two never collide.
+    """
+    if not getattr(sys, "frozen", False):
+        return Path(".local-data")
+    return Path.home() / BUNDLED_DATA_FOLDER
 
 
 def _sysctl_int(name: str) -> int | None:
@@ -77,7 +99,7 @@ class Settings(BaseSettings):
     )
 
     app_name: str = "Private AI"
-    data_dir: Path = Path(".local-data")
+    data_dir: Path = Field(default_factory=default_data_dir)
 
     # --- providers -------------------------------------------------------
     ollama_url: str = "http://127.0.0.1:11434"
