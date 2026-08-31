@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 __all__ = [
+    "badge_class",
     "elide",
     "format_bytes",
     "format_count",
@@ -39,6 +40,7 @@ STATUS_LABELS: dict[str, str] = {
     "pending": "Đang chờ",
     "queued": "Đang chờ",
     "processing": "Đang xử lý",
+    "extracted": "Đang lập chỉ mục",
     "ready": "Sẵn sàng",
     "failed": "Lỗi",
     "needs_ocr": "Cần đọc bằng OCR",
@@ -110,6 +112,31 @@ def format_percent(fraction: float | None) -> str:
 def format_count(value: int | None) -> str:
     """vi-VN groups thousands with a dot."""
     return f"{int(value or 0):,}".replace(",", ".")
+
+
+# The colour half of the two tables above: a label and its badge have to say the same
+# thing, so they are decided in one place. Stage names and status names share the
+# vocabulary, which is why one table serves both.
+BADGE_CLASSES: dict[str, str] = {
+    "completed": "badge-success",
+    "ready": "badge-success",
+    "queued": "badge-warn",
+    "pending": "badge-warn",
+    "processing": "badge-warn",
+    "extracting": "badge-warn",
+    "extracted": "badge-warn",
+    "normalizing": "badge-warn",
+    "chunking": "badge-warn",
+    "embedding": "badge-warn",
+    "indexing": "badge-warn",
+    "failed": "badge-danger",
+    "needs_ocr": "badge-danger",
+}
+
+
+def badge_class(state: str) -> str:
+    """The badge class for a stage or status; anything unknown stays neutral."""
+    return BADGE_CLASSES.get((state or "").strip(), "chip")
 
 
 def stage_label(stage: str) -> str:

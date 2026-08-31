@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, Qt, Signal
+from PySide6.QtCore import QPoint, QSize, Qt, Signal
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -24,6 +25,31 @@ from private_ai.ui import icons, theme
 from private_ai.ui.format import initials_of
 from private_ai.ui.widgets.confirm_button import ConfirmButton
 from private_ai.ui.widgets.status_pip import StatusPip
+
+MENU_ICON_PX = 15
+# ``QPushButton[class="menu-item"]`` pads its contents by this much, and the heading above
+# the rows has to start on the same edge.
+MENU_TEXT_INSET = 10
+
+
+def _menu_row(text: str, icon_name: str, parent: QWidget) -> QPushButton:
+    """One popup row, left-aligned with a fixed icon slot.
+
+    Every row reserves the same icon width even when it has no icon, because a row without
+    one would otherwise start its caption where the others start their glyph — which is
+    what made this menu fan out around its centre line instead of reading as a column.
+    """
+    button = QPushButton(text, parent)
+    button.setProperty("class", "menu-item")
+    button.setIconSize(QSize(MENU_ICON_PX, MENU_ICON_PX))
+    if icon_name:
+        button.setIcon(icons.icon(icon_name, size=MENU_ICON_PX))
+    else:
+        blank = QPixmap(MENU_ICON_PX, MENU_ICON_PX)
+        blank.fill(Qt.GlobalColor.transparent)
+        button.setIcon(QIcon(blank))
+    return button
+
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.ui.context import AppContext
@@ -43,42 +69,41 @@ class ProfileSwitcher(QWidget):
         self._active_name = "Bạn"
         self._menu: QFrame | None = None
 
+        # The card is drawn by the panel around the row rather than by the row itself: a
+        # QPushButton cannot carry a container's styling without an inline sheet that would
+        # keep the old palette after a theme switch.
+        self.setProperty("class", "panel")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setContentsMargins(*(theme.SPACE["2xs"],) * 4)
         self._button = QPushButton(self)
-        self._button.setMinimumHeight(52)
+        self._button.setProperty("class", "nav-item")
         self._button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._button.setStyleSheet(
-            f"QPushButton {{ border: 1px solid {theme.token('line')}; border-radius: 11px; "
-            f"text-align: left; padding: 0; background: {theme.token('surface')}; }}"
-            f"QPushButton:hover {{ background: {theme.token('surface-hover')}; }}"
-        )
         self._button.clicked.connect(self._open_menu)
         layout.addWidget(self._button, 1)
 
         inner = QHBoxLayout(self._button)
-        inner.setContentsMargins(9, 7, 10, 7)
-        inner.setSpacing(10)
+        # A nav row is pinned to 40px, so the avatar and the two lines of copy take all of
+        # the height and the padding is horizontal only.
+        inner.setContentsMargins(theme.SPACE["sm"], 0, theme.SPACE["sm"], 0)
+        inner.setSpacing(theme.SPACE["sm"])
         self._avatar = QLabel(self._button)
-        self._avatar.setFixedSize(32, 32)
         self._avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._avatar.setStyleSheet(
-            f"background: {theme.token('accent-soft')}; color: {theme.token('accent-ink')}; "
-            f'border-radius: 9px; font-family: "IBM Plex Mono", monospace; font-weight: 700;'
-        )
+        self._avatar.setProperty("class", "avatar-lg")
         inner.addWidget(self._avatar)
 
         copy = QVBoxLayout()
         copy.setContentsMargins(0, 0, 0, 0)
-        copy.setSpacing(1)
+        copy.setSpacing(theme.SPACE["3xs"])
         self._name = QLabel(self._active_name, self._button)
-        self._name.setStyleSheet(f"color: {theme.token('ink')}; font-weight: 700;")
+        self._name.setProperty("class", "body-strong")
         status = QHBoxLayout()
         status.setContentsMargins(0, 0, 0, 0)
-        status.setSpacing(6)
+        status.setSpacing(theme.SPACE["xs"])
         self._pip = StatusPip("online", self._button)
         self._where = QLabel("Trên thiết bị", self._button)
-        self._where.setProperty("class", "faint")
+        self._where.setProperty("class", "muted")
         status.addWidget(self._pip)
         status.addWidget(self._where, 1)
         copy.addWidget(self._name)
@@ -86,7 +111,7 @@ class ProfileSwitcher(QWidget):
         inner.addLayout(copy, 1)
 
         caret = QLabel(self._button)
-        caret.setPixmap(icons.pixmap("chevrons-up-down", 15, theme.token("faint")))
+        caret.setPixmap(icons.pixmap("chevrons-up-down", 15, theme.token("muted")))
         inner.addWidget(caret)
 
         self._render()
@@ -132,20 +157,20 @@ class ProfileSwitcher(QWidget):
         menu.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         menu.setMinimumWidth(max(250, self.width()))
         box = QVBoxLayout(menu)
-        box.setContentsMargins(9, 9, 9, 9)
-        box.setSpacing(3)
+        box.setContentsMargins(*(theme.SPACE["sm"],) * 4)
+        box.setSpacing(theme.SPACE["3xs"])
 
         heading = QLabel("Hồ sơ trên máy này", menu)
         heading.setProperty("class", "section-label")
+        # The rows carry the stylesheet's own horizontal padding, so the heading is
+        # indented by the same amount rather than starting a column of its own.
+        heading.setContentsMargins(MENU_TEXT_INSET, 0, 0, 0)
         box.addWidget(heading)
 
         for profile in self._profiles:
             pid = str(getattr(profile, "id", ""))
             name = (getattr(profile, "display_name", "") or "").strip() or "Bạn"
-            row = QPushButton(f"  {name}", menu)
-            row.setProperty("class", "ghost")
-            row.setMinimumHeight(34)
-            row.setIcon(icons.icon("check", size=15) if pid == self._active_id else icons.icon(""))
+            row = _menu_row(name, "check" if pid == self._active_id else "", menu)
             row.clicked.connect(lambda _=False, i=pid: self._switch(menu, i))
             box.addWidget(row)
 
@@ -154,24 +179,15 @@ class ProfileSwitcher(QWidget):
         divider.setProperty("class", "hline")
         box.addWidget(divider)
 
-        add = QPushButton("  Thêm hồ sơ", menu)
-        add.setProperty("class", "ghost")
-        add.setIcon(icons.icon("user-plus", size=15))
-        add.setMinimumHeight(32)
+        add = _menu_row("Thêm hồ sơ", "user-plus", menu)
         add.clicked.connect(lambda: self._create(menu))
         box.addWidget(add)
 
-        rename = QPushButton("  Đổi tên hiển thị", menu)
-        rename.setProperty("class", "ghost")
-        rename.setIcon(icons.icon("pencil", size=15))
-        rename.setMinimumHeight(32)
+        rename = _menu_row("Đổi tên hiển thị", "pencil", menu)
         rename.clicked.connect(lambda: self._rename(menu))
         box.addWidget(rename)
 
-        settings = QPushButton("  Cài đặt", menu)
-        settings.setProperty("class", "ghost")
-        settings.setIcon(icons.icon("settings", size=15))
-        settings.setMinimumHeight(32)
+        settings = _menu_row("Cài đặt", "settings", menu)
         settings.clicked.connect(lambda: (menu.hide(), self.settingsRequested.emit()))
         box.addWidget(settings)
 
@@ -186,7 +202,7 @@ class ProfileSwitcher(QWidget):
             box.addWidget(remove)
 
         menu.adjustSize()
-        menu.move(self.mapToGlobal(QPoint(0, -menu.sizeHint().height() - 6)))
+        menu.move(self.mapToGlobal(QPoint(0, -menu.sizeHint().height() - theme.SPACE["xs"])))
         menu.show()
         self._menu = menu
 

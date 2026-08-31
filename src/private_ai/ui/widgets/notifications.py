@@ -42,6 +42,10 @@ SEEN_KEY = "ui/notifications_seen_at"
 _TONE_ICON = {"alert": "alert-triangle", "warn": "info", "info": "check"}
 _TONE_TOKEN = {"alert": "danger", "warn": "warn", "info": "success"}
 
+# A popup, not a page: wide enough for a notice to read as a sentence, narrow enough not
+# to cover the view it was raised from.
+_PANEL_WIDTH = theme.SPACE["4xl"] * 9 + theme.SPACE["lg"]
+
 
 @dataclass(frozen=True)
 class Notice:
@@ -61,6 +65,8 @@ class _NoticeRow(QFrame):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         tone_color = theme.token(_TONE_TOKEN.get(notice.tone, "success"))
         border = theme.token("accent") if unread else "transparent"
+        # The unread bar has no equivalent in the stylesheet, so it is read from the tokens
+        # here; every row is rebuilt each time the panel opens, so it cannot go stale.
         self.setStyleSheet(
             f"QFrame {{ border-left: 3px solid {border}; "
             f"background: {theme.token('surface') if unread else 'transparent'}; "
@@ -68,21 +74,23 @@ class _NoticeRow(QFrame):
         )
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 9, 10, 9)
-        layout.setSpacing(10)
+        layout.setContentsMargins(
+            theme.SPACE["md"], theme.SPACE["sm"], theme.SPACE["md"], theme.SPACE["sm"]
+        )
+        layout.setSpacing(theme.SPACE["md"])
 
         mark = QLabel(self)
-        mark.setPixmap(icons.pixmap(_TONE_ICON.get(notice.tone, "info"), 17, tone_color))
-        mark.setFixedWidth(18)
+        mark.setPixmap(icons.pixmap(_TONE_ICON.get(notice.tone, "info"), 18, tone_color))
+        mark.setFixedWidth(theme.SPACE["xl"])
         mark.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(mark)
 
         copy = QVBoxLayout()
         copy.setContentsMargins(0, 0, 0, 0)
-        copy.setSpacing(3)
+        copy.setSpacing(theme.SPACE["2xs"])
         title = QLabel(notice.title, self)
         title.setWordWrap(True)
-        title.setStyleSheet(f"color: {theme.token('ink')}; font-weight: 700;")
+        title.setProperty("class", "body-strong")
         copy.addWidget(title)
         if notice.detail:
             detail = QLabel(notice.detail, self)
@@ -93,9 +101,9 @@ class _NoticeRow(QFrame):
             action = QPushButton(notice.action_label, self)
             action.setProperty("class", "ghost")
             action.setCursor(Qt.CursorShape.PointingHandCursor)
-            action.setStyleSheet(
-                f"QPushButton {{ color: {theme.token('accent')}; padding: 2px 0; }}"
-            )
+            # Flush left so it lines up with the copy above it; the accent is the only
+            # thing that reads as a link, and the ghost class has no colour of its own.
+            action.setStyleSheet(f"QPushButton {{ color: {theme.token('accent')}; padding: 0; }}")
             action.clicked.connect(lambda: notice.action and notice.action())
             copy.addWidget(action, 0, Qt.AlignmentFlag.AlignLeft)
         layout.addLayout(copy, 1)
@@ -114,11 +122,11 @@ class NotificationsPanel(QFrame):
         super().__init__(parent, Qt.WindowType.Popup)
         self.setProperty("class", "card")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedWidth(376)
+        self.setFixedWidth(_PANEL_WIDTH)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(12, 12, 12, 12)
-        outer.setSpacing(8)
+        outer.setContentsMargins(*theme.CARD_MARGINS)
+        outer.setSpacing(theme.CARD_SPACING)
         heading = QLabel("Thông báo", self)
         heading.setProperty("class", "heading")
         outer.addWidget(heading)
@@ -130,7 +138,7 @@ class NotificationsPanel(QFrame):
         self._body = QWidget(self._scroll)
         self._list = QVBoxLayout(self._body)
         self._list.setContentsMargins(0, 0, 0, 0)
-        self._list.setSpacing(4)
+        self._list.setSpacing(theme.SPACE["2xs"])
         self._list.addStretch(1)
         self._scroll.setWidget(self._body)
         outer.addWidget(self._scroll)
@@ -168,7 +176,6 @@ class NotificationsButton(QPushButton):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setProperty("class", "icon")
-        self.setFixedSize(36, 36)
         self.setToolTip("Thông báo")
         self._notices: list[Notice] = []
         self._settings = QSettings("PrivateAI", "PrivateAI")
@@ -215,13 +222,14 @@ class NotificationsButton(QPushButton):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         label = "9+" if unread > 9 else str(unread)
         radius = 8 if len(label) == 1 else 10
-        rect = self.rect().adjusted(self.width() - 2 * radius - 5, 4, -5, 0)
+        inset = theme.SPACE["2xs"]
+        rect = self.rect().adjusted(self.width() - 2 * radius - inset, inset, -inset, 0)
         rect.setHeight(2 * radius)
         painter.setPen(Qt.PenStyle.NoPen)
         painter.setBrush(QColor(theme.token("danger")))
         painter.drawRoundedRect(rect, radius, radius)
         font = QFont(self.font())
-        font.setPixelSize(9)
+        font.setPixelSize(theme.type_scale()["2xs"])
         font.setBold(True)
         painter.setFont(font)
         painter.setPen(QColor(theme.token("surface")))
@@ -238,7 +246,9 @@ class NotificationsButton(QPushButton):
         self.opened.emit()
         self._panel.set_notices(self._notices, self._is_unread)
         self._panel.adjustSize()
-        anchor = self.mapToGlobal(QPoint(self.width() - self._panel.width(), self.height() + 8))
+        anchor = self.mapToGlobal(
+            QPoint(self.width() - self._panel.width(), self.height() + theme.SPACE["sm"])
+        )
         self._panel.move(anchor)
         self._panel.show()
 

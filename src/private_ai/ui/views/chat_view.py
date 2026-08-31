@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
-    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -50,6 +49,7 @@ from private_ai.core.preferences import (
 from private_ai.core.schemas import ConversationCreate, RetrievalStrategyName
 from private_ai.ui import markdown as md
 from private_ai.ui import theme
+from private_ai.ui.a11y import describe
 from private_ai.ui.audio.capture import STATE_RECORDING, STATE_TRANSCRIBING, MicrophoneCapture
 from private_ai.ui.dialogs.document_viewer import DocumentViewer
 from private_ai.ui.dialogs.upload_dialog import UploadDialog, accepted_paths
@@ -61,7 +61,9 @@ from private_ai.ui.models.documents_model import (
     is_document_busy,
 )
 from private_ai.ui.widgets.model_picker import ModelEntry, ModelPicker
+from private_ai.ui.widgets.reasoning_trail import ReasoningTrail
 from private_ai.ui.widgets.status_pip import StatusPipLabel
+from private_ai.ui.widgets.strategy_picker import StrategyPicker, strategy_label
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from collections.abc import Sequence
@@ -76,52 +78,19 @@ REPAINT_INTERVAL_MS = 16  # one frame; see the module docstring
 NEAR_BOTTOM_PX = 80
 CONTEXT_POLL_MS = 1_200
 RAIL_WIDTH = 296
+# A status value sits under its caption, on the column the caption's own text starts on:
+# the pip's width plus the gap ``StatusPipLabel`` puts after it.
+STATUS_TEXT_INSET = theme.SPACE["sm"] + theme.SPACE["xs"]
 RAIL_DOCUMENTS = 3
+# The citation mark is a glyph in a fixed gutter, so every filename beside it starts on
+# one edge. The composer is three lines of body text before it starts scrolling.
+_MARK_GLYPH = theme.SPACE["lg"]
+_COMPOSER_HEIGHT = theme.SPACE["4xl"] + theme.SPACE["3xl"]
 
 STARTER_PROMPTS = (
     "Tóm tắt các tài liệu mới trong thư viện",
     "Giúp tôi lên kế hoạch công việc hôm nay",
     "Tìm lại thông tin tôi đã lưu về dự án",
-)
-
-# The seven retrieval strategies, in the order the picker offers them. ``auto`` leads
-# because it is the default and the right answer for most questions.
-STRATEGY_CHOICES: tuple[tuple[str, str, str], ...] = (
-    (
-        RetrievalStrategyName.AUTO.value,
-        "Tự động",
-        "Để trợ lý tự chọn cách tìm phù hợp với từng câu hỏi",
-    ),
-    (
-        RetrievalStrategyName.VECTOR.value,
-        "Ngữ nghĩa",
-        "Tìm những đoạn gần nghĩa nhất với câu hỏi",
-    ),
-    (
-        RetrievalStrategyName.KEYWORD.value,
-        "Từ khóa",
-        "Khớp đúng từ ngữ trong tài liệu, hợp với mã số và tên riêng",
-    ),
-    (
-        RetrievalStrategyName.HYBRID.value,
-        "Kết hợp",
-        "Gộp kết quả ngữ nghĩa với kết quả từ khóa",
-    ),
-    (
-        RetrievalStrategyName.GRAPH.value,
-        "Tri thức",
-        "Đi theo thực thể và quan hệ trong knowledge graph",
-    ),
-    (
-        RetrievalStrategyName.SUMMARY.value,
-        "Tóm lược",
-        "Đọc theo toàn tài liệu thay vì từng đoạn rời",
-    ),
-    (
-        RetrievalStrategyName.WEB.value,
-        "Web",
-        "Tra cứu trực tuyến. Câu hỏi sẽ rời khỏi máy này",
-    ),
 )
 
 NEED_MODEL = "Hãy cài hoặc chọn một mô hình trước khi gửi tin nhắn."
@@ -174,13 +143,70 @@ class _FittedBrowser(QTextBrowser):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setStyleSheet("background: transparent;")
+        # Qt's rich-text CSS has no max-width, so the reading measure is capped here.
+        self.setMaximumWidth(md.READING_MEASURE_PX)
         self.document().documentLayout().documentSizeChanged.connect(self._fit)
 
     def _fit(self, size: Any) -> None:
         height = int(size.height()) + 2 * self.frameWidth() + 4
         if height != self.height():
             self.setFixedHeight(max(height, 24))
+
+
+class _RailDocument(QFrame):
+    """One document in the context rail: a mark, a filename and its state beneath it.
+
+    This was a ``QToolButton`` carrying ``"name\nstatus"`` with the icon set beside the
+    text. Qt centres that icon against the whole two-line block, so it landed between the
+    lines, and the control's height cap left the two lines overlapping it. A row with a
+    name and a state under it is a row, not a button with a newline in it.
+    """
+
+    activated = Signal(str)
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._document_id = ""
+        self._busy = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, theme.SPACE["3xs"], 0, theme.SPACE["3xs"])
+        row.setSpacing(theme.SPACE["sm"])
+
+        self._mark = QLabel(self)
+        self._mark.setPixmap(icon("book-open", size=_MARK_GLYPH).pixmap(_MARK_GLYPH, _MARK_GLYPH))
+        self._mark.setFixedWidth(_MARK_GLYPH)
+        # The mark belongs to the filename, so it hangs from the first line rather than
+        # floating to the middle of the two.
+        row.addWidget(self._mark, 0, Qt.AlignmentFlag.AlignTop)
+
+        copy = QVBoxLayout()
+        copy.setContentsMargins(0, 0, 0, 0)
+        copy.setSpacing(theme.SPACE["3xs"])
+        self._name = QLabel(self)
+        self._name.setProperty("class", "body")
+        self._name.setWordWrap(True)
+        self._state = QLabel(self)
+        self._state.setProperty("class", "muted")
+        copy.addWidget(self._name)
+        copy.addWidget(self._state)
+        row.addLayout(copy, 1)
+
+    def set_document(self, document_id: str, filename: str, state: str, *, busy: bool) -> None:
+        self._document_id = document_id
+        self._busy = busy
+        self._name.setText(filename)
+        self._state.setText(state)
+        self.setToolTip(f"{filename} vẫn đang xử lý" if busy else f"Xem nội dung {filename}")
+        self.setCursor(
+            Qt.CursorShape.ForbiddenCursor if busy else Qt.CursorShape.PointingHandCursor
+        )
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if not self._busy and self._document_id:
+            self.activated.emit(self._document_id)
+        super().mousePressEvent(event)
 
 
 class _MessageBubble(QFrame):
@@ -195,14 +221,13 @@ class _MessageBubble(QFrame):
         self.setProperty("class", "card" if role == "assistant" else "panel")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(14, 11, 14, 11)
-        layout.setSpacing(6)
+        layout.setContentsMargins(*theme.CARD_MARGINS)
+        layout.setSpacing(theme.CARD_SPACING)
 
         header = QHBoxLayout()
-        header.setSpacing(8)
+        header.setSpacing(theme.SPACE["sm"])
         avatar = QLabel("AI" if role == "assistant" else _initials(author))
-        avatar.setProperty("class", "code")
-        avatar.setFixedSize(26, 26)
+        avatar.setProperty("class", "avatar")
         avatar.setAlignment(Qt.AlignmentFlag.AlignCenter)
         name = QLabel("Private AI" if role == "assistant" else author)
         name.setProperty("class", "section-label")
@@ -216,21 +241,36 @@ class _MessageBubble(QFrame):
         self._status.hide()
         layout.addWidget(self._status)
 
+        # Where the answer will be. Until a token arrives this is the only thing saying
+        # the turn is alive, so it stands in the answer's place rather than beside it.
+        self._trail = ReasoningTrail(self)
+        self._trail.hide()
+        layout.addWidget(self._trail)
+
         self._body = _FittedBrowser()
         self._body.document().setDefaultStyleSheet(md.document_css(theme.tokens()))
         layout.addWidget(self._body)
 
+        # How the sources were found. With ``auto`` the routing is a decision the user
+        # never made and cannot see anywhere else, and it is the answer to "why did it
+        # cite these and not those" long after the trail has collapsed.
+        self._retrieval = QLabel()
+        self._retrieval.setWordWrap(True)
+        self._retrieval.setProperty("class", "faint")
+        self._retrieval.hide()
+        layout.addWidget(self._retrieval)
+
         self._citations = QWidget()
         self._citations_layout = QHBoxLayout(self._citations)
-        self._citations_layout.setContentsMargins(0, 2, 0, 0)
-        self._citations_layout.setSpacing(6)
+        self._citations_layout.setContentsMargins(0, theme.SPACE["3xs"], 0, 0)
+        self._citations_layout.setSpacing(theme.SPACE["xs"])
         self._citations.hide()
         layout.addWidget(self._citations)
 
         self._actions = QWidget()
         actions = QHBoxLayout(self._actions)
-        actions.setContentsMargins(0, 2, 0, 0)
-        actions.setSpacing(6)
+        actions.setContentsMargins(0, theme.SPACE["3xs"], 0, 0)
+        actions.setSpacing(theme.SPACE["xs"])
         self._copy = QToolButton()
         self._copy.setIcon(icon("copy", size=15))
         self._copy.setText("Sao chép")
@@ -263,11 +303,30 @@ class _MessageBubble(QFrame):
         else:
             self._body.setPlainText(text)
         self._body.setVisible(bool(text))
-        self._status.setVisible(not text and self.role == "assistant")
+        idle = not text and self.role == "assistant"
+        self._status.setVisible(idle and not self._trail.isVisible())
 
     def set_status(self, text: str) -> None:
         self._status.setText(text)
-        self._status.setVisible(bool(text) and not self._content)
+        self._status.setVisible(bool(text) and not self._content and not self._trail.isVisible())
+
+    def trail(self) -> ReasoningTrail:
+        """The progress trail. The view drives it; the bubble only owns where it sits."""
+        return self._trail
+
+    def begin_progress(self, label: str) -> None:
+        self._trail.start(label)
+        self._trail.show()
+        self._status.hide()
+
+    def end_progress(self, label: str = "") -> None:
+        """Collapse the trail to its summary line, or to nothing.
+
+        A turn that took a couple of seconds never looked like a hang, so it leaves
+        nothing behind; a slow one, or one that degraded, keeps a line saying so.
+        """
+        self._trail.finish(label)
+        self._trail.setVisible(self._trail.has_content())
 
     def set_error(self, message: str) -> None:
         """Shown beneath whatever partial answer arrived, never instead of it."""
@@ -279,6 +338,18 @@ class _MessageBubble(QFrame):
     def set_actions_visible(self, visible: bool, *, can_regenerate: bool = True) -> None:
         self._regenerate.setVisible(can_regenerate)
         self._actions.setVisible(visible and bool(self._content))
+
+    def set_retrieval(self, strategy: str, routed_to: str, reason: str) -> None:
+        """Say which strategy produced the sources, and — when a router chose — why."""
+        used = routed_to or strategy
+        if not used:
+            self._retrieval.hide()
+            return
+        text = f"Tìm bằng {strategy_label(used)}"
+        if routed_to and strategy != routed_to and reason:
+            text = f"{text} (tự chọn: {reason})"
+        self._retrieval.setText(text)
+        self._retrieval.show()
 
     def set_citations(self, citations: Sequence[dict[str, Any]]) -> None:
         while self._citations_layout.count():
@@ -392,13 +463,14 @@ class ChatView(QWidget):
         layout.setSpacing(0)
 
         strip = QHBoxLayout()
-        strip.setContentsMargins(16, 8, 12, 0)
+        strip.setContentsMargins(theme.SPACE["2xl"], theme.SPACE["sm"], theme.SPACE["md"], 0)
+        strip.setSpacing(theme.TOOLBAR_SPACING)
         strip.addStretch(1)
         self._rail_toggle = QToolButton()
         self._rail_toggle.setCheckable(True)
         self._rail_toggle.setChecked(True)
         self._rail_toggle.setIcon(icon("panel-right-close"))
-        self._rail_toggle.setToolTip("Ẩn bảng ngữ cảnh")
+        describe(self._rail_toggle, "Ẩn bảng ngữ cảnh")
         self._rail_toggle.toggled.connect(self._toggle_rail)
         strip.addWidget(self._rail_toggle)
         layout.addLayout(strip)
@@ -408,8 +480,8 @@ class ChatView(QWidget):
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._stream_host = QWidget()
         self._stream_layout = QVBoxLayout(self._stream_host)
-        self._stream_layout.setContentsMargins(20, 14, 20, 18)
-        self._stream_layout.setSpacing(10)
+        self._stream_layout.setContentsMargins(*theme.PAGE_MARGINS)
+        self._stream_layout.setSpacing(theme.SPACE["md"])
         self._stream_layout.addStretch(1)
         self._scroll.setWidget(self._stream_host)
         layout.addWidget(self._scroll, 1)
@@ -428,8 +500,8 @@ class ChatView(QWidget):
     def _build_composer(self) -> QWidget:
         wrap = QWidget()
         layout = QVBoxLayout(wrap)
-        layout.setContentsMargins(20, 0, 20, 14)
-        layout.setSpacing(6)
+        layout.setContentsMargins(theme.SPACE["2xl"], 0, theme.SPACE["2xl"], theme.SPACE["lg"])
+        layout.setSpacing(theme.SPACE["xs"])
 
         self._error = QLabel()
         self._error.setProperty("class", "danger")
@@ -440,12 +512,12 @@ class ChatView(QWidget):
         frame = QFrame()
         frame.setProperty("class", "card")
         inner = QVBoxLayout(frame)
-        inner.setContentsMargins(10, 8, 10, 8)
-        inner.setSpacing(6)
+        inner.setContentsMargins(*theme.CARD_MARGINS)
+        inner.setSpacing(theme.SPACE["sm"])
 
         self._composer = _Composer()
         self._composer.setPlaceholderText("Nhập câu hỏi cho Private AI…")
-        self._composer.setFixedHeight(72)
+        self._composer.setFixedHeight(_COMPOSER_HEIGHT)
         # Otherwise a dropped file lands as its own path, pasted into the message.
         self._composer.setAcceptDrops(False)
         self._composer.setFrameShape(QFrame.Shape.NoFrame)
@@ -453,46 +525,42 @@ class ChatView(QWidget):
         inner.addWidget(self._composer)
 
         tools = QHBoxLayout()
-        tools.setSpacing(6)
+        tools.setSpacing(theme.TOOLBAR_SPACING)
         self._model_picker = ModelPicker()
         self._model_picker.set_placeholder("Chọn mô hình")
         tools.addWidget(self._model_picker)
 
-        self._strategy = QComboBox()
-        self._strategy.setToolTip("Cách tìm tài liệu để trả lời")
-        for value, label, hint in STRATEGY_CHOICES:
-            self._strategy.addItem(label, value)
-            self._strategy.setItemData(
-                self._strategy.count() - 1,
-                hint,
-                Qt.ItemDataRole.ToolTipRole,
-            )
+        self._strategy = StrategyPicker()
         tools.addWidget(self._strategy)
 
         self._web = QToolButton()
         self._web.setCheckable(True)
         self._web.setIcon(icon("globe"))
+        # Named at build time as well as on every preference change: the tooltip used to
+        # arrive only with the first async read, so the control was nameless until then.
+        describe(self._web, "Tra cứu trên web trước khi trả lời. Câu hỏi sẽ rời khỏi máy này.")
         tools.addWidget(self._web)
 
         self._attach = QToolButton()
         self._attach.setIcon(icon("paperclip"))
-        self._attach.setToolTip("Đính kèm tài liệu")
+        describe(self._attach, "Đính kèm tài liệu")
         tools.addWidget(self._attach)
 
         self._mic = QToolButton()
         self._mic.setIcon(icon("mic"))
+        describe(self._mic, "Ghi âm câu hỏi")
         tools.addWidget(self._mic)
 
         tools.addStretch(1)
         self._send = QToolButton()
         self._send.setIcon(icon("chevron-right"))
-        self._send.setToolTip("Gửi tin nhắn")
+        describe(self._send, "Gửi tin nhắn")
         tools.addWidget(self._send)
         inner.addLayout(tools)
         layout.addWidget(frame)
 
         hint = QLabel("Enter để gửi · Shift + Enter để xuống dòng")
-        hint.setProperty("class", "faint")
+        hint.setProperty("class", "muted")
         layout.addWidget(hint)
         return wrap
 
@@ -501,14 +569,14 @@ class ChatView(QWidget):
         self._rail.setObjectName("ContextRail")
         self._rail.setFixedWidth(RAIL_WIDTH)
         layout = QVBoxLayout(self._rail)
-        layout.setContentsMargins(14, 14, 14, 14)
-        layout.setSpacing(10)
+        layout.setContentsMargins(*theme.CARD_MARGINS)
+        layout.setSpacing(theme.SPACE["sm"])
 
         heading = QLabel("Ngữ cảnh")
         heading.setProperty("class", "section-label")
         layout.addWidget(heading)
         self._rail_workspace = QLabel("Chưa có không gian")
-        self._rail_workspace.setProperty("class", "title")
+        self._rail_workspace.setProperty("class", "heading")
         self._rail_workspace.setWordWrap(True)
         layout.addWidget(self._rail_workspace)
 
@@ -516,29 +584,21 @@ class ChatView(QWidget):
         documents_label.setProperty("class", "section-label")
         layout.addWidget(documents_label)
 
-        self._document_rows: list[tuple[QToolButton, QProgressBar]] = []
+        self._document_rows: list[tuple[_RailDocument, QProgressBar]] = []
         for _slot in range(RAIL_DOCUMENTS):
-            button = QToolButton()
-            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-            button.setIcon(icon("book-open", size=16))
-            button.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            row = _RailDocument()
             bar = QProgressBar()
             bar.setRange(0, 100)
             bar.setTextVisible(False)
-            bar.setFixedHeight(3)
             # Connected once: reconnecting per repaint made PySide warn about
             # disconnecting a never-connected signal on the first paint. The row's
-            # current document is carried on the button instead.
-            button.clicked.connect(
-                lambda _checked=False, b=button: self._open_document(
-                    str(b.property("documentId") or "")
-                )
-            )
-            layout.addWidget(button)
+            # current document is carried on the row instead.
+            row.activated.connect(self._open_document)
+            layout.addWidget(row)
             layout.addWidget(bar)
-            button.hide()
+            row.hide()
             bar.hide()
-            self._document_rows.append((button, bar))
+            self._document_rows.append((row, bar))
 
         self._documents_empty = QLabel("Chưa có tài liệu trong không gian này.")
         self._documents_empty.setProperty("class", "muted")
@@ -567,15 +627,20 @@ class ChatView(QWidget):
             ("knowledge_graph", "Kho tri thức"),
             ("asr", "Giọng nói"),
         ):
-            row = QHBoxLayout()
+            # Stacked, not two columns. The rail is 296px wide and these values are
+            # sentences ("Ollama cục bộ · trên thiết bị"); squeezed into the half-width
+            # right column they wrapped into a ragged block hanging off the caption.
+            entry = QVBoxLayout()
+            entry.setSpacing(theme.SPACE["3xs"])
             pip = StatusPipLabel(caption, "unknown")
             value = QLabel("Đang kiểm tra…")
             value.setProperty("class", "muted")
             value.setWordWrap(True)
-            row.addWidget(pip)
-            row.addStretch(1)
-            row.addWidget(value)
-            layout.addLayout(row)
+            # Indented onto the caption's own text column, past the pip beside it.
+            value.setContentsMargins(STATUS_TEXT_INSET, 0, 0, 0)
+            entry.addWidget(pip)
+            entry.addWidget(value)
+            layout.addLayout(entry)
             self._pips[key] = (pip, value)
 
         self._vram_title = QLabel("VRAM đang dùng")
@@ -587,10 +652,9 @@ class ChatView(QWidget):
         self._vram_bar = QProgressBar()
         self._vram_bar.setRange(0, 100)
         self._vram_bar.setTextVisible(False)
-        self._vram_bar.setFixedHeight(5)
         layout.addWidget(self._vram_bar)
         self._vram_detail = QLabel("")
-        self._vram_detail.setProperty("class", "faint")
+        self._vram_detail.setProperty("class", "muted")
         self._vram_detail.setWordWrap(True)
         layout.addWidget(self._vram_detail)
 
@@ -599,11 +663,13 @@ class ChatView(QWidget):
         note = QFrame()
         note.setProperty("class", "panel")
         note_layout = QVBoxLayout(note)
-        note_layout.setSpacing(2)
+        note_layout.setContentsMargins(*theme.CARD_MARGINS)
+        note_layout.setSpacing(theme.SPACE["2xs"])
         self._privacy_title = QLabel(ON_DEVICE_TITLE)
         self._privacy_title.setProperty("class", "section-label")
+        # Where the conversation goes is not tertiary text, however small the panel is.
         self._privacy_body = QLabel(ON_DEVICE_BODY)
-        self._privacy_body.setProperty("class", "faint")
+        self._privacy_body.setProperty("class", "muted")
         self._privacy_body.setWordWrap(True)
         note_layout.addWidget(self._privacy_title)
         note_layout.addWidget(self._privacy_body)
@@ -622,7 +688,6 @@ class ChatView(QWidget):
         self._attach.clicked.connect(lambda: self._open_upload([]))
         self._mic.clicked.connect(self._on_mic_clicked)
         self._web.toggled.connect(self._on_web_toggled)
-        self._strategy.currentIndexChanged.connect(self._on_strategy_changed)
         self._model_picker.selectionChanged.connect(self._on_model_selected)
         self._model_picker.manageRequested.connect(lambda: self.ctx.navigate("settings", "models"))
         self._scroll.verticalScrollBar().valueChanged.connect(self._on_scrolled)
@@ -648,25 +713,28 @@ class ChatView(QWidget):
         area = self._scroll.viewport().size()
         button.move(
             max(0, (area.width() - button.width()) // 2),
-            max(0, area.height() - button.height() - 12),
+            max(0, area.height() - button.height() - theme.SPACE["md"]),
         )
 
     # --- preferences ------------------------------------------------------
 
     def _apply_preferences(self, preferences: Any) -> None:
         with contextlib.suppress(RuntimeError):
-            self._strategy.blockSignals(True)
-            index = self._strategy.findData(str(preferences.retrieval_strategy))
-            self._strategy.setCurrentIndex(index if index >= 0 else 0)
-            self._strategy.blockSignals(False)
+            saved = str(preferences.retrieval_strategy)
+            web = bool(preferences.web_search_enabled)
+            if saved == RetrievalStrategyName.WEB.value:
+                # Web used to be one of the strategies *and* the globe toggle. The toggle
+                # won, so a default saved under the old meaning moves onto it once, rather
+                # than silently becoming "auto, with web off".
+                saved = RetrievalStrategyName.AUTO.value
+                web = True
+                self._persist(RETRIEVAL_STRATEGY_KEY, saved)
+                self._persist(WEB_SEARCH_ENABLED_KEY, "1")
+            self._strategy.set_default(saved)
             self._web.blockSignals(True)
-            self._web.setChecked(bool(preferences.web_search_enabled))
+            self._web.setChecked(web)
             self._web.blockSignals(False)
         self._refresh_web_button()
-
-    def _on_strategy_changed(self, _index: int) -> None:
-        value = str(self._strategy.currentData() or RetrievalStrategyName.AUTO.value)
-        self._persist(RETRIEVAL_STRATEGY_KEY, value)
 
     def _on_web_toggled(self, enabled: bool) -> None:
         self._refresh_web_button()
@@ -682,10 +750,11 @@ class ChatView(QWidget):
             if enabled
             else Qt.ToolButtonStyle.ToolButtonIconOnly
         )
-        self._web.setToolTip(
+        describe(
+            self._web,
             "Câu hỏi sẽ được gửi tới nguồn tìm kiếm đã chọn trong Cài đặt"
             if enabled
-            else "Tra cứu trên web trước khi trả lời. Câu hỏi sẽ rời khỏi máy này."
+            else "Tra cứu trên web trước khi trả lời. Câu hỏi sẽ rời khỏi máy này.",
         )
 
     def _persist(self, key: str, value: str) -> None:
@@ -780,7 +849,8 @@ class ChatView(QWidget):
     def _welcome(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setSpacing(8)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(theme.SPACE["sm"])
         greeting = QLabel(f"Chào bạn, {self._profile_name}" if self._profile_name else "Chào bạn")
         greeting.setProperty("class", "muted")
         title = QLabel("Hôm nay bạn muốn làm gì?")
@@ -799,15 +869,17 @@ class ChatView(QWidget):
             card = QFrame()
             card.setProperty("class", "card")
             box = QVBoxLayout(card)
-            box.setSpacing(6)
+            box.setContentsMargins(*theme.CARD_MARGINS)
+            box.setSpacing(theme.CARD_SPACING)
             headline = QLabel("Thiết lập trước khi trò chuyện")
-            headline.setProperty("class", "section-label")
+            headline.setProperty("class", "heading")
             detail = QLabel("Tạo nơi lưu dữ liệu và chọn một mô hình có thể trả lời.")
             detail.setProperty("class", "muted")
             detail.setWordWrap(True)
             box.addWidget(headline)
             box.addWidget(detail)
             row = QHBoxLayout()
+            row.setSpacing(theme.TOOLBAR_SPACING)
             if not self._has_workspace:
                 create = QToolButton()
                 create.setIcon(icon("plus", size=16))
@@ -830,9 +902,9 @@ class ChatView(QWidget):
                 starter = QToolButton()
                 starter.setText(prompt)
                 starter.setProperty("class", "chip")
-                starter.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+                # A chip hugs its text; stretched down the column it reads as a button bar.
                 starter.clicked.connect(lambda _checked=False, p=prompt: self._submit(p))
-                layout.addWidget(starter)
+                layout.addWidget(starter, 0, Qt.AlignmentFlag.AlignLeft)
         return page
 
     # --- sending ----------------------------------------------------------
@@ -876,7 +948,9 @@ class ChatView(QWidget):
         self._add_bubble(self._messages[-1])
         self._messages.append({"role": "assistant", "content": "", "citations": []})
         self._stream_bubble = self._add_bubble(self._messages[-1])
-        self._stream_bubble.set_status(THINKING)
+        # The clock starts with the turn, not with the first progress event: the gap
+        # before the graph reports anything is itself part of the wait.
+        self._stream_bubble.begin_progress(THINKING)
         self._refresh_actions()
         self._stream_text = ""
         self._stream_dirty = False
@@ -907,7 +981,7 @@ class ChatView(QWidget):
                 content=content,
                 workspace_id=ctx.workspace_id,
                 model=self._model(),
-                strategy=str(self._strategy.currentData() or RetrievalStrategyName.AUTO.value),
+                strategy=self._strategy.current(),
                 web_search=self._web.isChecked(),
             ):
                 self._handle_event(event)
@@ -919,22 +993,47 @@ class ChatView(QWidget):
         if kind == "token":
             self._stream_text += str(event.get("content") or "")
             self._stream_dirty = True
+        elif kind == "progress":
+            self._on_progress(event)
         elif kind == "tool_start":
             self._set_tool(str(event.get("name") or ""))
         elif kind == "tool_end":
             self._set_tool("")
         elif kind == "notice":
-            # A degraded sub-service, not a failed turn: say so and keep streaming.
-            self.ctx.toast(str(event.get("message") or ""), "info")
+            # A degraded sub-service, not a failed turn: say so and keep streaming. It
+            # goes into the trail as well, because a toast is gone in a few seconds and
+            # "why is there no citation" is asked long after that.
+            message = str(event.get("message") or "")
+            bubble = self._stream_bubble
+            if bubble is not None:
+                bubble.trail().note(message)
+            self.ctx.toast(message, "info")
         elif kind == "error":
             self._on_stream_error(str(event.get("message") or ""))
         elif kind == "final":
             self._on_final(event)
 
+    def _on_progress(self, event: dict[str, Any]) -> None:
+        bubble = self._stream_bubble
+        if bubble is None:
+            return
+        label = str(event.get("label") or "").strip()
+        if not label:
+            return
+        detail = str(event.get("detail") or "").strip()
+        fraction = event.get("fraction")
+        if isinstance(fraction, int | float) and 0.0 <= float(fraction) <= 1.0:
+            percent = f"{round(float(fraction) * 100)}%"
+            detail = f"{detail} · {percent}" if detail else percent
+        bubble.trail().step(label, detail)
+
     def _set_tool(self, name: str) -> None:
         bubble = self._stream_bubble
-        if bubble is not None:
-            bubble.set_status(f"Đang dùng {name}" if name else THINKING)
+        if bubble is None:
+            return
+        # A finished tool hands the turn straight back to the model, so say that rather
+        # than dropping to a generic "thinking" that reads like the step was lost.
+        bubble.trail().step(f"Đang dùng {name}" if name else "Soạn câu trả lời")
 
     def _flush_tokens(self) -> None:
         if not self._stream_dirty:
@@ -943,6 +1042,9 @@ class ChatView(QWidget):
         bubble = self._stream_bubble
         if bubble is None:
             return
+        # Once text is arriving the path taken has done its job; the trail collapses to
+        # its running line so it cannot push the answer down the bubble.
+        bubble.trail().collapse()
         bubble.set_content(self._stream_text)
         if self._messages:
             self._messages[-1]["content"] = self._stream_text
@@ -965,6 +1067,11 @@ class ChatView(QWidget):
         bubble = self._stream_bubble
         if bubble is not None:
             bubble.set_content(self._stream_text)
+            bubble.set_retrieval(
+                str(event.get("strategy") or ""),
+                str(event.get("routed_to") or ""),
+                str(event.get("routing_reason") or ""),
+            )
             bubble.set_citations(citations)
         self._after_grow()
 
@@ -972,6 +1079,7 @@ class ChatView(QWidget):
         self._set_error(message)
         bubble = self._stream_bubble
         if bubble is not None:
+            bubble.trail().fail(message)
             bubble.set_error(message)
 
     def _on_turn_failed(self, exc: BaseException) -> None:
@@ -981,6 +1089,9 @@ class ChatView(QWidget):
         self._repaint.stop()
         self._stream_dirty = True
         self._flush_tokens()
+        bubble = self._stream_bubble
+        if bubble is not None:
+            bubble.end_progress()
         self._stream_task = None
         self._stream_bubble = None
         self._set_running(False)
@@ -989,7 +1100,7 @@ class ChatView(QWidget):
 
     def _set_running(self, running: bool) -> None:
         self._send.setIcon(icon("stop-circle" if running else "chevron-right"))
-        self._send.setToolTip("Dừng trả lời" if running else "Gửi tin nhắn")
+        describe(self._send, "Dừng trả lời" if running else "Gửi tin nhắn")
         self._strategy.setEnabled(not running)
         self._web.setEnabled(not running)
         self._mic.setEnabled(not running and not self._capture.is_busy())
@@ -1069,12 +1180,13 @@ class ChatView(QWidget):
     def _on_voice_state(self, state: str) -> None:
         recording = state == STATE_RECORDING
         self._mic.setIcon(icon("mic-off" if recording else "mic"))
-        self._mic.setToolTip(
+        describe(
+            self._mic,
             "Dừng ghi âm"
             if recording
             else "Đang nhận dạng giọng nói"
             if state == STATE_TRANSCRIBING
-            else "Ghi âm câu hỏi"
+            else "Ghi âm câu hỏi",
         )
         self._mic.setEnabled(state != STATE_TRANSCRIBING and self._stream_task is None)
 
@@ -1165,10 +1277,12 @@ class ChatView(QWidget):
             busy = is_document_busy(document)
             document_id = str(document.get("id") or "")
             filename = str(document.get("filename") or "")
-            button.setText(f"{filename}\n{document_status_text(document)}")
-            button.setToolTip(f"{filename} vẫn đang xử lý" if busy else f"Xem nội dung {filename}")
-            button.setEnabled(not busy)
-            button.setProperty("documentId", document_id)
+            button.set_document(
+                document_id,
+                filename,
+                document_status_text(document),
+                busy=busy,
+            )
             button.show()
             bar.setValue(int(round(document_progress(document) * 100)))
             bar.setVisible(busy)
@@ -1206,7 +1320,7 @@ class ChatView(QWidget):
         value.setText("Sẵn sàng" if can_record else "Chưa cấu hình")
         self._mic.setEnabled(can_record and self._stream_task is None)
         if not can_record:
-            self._mic.setToolTip("Giọng nói chưa sẵn sàng")
+            describe(self._mic, "Giọng nói chưa sẵn sàng")
 
         remote = provider is not None and not on_device
         self._privacy_title.setText(REMOTE_TITLE if remote else ON_DEVICE_TITLE)
@@ -1268,7 +1382,7 @@ class ChatView(QWidget):
     def _toggle_rail(self, visible: bool) -> None:
         self._rail.setVisible(visible)
         self._rail_toggle.setIcon(icon("panel-right-close" if visible else "panel-right-open"))
-        self._rail_toggle.setToolTip("Ẩn bảng ngữ cảnh" if visible else "Hiện bảng ngữ cảnh")
+        describe(self._rail_toggle, "Ẩn bảng ngữ cảnh" if visible else "Hiện bảng ngữ cảnh")
 
     def _set_error(self, message: str) -> None:
         self._error.setText(message)

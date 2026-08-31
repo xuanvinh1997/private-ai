@@ -12,14 +12,13 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QVBoxLayout,
 )
 
 from private_ai.core import repositories
+from private_ai.ui.dialogs import _shell
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.core.schemas import ProfileRecord
@@ -83,25 +82,14 @@ class ProfileNameDialog(QDialog):
             # No close button: onboarding is answered, deferred, never dismissed.
             self.setWindowFlag(Qt.WindowType.WindowCloseButtonHint, False)
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout = _shell.dialog_layout(self)
+        _shell.title_block(layout, title, description)
 
-        heading = QLabel(title)
-        heading.setProperty("class", "title")
-        heading.setWordWrap(True)
-        layout.addWidget(heading)
-
-        blurb = QLabel(description)
-        blurb.setWordWrap(True)
-        blurb.setProperty("class", "muted")
-        layout.addWidget(blurb)
-
-        layout.addWidget(QLabel("Tên hiển thị"))
         self._name = QLineEdit(profile.display_name if (profile and mode == RENAME) else "")
         self._name.setMaxLength(60)
         self._name.setPlaceholderText("Ví dụ: Vinh")
         self._name.returnPressed.connect(self._on_save)
-        layout.addWidget(self._name)
+        _shell.field(layout, "Tên hiển thị", self._name)
 
         self._error = QLabel("")
         self._error.setProperty("class", "danger")
@@ -109,7 +97,7 @@ class ProfileNameDialog(QDialog):
         self._error.hide()
         layout.addWidget(self._error)
 
-        row = QHBoxLayout()
+        row = _shell.action_row(layout)
         row.addStretch(1)
         later = QPushButton("Để sau" if self._mode == ONBOARDING else "Hủy")
         later.clicked.connect(self.reject)
@@ -119,7 +107,6 @@ class ProfileNameDialog(QDialog):
         self._save.setDefault(True)
         self._save.clicked.connect(self._on_save)
         row.addWidget(self._save)
-        layout.addLayout(row)
 
         self._name.setFocus(Qt.FocusReason.OtherFocusReason)
 

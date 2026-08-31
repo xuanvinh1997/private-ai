@@ -50,6 +50,12 @@ PAGE_MARKER = re.compile(r"^<!--\s*private-ai-page:(\d+)\s*-->$")
 # counting them as text would make a scan of blank pages look like a readable document.
 MARKITDOWN_PAGE_HEADING = re.compile(r"^#{1,6}\s+Page\s+\d+\s*$", re.IGNORECASE)
 
+# Average characters per page below which a PDF's text layer is not worth trusting and the
+# OCR cascade should take over. A typeset page of prose runs to a few thousand characters;
+# a scanned page yields almost nothing but the page marker. 200 sits far below any real
+# page of text and far above an empty one, so a figure-heavy paper still counts as dense.
+MIN_NATIVE_CHARS_PER_PAGE = 200
+
 OFFICE_XML_PREFIXES: dict[str, tuple[str, ...]] = {
     ".docx": ("word/document.xml",),
     ".pptx": ("ppt/slides/slide",),
@@ -116,11 +122,23 @@ class PdfLoader(BaseLoader):
             for index, page in enumerate(reader.pages, start=1)
         )
 
+    def _page_count(self) -> int:
+        return max(1, len(PdfReader(self.path).pages))
+
     async def alazy_load(self) -> AsyncIterator[Document]:
         native = await asyncio.to_thread(self._native_text)
         native_text = strip_page_markers(native)
+
+        # OCR is a cascade, not a default. A born-digital PDF already carries its exact
+        # text, and running a vision model over every embedded figure to re-read it costs
+        # minutes per paper and produces a worse transcription than the one we have. Only
+        # a page that is mostly image — a scan — has a text layer this thin.
+        pages = await asyncio.to_thread(self._page_count)
+        dense = len(native_text) >= MIN_NATIVE_CHARS_PER_PAGE * pages
+        use_ocr = self.ocr and not dense
+
         try:
-            converted = await self.converter.aconvert(self.path, self.ocr, self.vision_model)
+            converted = await self.converter.aconvert(self.path, use_ocr, self.vision_model)
         except Exception as exc:
             if native_text:
                 yield self._document(native, ocr=False)

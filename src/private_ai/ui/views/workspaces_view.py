@@ -23,7 +23,16 @@ from private_ai.ui.dialogs.workspace_dialog import WorkspaceDialog
 from private_ai.ui.format import format_relative_time
 from private_ai.ui.icons import icon
 from private_ai.ui.models.workspaces_model import WorkspaceFilterProxy, WorkspacesModel
-from private_ai.ui.widgets.confirm_button import ConfirmButton
+from private_ai.ui.theme import (
+    BADGE_HEIGHT,
+    CARD_MARGINS,
+    CARD_SPACING,
+    PAGE_MARGINS,
+    PAGE_SPACING,
+    SPACE,
+    TOOLBAR_SPACING,
+)
+from private_ai.ui.widgets.confirm_button import ConfirmToolButton
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.core.schemas import WorkspaceRecord
@@ -46,24 +55,31 @@ class _WorkspaceCard(QFrame):
         self.setProperty("class", "card")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setMinimumWidth(240)
+        # Third-rank metadata. The id had its own line and was cut to eight characters,
+        # which was neither readable nor copyable; whole, in a tooltip, it is both.
+        self.setToolTip(f"{record.name}\n{record.id}")
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(8)
+        layout.setContentsMargins(*CARD_MARGINS)
+        layout.setSpacing(CARD_SPACING)
 
         top = QHBoxLayout()
+        top.setSpacing(TOOLBAR_SPACING)
         name = QLabel(record.name)
-        name.setProperty("class", "subtitle")
+        name.setProperty("class", "card-title")
         name.setWordWrap(True)
+        # Only one card in the grid carries the chip, and the chip is taller than the
+        # title. Giving the title the badge's height as a floor keeps every card in a row
+        # on one baseline; a spacer widget would do it too, but the layout puts its gap
+        # after it and indents the title away from the text below.
+        name.setMinimumHeight(BADGE_HEIGHT)
         top.addWidget(name, 1)
         if active:
+            # The open workspace is the current selection, so it gets the accent chip.
             badge = QLabel("Đang dùng")
             badge.setProperty("class", "chip-active")
-            top.addWidget(badge, 0, Qt.AlignmentFlag.AlignTop)
+            top.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
         layout.addLayout(top)
-
-        identity = QLabel(record.id[:8])
-        identity.setProperty("class", "faint")
-        layout.addWidget(identity)
 
         description = QLabel(record.description or "Chưa có mô tả")
         description.setWordWrap(True)
@@ -74,17 +90,25 @@ class _WorkspaceCard(QFrame):
             f"{record.conversation_count} cuộc trò chuyện · "
             f"cập nhật {format_relative_time(record.updated_at)}"
         )
-        meta.setProperty("class", "faint")
+        meta.setProperty("class", "muted")
         layout.addWidget(meta)
 
         actions = QHBoxLayout()
+        actions.setSpacing(TOOLBAR_SPACING)
         actions.addStretch(1)
         edit = QToolButton()
+        edit.setProperty("class", "icon")
         edit.setIcon(icon("pencil"))
         edit.setToolTip(f"Sửa {record.name}")
+        edit.setAccessibleName(edit.toolTip())
         edit.clicked.connect(lambda: self.editRequested.emit(self._record))
         actions.addWidget(edit)
-        remove = ConfirmButton("Xóa", "Xóa hẳn", icon_name="trash-2")
+        # Icon, not a labelled danger button: one card per row is fine, a grid of them
+        # makes the most destructive control the loudest thing on the page.
+        remove = ConfirmToolButton(
+            tooltip=f"Xóa {record.name}",
+            confirm_tooltip=f"Bấm lại để xóa hẳn {record.name}",
+        )
         remove.confirmed.connect(lambda: self.deleteRequested.emit(self._record))
         actions.addWidget(remove)
         layout.addLayout(actions)
@@ -105,11 +129,13 @@ class WorkspacesView(QWidget):
         self._loading = False
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(14)
+        root.setContentsMargins(*PAGE_MARGINS)
+        root.setSpacing(PAGE_SPACING)
 
         heading = QHBoxLayout()
+        heading.setSpacing(TOOLBAR_SPACING)
         titles = QVBoxLayout()
+        titles.setSpacing(SPACE["2xs"])
         eyebrow = QLabel("Không gian làm việc")
         eyebrow.setProperty("class", "section-label")
         titles.addWidget(eyebrow)
@@ -117,6 +143,7 @@ class WorkspacesView(QWidget):
         title.setProperty("class", "title")
         titles.addWidget(title)
         self._stats = QLabel("")
+        self._stats.setWordWrap(True)
         self._stats.setProperty("class", "muted")
         titles.addWidget(self._stats)
         heading.addLayout(titles, 1)
@@ -139,14 +166,17 @@ class WorkspacesView(QWidget):
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty.setWordWrap(True)
         self._empty.setProperty("class", "empty")
-        root.addWidget(self._empty)
+        # Stretch lives here as well as on the scroll area: the empty state hides the
+        # scroll, and a column with no expanding child hands the surplus to the page
+        # header instead, which stretches the title to five times its own height.
+        root.addWidget(self._empty, 1)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._canvas = QWidget()
         self._grid = QGridLayout(self._canvas)
-        self._grid.setSpacing(12)
+        self._grid.setSpacing(SPACE["md"])
         self._grid.setContentsMargins(0, 0, 0, 0)
         self._scroll.setWidget(self._canvas)
         root.addWidget(self._scroll, 1)

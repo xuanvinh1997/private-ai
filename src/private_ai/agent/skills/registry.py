@@ -17,10 +17,19 @@ import unicodedata
 import uuid
 from collections.abc import Sequence
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from private_ai.agent.skills.loader import BUILTIN_SKILLS_DIR, Skill, discover_skills
+from private_ai.agent.skills.loader import (
+    BUILTIN_SKILLS_DIR,
+    SKILL_FILENAME,
+    Skill,
+    SkillError,
+    discover_skills,
+    render_skill_file,
+    validate_name,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.config import Settings
@@ -138,6 +147,57 @@ class SkillRegistry:
 
     def _record_error(self, directory: Path, error: BaseException) -> None:
         self._errors.append((directory, str(error)))
+
+    # --- authoring -------------------------------------------------------
+
+    def create(
+        self,
+        *,
+        name: str,
+        description: str,
+        body: str,
+        title: str = "",
+        keywords: Sequence[str] = (),
+    ) -> Skill:
+        """Write a new pack into the user's skills directory and pick it up.
+
+        Authoring belongs on this side of the trust boundary: what lands here is typed by
+        the person operating the app, never assembled from a document or a model reply.
+        """
+        name = validate_name(name)
+        text = render_skill_file(
+            name=name, description=description, body=body, title=title, keywords=keywords
+        )
+        directory = self._settings.skills_dir / name
+        if (directory / SKILL_FILENAME).exists():
+            raise SkillError(f"Kỹ năng '{name}' đã tồn tại trong {directory.parent}.")
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / SKILL_FILENAME).write_text(text, encoding="utf-8")
+        self.refresh()
+        created = self._skills.get(name)
+        if created is None:  # pragma: no cover - only if the write vanished under us
+            raise SkillError(f"Không đọc lại được kỹ năng '{name}' vừa tạo.")
+        return created
+
+    async def create_async(
+        self,
+        *,
+        name: str,
+        description: str,
+        body: str,
+        title: str = "",
+        keywords: Sequence[str] = (),
+    ) -> Skill:
+        return await asyncio.to_thread(
+            partial(
+                self.create,
+                name=name,
+                description=description,
+                body=body,
+                title=title,
+                keywords=keywords,
+            )
+        )
 
     # --- queries ---------------------------------------------------------
 

@@ -33,7 +33,17 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from collections.abc import Sequence
 
-__all__ = ["document_css", "escape_html", "markdown_to_html", "plain_text"]
+__all__ = [
+    "READING_MEASURE_PX",
+    "document_css",
+    "escape_html",
+    "markdown_to_html",
+    "plain_text",
+]
+
+# Roughly 75 characters at the base step — past that the eye loses the start of the next
+# line. Qt's rich-text CSS subset has no ``max-width``, so the widget has to enforce it.
+READING_MEASURE_PX = 720
 
 _SAFE_SCHEMES = ("http://", "https://", "mailto:")
 
@@ -338,44 +348,58 @@ def document_css(tokens: dict[str, str], sizes: dict[str, int] | None = None) ->
     """A default stylesheet for ``QTextBrowser.document()``.
 
     Qt's rich-text engine understands a small CSS subset only; everything here is inside
-    it (no flexbox, no custom properties, no ``rem``).
+    it (no flexbox, no custom properties, no ``rem``). ``sizes`` defaults to the live type
+    ladder so a message bubble follows the same font-scale preference as the rest of the
+    app; the import is local because this module is otherwise Qt-free and doctested.
     """
-    fs = sizes or {"sm": 13, "base": 14, "md": 15, "lg": 17, "xl": 20}
+    from private_ai.ui.theme import MONO_FONTS, SPACE, type_scale
+
+    fs = sizes or type_scale()
+    # The same 4px grid the layouts use, so a heading in a bubble sits on the app's rhythm.
+    hair, tight, gap, wide = SPACE["2xs"], SPACE["sm"], SPACE["md"], SPACE["lg"]
     return f"""
-    body {{ color: {tokens["text"]}; font-size: {fs["base"]}px; }}
-    p {{ margin: 0 0 10px 0; line-height: 150%; }}
-    h1, h2, h3, h4, h5, h6 {{ color: {tokens["ink"]}; margin: 14px 0 7px 0; }}
+    body {{ color: {tokens["text"]}; font-size: {fs["base"]}px; line-height: 160%; }}
+    p {{ margin: 0 0 {gap}px 0; line-height: 160%; }}
+    h1, h2, h3, h4, h5, h6 {{
+        color: {tokens["ink"]};
+        margin: {wide}px 0 {tight}px 0;
+        line-height: 130%;
+    }}
     h1 {{ font-size: {fs["xl"]}px; }}
     h2 {{ font-size: {fs["lg"]}px; }}
-    h3, h4, h5, h6 {{ font-size: {fs["md"]}px; }}
+    h3 {{ font-size: {fs["md"]}px; }}
+    h4, h5, h6 {{ font-size: {fs["base"]}px; }}
     a {{ color: {tokens["accent"]}; text-decoration: none; }}
     code {{
-        font-family: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+        font-family: {MONO_FONTS};
         font-size: {fs["sm"]}px;
         color: {tokens["accent-ink"]};
         background-color: {tokens["accent-soft"]};
     }}
     pre {{
-        margin: 10px 0;
-        padding: 10px 12px;
+        margin: {gap}px 0;
+        padding: {tight}px {gap}px;
         color: {tokens["ink"]};
         background-color: {tokens["surface-soft"]};
         border: 1px solid {tokens["line"]};
-        font-family: "IBM Plex Mono", "SF Mono", Consolas, monospace;
+        font-family: {MONO_FONTS};
         font-size: {fs["sm"]}px;
+        line-height: 140%;
+        /* The bubble has no horizontal scrollbar, so an unwrapped line is a lost line. */
+        white-space: pre-wrap;
     }}
     pre code {{ background-color: transparent; color: {tokens["ink"]}; }}
     blockquote {{
-        margin: 10px 0 10px 4px;
-        padding-left: 12px;
+        margin: {gap}px 0 {gap}px {hair}px;
+        padding-left: {gap}px;
         border-left: 3px solid {tokens["line-strong"]};
         color: {tokens["muted"]};
     }}
-    ul, ol {{ margin: 6px 0 10px 0; }}
-    li {{ margin: 3px 0; }}
-    table {{ border-collapse: collapse; margin: 10px 0; }}
-    th, td {{ border: 1px solid {tokens["line"]}; padding: 6px 10px; }}
+    ul, ol {{ margin: {tight}px 0 {gap}px 0; }}
+    li {{ margin: {hair}px 0; line-height: 160%; }}
+    table {{ border-collapse: collapse; margin: {gap}px 0; }}
+    th, td {{ border: 1px solid {tokens["line"]}; padding: {tight}px {gap}px; }}
     th {{ background-color: {tokens["surface-soft"]}; color: {tokens["ink"]}; }}
     hr {{ border: 0; border-top: 1px solid {tokens["line"]}; }}
-    s {{ color: {tokens["faint"]}; }}
+    s {{ color: {tokens["muted"]}; }}
     """

@@ -79,6 +79,10 @@ READ_ONLY_TOOLS = frozenset(
 # read-only filter would have refused.
 EXTERNAL_PREFIX = "ext"
 
+# Lists every workspace, so it is the one tool a workspace-pinned agent must not have:
+# it is how a turn learns that other workspaces exist. The UI still calls it directly.
+WORKSPACE_DIRECTORY_TOOL = "workspaces.list"
+
 CONNECT_TIMEOUT_SECONDS = 20.0
 
 
@@ -208,12 +212,23 @@ class McpHub:
 
     # --- tools ------------------------------------------------------------
 
-    async def tools(self, *, allow: frozenset[str] | None = READ_ONLY_TOOLS) -> list[BaseTool]:
+    async def tools(
+        self,
+        *,
+        allow: frozenset[str] | None = READ_ONLY_TOOLS,
+        workspace_id: str = "",
+    ) -> list[BaseTool]:
         """Every advertised tool, as LangChain tools, minus anything ``allow`` excludes.
 
         ``allow`` defaults to the read-only set and is passed down to the adapter, which
         checks it again at invoke time. Filtering only here would leave a model free to
         call a mutating tool by guessing its mangled name.
+
+        ``workspace_id`` confines the turn to one workspace: the id is stripped from every
+        tool schema and forced at call time. ``workspaces.list`` is withheld entirely,
+        because a pinned agent has no id to choose and enumerating the other workspaces is
+        the discovery step that made cross-workspace reads possible in the first place.
+        Documents belong to exactly one workspace, and a chat turn sees exactly one.
 
         An external server's tools are namespaced ``ext.<server>.<tool>`` and are not in
         the built-in allow set, so they are matched against the same set only when the
@@ -223,9 +238,18 @@ class McpHub:
         await self.start()
         collected: list[BaseTool] = []
         for server_id, server in self._servers.items():
-            scope = None if server_id.startswith(f"{EXTERNAL_PREFIX}.") else allow
+            external = server_id.startswith(f"{EXTERNAL_PREFIX}.")
+            scope = None if external else allow
+            if workspace_id and not external and scope is not None:
+                scope = scope - {WORKSPACE_DIRECTORY_TOOL}
             try:
-                collected.extend(await mcp_tools_to_langchain(server, allow=scope))
+                collected.extend(
+                    await mcp_tools_to_langchain(
+                        server,
+                        allow=scope,
+                        workspace_id="" if external else workspace_id,
+                    )
+                )
             except Exception:  # noqa: BLE001 - a server that cannot list is a server we skip
                 logger.exception("Không liệt kê được công cụ của MCP server %s", server_id)
         return collected

@@ -386,10 +386,9 @@ class SummaryStrategy(Strategy):
                    EXISTS(SELECT 1 FROM document_chunks AS c WHERE c.document_id = d.id)
                        AS has_chunks
             FROM documents AS d
-            WHERE d.workspace_id = ? AND d.status = 'ready' AND (
-                EXISTS(SELECT 1 FROM document_chunks AS c WHERE c.document_id = d.id)
-                OR LENGTH(TRIM(COALESCE(d.extracted_text, ''))) > 0
-            )
+            WHERE d.workspace_id = ? AND d.status = 'ready'
+              AND d.indexed_at IS NOT NULL
+              AND EXISTS(SELECT 1 FROM document_chunks AS c WHERE c.document_id = d.id)
             ORDER BY d.created_at DESC
             """,
             (workspace_id,),

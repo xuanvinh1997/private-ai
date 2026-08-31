@@ -32,6 +32,16 @@ from private_ai.core import repositories
 from private_ai.mcp.adapter import name_for
 from private_ai.mcp.client import EXTERNAL_PREFIX, READ_ONLY_TOOLS
 from private_ai.ui.icons import icon
+from private_ai.ui.theme import (
+    CARD_MARGINS,
+    CARD_SPACING,
+    CONTROL_HEIGHT,
+    DIALOG_MARGINS,
+    DIALOG_SPACING,
+    PAGE_SPACING,
+    SPACE,
+    TOOLBAR_SPACING,
+)
 from private_ai.ui.widgets.confirm_button import ConfirmButton
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
@@ -71,6 +81,19 @@ async def delete_mcp_server(database, server_id: str) -> None:
     await database.execute_async("DELETE FROM mcp_servers WHERE id = ?", (server_id,))
 
 
+def _field(caption: str, control: QWidget) -> QWidget:
+    """A caption glued to its control, so the form has one rhythm and hides as one row."""
+    holder = QWidget()
+    box = QVBoxLayout(holder)
+    box.setContentsMargins(0, 0, 0, 0)
+    box.setSpacing(SPACE["2xs"])
+    label = QLabel(caption)
+    label.setProperty("class", "muted")
+    box.addWidget(label)
+    box.addWidget(control)
+    return holder
+
+
 class McpServerDialog(QDialog):
     """Describe one external server: a command to spawn, or a URL to dial."""
 
@@ -81,7 +104,8 @@ class McpServerDialog(QDialog):
         self.setMinimumWidth(500)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setContentsMargins(*DIALOG_MARGINS)
+        layout.setSpacing(DIALOG_SPACING)
 
         heading = QLabel("Thêm MCP server")
         heading.setProperty("class", "title")
@@ -95,35 +119,31 @@ class McpServerDialog(QDialog):
         blurb.setProperty("class", "muted")
         layout.addWidget(blurb)
 
-        layout.addWidget(QLabel("Tên"))
         self._name = QLineEdit()
         self._name.setPlaceholderText("vi-du-server")
-        layout.addWidget(self._name)
+        layout.addWidget(_field("Tên", self._name))
 
-        layout.addWidget(QLabel("Kiểu kết nối"))
         self._kind = QComboBox()
         self._kind.addItem(KIND_LABELS["stdio"], "stdio")
         self._kind.addItem(KIND_LABELS["http"], "http")
         self._kind.currentIndexChanged.connect(self._sync)
-        layout.addWidget(self._kind)
+        layout.addWidget(_field("Kiểu kết nối", self._kind))
 
-        self._command_label = QLabel("Lệnh và tham số")
         self._command = QLineEdit()
         self._command.setPlaceholderText("uvx some-mcp-server --flag")
-        layout.addWidget(self._command_label)
-        layout.addWidget(self._command)
+        self._command_row = _field("Lệnh và tham số", self._command)
+        layout.addWidget(self._command_row)
 
-        self._url_label = QLabel("Địa chỉ HTTP")
         self._url = QLineEdit()
         self._url.setPlaceholderText("https://example.com/mcp")
-        layout.addWidget(self._url_label)
-        layout.addWidget(self._url)
+        self._url_row = _field("Địa chỉ HTTP", self._url)
+        layout.addWidget(self._url_row)
 
-        self._headers_label = QLabel("Header (mỗi dòng một cặp KEY: value)")
         self._headers = QPlainTextEdit()
-        self._headers.setFixedHeight(70)
-        layout.addWidget(self._headers_label)
-        layout.addWidget(self._headers)
+        # Two control heights: enough for a couple of header lines without a scrollbar.
+        self._headers.setFixedHeight(CONTROL_HEIGHT * 2)
+        self._headers_row = _field("Header (mỗi dòng một cặp KEY: value)", self._headers)
+        layout.addWidget(self._headers_row)
 
         self._error = QLabel("")
         self._error.setWordWrap(True)
@@ -132,6 +152,7 @@ class McpServerDialog(QDialog):
         layout.addWidget(self._error)
 
         row = QHBoxLayout()
+        row.setSpacing(TOOLBAR_SPACING)
         row.addStretch(1)
         cancel = QPushButton("Hủy")
         cancel.clicked.connect(self.reject)
@@ -148,9 +169,8 @@ class McpServerDialog(QDialog):
 
     def _sync(self) -> None:
         stdio = self._kind.currentData() == "stdio"
-        self._command_label.setVisible(stdio)
-        self._command.setVisible(stdio)
-        for widget in (self._url_label, self._url, self._headers_label, self._headers):
+        self._command_row.setVisible(stdio)
+        for widget in (self._url_row, self._headers_row):
             widget.setVisible(not stdio)
 
     def _fail(self, message: str) -> None:
@@ -196,36 +216,44 @@ class _ServerCard(QFrame):
         super().__init__(parent)
         self.setProperty("class", "card")
         layout = QVBoxLayout(self)
-        layout.setSpacing(6)
+        layout.setContentsMargins(*CARD_MARGINS)
+        layout.setSpacing(CARD_SPACING)
 
         self.header = QHBoxLayout()
+        self.header.setSpacing(TOOLBAR_SPACING)
         heading = QVBoxLayout()
-        heading.setSpacing(2)
+        heading.setSpacing(SPACE["3xs"])
         name = QLabel(title)
-        name.setProperty("class", "subtitle")
+        name.setProperty("class", "card-title")
         heading.addWidget(name)
         detail = QLabel(subtitle)
         detail.setWordWrap(True)
         detail.setProperty("class", "muted")
         heading.addWidget(detail)
         self.header.addLayout(heading, 1)
+        # The subtitle wraps, so the controls the caller appends hang from the top edge.
+        self.header.setAlignment(heading, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(self.header)
 
         if tools:
+            listing = QVBoxLayout()
+            listing.setSpacing(SPACE["xs"])
             for tool in tools:
                 visible = tool in READ_ONLY_TOOLS
                 row = QHBoxLayout()
-                row.setSpacing(8)
+                row.setSpacing(TOOLBAR_SPACING)
                 label = QLabel(tool)
                 label.setProperty("class", "code")
-                row.addWidget(label, 1)
+                row.addWidget(label, 1, Qt.AlignmentFlag.AlignVCenter)
                 mark = QLabel("Chỉ đọc · agent dùng được" if visible else "Chỉ dành cho ứng dụng")
+                # Accent marks the subset the model is actually handed; the rest is neutral.
                 mark.setProperty("class", "chip-active" if visible else "chip")
-                row.addWidget(mark, 0)
-                layout.addLayout(row)
+                row.addWidget(mark, 0, Qt.AlignmentFlag.AlignVCenter)
+                listing.addLayout(row)
+            layout.addLayout(listing)
         else:
             empty = QLabel("Chưa liệt kê được công cụ nào.")
-            empty.setProperty("class", "faint")
+            empty.setProperty("class", "muted")
             layout.addWidget(empty)
 
 
@@ -236,11 +264,14 @@ class McpView(QWidget):
         self._loading = False
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(12)
+        # The settings tab host supplies the page padding; a second inset would double it.
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(PAGE_SPACING)
 
         heading = QHBoxLayout()
+        heading.setSpacing(TOOLBAR_SPACING)
         titles = QVBoxLayout()
+        titles.setSpacing(SPACE["3xs"])
         eyebrow = QLabel("Công cụ")
         eyebrow.setProperty("class", "section-label")
         titles.addWidget(eyebrow)
@@ -248,8 +279,7 @@ class McpView(QWidget):
         title.setProperty("class", "title")
         titles.addWidget(title)
         blurb = QLabel(
-            "Mọi công cụ mà trợ lý có đều đến từ một MCP server. Công cụ ghi hoặc xóa không "
-            "bao giờ được đưa cho mô hình: chúng chỉ chạy khi bạn tự bấm trong ứng dụng."
+            "Mọi công cụ của trợ lý đến từ đây. Công cụ ghi và xóa chỉ chạy khi bạn bấm."
         )
         blurb.setWordWrap(True)
         blurb.setProperty("class", "muted")
@@ -267,7 +297,7 @@ class McpView(QWidget):
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._canvas = QWidget()
         self._rows = QVBoxLayout(self._canvas)
-        self._rows.setSpacing(8)
+        self._rows.setSpacing(SPACE["sm"])
         self._rows.setContentsMargins(0, 0, 0, 0)
         self._rows.addStretch(1)
         self._scroll.setWidget(self._canvas)
@@ -319,7 +349,7 @@ class McpView(QWidget):
         self._add_heading("Đang gắn kết")
         if not grouped:
             note = QLabel("Chưa có server nào được gắn. Khởi động lại ứng dụng để thử lại.")
-            note.setProperty("class", "faint")
+            note.setProperty("class", "muted")
             self._rows.insertWidget(self._rows.count() - 1, note)
         for server_id in sorted(grouped):
             tools = sorted(grouped[server_id])
@@ -341,7 +371,7 @@ class McpView(QWidget):
                 "để mở rộng bộ công cụ."
             )
             note.setWordWrap(True)
-            note.setProperty("class", "faint")
+            note.setProperty("class", "muted")
             self._rows.insertWidget(self._rows.count() - 1, note)
         for record in editable:
             self._rows.insertWidget(self._rows.count() - 1, self._configured_card(record))

@@ -13,6 +13,7 @@ from private_ai.agent.skills.loader import (
     discover_skills,
     parse_frontmatter,
     parse_skill,
+    render_skill_file,
 )
 from private_ai.agent.skills.registry import SkillRegistry
 from private_ai.config import Settings
@@ -255,6 +256,77 @@ def test_extra_skill_paths_are_searched_too(
     registry.refresh()
 
     assert registry.get("rieng") is not None
+
+
+# --- authoring ------------------------------------------------------------
+
+
+def test_a_rendered_pack_reads_back_as_the_fields_that_went_in(tmp_path: Path) -> None:
+    """The writer and the reader are one round trip, punctuation and all."""
+    text = render_skill_file(
+        name="tom-tat-hop-dong",
+        title="Tóm tắt hợp đồng",
+        description='Rút gọn hợp đồng: điều khoản, "rủi ro" và mốc thời gian.',
+        body="1. Đọc toàn văn.\n2. Liệt kê nghĩa vụ.",
+        keywords=["hợp đồng", "rủi ro"],
+    )
+    directory = write_skill(tmp_path, "tom-tat-hop-dong", text)
+
+    skill = parse_skill(directory)
+
+    assert skill.name == "tom-tat-hop-dong"
+    assert skill.title == "Tóm tắt hợp đồng"
+    assert skill.description == 'Rút gọn hợp đồng: điều khoản, "rủi ro" và mốc thời gian.'
+    assert skill.keywords == ("hợp đồng", "rủi ro")
+    assert skill.body.startswith("1. Đọc toàn văn.")
+
+
+def test_rendering_rejects_what_the_loader_would_reject(tmp_path: Path) -> None:
+    with pytest.raises(SkillError):
+        render_skill_file(name="Tóm Tắt", description="mô tả", body="thân")
+    with pytest.raises(SkillError):
+        render_skill_file(name="tom-tat", description="", body="thân")
+    with pytest.raises(SkillError):
+        render_skill_file(name="tom-tat", description="mô tả", body="   ")
+
+
+def test_creating_a_pack_writes_it_and_picks_it_up(registry: SkillRegistry) -> None:
+    registry.refresh()
+
+    skill = registry.create(
+        name="tom-tat-hop-dong",
+        title="Tóm tắt hợp đồng",
+        description="Rút gọn hợp đồng dài thành điều khoản và mốc thời gian.",
+        body="1. Đọc toàn văn.\n2. Liệt kê nghĩa vụ.",
+    )
+
+    assert skill.source == "user"
+    assert skill.skill_file.is_file()
+    assert registry.get("tom-tat-hop-dong") is skill
+    # New packs arrive switched on, the same default a discovered one gets.
+    assert registry.is_enabled("tom-tat-hop-dong") is True
+
+
+def test_creating_over_an_existing_pack_is_refused(registry: SkillRegistry) -> None:
+    registry.refresh()
+    fields = {
+        "name": "tom-tat-hop-dong",
+        "description": "Rút gọn hợp đồng.",
+        "body": "1. Đọc toàn văn.",
+    }
+    registry.create(**fields)
+
+    with pytest.raises(SkillError):
+        registry.create(**fields)
+
+
+def test_an_invalid_name_leaves_nothing_behind(registry: SkillRegistry, settings: Settings) -> None:
+    registry.refresh()
+
+    with pytest.raises(SkillError):
+        registry.create(name="Tóm Tắt", description="Rút gọn hợp đồng.", body="1. Đọc.")
+
+    assert list(settings.skills_dir.iterdir()) == []
 
 
 # --- progressive disclosure ----------------------------------------------

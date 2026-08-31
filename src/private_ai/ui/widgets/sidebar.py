@@ -4,6 +4,11 @@ Collapsing hides the labels rather than the rail, which is what the web app did 
 icons stay hit-targets and the user keeps their spatial memory of the list. The workspace
 and conversation rows each carry an inline two-step delete, because those are the two
 things people delete constantly and a dialog for each would be exhausting.
+
+Everything below the nav lives in one scroll region. Two stacked scrollers in a 250px rail
+meant a short workspace list still reserved its cap in pixels, and a second scrollbar
+appeared a centimetre from the first; one region lets the recents have whatever the
+workspaces do not use.
 """
 
 from __future__ import annotations
@@ -11,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -23,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from private_ai.ui import icons, theme
-from private_ai.ui.format import elide, format_relative_time
+from private_ai.ui.format import format_relative_time
 from private_ai.ui.widgets.confirm_button import ConfirmToolButton
 from private_ai.ui.widgets.profile_switcher import ProfileSwitcher
 
@@ -34,8 +40,22 @@ if TYPE_CHECKING:  # pragma: no cover - import graph only
 
 __all__ = ["NAVIGATION", "Sidebar"]
 
-EXPANDED_WIDTH = 284
-COLLAPSED_WIDTH = 72
+EXPANDED_WIDTH = 252
+COLLAPSED_WIDTH = 64
+
+# The stylesheet indents a rail row's own contents; the section labels above the lists have
+# to start on that same edge or the rail reads as two misaligned columns.
+LABEL_INDENT = theme.SPACE["sm"] + theme.SPACE["3xs"]
+
+# Every row reserves this much for its delete affordance whether or not the button is
+# showing, so revealing one on hover never reflows the title next to it.
+# Matches the stylesheet's icon-button footprint, so the berth neither clips the
+# button nor leaves a gap when it is hidden.
+ACTION_SLOT = 30
+
+# The stylesheet's icon-button size, needed here to centre the lone toggle in a collapsed
+# rail rather than let it hang off the right edge.
+ICON_BUTTON = 30
 
 # The five nav destinations. Settings is last and visually separated, exactly as in the
 # web app where it sat below the workspace list.
@@ -48,12 +68,18 @@ NAVIGATION: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# The mark is a logo at its own size, which is why it is the one dimension here that does
+# not land on the 4px rhythm: it matches the badge height so the wordmark beside it sits
+# on the same line as every other 26px shape in the shell.
+_MARK_SIZE = theme.BADGE_HEIGHT
+
+
 class _BrandMark(QWidget):
     """The three skewed bars from the CSS, drawn rather than styled."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setFixedSize(26, 26)
+        self.setFixedSize(_MARK_SIZE, _MARK_SIZE)
 
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
         from PySide6.QtGui import QColor, QPainter
@@ -70,40 +96,119 @@ class _BrandMark(QWidget):
         painter.end()
 
 
-class _WorkspaceRow(QWidget):
+class _ElidedLabel(QLabel):
+    """Trims to the width the rail actually gives it, rather than a character guess.
+
+    The old rows cut every title at a fixed count, which threw away real estate at 252px
+    and would have overflowed at any wider setting. Eliding at paint time means one row
+    definition works at every rail width and every root font size.
+    """
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._full = text
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._apply()
+
+    def set_full_text(self, text: str) -> None:
+        self._full = text
+        self.setToolTip(text)
+        self._apply()
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._apply()
+
+    def _apply(self) -> None:
+        width = max(self.width(), 0)
+        metrics = QFontMetrics(self.font())
+        super().setText(metrics.elidedText(self._full, Qt.TextElideMode.ElideRight, width))
+
+
+class _ActionSlot(QWidget):
+    """A fixed-width berth for a row's delete button.
+
+    The button hides when the row is neither hovered nor current, but the berth stays, so
+    the title beside it keeps one width for the life of the row.
+    """
+
+    def __init__(self, button: QPushButton, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setFixedWidth(ACTION_SLOT)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(button)
+        self.button = button
+
+
+class _RailRow(QWidget):
+    """Shared hover bookkeeping for the two list row types."""
+
+    def __init__(self, pinned: bool, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._pinned = pinned
+        self._action: ConfirmToolButton | None = None
+
+    def _watch(self, action: ConfirmToolButton) -> None:
+        self._action = action
+        action.setVisible(self._pinned)
+
+    def enterEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if self._action is not None:
+            self._action.setVisible(True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
+        # An armed button must survive the pointer leaving, or the second click of the
+        # two-step confirm has nothing to land on.
+        if self._action is not None and not self._action.is_armed():
+            self._action.setVisible(self._pinned)
+        super().leaveEvent(event)
+
+
+class _WorkspaceRow(_RailRow):
     chosen = Signal(str)
     deleted = Signal(str)
 
     def __init__(self, workspace_id: str, name: str, active: bool, parent=None) -> None:
-        super().__init__(parent)
+        super().__init__(active, parent)
         self.workspace_id = workspace_id
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(0)
 
-        self.button = QPushButton(f"  {elide(name, 26)}", self)
-        self.button.setProperty("class", "nav-item")
-        self.button.setMinimumHeight(34)
+        self.button = QPushButton(self)
+        self.button.setProperty("class", "rail-item")
         self.button.setCheckable(True)
         self.button.setChecked(active)
         self.button.setToolTip(name)
-        self.button.setIcon(
-            icons.icon("folder", color=theme.token("accent") if active else None, size=15)
-        )
         self.button.clicked.connect(lambda: self.chosen.emit(self.workspace_id))
         layout.addWidget(self.button, 1)
+
+        inner = QHBoxLayout(self.button)
+        inner.setContentsMargins(theme.SPACE["sm"], 0, theme.SPACE["3xs"], 0)
+        inner.setSpacing(theme.SPACE["sm"])
+        mark = QLabel(self.button)
+        mark.setPixmap(icons.pixmap("folder", 15, theme.token("accent" if active else "muted")))
+        inner.addWidget(mark)
+        label = _ElidedLabel(name, self.button)
+        label.setProperty("class", "rail-active" if active else "body")
+        inner.addWidget(label, 1)
 
         self.delete = ConfirmToolButton(
             "trash-2",
             tooltip=f"Xóa không gian làm việc {name}",
             confirm_tooltip=f"Bấm lại để xác nhận xóa {name} và toàn bộ cuộc trò chuyện bên trong",
-            parent=self,
+            parent=self.button,
         )
         self.delete.confirmed.connect(lambda: self.deleted.emit(self.workspace_id))
-        layout.addWidget(self.delete)
+        inner.addWidget(_ActionSlot(self.delete, self.button))
+        self._watch(self.delete)
 
 
-class _ConversationRow(QWidget):
+class _ConversationRow(_RailRow):
     chosen = Signal(str)
     deleted = Signal(str)
 
@@ -115,51 +220,53 @@ class _ConversationRow(QWidget):
         active: bool,
         parent=None,
     ) -> None:
-        super().__init__(parent)
+        super().__init__(active, parent)
         self.conversation_id = conversation_id
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(0)
 
         button = QPushButton(self)
-        button.setProperty("class", "nav-item")
+        button.setProperty("class", "rail-row")
         button.setCheckable(True)
         button.setChecked(active)
-        button.setMinimumHeight(44)
         button.setToolTip(title)
         button.clicked.connect(lambda: self.chosen.emit(conversation_id))
         inner = QHBoxLayout(button)
-        inner.setContentsMargins(11, 4, 8, 4)
-        inner.setSpacing(9)
+        # No vertical padding: the stylesheet pins the row's height and the two lines of
+        # copy only breathe if they own all of it.
+        inner.setContentsMargins(theme.SPACE["sm"], 0, theme.SPACE["3xs"], 0)
+        inner.setSpacing(theme.SPACE["sm"])
         mark = QLabel(button)
-        mark.setPixmap(icons.pixmap("message-square", 15, theme.token("faint")))
+        mark.setPixmap(
+            icons.pixmap("message-square", 15, theme.token("accent" if active else "muted"))
+        )
         inner.addWidget(mark)
         copy = QVBoxLayout()
         copy.setContentsMargins(0, 0, 0, 0)
         copy.setSpacing(0)
-        head = QLabel(elide(title, 24), button)
-        head.setStyleSheet(
-            f"color: {theme.token('accent-ink') if active else theme.token('text')}; "
-            f"font-weight: {'700' if active else '600'};"
-        )
+        head = _ElidedLabel(title, button)
+        # The row is rebuilt on every selection change, so the emphasis can be a class
+        # swap rather than an inline weight — which keeps the palette with the stylesheet.
+        head.setProperty("class", "rail-active" if active else "body")
         sub = QLabel(subtitle, button)
-        sub.setProperty("class", "faint")
+        sub.setProperty("class", "muted")
         copy.addWidget(head)
         copy.addWidget(sub)
         inner.addLayout(copy, 1)
         layout.addWidget(button, 1)
 
-        # Only the open conversation offers deletion — the web app did the same, so a
-        # stray click in the list cannot arm a delete on something you are not looking at.
-        if active:
-            remove = ConfirmToolButton(
-                "x",
-                tooltip="Xóa cuộc trò chuyện",
-                confirm_tooltip="Bấm lại để xác nhận xóa",
-                parent=self,
-            )
-            remove.confirmed.connect(lambda: self.deleted.emit(conversation_id))
-            layout.addWidget(remove)
+        remove = ConfirmToolButton(
+            "x",
+            tooltip="Xóa cuộc trò chuyện",
+            confirm_tooltip="Bấm lại để xác nhận xóa",
+            parent=button,
+        )
+        remove.confirmed.connect(lambda: self.deleted.emit(conversation_id))
+        inner.addWidget(_ActionSlot(remove, button))
+        # The open conversation keeps its delete on screen — it is the one row a keyboard
+        # user can tab into without a pointer to reveal anything.
+        self._watch(remove)
 
 
 class Sidebar(QWidget):
@@ -182,17 +289,19 @@ class Sidebar(QWidget):
         self._nav_buttons: dict[str, QPushButton] = {}
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 20, 16, 16)
+        root.setContentsMargins(
+            theme.SPACE["md"], theme.SPACE["md"], theme.SPACE["md"], theme.SPACE["md"]
+        )
         root.setSpacing(0)
 
         root.addLayout(self._build_header())
-        root.addSpacing(18)
+        root.addSpacing(theme.SPACE["md"])
         root.addWidget(self._build_new_button())
-        root.addSpacing(16)
+        root.addSpacing(theme.SPACE["md"])
         root.addLayout(self._build_nav())
-        root.addSpacing(20)
+        root.addSpacing(theme.SPACE["md"])
         root.addWidget(self._build_lists(), 1)
-        root.addSpacing(10)
+        root.addSpacing(theme.SPACE["sm"])
 
         self.profiles = ProfileSwitcher(ctx, self)
         self.profiles.settingsRequested.connect(lambda: self.navigate.emit("settings"))
@@ -200,9 +309,11 @@ class Sidebar(QWidget):
 
     # ------------------------------------------------------------------ build
     def _build_header(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
+        row = self._header = QHBoxLayout()
+        # The 4px band lifts the row to 38px, which puts the toggle on the same baseline as
+        # the topbar's controls — the two meet at the seam between rail and stage.
+        row.setContentsMargins(0, theme.SPACE["2xs"], 0, theme.SPACE["2xs"])
+        row.setSpacing(theme.SPACE["sm"])
         self._mark = _BrandMark(self)
         row.addWidget(self._mark)
         self._wordmark = QLabel(self)
@@ -223,8 +334,7 @@ class Sidebar(QWidget):
 
     def _build_new_button(self) -> QPushButton:
         self._new = QPushButton("  Cuộc trò chuyện mới", self)
-        self._new.setProperty("class", "primary")
-        self._new.setMinimumHeight(46)
+        self._new.setProperty("class", "cta")
         self._new.setIcon(icons.icon("plus", color=theme.token("on-accent"), size=18))
         self._new.setToolTip("Cuộc trò chuyện mới")
         self._new.clicked.connect(self.newConversation)
@@ -233,69 +343,75 @@ class Sidebar(QWidget):
     def _build_nav(self) -> QVBoxLayout:
         nav = QVBoxLayout()
         nav.setContentsMargins(0, 0, 0, 0)
-        nav.setSpacing(3)
+        # Destinations are one group; a gap wide enough to read as separation between them
+        # only pushes the lists down. Adjacency is what says "these five belong together".
+        nav.setSpacing(theme.SPACE["3xs"])
         for key, label, icon_name in NAVIGATION:
             button = QPushButton(f"  {label}", self)
-            button.setProperty("class", "nav-item")
+            button.setProperty("class", "rail-item")
             button.setCheckable(True)
-            button.setIcon(icons.icon(icon_name, size=19))
+            button.setIcon(icons.icon(icon_name, size=18))
             button.setToolTip(label)
             button.clicked.connect(lambda _=False, k=key: self.navigate.emit(k))
             nav.addWidget(button)
             self._nav_buttons[key] = button
         return nav
 
+    @staticmethod
+    def _section_label(text: str, parent: QWidget) -> QLabel:
+        label = QLabel(text, parent)
+        label.setProperty("class", "section-label")
+        return label
+
     def _build_lists(self) -> QWidget:
-        holder = QWidget(self)
+        self._lists_scroll = QScrollArea(self)
+        self._lists_scroll.setWidgetResizable(True)
+        self._lists_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._lists_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._lists_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
+        holder = QWidget(self._lists_scroll)
+        self._lists_holder = holder
         box = QVBoxLayout(holder)
         box.setContentsMargins(0, 0, 0, 0)
-        box.setSpacing(4)
+        box.setSpacing(0)
 
+        # The stylesheet pads .section-label to zero, so the indent that lines an eyebrow
+        # up with the row titles below it has to come from the layout.
         header = QHBoxLayout()
-        header.setContentsMargins(0, 0, 0, 0)
-        self._workspace_label = QLabel("KHÔNG GIAN CỦA BẠN", holder)
-        self._workspace_label.setProperty("class", "section-label")
+        header.setContentsMargins(LABEL_INDENT, 0, 0, theme.SPACE["2xs"])
+        header.setSpacing(theme.SPACE["xs"])
+        self._workspace_label = self._section_label("KHÔNG GIAN CỦA BẠN", holder)
         add = QPushButton(holder)
         add.setProperty("class", "icon")
-        add.setFixedSize(30, 30)
-        add.setIcon(icons.icon("plus", size=16))
+        add.setIcon(icons.icon("plus", size=15))
         add.setToolTip("Tạo không gian làm việc")
         add.clicked.connect(self.workspaceCreateRequested)
         header.addWidget(self._workspace_label, 1)
         header.addWidget(add)
         box.addLayout(header)
 
-        self._workspace_scroll = QScrollArea(holder)
-        self._workspace_scroll.setWidgetResizable(True)
-        self._workspace_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._workspace_scroll.setMaximumHeight(190)
-        self._workspace_host = QWidget(self._workspace_scroll)
+        self._workspace_host = QWidget(holder)
         self._workspace_list = QVBoxLayout(self._workspace_host)
         self._workspace_list.setContentsMargins(0, 0, 0, 0)
-        self._workspace_list.setSpacing(1)
-        self._workspace_list.addStretch(1)
-        self._workspace_scroll.setWidget(self._workspace_host)
-        box.addWidget(self._workspace_scroll)
+        self._workspace_list.setSpacing(theme.SPACE["3xs"])
+        box.addWidget(self._workspace_host)
 
-        self._recent_label = QLabel("GẦN ĐÂY", holder)
-        self._recent_label.setProperty("class", "section-label")
-        box.addSpacing(8)
-        box.addWidget(self._recent_label)
+        self._recent_label = self._section_label("GẦN ĐÂY", holder)
+        recent = QHBoxLayout()
+        recent.setContentsMargins(LABEL_INDENT, theme.SPACE["md"], 0, theme.SPACE["2xs"])
+        recent.addWidget(self._recent_label, 1)
+        box.addLayout(recent)
 
-        self._conversation_scroll = QScrollArea(holder)
-        self._conversation_scroll.setWidgetResizable(True)
-        self._conversation_scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._conversation_scroll.setSizePolicy(
-            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding
-        )
-        self._conversation_host = QWidget(self._conversation_scroll)
+        self._conversation_host = QWidget(holder)
         self._conversation_list = QVBoxLayout(self._conversation_host)
         self._conversation_list.setContentsMargins(0, 0, 0, 0)
-        self._conversation_list.setSpacing(1)
-        self._conversation_list.addStretch(1)
-        self._conversation_scroll.setWidget(self._conversation_host)
-        box.addWidget(self._conversation_scroll, 1)
-        return holder
+        self._conversation_list.setSpacing(theme.SPACE["3xs"])
+        box.addWidget(self._conversation_host)
+        box.addStretch(1)
+
+        self._lists_scroll.setWidget(holder)
+        return self._lists_scroll
 
     # -------------------------------------------------------------------- API
     def set_active_view(self, key: str) -> None:
@@ -312,10 +428,17 @@ class Sidebar(QWidget):
         )
         self._toggle.setToolTip("Mở rộng thanh bên" if collapsed else "Thu gọn thanh bên")
         self._wordmark.setVisible(not collapsed)
-        self._workspace_label.setVisible(not collapsed)
-        self._recent_label.setVisible(not collapsed)
-        self._workspace_scroll.setVisible(not collapsed)
-        self._conversation_scroll.setVisible(not collapsed)
+        # Mark plus toggle need 64px of row; a collapsed rail has 40. The toggle is the only
+        # way back out, so it is the one that stays, centred by the row's right inset.
+        self._mark.setVisible(not collapsed)
+        inset = (COLLAPSED_WIDTH - 2 * theme.SPACE["md"] - ICON_BUTTON) // 2
+        self._header.setContentsMargins(
+            0, theme.SPACE["2xs"], inset if collapsed else 0, theme.SPACE["2xs"]
+        )
+        # The scroller itself stays: it is the only stretching item in the column, and a
+        # hidden one leaves the layout with nothing to give the slack to, which spreads the
+        # nav icons down the whole rail. Emptying it is enough.
+        self._lists_holder.setVisible(not collapsed)
         self.profiles.setVisible(not collapsed)
         self._new.setText("" if collapsed else "  Cuộc trò chuyện mới")
         for key, label, _ in NAVIGATION:
@@ -384,4 +507,3 @@ class Sidebar(QWidget):
         else:
             for item in items:
                 layout.addWidget(make(item))
-        layout.addStretch(1)

@@ -106,18 +106,20 @@ class _Placeholder(QWidget):
 
     def __init__(self, label: str, reason: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        gutter = theme.SPACE["4xl"]
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(40, 40, 40, 40)
-        layout.setSpacing(9)
+        layout.setContentsMargins(gutter, gutter, gutter, gutter)
+        layout.setSpacing(theme.SPACE["md"])
         layout.addStretch(1)
         mark = QLabel(self)
-        mark.setPixmap(icons.pixmap("wrench", 28, theme.token("faint")))
+        mark.setPixmap(icons.pixmap("wrench", 28, theme.token("muted")))
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title = QLabel(f"Màn hình “{label}” chưa sẵn sàng", self)
         title.setProperty("class", "title")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # The import error is the whole point of this screen, so it reads at `muted`.
         detail = QLabel(reason, self)
-        detail.setProperty("class", "faint")
+        detail.setProperty("class", "muted")
         detail.setWordWrap(True)
         detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(mark)

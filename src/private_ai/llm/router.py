@@ -179,7 +179,7 @@ class ModelRouter:
             return ChatOllama(
                 model=name,
                 base_url=config.base_url,
-                client_kwargs={"timeout": self.settings.request_timeout_seconds},
+                client_kwargs={"timeout": self.settings.generation_timeout_seconds},
                 callbacks=self._callbacks(config, name),
                 **kwargs,
             )
@@ -187,7 +187,7 @@ class ModelRouter:
             model=name,
             base_url=openai_base_url(config.base_url),
             api_key=config.api_key or PLACEHOLDER_API_KEY,
-            timeout=self.settings.request_timeout_seconds,
+            timeout=self.settings.generation_timeout_seconds,
             streaming=streaming,
             **kwargs,
         )
@@ -197,13 +197,13 @@ class ModelRouter:
             return OllamaEmbeddings(
                 model=name,
                 base_url=config.base_url,
-                client_kwargs={"timeout": self.settings.request_timeout_seconds},
+                client_kwargs={"timeout": self.settings.generation_timeout_seconds},
             )
         return OpenAIEmbeddings(
             model=name,
             base_url=openai_base_url(config.base_url),
             api_key=config.api_key or PLACEHOLDER_API_KEY,
-            timeout=self.settings.request_timeout_seconds,
+            timeout=self.settings.generation_timeout_seconds,
             # Only the real API tokenizes with tiktoken; a local server wants the raw text.
             check_embedding_ctx_length=_is_openai_cloud(config.base_url),
         )

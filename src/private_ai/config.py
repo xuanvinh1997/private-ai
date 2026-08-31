@@ -85,6 +85,11 @@ class Settings(BaseSettings):
     embedding_model: str = "embeddinggemma"
     vision_model: str = ""
     request_timeout_seconds: float = Field(default=60.0, gt=0)
+    # Generation is not a request like the others. Listing models should fail fast, but a
+    # local 27B answering from a long document legitimately takes minutes, and a summary
+    # map-reduce spends a full model call on every batch. Sixty seconds killed those turns
+    # mid-generation, so token production gets its own, far longer budget.
+    generation_timeout_seconds: float = Field(default=600.0, gt=0)
 
     # --- agent -----------------------------------------------------------
     # Recursion budget for the LangGraph agent. Each tool call plus its follow-up

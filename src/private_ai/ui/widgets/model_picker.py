@@ -76,29 +76,30 @@ class _ModelRow(QPushButton):
     def __init__(self, entry: ModelEntry, selected: bool, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.entry = entry
-        self.setFlat(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setEnabled(entry.state not in UNSELECTABLE)
-        self.setMinimumHeight(48)
-        background = theme.token("accent-soft") if selected else "transparent"
-        self.setStyleSheet(
-            f"QPushButton {{ border: 0; border-radius: 9px; text-align: left; padding: 0; "
-            f"background: {background}; }}"
-            f"QPushButton:hover {{ background: {theme.token('surface-hover')}; }}"
-        )
+        # Same shape as the rows in the sidebar: the checked state is what paints the
+        # selection, which keeps the whole thing on the stylesheet's palette.
+        self.setProperty("class", "nav-item")
+        self.setCheckable(True)
+        self.setChecked(selected)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(11, 7, 10, 7)
-        layout.setSpacing(9)
+        # A nav row is pinned to 40px, so the two lines of copy own the full height.
+        layout.setContentsMargins(theme.SPACE["md"], 0, theme.SPACE["md"], 0)
+        layout.setSpacing(theme.SPACE["sm"])
 
         copy = QVBoxLayout()
         copy.setContentsMargins(0, 0, 0, 0)
-        copy.setSpacing(1)
+        copy.setSpacing(theme.SPACE["3xs"])
         title = QLabel(entry.display(), self)
-        color = theme.token("accent-ink") if selected else theme.token("ink")
-        title.setStyleSheet(f"color: {color}; font-weight: 660;")
+        # Rebuilt per selection, so emphasis is a class swap and the palette stays in the
+        # stylesheet; a colour baked in here would survive a theme switch.
+        title.setProperty("class", "body-strong" if selected else "body")
         meta = QLabel(entry.meta(), self)
-        meta.setProperty("class", "faint")
+        # The second line is why the picker exists (runtime, size, whether it is resident),
+        # so it is muted rather than faint.
+        meta.setProperty("class", "muted")
         copy.addWidget(title)
         copy.addWidget(meta)
         layout.addLayout(copy, 1)
@@ -126,8 +127,8 @@ class _Popup(QFrame):
         self.setMinimumWidth(320)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(9, 9, 9, 9)
-        outer.setSpacing(6)
+        outer.setContentsMargins(*(theme.SPACE["sm"],) * 4)
+        outer.setSpacing(theme.SPACE["xs"])
         heading = QLabel("Chọn mô hình", self)
         heading.setProperty("class", "section-label")
         outer.addWidget(heading)
@@ -139,7 +140,7 @@ class _Popup(QFrame):
         self._body = QWidget(self._scroll)
         self._list = QVBoxLayout(self._body)
         self._list.setContentsMargins(0, 0, 0, 0)
-        self._list.setSpacing(2)
+        self._list.setSpacing(theme.SPACE["3xs"])
         self._scroll.setWidget(self._body)
         outer.addWidget(self._scroll)
 
@@ -151,7 +152,6 @@ class _Popup(QFrame):
         footer = QPushButton("  Quản lý mô hình", self)
         footer.setProperty("class", "ghost")
         footer.setIcon(icons.icon("settings-2", size=16))
-        footer.setMinimumHeight(34)
         footer.clicked.connect(lambda: (self.hide(), self.manage.emit()))
         outer.addWidget(footer)
 
@@ -204,7 +204,6 @@ class ModelPicker(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         self._trigger = QPushButton(self)
         self._trigger.setProperty("class", "chip")
-        self._trigger.setMinimumHeight(32)
         self._trigger.setIcon(icons.icon("boxes", size=16))
         self._trigger.setCursor(Qt.CursorShape.PointingHandCursor)
         self._trigger.clicked.connect(self._open)
@@ -254,7 +253,7 @@ class ModelPicker(QWidget):
         width = max(self._popup.width(), self._trigger.width())
         self._popup.setFixedWidth(width)
         # Opens upward: the picker lives in the composer toolbar at the bottom of the pane.
-        below = self.mapToGlobal(QPoint(0, -self._popup.sizeHint().height() - 8))
+        below = self.mapToGlobal(QPoint(0, -self._popup.sizeHint().height() - theme.SPACE["sm"]))
         self._popup.move(below)
         self._popup.show()
 

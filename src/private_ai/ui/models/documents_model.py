@@ -41,13 +41,16 @@ _HEADERS = ("Tên tệp", "Trạng thái", "Dung lượng", "Cập nhật")
 # bar somewhere, and these are the places its status means.
 _STATUS_PROGRESS = {
     "queued": 0.45,
+    "extracted": 0.6,
     "processing": 0.78,
     "ready": 1.0,
     "needs_ocr": 1.0,
     "failed": 1.0,
 }
 
-_BUSY_STATUSES = frozenset({"queued", "processing"})
+# `extracted` is busy too: the text is in hand but the index is still being built,
+# and the row must keep polling until it is queryable.
+_BUSY_STATUSES = frozenset({"queued", "extracted", "processing"})
 
 IdRole = Qt.ItemDataRole.UserRole + 1
 RecordRole = Qt.ItemDataRole.UserRole + 2

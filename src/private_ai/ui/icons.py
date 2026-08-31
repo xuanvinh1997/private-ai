@@ -19,7 +19,7 @@ if TYPE_CHECKING:  # pragma: no cover - import graph only
 
 logger = logging.getLogger("private_ai.ui.icons")
 
-__all__ = ["ICON_NAMES", "icon", "invalidate_cache", "pixmap", "svg_source"]
+__all__ = ["ICON_NAMES", "icon", "icon_path", "invalidate_cache", "pixmap", "svg_source"]
 
 _MISSING_WARNED: set[str] = set()
 
@@ -306,6 +306,69 @@ def icon(name: str, *, color: str | None = None, size: int = 20) -> QIcon:
         _warn_missing(name)
         return QIcon()
     return QIcon(_render(name, color or _ink(), size))
+
+
+def _rasterise(name: str, color: str, pixels: int):
+    """The glyph at an exact pixel size, as a ``QImage`` that can be written to disk."""
+    from PySide6.QtCore import QByteArray, Qt
+    from PySide6.QtGui import QImage, QPainter
+    from PySide6.QtSvg import QSvgRenderer
+
+    renderer = QSvgRenderer(QByteArray(svg_source(name, color, 24).encode("utf-8")))
+    image = QImage(pixels, pixels, QImage.Format.Format_ARGB32_Premultiplied)
+    image.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(image)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    renderer.render(painter)
+    painter.end()
+    return image
+
+
+def _icon_cache_dir():
+    from pathlib import Path
+
+    from PySide6.QtCore import QStandardPaths
+
+    root = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.CacheLocation)
+    if not root:
+        import tempfile
+
+        root = tempfile.gettempdir()
+    folder = Path(root) / "qss-icons"
+    folder.mkdir(parents=True, exist_ok=True)
+    return folder
+
+
+@lru_cache(maxsize=64)
+def icon_path(name: str, color: str, size: int = 12) -> str:
+    """A themed glyph written to disk, for the one consumer that cannot take a ``QPixmap``.
+
+    Qt draws stylesheet sub-controls — a combo box's chevron, a spin box's steppers, a
+    check box's tick — from ``image: url(...)`` and nothing else. Left unset it falls back
+    to the *native* style for that one part, which is how a light theme ended up with
+    system-drawn arrows sitting on top of its own rounded borders.
+
+    The file name carries the colour, so switching theme writes new files rather than
+    overwriting the ones the outgoing sheet still points at. A ``@2x`` twin is written
+    beside each one, which is the convention Qt itself looks for on a retina screen.
+    """
+    from PySide6.QtGui import QGuiApplication
+
+    if name not in PATHS or QGuiApplication.instance() is None:
+        return ""
+    try:
+        folder = _icon_cache_dir()
+        stem = f"{name}-{color.lstrip('#')}-{size}"
+        target = folder / f"{stem}.png"
+        if not target.exists():
+            # Rasterised here rather than through ``_render``: that one hands back a shared,
+            # cached pixmap carrying a 2x device ratio, and a file needs exact pixels.
+            for suffix, pixels in ((".png", size), ("@2x.png", size * 2)):
+                _rasterise(name, color, pixels).save(str(folder / f"{stem}{suffix}"), "PNG")
+        return target.as_posix()
+    except Exception:  # noqa: BLE001 - a missing arrow must not take the theme down
+        logger.debug("Không ghi được biểu tượng cho stylesheet: %s", name, exc_info=True)
+        return ""
 
 
 def _warn_missing(name: str) -> None:

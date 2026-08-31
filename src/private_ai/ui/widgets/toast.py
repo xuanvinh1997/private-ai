@@ -60,23 +60,30 @@ class Toast(QFrame):
 
         tone_color = theme.token(_TONE_TOKEN.get(tone, "accent"))
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(13, 11, 9, 11)
-        layout.setSpacing(10)
+        # Tighter on the right: the close button is an icon control and already carries its
+        # own padding.
+        layout.setContentsMargins(
+            theme.SPACE["lg"], theme.SPACE["md"], theme.SPACE["sm"], theme.SPACE["md"]
+        )
+        layout.setSpacing(theme.SPACE["md"])
 
         mark = QLabel(self)
         mark.setPixmap(icons.pixmap(_ICON.get(tone, "info"), 19, tone_color))
-        mark.setFixedWidth(20)
+        mark.setFixedWidth(theme.SPACE["xl"])
         mark.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(mark)
 
         copy = QVBoxLayout()
         copy.setContentsMargins(0, 0, 0, 0)
-        copy.setSpacing(2)
+        copy.setSpacing(theme.SPACE["3xs"])
         heading = QLabel(title, self)
+        # The tone colour is the whole point of the heading and no stylesheet class carries
+        # it; a toast lives 4.5s, so it cannot outlive the palette it was built under.
         heading.setStyleSheet(f"color: {tone_color}; font-weight: 700;")
         body = QLabel(message, self)
         body.setWordWrap(True)
-        body.setProperty("class", "muted")
+        # The message is the toast's content, not metadata about it.
+        body.setProperty("class", "body")
         copy.addWidget(heading)
         copy.addWidget(body)
         layout.addLayout(copy, 1)
@@ -84,7 +91,6 @@ class Toast(QFrame):
         close = QPushButton(self)
         close.setProperty("class", "icon")
         close.setIcon(icons.icon("x", size=15))
-        close.setFixedSize(26, 26)
         close.setToolTip("Đóng thông báo")
         close.clicked.connect(self._dismiss)
         layout.addWidget(close, 0, Qt.AlignmentFlag.AlignTop)
@@ -138,7 +144,7 @@ class ToastOverlay(QWidget):
         self.setObjectName("ToastOverlay")
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(9)
+        self._layout.setSpacing(theme.SPACE["sm"])
         self._layout.addStretch(1)
         self._live: list[Toast] = []
         self._queue: deque[_Pending] = deque()
@@ -186,11 +192,14 @@ class ToastOverlay(QWidget):
         parent = self.parentWidget()
         if parent is None:
             return
-        width = min(440, max(300, parent.width() - 48))
+        inset = theme.SPACE["2xl"]
+        width = min(440, max(300, parent.width() - inset * 2))
         self.setFixedWidth(width)
         self.adjustSize()
         height = max(1, self.sizeHint().height())
-        self.setGeometry(parent.width() - width - 24, parent.height() - height - 24, width, height)
+        self.setGeometry(
+            parent.width() - width - inset, parent.height() - height - inset, width, height
+        )
         self.raise_()
         self.setVisible(bool(self._live))
 

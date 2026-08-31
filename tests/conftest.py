@@ -225,16 +225,22 @@ def insert_document(
     *,
     status: str = "ready",
     index_mode: str = "simple",
+    indexed: bool = True,
 ) -> str:
-    """A ``documents`` row without going through ingestion."""
+    """A ``documents`` row without going through ingestion.
+
+    ``indexed`` stamps ``indexed_at``, because retrieval treats that column — not the
+    status — as proof that a document can be queried. A ``ready`` row without it is a
+    document that is still being indexed, so leave it unset only when that is the point.
+    """
     document_id = str(uuid4())
     now = datetime.now(UTC).isoformat()
     database.execute(
         """
         INSERT INTO documents(
             id, workspace_id, filename, media_type, sha256, byte_size, status,
-            source_path, extracted_text, index_mode, created_at, updated_at
-        ) VALUES (?, ?, ?, 'text/plain', ?, ?, ?, ?, ?, ?, ?, ?)
+            source_path, extracted_text, index_mode, indexed_at, created_at, updated_at
+        ) VALUES (?, ?, ?, 'text/plain', ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             document_id,
@@ -246,6 +252,7 @@ def insert_document(
             f"/tmp/{document_id}/{filename}",  # noqa: S108 - never opened
             text or None,
             index_mode,
+            now if indexed and status == "ready" else None,
             now,
             now,
         ),

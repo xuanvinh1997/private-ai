@@ -142,9 +142,7 @@ def main() -> int:
         run_worker = not arguments.no_worker
         if run_worker:
             # The worker waits for the app's migrations, so the start order does not matter.
-            processes.append(
-                spawn([sys.executable, "-m", "private_ai.worker"], environment())
-            )
+            processes.append(spawn([sys.executable, "-m", "private_ai.worker"], environment()))
         if not arguments.worker_only:
             processes.append(
                 spawn(

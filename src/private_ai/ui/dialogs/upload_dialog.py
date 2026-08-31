@@ -38,6 +38,8 @@ from PySide6.QtWidgets import (
 )
 
 from private_ai.core import repositories
+from private_ai.ui import theme
+from private_ai.ui.dialogs import _shell
 from private_ai.ui.format import format_file_size
 from private_ai.ui.icons import icon
 
@@ -80,7 +82,14 @@ _FILE_FILTER = "Tài liệu ({});;Tất cả tệp (*)".format(
 )
 
 # Progress a status alone implies, when no job row has been written yet.
-_STATUS_PROGRESS = {"queued": 45, "processing": 78, "ready": 100, "needs_ocr": 100, "failed": 100}
+_STATUS_PROGRESS = {
+    "queued": 45,
+    "extracted": 60,
+    "processing": 78,
+    "ready": 100,
+    "needs_ocr": 100,
+    "failed": 100,
+}
 
 # Stages after the text exists: the file is no longer being read, it is being indexed.
 _INDEXING_STAGES = frozenset(
@@ -168,15 +177,15 @@ class _StagedRow(QFrame):
         self._locked = False
         self.setProperty("class", "card")
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(10, 8, 8, 8)
-        layout.setSpacing(10)
+        layout.setContentsMargins(*theme.CARD_MARGINS)
+        layout.setSpacing(theme.CARD_SPACING)
 
         self._mark = QLabel()
-        self._mark.setFixedWidth(20)
+        self._mark.setFixedWidth(theme.SPACE["xl"])
         layout.addWidget(self._mark, 0, Qt.AlignmentFlag.AlignTop)
 
         identity = QVBoxLayout()
-        identity.setSpacing(3)
+        identity.setSpacing(theme.SPACE["2xs"])
         self._name = QLabel(item.path.name)
         self._name.setToolTip(str(item.path))
         self._name.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -186,7 +195,6 @@ class _StagedRow(QFrame):
         self._bar = QProgressBar()
         self._bar.setRange(0, 100)
         self._bar.setTextVisible(False)
-        self._bar.setFixedHeight(4)
         identity.addWidget(self._name)
         identity.addWidget(self._status)
         identity.addWidget(self._bar)
@@ -265,21 +273,10 @@ class UploadDialog(QDialog):
     # --- layout -----------------------------------------------------------
 
     def _build(self) -> None:
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(20, 18, 20, 16)
-        layout.setSpacing(10)
-
-        title = QLabel("Thêm tài liệu")
-        title.setProperty("class", "title")
-        layout.addWidget(title)
-
-        self._subtitle = QLabel()
-        self._subtitle.setProperty("class", "subtitle")
-        self._subtitle.setWordWrap(True)
-        layout.addWidget(self._subtitle)
+        layout = _shell.dialog_layout(self)
+        self._subtitle = _shell.title_block(layout, "Thêm tài liệu")[1]
 
         self._drop = QPushButton(icon("upload"), "Chọn tệp từ máy")
-        self._drop.setMinimumHeight(84)
         self._drop.setToolTip(
             "Hoặc kéo thả · PDF, Office, ảnh và văn bản · tối đa 100 MB mỗi tệp",
         )
@@ -288,19 +285,24 @@ class UploadDialog(QDialog):
 
         self._heading = QLabel()
         self._heading.setProperty("class", "section-label")
-        layout.addWidget(self._heading)
 
         self._list_host = QWidget()
         self._list_layout = QVBoxLayout(self._list_host)
         self._list_layout.setContentsMargins(0, 0, 0, 0)
-        self._list_layout.setSpacing(6)
+        self._list_layout.setSpacing(theme.SPACE["xs"])
         self._list_layout.addStretch(1)
 
         scroller = QScrollArea()
         scroller.setWidgetResizable(True)
         scroller.setFrameShape(QFrame.Shape.NoFrame)
         scroller.setWidget(self._list_host)
-        layout.addWidget(scroller, 1)
+
+        # The count is a caption on the list, not a section of its own.
+        listing = QVBoxLayout()
+        listing.setSpacing(theme.SPACE["2xs"])
+        listing.addWidget(self._heading)
+        listing.addWidget(scroller, 1)
+        layout.addLayout(listing, 1)
 
         self._notice = QLabel()
         self._notice.setProperty("class", "muted")
@@ -320,7 +322,7 @@ class UploadDialog(QDialog):
         self._overall.hide()
         layout.addWidget(self._overall)
 
-        actions = QHBoxLayout()
+        actions = _shell.action_row(layout)
         actions.addStretch(1)
         self._cancel = QPushButton("Hủy")
         self._cancel.clicked.connect(self.reject)
@@ -330,7 +332,6 @@ class UploadDialog(QDialog):
         self._confirm.clicked.connect(self._on_confirm)
         actions.addWidget(self._cancel)
         actions.addWidget(self._confirm)
-        layout.addLayout(actions)
 
         self._refresh_chrome()
 

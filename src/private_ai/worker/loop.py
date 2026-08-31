@@ -33,7 +33,7 @@ def _pending_count(services) -> int:  # noqa: ANN001 - AppServices, kept loose f
     row = services.database.fetch_one(
         """
         SELECT COUNT(*) AS pending FROM documents d
-        WHERE d.status IN ('queued', 'processing')
+        WHERE d.status IN ('queued', 'extracted', 'processing')
            OR (
                 d.status = 'ready'
                 AND d.extracted_text IS NOT NULL

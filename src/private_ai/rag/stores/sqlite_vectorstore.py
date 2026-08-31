@@ -44,6 +44,7 @@ _CHUNK_SOURCE = """
     FROM document_chunks AS c
     JOIN documents AS d ON d.id = c.document_id
     WHERE d.workspace_id = ? AND d.status = 'ready' AND d.index_mode = 'simple'
+      AND d.indexed_at IS NOT NULL
     ORDER BY d.created_at DESC, c.chunk_index
 """
 

@@ -48,23 +48,11 @@ from PySide6.QtWidgets import (
 )
 
 from private_ai.ui import theme
+from private_ai.ui.a11y import describe
 from private_ai.ui.icons import icon
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.ui.context import AppContext
-
-# The eight-entry palette the web app used. An entity type is hashed into it, so the same
-# type is the same colour across sessions, workspaces and the legend.
-PALETTE = (
-    "#1c7a63",
-    "#3d6fb4",
-    "#a8672c",
-    "#7d55ab",
-    "#a8465c",
-    "#2f8f8a",
-    "#5c6f3a",
-    "#8a5a86",
-)
 
 # Expanding asks only for direct neighbours: enough to add one layer without dragging the
 # whole store back over.
@@ -87,6 +75,11 @@ MIN_ZOOM = 0.15
 MAX_ZOOM = 3.2
 FADED_OPACITY = 0.12
 
+# The side column: wide enough for a relation description, narrow enough that the canvas
+# stays the subject. The legend inside it is capped so the detail card always has room.
+_SIDE_WIDTH = theme.SPACE["4xl"] * 7
+_LEGEND_HEIGHT = theme.SPACE["4xl"] * 5 + theme.SPACE["xl"]
+
 
 def hash_of(text: str) -> int:
     """The web app's string hash, reproduced so colours and angles do not shift."""
@@ -97,7 +90,14 @@ def hash_of(text: str) -> int:
 
 
 def color_of(entity_type: str) -> str:
-    return PALETTE[hash_of(entity_type) % len(PALETTE)]
+    """The type's slot in the theme's data palette, resolved at call time.
+
+    The slot is what is stable: hashing the type keeps it in the same position across
+    sessions, workspaces and the legend, while the hue in that position follows the
+    theme, so a dark canvas gets colours it can actually show.
+    """
+    palette = theme.graph_palette()
+    return palette[hash_of(entity_type) % len(palette)]
 
 
 def size_of(degree: int) -> float:
@@ -194,17 +194,18 @@ class _NodeItem(QGraphicsEllipseItem):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.label = QGraphicsSimpleTextItem(node.label, self)
         self.label.setZValue(3)
-        font = QFont()
-        font.setPointSizeF(7.5)
-        font.setBold(True)
-        self.label.setFont(font)
         self.apply_theme()
 
     def apply_theme(self) -> None:
-        tokens = theme.tokens()
+        # A scene item caches its pen, brush and font, so all three are read again here —
+        # this is the only place a theme or font-scale change reaches the canvas.
+        font = QFont()
+        font.setPixelSize(theme.type_scale()["xs"])
+        font.setBold(True)
+        self.label.setFont(font)
         self.setBrush(QBrush(QColor(self.node.color)))
-        self.setPen(QPen(QColor(tokens.get("surface", "#ffffff")), 2))
-        self.label.setBrush(QBrush(QColor(tokens.get("text", "#293732"))))
+        self.setPen(QPen(QColor(theme.token("surface")), 2))
+        self.label.setBrush(QBrush(QColor(theme.token("text"))))
         self.reposition_label()
 
     def resize(self) -> None:
@@ -214,16 +215,15 @@ class _NodeItem(QGraphicsEllipseItem):
 
     def reposition_label(self) -> None:
         bounds = self.label.boundingRect()
-        self.label.setPos(-bounds.width() / 2, self.node.size / 2 + 3)
+        self.label.setPos(-bounds.width() / 2, self.node.size / 2 + theme.SPACE["2xs"])
 
     def set_selected_ring(self, selected: bool) -> None:
-        tokens = theme.tokens()
         if selected:
-            self.setPen(QPen(QColor(tokens.get("ink", "#17231f")), 3))
+            self.setPen(QPen(QColor(theme.token("ink")), 3))
         elif self.node.expanded:
-            self.setPen(QPen(QColor(tokens.get("accent", "#176b59")), 3))
+            self.setPen(QPen(QColor(theme.token("accent")), 3))
         else:
-            self.setPen(QPen(QColor(tokens.get("surface", "#ffffff")), 2))
+            self.setPen(QPen(QColor(theme.token("surface")), 2))
 
     # --- interaction ------------------------------------------------------
 
@@ -261,19 +261,18 @@ class _EdgeItem(QGraphicsLineItem):
         self.setAcceptHoverEvents(True)
         self.label = QGraphicsSimpleTextItem(edge.label)
         self.label.setZValue(4)
-        font = QFont()
-        font.setPointSizeF(7.0)
-        font.setBold(True)
-        self.label.setFont(font)
         self.label.setVisible(False)
         self.apply_theme()
 
     def apply_theme(self) -> None:
-        tokens = theme.tokens()
-        self._idle = QPen(QColor(tokens.get("line-strong", "#c2cec8")), 1.4)
-        self._lit = QPen(QColor(tokens.get("accent", "#176b59")), 2.8)
+        font = QFont()
+        font.setPixelSize(theme.type_scale()["2xs"])
+        font.setBold(True)
+        self.label.setFont(font)
+        self._idle = QPen(QColor(theme.token("line-strong")), 1.4)
+        self._lit = QPen(QColor(theme.token("accent")), 2.8)
         self.setPen(self._idle)
-        self.label.setBrush(QBrush(QColor(tokens.get("accent-ink", "#0c4d3f"))))
+        self.label.setBrush(QBrush(QColor(theme.token("accent-ink"))))
 
     def set_lit(self, lit: bool) -> None:
         self.setPen(self._lit if lit else self._idle)
@@ -369,13 +368,13 @@ class GraphView(QWidget):
         self._temperature = 0.0
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(10)
+        root.setContentsMargins(*theme.PAGE_MARGINS)
+        root.setSpacing(theme.PAGE_SPACING)
         self._build_heading(root)
         self._build_toolbar(root)
 
         body = QHBoxLayout()
-        body.setSpacing(12)
+        body.setSpacing(theme.SPACE["lg"])
         body.addWidget(self._build_stage(), 1)
         body.addWidget(self._build_side(), 0)
         root.addLayout(body, 1)
@@ -399,18 +398,19 @@ class GraphView(QWidget):
 
     def _build_heading(self, root: QVBoxLayout) -> None:
         heading = QHBoxLayout()
+        heading.setSpacing(theme.TOOLBAR_SPACING)
         titles = QVBoxLayout()
+        titles.setSpacing(theme.SPACE["3xs"])
         eyebrow = QLabel("Kho tri thức")
         eyebrow.setProperty("class", "section-label")
         titles.addWidget(eyebrow)
         title = QLabel("Đồ thị tri thức")
         title.setProperty("class", "title")
         titles.addWidget(title)
-        blurb = QLabel(
-            "Thực thể và quan hệ mà Private AI rút ra từ tài liệu. Kéo node để sắp lại, kéo "
-            "nền để dời khung, lăn chuột để phóng to, bấm một node hoặc một đường nối để xem "
-            "chi tiết. Bấm đúp vào một node để mở thêm một lớp lân cận ngay trên hình đang có."
-        )
+        # One line about what this is. How to drive the canvas belongs beside the canvas,
+        # and the detail panel already says it — printing both put the same paragraph on
+        # screen twice.
+        blurb = QLabel("Thực thể và quan hệ mà Private AI rút ra từ tài liệu.")
         blurb.setWordWrap(True)
         blurb.setProperty("class", "muted")
         titles.addWidget(blurb)
@@ -434,6 +434,7 @@ class GraphView(QWidget):
 
     def _build_toolbar(self, root: QVBoxLayout) -> None:
         toolbar = QHBoxLayout()
+        toolbar.setSpacing(theme.TOOLBAR_SPACING)
         self._search = QLineEdit()
         self._search.setClearButtonEnabled(True)
         self._search.setPlaceholderText("Tìm thực thể để xem lân cận")
@@ -473,12 +474,13 @@ class GraphView(QWidget):
         ):
             button = QToolButton()
             button.setText(label)
-            button.setToolTip(tip)
+            # A screen reader would otherwise announce the character, not the action.
+            describe(button, tip)
             button.clicked.connect(handler)
             toolbar.addWidget(button)
         fit_button = QToolButton()
         fit_button.setIcon(icon("eye"))
-        fit_button.setToolTip("Vừa khung hình")
+        describe(fit_button, "Vừa khung hình")
         fit_button.clicked.connect(self.fit)
         toolbar.addWidget(fit_button)
         root.addLayout(toolbar)
@@ -487,7 +489,7 @@ class GraphView(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(6)
+        layout.setSpacing(theme.SPACE["xs"])
 
         self._scene = QGraphicsScene(self)
         self._canvas = _Canvas(self._scene, container)
@@ -502,7 +504,7 @@ class GraphView(QWidget):
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
-        self._status.setProperty("class", "faint")
+        self._status.setProperty("class", "muted")
         layout.addWidget(self._status)
 
         self._warning = QLabel("")
@@ -514,10 +516,10 @@ class GraphView(QWidget):
 
     def _build_side(self) -> QWidget:
         side = QWidget()
-        side.setFixedWidth(280)
+        side.setFixedWidth(_SIDE_WIDTH)
         layout = QVBoxLayout(side)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(theme.SPACE["md"])
 
         legend_title = QLabel("Loại thực thể")
         legend_title.setProperty("class", "section-label")
@@ -527,10 +529,10 @@ class GraphView(QWidget):
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setMaximumHeight(220)
+        scroll.setMaximumHeight(_LEGEND_HEIGHT)
         legend_host = QWidget()
         self._legend = QVBoxLayout(legend_host)
-        self._legend.setSpacing(3)
+        self._legend.setSpacing(theme.SPACE["2xs"])
         self._legend.setContentsMargins(0, 0, 0, 0)
         self._legend.addStretch(1)
         scroll.setWidget(legend_host)
@@ -539,7 +541,8 @@ class GraphView(QWidget):
         self._detail = QFrame()
         self._detail.setProperty("class", "card")
         self._detail_layout = QVBoxLayout(self._detail)
-        self._detail_layout.setSpacing(6)
+        self._detail_layout.setContentsMargins(*theme.CARD_MARGINS)
+        self._detail_layout.setSpacing(theme.CARD_SPACING)
         layout.addWidget(self._detail, 1)
         self._render_detail()
         return side
@@ -559,14 +562,16 @@ class GraphView(QWidget):
         self.reload()
 
     def _on_theme(self, _name: str) -> None:
-        tokens = theme.tokens()
-        self._scene.setBackgroundBrush(QBrush(QColor(tokens.get("surface", "#ffffff"))))
+        self._scene.setBackgroundBrush(QBrush(QColor(theme.token("surface"))))
         for item in self._node_items.values():
             item.apply_theme()
         for item in self._edge_items.values():
             item.apply_theme()
         self._sync_selection_rings()
+        # The legend swatches and the detail panel's end buttons are painted pixmaps, so
+        # they only follow the data palette if they are drawn again.
         self._render_legend()
+        self._render_detail()
 
     # --- data -------------------------------------------------------------
 
@@ -1075,8 +1080,9 @@ class GraphView(QWidget):
         selection = self._selection
         if selection is None:
             hint = QLabel(
-                "Kéo node để sắp lại chỗ. Bấm một node hoặc một đường nối để xem chi tiết, "
-                "bấm đúp vào node để mở thêm một lớp lân cận quanh nó."
+                "Bấm một node hoặc một đường nối để xem chi tiết.\n"
+                "Bấm đúp vào node để mở lớp lân cận.\n"
+                "Kéo node để sắp lại, kéo nền để dời khung."
             )
             hint.setWordWrap(True)
             hint.setProperty("class", "muted")
@@ -1090,12 +1096,14 @@ class GraphView(QWidget):
         self._detail_layout.addStretch(1)
 
     def _render_node_detail(self, node: GraphNode) -> None:
+        # The type badge used to carry the node's own colour inline; the swatch on the
+        # node itself already says that, and a chip keeps the panel on the type ramp.
         kind = QLabel(node.type)
-        kind.setStyleSheet(f"color: {node.color};")
-        self._detail_layout.addWidget(kind)
+        kind.setProperty("class", "chip")
+        self._detail_layout.addWidget(kind, 0, Qt.AlignmentFlag.AlignLeft)
         title = QLabel(node.label)
         title.setWordWrap(True)
-        title.setProperty("class", "subtitle")
+        title.setProperty("class", "heading")
         self._detail_layout.addWidget(title)
 
         meta = [f"{node.degree} quan hệ"]
@@ -1105,12 +1113,13 @@ class GraphView(QWidget):
             meta.append(f"nguồn: {node.file}")
         summary = QLabel(" · ".join(meta))
         summary.setWordWrap(True)
-        summary.setProperty("class", "faint")
+        summary.setProperty("class", "muted")
         self._detail_layout.addWidget(summary)
 
         if node.description:
             body = QLabel(node.description)
             body.setWordWrap(True)
+            body.setProperty("class", "body")
             self._detail_layout.addWidget(body)
 
         expand = QPushButton(
@@ -1128,14 +1137,15 @@ class GraphView(QWidget):
 
     def _render_edge_detail(self, edge: GraphEdge, source: GraphNode, target: GraphNode) -> None:
         kind = QLabel("Quan hệ")
-        kind.setProperty("class", "faint")
-        self._detail_layout.addWidget(kind)
+        kind.setProperty("class", "chip")
+        self._detail_layout.addWidget(kind, 0, Qt.AlignmentFlag.AlignLeft)
         title = QLabel(edge.label)
         title.setWordWrap(True)
-        title.setProperty("class", "subtitle")
+        title.setProperty("class", "heading")
         self._detail_layout.addWidget(title)
 
         ends = QHBoxLayout()
+        ends.setSpacing(theme.TOOLBAR_SPACING)
         for node in (source, target):
             button = QPushButton(node.label)
             button.setToolTip(f"Chỉ xem lân cận của {node.label}")
@@ -1152,10 +1162,11 @@ class GraphView(QWidget):
         if meta:
             summary = QLabel(" · ".join(meta))
             summary.setWordWrap(True)
-            summary.setProperty("class", "faint")
+            summary.setProperty("class", "muted")
             self._detail_layout.addWidget(summary)
 
         if edge.description:
             body = QLabel(edge.description)
             body.setWordWrap(True)
+            body.setProperty("class", "body")
             self._detail_layout.addWidget(body)

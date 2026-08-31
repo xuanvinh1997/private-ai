@@ -24,6 +24,7 @@ from langchain_core.messages import AIMessage, AnyMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+from private_ai.agent import progress
 from private_ai.agent.prompts import build_system_prompt
 from private_ai.agent.state import AgentState
 from private_ai.core.schemas import Citation
@@ -43,6 +44,25 @@ MEMORY_LIMIT = 5
 # A digest covers a whole document, so it could cite hundreds of chunks. The answer only
 # needs enough provenance to be checkable.
 CITATION_LIMIT = 8
+
+
+async def _indexing_count(services: AppServices, workspace_id: str) -> int:
+    """Documents in this workspace that exist but cannot be queried yet."""
+    if not workspace_id:
+        return 0
+    try:
+        row = await services.database.fetch_one_async(
+            """
+            SELECT COUNT(*) AS n FROM documents
+            WHERE workspace_id = ?
+              AND (status IN ('queued', 'extracted', 'processing') OR indexed_at IS NULL)
+              AND status NOT IN ('failed', 'needs_ocr')
+            """,
+            (workspace_id,),
+        )
+    except Exception:
+        return 0
+    return int((row or {}).get("n") or 0)
 
 
 async def _summary_plan(services: AppServices, query: str, workspace_id: str, strategy: str):
@@ -87,15 +107,39 @@ def agent_config(settings: Settings) -> dict[str, Any]:
     return {"recursion_limit": settings.agent_max_iterations + 3}
 
 
+def _is_resident(services: AppServices, model: str) -> bool:
+    """Whether the next call skips the weight load, so the wait can be named honestly.
+
+    Only a local provider loads anything: ``ModelRouter`` attaches a lease callback under
+    exactly the same condition, so a cloud endpoint reports resident and never claims to
+    be "nạp mô hình" for what is really network latency.
+    """
+    try:
+        from private_ai.llm.leases import OWNER_PREFIX, owner_for
+
+        if services.models.active_config().kind != "ollama":
+            return True
+        return owner_for(model) in services.gpu_leases.owners(OWNER_PREFIX)
+    except Exception:  # pragma: no cover - never let a status guess break the turn
+        return True
+
+
 async def build_agent_graph(
     services: AppServices,
     *,
     tools: list[BaseTool] | None = None,
+    workspace_id: str = "",
 ) -> CompiledStateGraph:
-    """Compile the turn graph. ``tools`` defaults to the agent-visible MCP tool set."""
+    """Compile the turn graph. ``tools`` defaults to the agent-visible MCP tool set.
+
+    ``workspace_id`` pins those tools to one workspace, which is why the graph is compiled
+    per workspace rather than once per process: the binding lives in the tool schemas.
+    """
     settings = services.settings
     if tools is None:
-        tools = await services.mcp.tools() if services.mcp is not None else []
+        tools = (
+            await services.mcp.tools(workspace_id=workspace_id) if services.mcp is not None else []
+        )
     rounds = tool_rounds(settings)
 
     def plan(state: AgentState) -> dict[str, Any]:
@@ -108,7 +152,9 @@ async def build_agent_graph(
             selected = [skill for skill in chosen if skill is not None]
         else:
             selected = services.skills.select(state.get("query", ""))
-        return {"strategy": strategy, "skills": [skill.name for skill in selected]}
+        names = [skill.name for skill in selected]
+        progress.emit("plan", f"{strategy} · {', '.join(names)}" if names else strategy)
+        return {"strategy": strategy, "skills": names}
 
     async def retrieve(state: AgentState) -> dict[str, Any]:
         query = state.get("query", "")
@@ -118,7 +164,10 @@ async def build_agent_graph(
         documents = []
         summary = ""
         summary_label = ""
+        routed_to = ""
+        routing_reason = ""
         try:
+            progress.emit("scoping")
             plan = await _summary_plan(services, query, workspace_id, state.get("strategy", "auto"))
             if plan is not None:
                 # An exhaustive summary is reduced *before* the prompt is built. Handing
@@ -126,28 +175,54 @@ async def build_agent_graph(
                 # window: the strategy returns the whole document by design, and only a
                 # map-reduce brings it back under budget.
                 summary_label = plan.source_label
+                # The summary strategy has always reported its map-reduce through a
+                # ``ProgressSink``; until this argument existed, every one of those
+                # "Tóm tắt tài liệu 7/31" lines was thrown away and the longest turn the
+                # app can run was also the one that looked most like a freeze.
                 summary = await services.strategies.get("summary").digest(
                     query,
                     workspace_id,
                     model=state.get("model", ""),
                     plan=plan,
+                    on_progress=progress.sink(),
                 )
                 documents = services.strategies.get("summary").documents(plan)[:CITATION_LIMIT]
+                routed_to = "summary"
+                routing_reason = f"yêu cầu tóm tắt toàn bộ [{plan.source_label}]"
                 notices.append(
                     f"Đã đọc và tóm tắt {len(plan.chunks)} đoạn của [{plan.source_label}]."
                 )
             else:
+                progress.emit("retrieve")
                 documents = await services.strategies.retrieve(
                     query,
                     workspace_id=workspace_id,
                     strategy=state.get("strategy", "auto"),
                     limit=settings.retrieval_top_k,
                 )
+                # ``auto`` stamps every document it returns with the strategy it routed
+                # to and the rule that decided it. Lifting that to the turn is what lets
+                # the answer say how it was found instead of leaving the user to guess.
+                if documents:
+                    metadata = documents[0].metadata
+                    routed_to = str(metadata.get("strategy") or "")
+                    routing_reason = str(metadata.get("routing_reason") or "")
         except Exception as exc:  # a dead index must not take the answer with it
             notices.append(f"Không truy hồi được tài liệu: {exc}")
+            progress.notice(f"Không truy hồi được tài liệu: {exc}")
+
+        # Retrieval only sees indexed documents, so a workspace mid-ingest would otherwise
+        # look simply empty. Saying so beats answering as though the file were not there.
+        indexing = await _indexing_count(services, workspace_id)
+        if indexing:
+            notices.append(
+                f"{indexing} tài liệu đang được lập chỉ mục và chưa thể tra cứu. "
+                "Hãy đợi trạng thái chuyển sang Sẵn sàng rồi hỏi lại."
+            )
 
         memories = []
         try:
+            progress.emit("memory")
             memories = await services.memory.search(
                 query,
                 user_id=state.get("user_id", ""),
@@ -155,8 +230,14 @@ async def build_agent_graph(
             )
         except Exception as exc:
             notices.append(f"Không đọc được bộ nhớ cá nhân: {exc}")
+            progress.notice(f"Không đọc được bộ nhớ cá nhân: {exc}")
 
-        web = await _web_context(services, state, notices) if state.get("web_search") else None
+        web = None
+        if state.get("web_search"):
+            progress.emit("web")
+            web = await _web_context(services, state, notices)
+
+        progress.emit("prompt", f"{len(documents)} nguồn" if documents else "")
 
         activated = [services.skills.get(name) for name in state.get("skills", [])]
         prompt = build_system_prompt(
@@ -181,6 +262,8 @@ async def build_agent_graph(
             "citations": citations,
             "system_prompt": prompt,
             "notices": notices,
+            "routed_to": routed_to,
+            "routing_reason": routing_reason,
         }
 
     async def agent(state: AgentState) -> dict[str, Any]:
@@ -196,6 +279,15 @@ async def build_agent_graph(
             streaming=settings.agent_stream_tokens,
             tools=offered,
         )
+        # A cold model is the other long silence: Ollama moves weights into VRAM before it
+        # emits a first token, and that wait is indistinguishable from a hang unless it is
+        # named. The lease table already knows what is resident, so ask it rather than
+        # timing the call and guessing afterwards.
+        name = state.get("model", "") or services.models.default_model("chat")
+        if name and not _is_resident(services, name):
+            progress.emit("loading", name)
+        else:
+            progress.emit("thinking", f"vòng {iterations + 1}" if iterations else "")
         response = await _call_model(model, messages, stream=settings.agent_stream_tokens)
         return {"messages": [response], "iterations": iterations + 1}
 

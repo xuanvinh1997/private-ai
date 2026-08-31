@@ -7,17 +7,16 @@ from typing import TYPE_CHECKING
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
-    QDialogButtonBox,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QVBoxLayout,
 )
 
 from private_ai.core import repositories
 from private_ai.core.schemas import WorkspaceCreate, WorkspaceUpdate
+from private_ai.ui.dialogs import _shell
+from private_ai.ui.theme import CONTROL_HEIGHT
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.core.schemas import WorkspaceRecord
@@ -48,28 +47,22 @@ class WorkspaceDialog(QDialog):
         self.setWindowTitle("Sửa không gian làm việc" if workspace else "Không gian làm việc mới")
         self.setMinimumWidth(460)
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout = _shell.dialog_layout(self)
+        _shell.title_block(
+            layout,
+            self.windowTitle(),
+            "Nhóm các cuộc trò chuyện cùng dự án để tìm lại dễ dàng hơn.",
+        )
 
-        title = QLabel(self.windowTitle())
-        title.setProperty("class", "title")
-        layout.addWidget(title)
-
-        blurb = QLabel("Nhóm các cuộc trò chuyện cùng dự án để tìm lại dễ dàng hơn.")
-        blurb.setWordWrap(True)
-        blurb.setProperty("class", "muted")
-        layout.addWidget(blurb)
-
-        layout.addWidget(QLabel("Tên"))
         self._name = QLineEdit(workspace.name if workspace else "")
         self._name.setMaxLength(120)
         self._name.setPlaceholderText("Ví dụ: Hồ sơ dự án")
-        layout.addWidget(self._name)
+        _shell.field(layout, "Tên", self._name)
 
-        layout.addWidget(QLabel("Mô tả"))
         self._description = QPlainTextEdit(workspace.description if workspace else "")
-        self._description.setFixedHeight(84)
-        layout.addWidget(self._description)
+        # Three input rows tall: enough for a real description, still on the control grid.
+        self._description.setFixedHeight(CONTROL_HEIGHT * 3)
+        _shell.field(layout, "Mô tả", self._description)
 
         self._error = QLabel("")
         self._error.setWordWrap(True)
@@ -77,22 +70,23 @@ class WorkspaceDialog(QDialog):
         self._error.hide()
         layout.addWidget(self._error)
 
-        row = QHBoxLayout()
+        # Plain buttons rather than a QDialogButtonBox: the box reorders itself per
+        # platform, which is the one thing these six dialogs must not disagree about.
+        row = _shell.action_row(layout)
         self._delete = QPushButton("Xóa")
         self._delete.setProperty("class", "danger")
         self._delete.clicked.connect(self._on_delete)
         self._delete.setVisible(bool(workspace) and allow_delete)
         row.addWidget(self._delete)
         row.addStretch(1)
-
-        buttons = QDialogButtonBox()
-        self._save = buttons.addButton("Lưu", QDialogButtonBox.ButtonRole.AcceptRole)
-        self._save.setProperty("class", "primary")
-        cancel = buttons.addButton("Hủy", QDialogButtonBox.ButtonRole.RejectRole)
+        cancel = QPushButton("Hủy")
         cancel.clicked.connect(self.reject)
+        row.addWidget(cancel)
+        self._save = QPushButton("Lưu")
+        self._save.setProperty("class", "primary")
+        self._save.setDefault(True)
         self._save.clicked.connect(self._on_save)
-        row.addWidget(buttons)
-        layout.addLayout(row)
+        row.addWidget(self._save)
 
         self._name.setFocus(Qt.FocusReason.OtherFocusReason)
         self._name.returnPressed.connect(self._on_save)

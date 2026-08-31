@@ -21,16 +21,18 @@ class IngestionProgress(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 5, 0, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(0, theme.SPACE["2xs"], 0, theme.SPACE["2xs"])
+        layout.setSpacing(theme.SPACE["2xs"])
 
         head = QHBoxLayout()
         head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(8)
+        head.setSpacing(theme.SPACE["sm"])
         self._title = QLabel(self)
-        self._title.setStyleSheet(f"color: {theme.token('ink')}; font-weight: 620;")
+        self._title.setProperty("class", "body-strong")
         self._percent = QLabel(self)
-        self._percent.setProperty("class", "faint")
+        # The percentage and the stage line are the information in this widget, so neither
+        # of them may sit on the faint step.
+        self._percent.setProperty("class", "muted")
         self._percent.setAlignment(Qt.AlignmentFlag.AlignRight)
         head.addWidget(self._title, 1)
         head.addWidget(self._percent)
@@ -39,11 +41,11 @@ class IngestionProgress(QWidget):
         self._bar = QProgressBar(self)
         self._bar.setRange(0, 100)
         self._bar.setTextVisible(False)
-        self._bar.setFixedHeight(6)
+        self._bar.setFixedHeight(theme.SPACE["xs"])
         layout.addWidget(self._bar)
 
         self._detail = QLabel(self)
-        self._detail.setProperty("class", "faint")
+        self._detail.setProperty("class", "muted")
         self._detail.setWordWrap(False)
         layout.addWidget(self._detail)
 
@@ -73,7 +75,8 @@ class IngestionProgress(QWidget):
         text = detail or stage_label(stage)
         self._detail.setText(elide(text, 60))
         self._detail.setToolTip(text)
-        self._detail.setStyleSheet(f"color: {theme.token('danger')};" if failed else "")
+        self._detail.setProperty("class", "danger" if failed else "muted")
+        theme.restyle(self._detail)
         self.setVisible(True)
 
     def clear(self) -> None:

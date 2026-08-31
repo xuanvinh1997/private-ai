@@ -21,7 +21,16 @@ from PySide6.QtWidgets import (
 
 from private_ai.ui.dialogs.provider_dialog import KIND_LABELS, ProviderDialog, probe_provider
 from private_ai.ui.icons import icon
-from private_ai.ui.widgets.confirm_button import ConfirmButton
+from private_ai.ui.theme import (
+    BADGE_HEIGHT,
+    CARD_MARGINS,
+    CARD_SPACING,
+    PAGE_SPACING,
+    SPACE,
+    TOOLBAR_SPACING,
+    token,
+)
+from private_ai.ui.widgets.confirm_button import ConfirmToolButton
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.llm.registry import ProviderConfig
@@ -41,57 +50,86 @@ class _ProviderRow(QFrame):
         self.setProperty("class", "card")
 
         layout = QHBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setContentsMargins(*CARD_MARGINS)
+        layout.setSpacing(CARD_SPACING)
 
         identity = QVBoxLayout()
-        identity.setSpacing(2)
+        identity.setSpacing(SPACE["3xs"])
+
+        title = QHBoxLayout()
+        title.setSpacing(SPACE["sm"])
         name = QLabel(provider.name)
-        name.setProperty("class", "subtitle")
-        identity.addWidget(name)
-        endpoint = QLabel(f"{KIND_LABELS.get(provider.kind, provider.kind)} · {provider.base_url}")
+        name.setProperty("class", "card-title")
+        name.setMinimumHeight(BADGE_HEIGHT)
+        title.addWidget(name)
+        if active:
+            # Only the current selection is marked. "Chưa dùng" on every other row was a
+            # label for the absence of a state.
+            badge = QLabel("Đang dùng")
+            badge.setProperty("class", "chip-active")
+            badge.setToolTip("Nhà cung cấp đang được dùng")
+            title.addWidget(badge, 0, Qt.AlignmentFlag.AlignVCenter)
+        title.addStretch(1)
+        identity.addLayout(title)
+
+        # The kind is only worth a line when it is not already the name: a provider called
+        # "Ollama" of kind Ollama at an Ollama URL said the same word three times.
+        kind_label = KIND_LABELS.get(provider.kind, provider.kind)
+        endpoint = QLabel(
+            provider.base_url
+            if kind_label == provider.name
+            else f"{kind_label} · {provider.base_url}"
+        )
         endpoint.setWordWrap(True)
         endpoint.setProperty("class", "muted")
         identity.addWidget(endpoint)
+
         notes = []
+        if provider.on_device:
+            notes.append("Chạy trên máy này")
+        elif provider.builtin:
+            notes.append("Cài sẵn")
         if provider.api_key:
             notes.append("Đã lưu khóa API")
-        if provider.builtin:
-            notes.append("Ollama trên máy này")
-        if provider.on_device:
-            notes.append("chạy trên máy này")
         if notes:
             hint = QLabel(" · ".join(notes))
             hint.setProperty("class", "faint")
             identity.addWidget(hint)
+        # The probe verdict is the reason this row exists; it never gets the faint step.
         self._status = QLabel("")
         self._status.setWordWrap(True)
-        self._status.setProperty("class", "faint")
+        self._status.setProperty("class", "muted")
         self._status.hide()
         identity.addWidget(self._status)
         layout.addLayout(identity, 1)
 
-        state = QLabel("Đang dùng" if active else "Chưa dùng")
-        state.setProperty("class", "chip-active" if active else "chip")
-        layout.addWidget(state, 0, Qt.AlignmentFlag.AlignTop)
-
         actions = QHBoxLayout()
-        actions.setSpacing(6)
+        actions.setSpacing(SPACE["3xs"])
         if not active:
-            use = QPushButton("Dùng")
-            use.clicked.connect(lambda: view.activate(provider))
-            actions.addWidget(use)
-        check = QPushButton("Kiểm tra")
-        check.clicked.connect(self._on_probe)
-        actions.addWidget(check)
-        edit = QPushButton("Sửa")
-        edit.clicked.connect(lambda: view.edit(provider))
-        actions.addWidget(edit)
-        remove = ConfirmButton("Xóa", "Xác nhận xóa")
+            self._add(actions, "check", "Dùng nhà cung cấp này", lambda: view.activate(provider))
+        self._add(actions, "zap", "Kiểm tra kết nối", self._on_probe)
+        self._add(actions, "pencil", f"Sửa {provider.name}", lambda: view.edit(provider))
+        remove = ConfirmToolButton(
+            tooltip=f"Xóa {provider.name}",
+            confirm_tooltip=f"Bấm lại để xóa hẳn {provider.name}",
+        )
         remove.confirmed.connect(lambda: view.remove(provider))
         actions.addWidget(remove)
         layout.addLayout(actions, 0)
+        # The identity column wraps, so every column of this row hangs from the top.
+        layout.setAlignment(actions, Qt.AlignmentFlag.AlignTop)
 
         self._view = view
+
+    def _add(self, layout: QHBoxLayout, icon_name: str, tooltip: str, handler) -> None:
+        """An action as its verb-icon, the same shape the model rows use."""
+        button = QPushButton()
+        button.setProperty("class", "icon")
+        button.setIcon(icon(icon_name, color=token("muted"), size=SPACE["lg"] - 2))
+        button.setToolTip(tooltip)
+        button.setAccessibleName(tooltip)
+        button.clicked.connect(handler)
+        layout.addWidget(button)
 
     def _on_probe(self) -> None:
         self._status.setText("Đang kiểm tra kết nối…")
@@ -120,22 +158,22 @@ class ProvidersView(QWidget):
         self.ctx = ctx
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(12)
+        # Hosted inside the settings tab widget, which already supplies the page
+        # padding; a second PAGE_MARGINS here would inset the tab twice.
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(PAGE_SPACING)
 
         heading = QHBoxLayout()
+        heading.setSpacing(TOOLBAR_SPACING)
         titles = QVBoxLayout()
+        titles.setSpacing(SPACE["2xs"])
         eyebrow = QLabel("Nguồn suy luận")
         eyebrow.setProperty("class", "section-label")
         titles.addWidget(eyebrow)
         title = QLabel("Nhà cung cấp AI")
         title.setProperty("class", "title")
         titles.addWidget(title)
-        blurb = QLabel(
-            "Chọn nơi chạy mô hình: Ollama trên máy hoặc bất kỳ máy chủ nào theo chuẩn "
-            "OpenAI API. Trò chuyện, embedding và trích xuất tri thức đều dùng nhà cung cấp "
-            "đang bật."
-        )
+        blurb = QLabel("Chọn nơi chạy mô hình: Ollama trên máy, hoặc máy chủ chuẩn OpenAI API.")
         blurb.setWordWrap(True)
         blurb.setProperty("class", "muted")
         titles.addWidget(blurb)
@@ -151,14 +189,17 @@ class ProvidersView(QWidget):
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty.setWordWrap(True)
         self._empty.setProperty("class", "empty")
-        root.addWidget(self._empty)
+        # Stretch lives here as well as on the scroll area: the empty state hides the
+        # scroll, and a column with no expanding child hands the surplus to the page
+        # header instead, which stretches the title to five times its own height.
+        root.addWidget(self._empty, 1)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._canvas = QWidget()
         self._rows = QVBoxLayout(self._canvas)
-        self._rows.setSpacing(8)
+        self._rows.setSpacing(SPACE["sm"])
         self._rows.setContentsMargins(0, 0, 0, 0)
         self._rows.addStretch(1)
         self._scroll.setWidget(self._canvas)
@@ -182,7 +223,10 @@ class ProvidersView(QWidget):
             configs = registry.list_configs()
             active = registry.active_id()
         except Exception as exc:  # noqa: BLE001 - a broken table must not blank the tab
-            self._empty.setText(f"Không đọc được danh sách nhà cung cấp: {exc}")
+            # What happened and what to do; the Python message is detail for whoever goes
+            # looking, so it lives in the tooltip rather than in the sentence.
+            self._empty.setText("Không đọc được danh sách nhà cung cấp.\nKhởi động lại ứng dụng.")
+            self._empty.setToolTip(str(exc))
             self._empty.show()
             self._scroll.hide()
             return
@@ -191,6 +235,7 @@ class ProvidersView(QWidget):
                 "Chưa có nhà cung cấp nào.\n"
                 "Thêm một máy chủ để trò chuyện, tạo embedding và trích xuất tri thức."
             )
+            self._empty.setToolTip("")
             self._empty.show()
             self._scroll.hide()
             return

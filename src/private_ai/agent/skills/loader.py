@@ -10,6 +10,7 @@ the prompt, not a hundred documents.
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
@@ -37,6 +38,13 @@ class SkillError(ValueError):
 def _strip_scalar(value: str) -> str:
     value = value.strip()
     if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        if value[0] == '"':
+            # Double-quoted YAML carries backslash escapes, and that is the form
+            # :func:`render_skill_file` writes; JSON decodes exactly that subset.
+            try:
+                return json.loads(value)
+            except ValueError:
+                return value[1:-1]
         return value[1:-1]
     # A trailing ``# comment`` is only a comment when whitespace precedes it.
     return re.sub(r"\s+#.*\Z", "", value).strip()
@@ -80,6 +88,57 @@ def _parse_frontmatter_fallback(text: str) -> dict[str, object]:
         else:
             meta[key] = _strip_scalar(value)
     return meta
+
+
+def validate_name(name: str) -> str:
+    """The slug a pack is addressed by. Checked here so nothing invalid reaches disk."""
+    name = name.strip()
+    if not _NAME_RE.match(name):
+        raise SkillError(
+            f"Tên kỹ năng '{name}' không hợp lệ: chỉ dùng chữ thường, số, '.', '-' và '_'."
+        )
+    return name
+
+
+def _scalar(value: str) -> str:
+    """One frontmatter value, quoted only when leaving it bare would change its meaning.
+
+    JSON is a subset of YAML for double-quoted strings, so ``json.dumps`` gives correct
+    escaping without pulling in an emitter.
+    """
+    value = " ".join(value.split())
+    if value and not re.search(r'^[-?:,\[\]{}#&*!|>\'"%@`]|[:#]\s|["\'\\]|\s$', value):
+        return value
+    return json.dumps(value, ensure_ascii=False)
+
+
+def render_skill_file(
+    *,
+    name: str,
+    description: str,
+    body: str,
+    title: str = "",
+    version: str = "1.0.0",
+    keywords: Sequence[str] = (),
+) -> str:
+    """A SKILL.md for a pack written in the app, validated before it is handed back."""
+    name = validate_name(name)
+    description = " ".join(description.split())
+    body = body.strip()
+    if not description:
+        raise SkillError(f"Kỹ năng '{name}' thiếu trường 'description'.")
+    if not body:
+        raise SkillError(f"Kỹ năng '{name}' không có phần hướng dẫn.")
+    lines = ["---", f"name: {name}"]
+    if title.strip():
+        lines.append(f"title: {_scalar(title)}")
+    lines.append(f"description: {_scalar(description)}")
+    lines.append(f"version: {_scalar(version)}")
+    cleaned = [word for word in (item.strip() for item in keywords) if word]
+    if cleaned:
+        lines.append("keywords: [" + ", ".join(_scalar(word) for word in cleaned) + "]")
+    lines.extend(["---", "", body, ""])
+    return "\n".join(lines)
 
 
 def parse_frontmatter(text: str) -> tuple[dict[str, object], str]:
@@ -179,11 +238,7 @@ def parse_skill(path: Path, *, source: str | None = None) -> Skill:
         raise SkillError(f"Không tìm thấy {SKILL_FILENAME} trong {directory}")
 
     meta, body = parse_frontmatter(skill_file.read_text(encoding="utf-8"))
-    name = _as_text(meta, "name") or directory.name
-    if not _NAME_RE.match(name):
-        raise SkillError(
-            f"Tên kỹ năng '{name}' không hợp lệ: chỉ dùng chữ thường, số, '.', '-' và '_'."
-        )
+    name = validate_name(_as_text(meta, "name") or directory.name)
     description = _as_text(meta, "description")
     if not description:
         raise SkillError(f"Kỹ năng '{name}' thiếu trường 'description'.")

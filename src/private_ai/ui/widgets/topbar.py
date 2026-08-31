@@ -32,25 +32,30 @@ class Topbar(QWidget):
         super().__init__(parent)
         self.setObjectName("Topbar")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setFixedHeight(62)
+        # 48px of content between two 16px bands puts the controls on the same baseline as
+        # the sidebar header's toggle, which is the widget on the other side of the seam.
+        # The 24px inset is the page margin, so the title starts where the view below it does.
+        self.setFixedHeight(theme.SPACE["4xl"] + theme.SPACE["xl"] * 2)
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(22, 10, 18, 10)
-        row.setSpacing(12)
+        row.setContentsMargins(
+            theme.SPACE["2xl"], theme.SPACE["lg"], theme.SPACE["2xl"], theme.SPACE["lg"]
+        )
+        row.setSpacing(theme.TOOLBAR_SPACING)
 
         copy = QVBoxLayout()
         copy.setContentsMargins(0, 0, 0, 0)
-        copy.setSpacing(1)
+        copy.setSpacing(theme.SPACE["3xs"])
         self._title = QLabel(self)
-        self._title.setStyleSheet(f"color: {theme.token('ink')}; font-weight: 720;")
+        self._title.setProperty("class", "body-strong")
         copy.addWidget(self._title)
 
         status = QHBoxLayout()
         status.setContentsMargins(0, 0, 0, 0)
-        status.setSpacing(6)
+        status.setSpacing(theme.SPACE["xs"])
         self._pip = StatusPip("online", self)
         self._where = QLabel("Trên thiết bị", self)
-        self._where.setProperty("class", "faint")
+        self._where.setProperty("class", "muted")
         status.addWidget(self._pip)
         status.addWidget(self._where)
         status.addStretch(1)

@@ -32,6 +32,7 @@ from langchain_core.messages import (
 )
 from langgraph.errors import GraphRecursionError
 
+from private_ai.agent import progress
 from private_ai.agent.graph import agent_config, build_agent_graph
 from private_ai.agent.state import initial_state
 from private_ai.core import repositories
@@ -90,24 +91,56 @@ def _history(messages: Sequence[Any]) -> list[AnyMessage]:
     return converted
 
 
+def _progress_event(payload: Any) -> dict[str, Any] | None:
+    """One custom-channel payload, as the event the UI consumes.
+
+    Anything on that channel that is not ours is dropped rather than forwarded: a tool or
+    a sub-graph may write to it too, and an unrecognised shape reaching the chat bubble
+    would render as an empty step.
+    """
+    if not isinstance(payload, dict):
+        return None
+    kind = str(payload.get("kind") or "")
+    if kind == "notice":
+        message = str(payload.get("message") or "").strip()
+        return {"type": "notice", "message": message} if message else None
+    if kind != "progress":
+        return None
+    event: dict[str, Any] = {
+        "type": "progress",
+        "stage": str(payload.get("stage") or ""),
+        "label": str(payload.get("label") or ""),
+        "detail": str(payload.get("detail") or ""),
+    }
+    fraction = payload.get("fraction")
+    if isinstance(fraction, int | float):
+        event["fraction"] = float(fraction)
+    return event
+
+
 class AgentRunner:
     """Runs one chat turn and reports it as a stream of events."""
 
     def __init__(self, services: AppServices) -> None:
         self.services = services
-        self._graph: CompiledStateGraph | None = None
+        # One graph per workspace: the workspace is bound into the tool schemas, so a
+        # single shared graph would hand every turn the first workspace's tools.
+        self._graphs: dict[str, CompiledStateGraph] = {}
         self._build_lock = asyncio.Lock()
 
-    async def graph(self) -> CompiledStateGraph:
-        """Compiled once. Mounting or unmounting an MCP server calls :meth:`reset`."""
-        if self._graph is None:
+    async def graph(self, workspace_id: str = "") -> CompiledStateGraph:
+        """Compiled once per workspace. Mounting an MCP server calls :meth:`reset`."""
+        cached = self._graphs.get(workspace_id)
+        if cached is None:
             async with self._build_lock:
-                if self._graph is None:
-                    self._graph = await build_agent_graph(self.services)
-        return self._graph
+                cached = self._graphs.get(workspace_id)
+                if cached is None:
+                    cached = await build_agent_graph(self.services, workspace_id=workspace_id)
+                    self._graphs[workspace_id] = cached
+        return cached
 
     def reset(self) -> None:
-        self._graph = None
+        self._graphs.clear()
 
     # --- the public stream -------------------------------------------------
 
@@ -144,12 +177,16 @@ class AgentRunner:
         )
         run_id = self._open_run(conversation_id, strategy)
 
-        graph = await self.graph()
+        # The graph carries workspace-bound tools, so it must match the turn's workspace.
+        graph = await self.graph(state["workspace_id"])
         answer_parts: list[str] = []
         citations: list[dict[str, Any]] = []
         used_skills: list[str] = []
         used_tools: list[str] = []
+        seen_notices: set[str] = set()
         chosen_strategy = strategy
+        routed_to = ""
+        routing_reason = ""
         saved = False
         status = "completed"
         failure = ""
@@ -158,8 +195,16 @@ class AgentRunner:
             async for mode, payload in graph.astream(
                 state,
                 config=agent_config(settings),
-                stream_mode=["messages", "updates"],
+                stream_mode=["messages", "updates", "custom"],
             ):
+                # The nodes write their own progress on the custom channel, so it arrives
+                # interleaved with tokens in the order it happened rather than on a second
+                # path the UI would have to re-order.
+                if mode == "custom":
+                    event = _progress_event(payload)
+                    if event is not None:
+                        yield event
+                    continue
                 if mode == "messages":
                     message, metadata = payload
                     if metadata.get("langgraph_node") != "agent":
@@ -180,8 +225,15 @@ class AgentRunner:
                         used_skills = [str(name) for name in update.get("skills") or []]
                     elif node == "retrieve":
                         citations.extend(update.get("citations") or [])
+                        routed_to = str(update.get("routed_to") or routed_to)
+                        routing_reason = str(update.get("routing_reason") or routing_reason)
+                        # Streamed live from the node as well; this is the catch-up for a
+                        # notice recorded before anything was listening.
                         for notice in update.get("notices") or []:
-                            yield {"type": "notice", "message": str(notice)}
+                            text = str(notice)
+                            if text not in seen_notices:
+                                seen_notices.add(text)
+                                yield {"type": "notice", "message": text}
                     elif node == "agent":
                         for message in update.get("messages") or []:
                             if not settings.agent_stream_tokens:
@@ -192,6 +244,12 @@ class AgentRunner:
                             # look like the answer had hung.
                             for call in getattr(message, "tool_calls", None) or []:
                                 used_tools.append(str(call.get("name") or ""))
+                                yield {
+                                    "type": "progress",
+                                    "stage": "tool",
+                                    "label": progress.stage_label("tool"),
+                                    "detail": str(call.get("name") or ""),
+                                }
                                 yield {
                                     "type": "tool_start",
                                     "name": str(call.get("name") or ""),
@@ -214,7 +272,16 @@ class AgentRunner:
             else:
                 await asyncio.to_thread(self._finalize, conversation_id, content, answer, model)
                 saved = True
-                yield {"type": "final", "content": answer, "citations": citations}
+                yield {
+                    "type": "final",
+                    "content": answer,
+                    "citations": citations,
+                    # What the turn asked for, what it actually used, and why: with
+                    # ``auto`` the first two differ, and only the third explains it.
+                    "strategy": chosen_strategy,
+                    "routed_to": routed_to,
+                    "routing_reason": routing_reason,
+                }
         except asyncio.CancelledError:
             status = "cancelled"
             failure = "cancelled"
@@ -245,17 +312,28 @@ class AgentRunner:
         content = ""
         citations: list[dict[str, Any]] = []
         notices: list[str] = []
+        routed_to = ""
+        routing_reason = ""
         error = ""
         async for event in self.stream(**kwargs):
             kind = event.get("type")
             if kind == "final":
                 content = str(event.get("content", ""))
                 citations = list(event.get("citations") or [])
+                routed_to = str(event.get("routed_to") or "")
+                routing_reason = str(event.get("routing_reason") or "")
             elif kind == "notice":
                 notices.append(str(event.get("message", "")))
             elif kind == "error":
                 error = str(event.get("message", ""))
-        return {"content": content, "citations": citations, "notices": notices, "error": error}
+        return {
+            "content": content,
+            "citations": citations,
+            "notices": notices,
+            "routed_to": routed_to,
+            "routing_reason": routing_reason,
+            "error": error,
+        }
 
     # --- persistence -------------------------------------------------------
 

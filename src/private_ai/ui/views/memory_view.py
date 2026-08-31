@@ -24,11 +24,23 @@ from PySide6.QtWidgets import (
 from private_ai.core import repositories
 from private_ai.ui.icons import icon
 from private_ai.ui.models.memory_model import TYPE_LABELS, MemoryModel, type_label
+from private_ai.ui.theme import (
+    CARD_MARGINS,
+    CARD_SPACING,
+    DIALOG_MARGINS,
+    DIALOG_SPACING,
+    PAGE_SPACING,
+    SPACE,
+    TOOLBAR_SPACING,
+)
 from private_ai.ui.widgets.confirm_button import ConfirmButton
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.core.schemas import MemoryRecord
     from private_ai.ui.context import AppContext
+
+# Enough for a few sentences of a remembered note before the editor starts scrolling.
+_CONTENT_HEIGHT = SPACE["3xl"] * 3 + SPACE["2xl"]
 
 
 class MemoryDialog(QDialog):
@@ -41,7 +53,8 @@ class MemoryDialog(QDialog):
         self.setMinimumWidth(460)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setContentsMargins(*DIALOG_MARGINS)
+        layout.setSpacing(DIALOG_SPACING)
 
         heading = QLabel(self.windowTitle())
         heading.setProperty("class", "title")
@@ -63,10 +76,11 @@ class MemoryDialog(QDialog):
 
         layout.addWidget(QLabel("Nội dung"))
         self._content = QPlainTextEdit(record.content if record else "")
-        self._content.setFixedHeight(120)
+        self._content.setFixedHeight(_CONTENT_HEIGHT)
         layout.addWidget(self._content)
 
         row = QHBoxLayout()
+        row.setSpacing(TOOLBAR_SPACING)
         row.addStretch(1)
         cancel = QPushButton("Hủy")
         cancel.clicked.connect(self.reject)
@@ -95,20 +109,22 @@ class _MemoryRow(QFrame):
         self.setEnabled(True)
 
         layout = QHBoxLayout(self)
-        layout.setSpacing(12)
+        layout.setContentsMargins(*CARD_MARGINS)
+        layout.setSpacing(CARD_SPACING)
 
+        # A memory type is a category, not a state, so it takes the neutral badge.
         kind = QLabel(type_label(record.type))
         kind.setProperty("class", "chip")
-        kind.setFixedWidth(120)
         layout.addWidget(kind, 0, Qt.AlignmentFlag.AlignTop)
 
         content = QLabel(record.content)
         content.setWordWrap(True)
-        content.setProperty("class", "" if record.enabled else "faint")
+        # A disabled memory is still the text the user came here to read.
+        content.setProperty("class", "" if record.enabled else "muted")
         layout.addWidget(content, 1)
 
         actions = QHBoxLayout()
-        actions.setSpacing(6)
+        actions.setSpacing(TOOLBAR_SPACING)
         edit = QPushButton("Sửa")
         edit.clicked.connect(lambda: view.edit(record))
         actions.addWidget(edit)
@@ -119,6 +135,8 @@ class _MemoryRow(QFrame):
         remove.confirmed.connect(lambda: view.remove(record))
         actions.addWidget(remove)
         layout.addLayout(actions, 0)
+        # The content column wraps, so the two side columns hang from the same top edge.
+        layout.setAlignment(actions, Qt.AlignmentFlag.AlignTop)
 
 
 class MemoryView(QWidget):
@@ -130,11 +148,15 @@ class MemoryView(QWidget):
         self._loading = False
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(4, 4, 4, 4)
-        root.setSpacing(12)
+        # Hosted inside the settings tab widget, which already supplies the page
+        # padding; a second PAGE_MARGINS here would inset the tab twice.
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(PAGE_SPACING)
 
         heading = QHBoxLayout()
+        heading.setSpacing(TOOLBAR_SPACING)
         titles = QVBoxLayout()
+        titles.setSpacing(SPACE["2xs"])
         eyebrow = QLabel("Bộ nhớ cá nhân")
         eyebrow.setProperty("class", "section-label")
         titles.addWidget(eyebrow)
@@ -162,14 +184,17 @@ class MemoryView(QWidget):
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._empty.setWordWrap(True)
         self._empty.setProperty("class", "empty")
-        root.addWidget(self._empty)
+        # Stretch lives here as well as on the scroll area: the empty state hides the
+        # scroll, and a column with no expanding child hands the surplus to the page
+        # header instead, which stretches the title to five times its own height.
+        root.addWidget(self._empty, 1)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
         self._canvas = QWidget()
         self._rows = QVBoxLayout(self._canvas)
-        self._rows.setSpacing(8)
+        self._rows.setSpacing(SPACE["sm"])
         self._rows.setContentsMargins(0, 0, 0, 0)
         self._rows.addStretch(1)
         self._scroll.setWidget(self._canvas)

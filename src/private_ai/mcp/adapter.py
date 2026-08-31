@@ -64,6 +64,9 @@ def render_result(result: Any) -> str:
     return text[:MAX_TOOL_OUTPUT_CHARS]
 
 
+WORKSPACE_FIELD = "workspace_id"
+
+
 def _object_schema(schema: Any) -> dict[str, Any]:
     """MCP guarantees an object schema; a server that sends something else gets a stub."""
     if isinstance(schema, dict) and schema.get("type") == "object":
@@ -71,30 +74,68 @@ def _object_schema(schema: Any) -> dict[str, Any]:
     return {"type": "object", "properties": {}}
 
 
+def _bind_workspace(schema: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Hide ``workspace_id`` from a tool the agent may only use on one workspace.
+
+    A parameter the model cannot see is a parameter it cannot get wrong. Leaving it in the
+    schema is what let a turn started in one workspace list and read another's documents:
+    the model was free to pass any id it had learned. The value is supplied at call time
+    instead, so the tool still works and the workspace is no longer the model's choice.
+    """
+    properties = schema.get("properties")
+    if not isinstance(properties, dict) or WORKSPACE_FIELD not in properties:
+        return schema, False
+    bound = dict(schema)
+    bound["properties"] = {k: v for k, v in properties.items() if k != WORKSPACE_FIELD}
+    required = schema.get("required")
+    if isinstance(required, list):
+        bound["required"] = [item for item in required if item != WORKSPACE_FIELD]
+    return bound, True
+
+
 async def mcp_tools_to_langchain(
     server: ToolServer,
     *,
     allow: frozenset[str] | None = None,
+    workspace_id: str = "",
 ) -> list[StructuredTool]:
-    """Advertise one server's tools to the agent, minus anything ``allow`` excludes."""
+    """Advertise one server's tools to the agent, minus anything ``allow`` excludes.
+
+    ``workspace_id`` pins every workspace-scoped tool to one workspace for the whole turn.
+    """
     tools: list[StructuredTool] = []
     for tool in await server.list_tools():
         name = str(tool.name)
         if allow is not None and name not in allow:
             continue
+        schema = _object_schema(getattr(tool, "input_schema", None))
+        scoped = False
+        if workspace_id:
+            schema, scoped = _bind_workspace(schema)
         tools.append(
             StructuredTool(
                 name=alias_for(name),
                 description=(tool.description or "").strip(),
-                args_schema=_object_schema(getattr(tool, "input_schema", None)),
-                coroutine=invoker(server, alias_for(name), allow=allow),
+                args_schema=schema,
+                coroutine=invoker(
+                    server,
+                    alias_for(name),
+                    allow=allow,
+                    workspace_id=workspace_id if scoped else "",
+                ),
                 func=None,
             )
         )
     return tools
 
 
-def invoker(server: ToolServer, alias: str, *, allow: frozenset[str] | None = None):
+def invoker(
+    server: ToolServer,
+    alias: str,
+    *,
+    allow: frozenset[str] | None = None,
+    workspace_id: str = "",
+):
     """The coroutine behind one advertised tool.
 
     The membership test runs again here, *after* unmangling, because the advertised list
@@ -109,6 +150,10 @@ def invoker(server: ToolServer, alias: str, *, allow: frozenset[str] | None = No
     async def _run(**arguments: Any) -> str:
         if allow is not None and name not in allow:
             return f"Tool {name} is not available to the agent."
+        if workspace_id:
+            # Overwrite rather than default: a model that supplied its own id must not
+            # be able to reach across workspaces by guessing one.
+            arguments = {**arguments, WORKSPACE_FIELD: workspace_id}
         try:
             result = await server.call_tool(name, arguments)
         except Exception as exc:  # noqa: BLE001 - a failing tool must not kill the turn

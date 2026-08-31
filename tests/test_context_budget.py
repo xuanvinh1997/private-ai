@@ -107,9 +107,7 @@ async def test_a_summary_request_over_a_large_document_does_not_flood_the_prompt
     assert raw > 200_000, "fixture must be big enough that flooding would be obvious"
 
     # The old behaviour: every chunk straight into the prompt.
-    flooded = document_block(
-        services.strategies.get("summary").documents(plan), budget=10**9
-    )
+    flooded = document_block(services.strategies.get("summary").documents(plan), budget=10**9)
     assert len(flooded) > 200_000
 
     # The fixed behaviour: the same passages, under budget.

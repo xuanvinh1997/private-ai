@@ -79,9 +79,17 @@ async def conversation(services: AppServices, workspace_id: str) -> str:
 async def runner_for(
     services: AppServices,
     tools: list[StructuredTool] | None = None,
+    workspace_id: str = "",
 ) -> AgentRunner:
+    """A runner whose graph is pre-built with the given tools.
+
+    The runner caches one graph per workspace, because the workspace is bound into the
+    tool schemas, so the injected graph has to be filed under the workspace the turn will
+    run in.
+    """
     runner = AgentRunner(services)
-    runner._graph = await build_agent_graph(services, tools=tools or [])
+    graph = await build_agent_graph(services, tools=tools or [], workspace_id=workspace_id)
+    runner._graphs[workspace_id] = graph
     return runner
 
 
@@ -129,21 +137,26 @@ async def test_a_turn_with_one_tool_round_emits_the_contracted_events(
             AIMessage(content="Chiếc xe màu đỏ."),
         ],
     )
-    runner = await runner_for(services, [search_tool])
+    runner = await runner_for(services, [search_tool], workspace_id)
 
     events = [event async for event in runner.stream(**_stream_kwargs(conversation, workspace_id))]
 
+    # Progress events are interleaved by design — the turn reports where it is so a long
+    # retrieval does not read as a hang — so the tool contract is asserted on the rest.
     kinds = [event["type"] for event in events]
-    assert kinds[0] == "tool_start"
-    assert kinds[1] == "tool_end"
-    assert "token" in kinds
-    assert kinds[-1] == "final"
+    assert "progress" in kinds
+    work = [event for event in events if event["type"] != "progress"]
+    work_kinds = [event["type"] for event in work]
+    assert work_kinds[0] == "tool_start"
+    assert work_kinds[1] == "tool_end"
+    assert "token" in work_kinds
+    assert work_kinds[-1] == "final"
 
-    start = events[0]
+    start = work[0]
     assert start["name"] == TOOL_ALIAS
     assert start["args"] == {"query": "xe hơi"}
     assert tool_calls == [{"query": "xe hơi"}]
-    assert "chiếc xe màu đỏ" in events[1]["output"]
+    assert "chiếc xe màu đỏ" in work[1]["output"]
 
     tokens = "".join(event["content"] for event in events if event["type"] == "token")
     assert tokens.strip() == "Chiếc xe màu đỏ."
@@ -170,7 +183,7 @@ async def test_the_answer_and_the_run_are_written_down(
             AIMessage(content="Màu đỏ."),
         ],
     )
-    runner = await runner_for(services, [search_tool])
+    runner = await runner_for(services, [search_tool], workspace_id)
 
     async for _ in runner.stream(**_stream_kwargs(conversation, workspace_id)):
         pass
@@ -197,7 +210,7 @@ async def test_a_question_that_needs_no_tool_costs_no_round(
     search_tool: StructuredTool,
 ) -> None:
     _, offered = install_model(services, [AIMessage(content="Không cần công cụ.")])
-    runner = await runner_for(services, [search_tool])
+    runner = await runner_for(services, [search_tool], workspace_id)
 
     events = [event async for event in runner.stream(**_stream_kwargs(conversation, workspace_id))]
 
@@ -218,7 +231,7 @@ async def test_a_model_that_keeps_asking_for_tools_is_stopped_not_looped(
         services,
         [AIMessage(content="", tool_calls=call) for _ in range(5)],
     )
-    runner = await runner_for(services, [search_tool])
+    runner = await runner_for(services, [search_tool], workspace_id)
 
     events = [event async for event in runner.stream(**_stream_kwargs(conversation, workspace_id))]
 
@@ -257,6 +270,29 @@ async def test_retrieved_documents_come_back_as_citations(
     assert citation["page"] == 2
     assert citation["snippet"]
     assert citation["strategy"]
+
+
+async def test_the_turn_reports_which_strategy_auto_routed_to_and_why(
+    services: AppServices,
+    workspace_id: str,
+    conversation: str,
+) -> None:
+    """``auto`` is a decision the user never made; the turn has to be able to explain it."""
+    document_id = insert_document(services.database, workspace_id, "ND-15.txt")
+    await services.vectors.scoped(workspace_id).aadd_texts(
+        ["nghị định ND-15 quy định về hợp đồng"],
+        [{"document_id": document_id}],
+    )
+    install_model(services, [AIMessage(content="Theo [ND-15.txt].")])
+    runner = await runner_for(services)
+
+    # A question carrying an identifier is what routes auto to the keyword strategy.
+    result = await runner.run(
+        **_stream_kwargs(conversation, workspace_id, content="ND-15 quy định gì?")
+    )
+
+    assert result["routed_to"] == "keyword"
+    assert result["routing_reason"]
 
 
 async def test_a_failed_web_search_is_a_notice_not_a_failed_turn(
@@ -438,8 +474,78 @@ async def test_an_odd_iteration_budget_can_use_all_of_its_tool_rounds(
         ]
         + [AIMessage(content="Xong.")],
     )
-    runner = await runner_for(services, [search_tool])
+    runner = await runner_for(services, [search_tool], workspace_id)
 
     events = [event async for event in runner.stream(**_stream_kwargs(conversation, workspace_id))]
 
     assert events[-1]["type"] == "final"
+
+
+async def test_a_turn_reports_where_it_is(
+    services: AppServices,
+    workspace_id: str,
+    conversation: str,
+    search_tool: StructuredTool,
+) -> None:
+    """A turn that says nothing for a minute is indistinguishable from a crashed one."""
+    install_model(services, [AIMessage(content="Chiếc xe màu đỏ.")])
+    runner = await runner_for(services, [search_tool], workspace_id)
+
+    events = [event async for event in runner.stream(**_stream_kwargs(conversation, workspace_id))]
+    steps = [event for event in events if event["type"] == "progress"]
+
+    assert steps, "the turn reported nothing at all"
+    # The stages that bracket the two long silences: retrieval, and the first model call.
+    stages = [step["stage"] for step in steps]
+    assert "retrieve" in stages
+    assert stages[-1] in {"loading", "thinking"}
+    # Every step must be renderable — a blank caption is a blank line in the bubble.
+    assert all(step["label"] for step in steps)
+    # And it has to arrive before the answer, which is the entire point.
+    assert events.index(steps[0]) < events.index(
+        next(event for event in events if event["type"] == "token")
+    )
+
+
+async def test_the_summary_map_reduce_is_reported_not_swallowed(
+    services: AppServices,
+    workspace_id: str,
+    conversation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The slowest turn the app can run was also the one that looked most like a freeze.
+
+    ``SummaryStrategy.digest`` has always accepted a ``ProgressSink`` and reported every
+    map and reduce round through it; the graph simply never passed one, so all of it was
+    discarded. This asserts the argument is still there.
+    """
+    from private_ai.agent import graph as graph_module
+
+    seen: list[str] = []
+
+    class _Plan:
+        source_label = "sách.pdf"
+        chunks = ("a", "b", "c")
+
+    class _Summary:
+        async def digest(self, query, workspace_id, *, on_progress=None, **kwargs):
+            assert on_progress is not None, "the map-reduce is reporting into the void"
+            on_progress("mapping", 0.5, "Tóm tắt tài liệu 2/4")
+            return "Bản tóm tắt."
+
+        def documents(self, plan):
+            return []
+
+    async def fake_plan(*args: Any, **kwargs: Any):
+        return _Plan()
+
+    monkeypatch.setattr(graph_module, "_summary_plan", fake_plan)
+    monkeypatch.setattr(services.strategies, "get", lambda name: _Summary())
+    install_model(services, [AIMessage(content="Xong.")])
+    runner = await runner_for(services, [], workspace_id)
+
+    async for event in runner.stream(**_stream_kwargs(conversation, workspace_id)):
+        if event["type"] == "progress":
+            seen.append(event["stage"])
+
+    assert "mapping" in seen, f"map-reduce progress never reached the stream: {seen}"

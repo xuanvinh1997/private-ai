@@ -108,7 +108,6 @@ class ConfirmToolButton(ConfirmButton):
         )
         self._tooltip = tooltip
         self._confirm_tooltip = confirm_tooltip
-        self.setFixedSize(28, 28)
         self.setProperty("class", "icon")
         self._paint()
 
@@ -119,7 +118,7 @@ class ConfirmToolButton(ConfirmButton):
             getattr(self, "_confirm_tooltip", "") if armed else getattr(self, "_tooltip", "")
         )
         self.setAccessibleName(self.toolTip())
-        color = theme.token("danger") if armed else theme.token("faint")
+        color = theme.token("danger") if armed else theme.token("muted")
         self.setIcon(icons.icon(self._icon_name or "trash-2", color=color, size=15))
         self.setProperty("class", "icon")
         theme.restyle(self)

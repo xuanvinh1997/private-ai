@@ -63,7 +63,7 @@ class StatusPip(QWidget):
     def __init__(self, state: str = "unknown", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._state = state
-        self.setFixedSize(QSize(9, 9))
+        self.setFixedSize(QSize(theme.SPACE["sm"], theme.SPACE["sm"]))
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setToolTip(state_text(state))
 
@@ -82,7 +82,7 @@ class StatusPip(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         color = QColor(state_color(self._state))
         painter.setPen(Qt.PenStyle.NoPen)
-        # The halo is what makes a 9px dot readable against both the sidebar and a card.
+        # The halo is what makes an 8px dot readable against both the sidebar and a card.
         halo = QColor(color)
         halo.setAlpha(60)
         painter.setBrush(halo)
@@ -104,7 +104,7 @@ class StatusPipLabel(QWidget):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(7)
+        layout.setSpacing(theme.SPACE["xs"])
         self.pip = StatusPip(state, self)
         self.label = QLabel(text, self)
         self.label.setProperty("class", "muted")

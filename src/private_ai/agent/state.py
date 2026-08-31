@@ -33,7 +33,11 @@ class AgentState(TypedDict, total=False):
     strategy: str
     skills: list[str]
 
-    # Produced by ``retrieve``.
+    # Produced by ``retrieve``. ``routed_to`` and ``routing_reason`` are what ``auto``
+    # actually decided and why — the choice is made inside retrieval, so ``plan``'s
+    # ``strategy`` still says "auto" long after the question has been routed elsewhere.
+    routed_to: str
+    routing_reason: str
     documents: Annotated[list[Document], operator.add]
     citations: Annotated[list[dict[str, Any]], operator.add]
     system_prompt: str
@@ -70,6 +74,8 @@ def initial_state(
         web_search=web_search,
         strategy=strategy,
         skills=list(skills or []),
+        routed_to="",
+        routing_reason="",
         documents=[],
         citations=[],
         system_prompt="",

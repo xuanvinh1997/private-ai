@@ -15,15 +15,14 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QVBoxLayout,
 )
 
 from private_ai.core.schemas import ProviderProbeResult
 from private_ai.llm.router import openai_base_url
+from private_ai.ui.dialogs import _shell
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.llm.registry import ProviderConfig
@@ -87,58 +86,45 @@ class ProviderDialog(QDialog):
         self.setWindowTitle(provider.name if provider else "Thêm nhà cung cấp AI")
         self.setMinimumWidth(480)
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-
-        heading = QLabel(self.windowTitle())
-        heading.setProperty("class", "title")
-        layout.addWidget(heading)
-
-        blurb = QLabel(
+        layout = _shell.dialog_layout(self)
+        _shell.title_block(
+            layout,
+            self.windowTitle(),
             "Đổi địa chỉ Ollama mà ứng dụng gọi tới, ví dụ khi Ollama chạy trong WSL2 hoặc "
             "trên một máy khác trong mạng nội bộ."
             if (provider is not None and provider.builtin)
             else "Kết nối tới một máy chủ nói giao thức OpenAI API, ví dụ vLLM, LM Studio, "
-            "LiteLLM hoặc OpenAI. Khóa API chỉ được lưu trên máy này."
+            "LiteLLM hoặc OpenAI. Khóa API chỉ được lưu trên máy này.",
         )
-        blurb.setWordWrap(True)
-        blurb.setProperty("class", "muted")
-        layout.addWidget(blurb)
 
-        layout.addWidget(QLabel("Tên hiển thị"))
         self._name = QLineEdit(provider.name if provider else "")
         self._name.setPlaceholderText("Máy chủ nội bộ")
         self._name.setMaxLength(120)
-        layout.addWidget(self._name)
+        _shell.field(layout, "Tên hiển thị", self._name)
 
-        self._kind_label = QLabel("Giao thức")
         self._kind = QComboBox()
         for value in ("openai", "ollama"):
             self._kind.addItem(KIND_LABELS[value], value)
+        self._kind_label = _shell.field(layout, "Giao thức", self._kind)
         if editing:
             # The kind decides the client class and cannot be swapped under a saved row.
             self._kind.setCurrentIndex(self._kind.findData(provider.kind))
             self._kind_label.hide()
             self._kind.hide()
         self._kind.currentIndexChanged.connect(self._sync_key_row)
-        layout.addWidget(self._kind_label)
-        layout.addWidget(self._kind)
 
-        layout.addWidget(QLabel("Địa chỉ máy chủ"))
         self._base_url = QLineEdit(provider.base_url if provider else "")
         self._base_url.setPlaceholderText("https://api.openai.com/v1")
         self._base_url.setMaxLength(500)
-        layout.addWidget(self._base_url)
+        _shell.field(layout, "Địa chỉ máy chủ", self._base_url)
 
-        self._key_label = QLabel("Khóa API")
         self._key = QLineEdit()
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         self._key.setMaxLength(500)
         self._key.setPlaceholderText(
             "Giữ nguyên khóa đã lưu" if (provider and provider.api_key) else "sk-…"
         )
-        layout.addWidget(self._key_label)
-        layout.addWidget(self._key)
+        self._key_label = _shell.field(layout, "Khóa API", self._key)
 
         self._status = QLabel("")
         self._status.setWordWrap(True)
@@ -152,7 +138,7 @@ class ProviderDialog(QDialog):
         self._error.hide()
         layout.addWidget(self._error)
 
-        row = QHBoxLayout()
+        row = _shell.action_row(layout)
         self._probe = QPushButton("Kiểm tra")
         self._probe.clicked.connect(self._on_probe)
         row.addWidget(self._probe)
@@ -165,7 +151,6 @@ class ProviderDialog(QDialog):
         self._save.setDefault(True)
         self._save.clicked.connect(self._on_save)
         row.addWidget(self._save)
-        layout.addLayout(row)
 
         self._sync_key_row()
         self._name.setFocus(Qt.FocusReason.OtherFocusReason)

@@ -33,28 +33,32 @@ from private_ai.core.schemas import (
     WebSearchBackend,
 )
 from private_ai.rag.web_search import WebSearchConfig
+from private_ai.ui.theme import (
+    CARD_MARGINS,
+    PAGE_MARGINS,
+    PAGE_SPACING,
+    SPACE,
+    TOOLBAR_SPACING,
+    restyle,
+)
 from private_ai.ui.widgets.status_pip import StatusPip
+from private_ai.ui.widgets.strategy_picker import STRATEGY_CHOICES
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.core.preferences import AppPreferences
     from private_ai.ui.context import AppContext
 
+# Spin boxes hold two or three digits; a full-width field would read as free text.
+_SPIN_WIDTH = SPACE["4xl"] * 2
+
 logger = logging.getLogger(__name__)
 
-STRATEGY_LABELS: dict[str, tuple[str, str]] = {
-    "auto": ("Tự chọn", "Để trợ lý tự quyết định cách tìm dựa trên câu hỏi."),
-    "vector": ("Vector", "Tìm theo ngữ nghĩa trên các đoạn đã nhúng."),
-    "keyword": ("Từ khóa", "Khớp đúng chữ — hợp với mã số, tên riêng, thuật ngữ."),
-    "hybrid": ("Kết hợp", "Gộp kết quả vector và từ khóa rồi xếp hạng lại."),
-    "graph": ("Đồ thị tri thức", "Đi theo thực thể và quan hệ, hợp với câu hỏi nhiều bước."),
-    "summary": ("Tóm tắt", "Đọc toàn bộ tài liệu thay vì từng đoạn rời rạc."),
-    "web": ("Tìm kiếm web", "Gửi câu hỏi ra ngoài máy tới nguồn tìm kiếm đã cấu hình."),
-}
-
 BACKEND_LABELS: dict[str, tuple[str, str]] = {
-    "searxng": ("SearXNG", "Máy chủ SearXNG của bạn — riêng tư nhất nếu chạy trên máy này."),
-    "duckduckgo": ("DuckDuckGo", "Không cần khóa, không cần máy chủ; câu hỏi rời khỏi máy."),
-    "openai": ("OpenAI", "Dùng công cụ tìm kiếm của OpenAI; tốn phí theo lượt tìm."),
+    "searxng": ("SearXNG", "Máy chủ của bạn — riêng tư nhất nếu chạy tại máy."),
+    # The card's own subtitle already says the question leaves the machine; a hint that
+    # repeats it under every choice is the line nobody reads twice.
+    "duckduckgo": ("DuckDuckGo", "Không cần khóa."),
+    "openai": ("OpenAI", "Cần API key. Tốn phí mỗi lượt."),
 }
 
 TAB_ORDER = ("general", "models", "memory", "providers", "skills", "mcp")
@@ -68,20 +72,96 @@ TAB_LABELS = {
 }
 
 
-def _section(title: str, blurb: str) -> tuple[QFrame, QVBoxLayout]:
+def _group(
+    title: str,
+    hint: str = "",
+    control: QWidget | None = None,
+) -> tuple[QFrame, QVBoxLayout]:
+    """One card per *group* of settings, not per setting.
+
+    Eight outlined cards down a page is eight frames competing with the one accent colour
+    the screen actually needs. Related preferences share a card and are told apart by a
+    hairline, which leaves the borders meaning "these belong together".
+
+    ``control`` is the group's own master switch, and it belongs on the heading line: a
+    whole row captioned "Bật" under a heading that already names the feature says the same
+    thing twice and spends a row doing it.
+    """
     frame = QFrame()
     frame.setProperty("class", "card")
     layout = QVBoxLayout(frame)
-    layout.setSpacing(6)
+    layout.setContentsMargins(*CARD_MARGINS)
+    layout.setSpacing(SPACE["sm"])
+
+    head = QHBoxLayout()
+    head.setContentsMargins(0, 0, 0, 0)
+    head.setSpacing(SPACE["md"])
+    copy = QVBoxLayout()
+    copy.setContentsMargins(0, 0, 0, 0)
+    copy.setSpacing(SPACE["3xs"])
     heading = QLabel(title)
-    heading.setProperty("class", "subtitle")
-    layout.addWidget(heading)
-    if blurb:
-        description = QLabel(blurb)
-        description.setWordWrap(True)
-        description.setProperty("class", "muted")
-        layout.addWidget(description)
+    heading.setProperty("class", "card-title")
+    copy.addWidget(heading)
+    if hint:
+        note = QLabel(hint)
+        note.setWordWrap(True)
+        note.setProperty("class", "muted")
+        copy.addWidget(note)
+    head.addLayout(copy, 1)
+    if control is not None:
+        head.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+    layout.addLayout(head)
     return frame, layout
+
+
+def _divider() -> QFrame:
+    """The hairline between two rows of one card."""
+    line = QFrame()
+    line.setProperty("class", "hline")
+    return line
+
+
+def _row(
+    caption: str,
+    control: QWidget,
+    hint: str = "",
+    hint_widget: QWidget | None = None,
+) -> QWidget:
+    """A setting as one row: what it is on the left, what it is set to on the right.
+
+    Only controls that need the width — combo boxes, URLs, keys — drop to their own line;
+    a checkbox or a segmented choice sits beside its caption, which is what turns a page of
+    stacked headings into a list you can scan.
+    """
+    holder = QWidget()
+    box = QVBoxLayout(holder)
+    box.setContentsMargins(0, 0, 0, 0)
+    box.setSpacing(SPACE["2xs"])
+
+    wide = isinstance(control, QComboBox | QLineEdit) or control.property("wideRow") is True
+    line = QHBoxLayout()
+    line.setContentsMargins(0, 0, 0, 0)
+    line.setSpacing(SPACE["md"])
+    copy = QVBoxLayout()
+    copy.setContentsMargins(0, 0, 0, 0)
+    copy.setSpacing(SPACE["3xs"])
+    label = QLabel(caption)
+    label.setProperty("class", "body-strong")
+    copy.addWidget(label)
+    if hint:
+        note = QLabel(hint)
+        note.setWordWrap(True)
+        note.setProperty("class", "muted")
+        copy.addWidget(note)
+    if hint_widget is not None:
+        copy.addWidget(hint_widget)
+    line.addLayout(copy, 1)
+    if not wide:
+        line.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+    box.addLayout(line)
+    if wide:
+        box.addWidget(control)
+    return holder
 
 
 class _Segmented(QWidget):
@@ -89,19 +169,22 @@ class _Segmented(QWidget):
 
     def __init__(self, options: list[tuple[str, str]], parent=None) -> None:
         super().__init__(parent)
+        self.setProperty("class", "segment")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        # The track's own hairline is the padding; the buttons sit inside it.
+        layout.setContentsMargins(*(SPACE["3xs"],) * 4)
+        layout.setSpacing(SPACE["3xs"])
         self._buttons: dict[str, QPushButton] = {}
         self._handler = None
         for value, label in options:
             button = QPushButton(label)
             button.setCheckable(True)
-            button.setProperty("class", "chip")
+            button.setProperty("class", "segment-item")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, v=value: self._picked(v))
             layout.addWidget(button)
             self._buttons[value] = button
-        layout.addStretch(1)
 
     def on_change(self, handler) -> None:
         self._handler = handler
@@ -136,160 +219,156 @@ class GeneralSettings(QWidget):
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         canvas = QWidget()
         root = QVBoxLayout(canvas)
-        root.setSpacing(12)
+        # Flush with the tab, minus a gutter so the cards do not sit under the scrollbar.
+        root.setContentsMargins(0, 0, SPACE["md"], 0)
+        root.setSpacing(PAGE_SPACING)
         scroll.setWidget(canvas)
         outer.addWidget(scroll)
 
-        # --- appearance --------------------------------------------------
-        frame, layout = _section("Giao diện", "Chọn nền sáng dễ đọc hoặc nền tối.")
-        self._theme = _Segmented([("light", "Sáng"), ("dark", "Tối"), ("system", "Theo hệ thống")])
+        # --- appearance ---------------------------------------------------
+        frame, layout = _group("Giao diện")
+        self._theme = _Segmented([("light", "Sáng"), ("dark", "Tối"), ("system", "Hệ thống")])
         self._theme.on_change(self._ctx.set_theme)
-        layout.addWidget(self._theme)
-        root.addWidget(frame)
-
-        frame, layout = _section("Cỡ chữ", "Tăng toàn bộ chữ và vùng điều khiển.")
-        self._large_text = QCheckBox("Dùng chữ lớn")
+        layout.addWidget(_row("Nền", self._theme))
+        layout.addWidget(_divider())
+        self._large_text = QCheckBox()
         self._large_text.toggled.connect(
             lambda value: self._ctx.set_font_scale("large" if value else "normal")
         )
-        layout.addWidget(self._large_text)
+        layout.addWidget(_row("Chữ lớn", self._large_text, "Phóng to cả chữ và vùng bấm."))
         root.addWidget(frame)
 
-        # --- OCR ----------------------------------------------------------
-        frame, layout = _section(
-            "Đọc văn bản bằng OCR",
-            "Bật OCR khi tệp không có lớp văn bản. Tắt thì chỉ đọc văn bản có sẵn — nhanh "
-            "hơn nhưng bỏ qua tài liệu scan.",
-        )
-        self._ocr = QCheckBox("Đang bật")
+        # --- documents ------------------------------------------------------
+        frame, layout = _group("Tài liệu")
+        self._ocr = QCheckBox()
         self._ocr.toggled.connect(self._on_ocr)
-        layout.addWidget(self._ocr)
+        layout.addWidget(_row("OCR", self._ocr, "Đọc được tài liệu scan. Chậm hơn."))
+        layout.addWidget(_divider())
+
+        numbers = QWidget()
+        # Two numbers side by side is the whole control; the row helper would stack it.
+        numbers.setProperty("wideRow", False)
+        number_row = QHBoxLayout(numbers)
+        number_row.setContentsMargins(0, 0, 0, 0)
+        number_row.setSpacing(TOOLBAR_SPACING)
+        self._batch = QSpinBox()
+        self._batch.setRange(1, 256)
+        self._batch.setToolTip("Số đoạn mỗi lô, 1–256")
+        self._batch.editingFinished.connect(self._on_batch)
+        self._concurrency = QSpinBox()
+        self._concurrency.setRange(1, 32)
+        self._concurrency.setToolTip("Số yêu cầu chạy cùng lúc, 1–32")
+        self._concurrency.editingFinished.connect(self._on_concurrency)
+        for caption, control in (("Lô", self._batch), ("Song song", self._concurrency)):
+            label = QLabel(caption)
+            label.setProperty("class", "muted")
+            # Sized to the widest value it accepts plus the stepper column, so a two-digit
+            # setting is not marooned at one end of a field built for nothing.
+            # (``setAlignment`` is not used: a stylesheet-styled QSpinBox draws its text
+            # left regardless of what the line edit reports.)
+            control.setFixedWidth(_SPIN_WIDTH)
+            number_row.addWidget(label, 0, Qt.AlignmentFlag.AlignVCenter)
+            number_row.addWidget(control, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(_row("Embedding", numbers, "Tăng nếu máy còn RAM."))
         root.addWidget(frame)
 
-        # --- retrieval ----------------------------------------------------
-        frame, layout = _section(
-            "Cách tìm mặc định",
-            "Chiến lược truy xuất dùng cho mọi câu hỏi khi bạn không chọn khác trong ô soạn.",
-        )
+        # --- retrieval ------------------------------------------------------
+        frame, layout = _group("Truy xuất")
+        # Same list and same wording as the composer's picker: two names for one strategy
+        # is how "Tự chọn" here and "Tự động" there came to look like two features.
+        # ``web`` is not among them — the composer's web toggle owns that.
         self._strategy = QComboBox()
-        for name in RetrievalStrategyName:
-            label, hint = STRATEGY_LABELS.get(name.value, (name.value, ""))
-            self._strategy.addItem(f"{label} — {hint}" if hint else label, name.value)
+        for value, label, hint in STRATEGY_CHOICES:
+            self._strategy.addItem(label, value)
+            self._strategy.setItemData(
+                self._strategy.count() - 1, hint, Qt.ItemDataRole.ToolTipRole
+            )
         self._strategy.currentIndexChanged.connect(self._on_strategy)
-        layout.addWidget(self._strategy)
-        root.addWidget(frame)
+        layout.addWidget(_row("Cách tìm mặc định", self._strategy, "Khi ô soạn không chọn khác."))
+        layout.addWidget(_divider())
 
-        frame, layout = _section(
-            "Mô hình trích xuất đồ thị",
-            "Chọn model nhỏ cho bước rút thực thể và quan hệ. Model trả lời chat không đổi.",
-        )
         self._graph_model = QComboBox()
         self._graph_model.addItem("Mô hình chat mặc định", "")
         self._graph_model.currentIndexChanged.connect(self._on_graph_model)
-        layout.addWidget(self._graph_model)
+        layout.addWidget(
+            _row("Mô hình trích xuất", self._graph_model, "Chỉ dùng cho bước rút thực thể.")
+        )
         root.addWidget(frame)
 
-        # --- web search ---------------------------------------------------
-        frame, layout = _section(
-            "Tìm kiếm web",
-            "Đây là tính năng duy nhất khiến câu hỏi rời khỏi máy này: nội dung tin nhắn "
-            "được gửi tới nguồn tìm kiếm bên dưới. Tài liệu, bộ nhớ và tri thức vẫn ở lại máy.",
-        )
-        self._web_enabled = QCheckBox("Đang tắt")
+        # --- web search -----------------------------------------------------
+        self._web_enabled = QCheckBox()
+        self._web_enabled.setToolTip("Bật tìm kiếm web")
+        self._web_enabled.setAccessibleName("Bật tìm kiếm web")
         self._web_enabled.toggled.connect(self._on_web_enabled)
-        layout.addWidget(self._web_enabled)
+        frame, layout = _group(
+            "Tìm kiếm web",
+            "Câu hỏi rời khỏi máy. Tài liệu thì không.",
+            self._web_enabled,
+        )
 
         self._backend = _Segmented(
             [(value, BACKEND_LABELS[value][0]) for value in ("searxng", "duckduckgo", "openai")]
         )
         self._backend.on_change(self._on_backend)
-        layout.addWidget(self._backend)
         self._backend_hint = QLabel("")
         self._backend_hint.setWordWrap(True)
-        self._backend_hint.setProperty("class", "faint")
-        layout.addWidget(self._backend_hint)
+        self._backend_hint.setProperty("class", "muted")
+        layout.addWidget(_row("Nguồn", self._backend, hint_widget=self._backend_hint))
 
-        self._searxng_label = QLabel("Địa chỉ SearXNG")
         self._searxng = QLineEdit()
         self._searxng.setPlaceholderText("http://127.0.0.1:8888")
         self._searxng.editingFinished.connect(self._on_searxng_url)
-        layout.addWidget(self._searxng_label)
-        layout.addWidget(self._searxng)
-        self._searxng_hint = QLabel(
-            "SearXNG chỉ trả HTML cho tới khi bạn thêm json vào search.formats trong settings.yml."
+        self._searxng_row = _row(
+            "Địa chỉ SearXNG", self._searxng, "settings.yml cần có json trong search.formats."
         )
-        self._searxng_hint.setWordWrap(True)
-        self._searxng_hint.setProperty("class", "faint")
-        layout.addWidget(self._searxng_hint)
+        layout.addWidget(self._searxng_row)
 
-        self._key_label = QLabel("OpenAI API key")
-        key_row = QHBoxLayout()
+        key_line = QWidget()
+        key_line.setProperty("wideRow", True)
+        key_row = QHBoxLayout(key_line)
+        key_row.setContentsMargins(0, 0, 0, 0)
+        key_row.setSpacing(TOOLBAR_SPACING)
         self._key = QLineEdit()
         self._key.setEchoMode(QLineEdit.EchoMode.Password)
         key_row.addWidget(self._key, 1)
-        self._save_key = QPushButton("Lưu key")
+        self._save_key = QPushButton("Lưu")
         self._save_key.clicked.connect(self._on_save_key)
         key_row.addWidget(self._save_key)
-        self._clear_key = QPushButton("Xóa key")
+        self._clear_key = QPushButton("Xóa")
         self._clear_key.clicked.connect(self._on_clear_key)
         key_row.addWidget(self._clear_key)
-        self._key_row = QWidget()
-        self._key_row.setLayout(key_row)
-        layout.addWidget(self._key_label)
+        self._key_row = _row("OpenAI API key", key_line)
         layout.addWidget(self._key_row)
 
-        self._search_model_label = QLabel("Mô hình chạy tìm kiếm")
         self._search_model = QLineEdit()
         self._search_model.setPlaceholderText("gpt-5")
         self._search_model.editingFinished.connect(self._on_search_model)
-        layout.addWidget(self._search_model_label)
-        layout.addWidget(self._search_model)
+        self._search_model_row = _row("Model tìm kiếm", self._search_model)
+        layout.addWidget(self._search_model_row)
 
-        probe_row = QHBoxLayout()
-        self._probe = QPushButton("Kiểm tra kết nối")
+        layout.addWidget(_divider())
+        self._probe = QPushButton("Kiểm tra")
         self._probe.clicked.connect(self._on_probe)
-        probe_row.addWidget(self._probe)
         self._probe_result = QLabel("")
         self._probe_result.setWordWrap(True)
-        self._probe_result.setProperty("class", "faint")
-        probe_row.addWidget(self._probe_result, 1)
-        layout.addLayout(probe_row)
+        self._probe_result.setProperty("class", "muted")
+        # The verdict rides in the caption column so a two-line failure wraps against the
+        # text, not against the button it would otherwise push around.
+        layout.addWidget(_row("Kết nối", self._probe, hint_widget=self._probe_result))
         root.addWidget(frame)
 
-        # --- embedding performance ----------------------------------------
-        frame, layout = _section(
-            "Hiệu năng embedding",
-            "Tăng dần nếu máy còn RAM/VRAM. Giá trị quá cao có thể làm mô hình chậm hoặc "
-            "hết bộ nhớ.",
-        )
-        numbers = QHBoxLayout()
-        numbers.addWidget(QLabel("Kích thước lô"))
-        self._batch = QSpinBox()
-        self._batch.setRange(1, 256)
-        self._batch.setToolTip("1–256 đoạn mỗi lô")
-        self._batch.editingFinished.connect(self._on_batch)
-        numbers.addWidget(self._batch)
-        numbers.addSpacing(16)
-        numbers.addWidget(QLabel("Tác vụ song song"))
-        self._concurrency = QSpinBox()
-        self._concurrency.setRange(1, 32)
-        self._concurrency.setToolTip("1–32 yêu cầu đồng thời")
-        self._concurrency.editingFinished.connect(self._on_concurrency)
-        numbers.addWidget(self._concurrency)
-        numbers.addStretch(1)
-        layout.addLayout(numbers)
-        root.addWidget(frame)
-
-        # --- provider readout ---------------------------------------------
-        frame, layout = _section(
-            "Nhà cung cấp đang dùng", "Nơi mô hình thực sự chạy cho phiên làm việc này."
-        )
-        provider_row = QHBoxLayout()
+        # --- provider readout -----------------------------------------------
+        frame, layout = _group("Nhà cung cấp")
+        # A readout, not a setting: the heading already says what this is, so the row that
+        # would have repeated it as "Đang chạy tại" is gone and only the answer is left.
+        provider_box = QHBoxLayout()
+        provider_box.setContentsMargins(0, 0, 0, 0)
+        provider_box.setSpacing(SPACE["sm"])
         self._provider_pip = StatusPip("unknown")
-        provider_row.addWidget(self._provider_pip)
+        provider_box.addWidget(self._provider_pip, 0, Qt.AlignmentFlag.AlignVCenter)
         self._provider_name = QLabel("Đang kiểm tra…")
-        provider_row.addWidget(self._provider_name, 1)
-        layout.addLayout(provider_row)
+        provider_box.addWidget(self._provider_name, 1, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(provider_box)
         root.addWidget(frame)
 
         root.addStretch(1)
@@ -312,32 +391,25 @@ class GeneralSettings(QWidget):
             self._theme.set_value(self._ctx.preferences.ui_theme)
             self._large_text.setChecked(preferences.ui_font_scale == "large")
             self._ocr.setChecked(preferences.ocr_enabled)
-            self._ocr.setText("Đang bật" if preferences.ocr_enabled else "Đang tắt")
+            # A default saved as ``web`` under the old meaning is no longer offered here;
+            # the composer migrates it onto the web toggle, so show what will be used.
             index = self._strategy.findData(str(preferences.retrieval_strategy))
-            if index >= 0:
-                self._strategy.setCurrentIndex(index)
+            self._strategy.setCurrentIndex(index if index >= 0 else 0)
             self._select_graph_model(preferences.graph_model)
             self._web_enabled.setChecked(preferences.web_search_enabled)
-            self._web_enabled.setText("Đang bật" if preferences.web_search_enabled else "Đang tắt")
             backend = str(preferences.web_search_backend)
             self._backend.set_value(backend)
             self._backend_hint.setText(BACKEND_LABELS.get(backend, ("", ""))[1])
             self._searxng.setText(preferences.web_search_base_url)
             self._search_model.setText(preferences.web_search_model)
             self._key.setPlaceholderText(
-                "Đã lưu một API key" if preferences.web_search_has_api_key else "sk-…"
+                "Đã lưu một key" if preferences.web_search_has_api_key else "sk-…"
             )
             self._clear_key.setVisible(preferences.web_search_has_api_key)
             self._batch.setValue(preferences.embedding_batch_size)
             self._concurrency.setValue(preferences.embedding_concurrency)
-            for widget in (self._searxng_label, self._searxng, self._searxng_hint):
-                widget.setVisible(backend == "searxng")
-            for widget in (
-                self._key_label,
-                self._key_row,
-                self._search_model_label,
-                self._search_model,
-            ):
+            self._searxng_row.setVisible(backend == "searxng")
+            for widget in (self._key_row, self._search_model_row):
                 widget.setVisible(backend == "openai")
         finally:
             self._syncing = False
@@ -408,7 +480,6 @@ class GeneralSettings(QWidget):
     def _on_ocr(self, value: bool) -> None:
         if self._syncing:
             return
-        self._ocr.setText("Đang bật" if value else "Đang tắt")
         self._write(
             PreferencesUpdate(ocr_enabled=value),
             lambda: self._ocr.setChecked(not value),
@@ -446,7 +517,6 @@ class GeneralSettings(QWidget):
     def _on_web_enabled(self, value: bool) -> None:
         if self._syncing:
             return
-        self._web_enabled.setText("Đang bật" if value else "Đang tắt")
         self._write(
             PreferencesUpdate(web_search_enabled=value),
             lambda: self._web_enabled.setChecked(not value),
@@ -550,6 +620,8 @@ class GeneralSettings(QWidget):
         )
         self._probe.setEnabled(False)
         self._probe_result.setText("Đang kiểm tra…")
+        self._probe_result.setProperty("class", "muted")
+        restyle(self._probe_result)
         self._ctx.run(
             self._ctx.services.web_search.probe(config),
             on_result=self._probe_done,
@@ -564,14 +636,18 @@ class GeneralSettings(QWidget):
                 f"{result.get('host', '')} trả về {result.get('result_count', 0)} kết quả · "
                 f"{locality}"
             )
-            self._probe_result.setProperty("class", "faint")
+            self._probe_result.setProperty("class", "muted")
         else:
             self._probe_result.setText(str(result.get("detail") or "Không kết nối được"))
             self._probe_result.setProperty("class", "danger")
+        # Qt caches the computed style, so the class swap is inert without a re-polish.
+        restyle(self._probe_result)
 
     def _probe_failed(self, exc: BaseException) -> None:
         self._probe.setEnabled(True)
         self._probe_result.setText(str(exc) or "Không kiểm tra được kết nối")
+        self._probe_result.setProperty("class", "danger")
+        restyle(self._probe_result)
 
 
 class SettingsView(QWidget):
@@ -583,30 +659,32 @@ class SettingsView(QWidget):
         self._built: dict[str, QWidget] = {}
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(24, 20, 24, 20)
-        root.setSpacing(12)
+        root.setContentsMargins(*PAGE_MARGINS)
+        root.setSpacing(PAGE_SPACING)
 
-        eyebrow = QLabel("Cài đặt thiết bị")
-        eyebrow.setProperty("class", "section-label")
-        root.addWidget(eyebrow)
+        # The eyebrow said "Cài đặt thiết bị" above a title reading "Cài đặt", and the blurb
+        # listed the tab labels sitting two rows below it. What is left is the one fact the
+        # screen cannot show by itself.
+        titles = QVBoxLayout()
+        titles.setSpacing(SPACE["3xs"])
         title = QLabel("Cài đặt")
         title.setProperty("class", "title")
-        root.addWidget(title)
-        blurb = QLabel(
-            "Hiển thị, xử lý tài liệu và các cấu hình nâng cao đều nằm ở đây. "
-            "Mọi lựa chọn chỉ lưu trên máy hiện tại."
-        )
-        blurb.setWordWrap(True)
+        titles.addWidget(title)
+        blurb = QLabel("Mọi lựa chọn chỉ lưu trên máy này.")
         blurb.setProperty("class", "muted")
-        root.addWidget(blurb)
+        titles.addWidget(blurb)
+        root.addLayout(titles)
 
         self._tabs = QTabWidget()
         self._tabs.setDocumentMode(True)
+        # The native base is drawn from the *system* appearance, not the app's theme; the
+        # pane rule in the stylesheet supplies the only edge this strip needs.
+        self._tabs.tabBar().setDrawBase(False)
         self._hosts: dict[str, QWidget] = {}
         for key in TAB_ORDER:
             host = QWidget()
             layout = QVBoxLayout(host)
-            layout.setContentsMargins(0, 8, 0, 0)
+            layout.setContentsMargins(0, SPACE["sm"], 0, 0)
             self._hosts[key] = host
             self._tabs.addTab(host, TAB_LABELS[key])
         self._tabs.currentChanged.connect(self._on_tab)

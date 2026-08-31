@@ -13,15 +13,14 @@ from typing import TYPE_CHECKING, Any
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QDialog,
-    QHBoxLayout,
     QLabel,
     QLineEdit,
     QProgressBar,
     QPushButton,
-    QVBoxLayout,
 )
 
 from private_ai.llm.admin import pull_fraction
+from private_ai.ui.dialogs import _shell
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.ui.context import AppContext
@@ -49,26 +48,18 @@ class AddModelDialog(QDialog):
         self.setWindowTitle("Tải mô hình Ollama")
         self.setMinimumWidth(480)
 
-        layout = QVBoxLayout(self)
-        layout.setSpacing(10)
-
-        heading = QLabel("Tải mô hình Ollama")
-        heading.setProperty("class", "title")
-        layout.addWidget(heading)
-
-        blurb = QLabel(
+        layout = _shell.dialog_layout(self)
+        _shell.title_block(
+            layout,
+            "Tải mô hình Ollama",
             "Nhập tên trong thư viện Ollama, ví dụ qwen3:8b. Bạn có thể theo dõi tiến trình "
-            "ngay tại đây."
+            "ngay tại đây.",
         )
-        blurb.setWordWrap(True)
-        blurb.setProperty("class", "muted")
-        layout.addWidget(blurb)
 
-        layout.addWidget(QLabel("Tên mô hình"))
         self._name = QLineEdit()
         self._name.setPlaceholderText("qwen3:8b")
         self._name.returnPressed.connect(self._on_pull)
-        layout.addWidget(self._name)
+        _shell.field(layout, "Tên mô hình", self._name)
 
         self._bar = QProgressBar()
         self._bar.setRange(0, 100)
@@ -88,7 +79,7 @@ class AddModelDialog(QDialog):
         self._error.hide()
         layout.addWidget(self._error)
 
-        row = QHBoxLayout()
+        row = _shell.action_row(layout)
         row.addStretch(1)
         self._cancel_button = QPushButton("Hủy")
         self._cancel_button.clicked.connect(self._on_cancel)
@@ -98,7 +89,6 @@ class AddModelDialog(QDialog):
         self._start.setDefault(True)
         self._start.clicked.connect(self._on_pull)
         row.addWidget(self._start)
-        layout.addLayout(row)
 
         self._name.setFocus(Qt.FocusReason.OtherFocusReason)
 

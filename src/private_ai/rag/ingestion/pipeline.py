@@ -52,7 +52,18 @@ if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.rag.stores.graph_store import GraphStore
     from private_ai.rag.stores.sqlite_vectorstore import SqliteVectorStore
 
-__all__ = ["CLAIM_HEARTBEAT_SECONDS", "CLAIM_STALE_SECONDS", "IngestionPipeline"]
+__all__ = [
+    "CLAIM_HEARTBEAT_SECONDS",
+    "CLAIM_STALE_SECONDS",
+    "STATUS_EXTRACTED",
+    "IngestionPipeline",
+]
+
+# Text arrived without needing a parser, but nothing is indexed yet. This state exists so
+# that ``ready`` can mean one thing only — chunked, embedded and safe to query. Retrieval
+# filters on ``indexed_at``, so a document sitting here is invisible to search rather than
+# silently answering out of its raw text.
+STATUS_EXTRACTED = "extracted"
 
 # The owner of an ingestion claim refreshes it on this cadence; a claim quieter than the
 # stale window belonged to a process that was killed and is free to take over.
@@ -218,8 +229,11 @@ class IngestionPipeline:
             await asyncio.to_thread(shutil.rmtree, target_dir, ignore_errors=True)
             return str(duplicate["id"])
 
-        # A text file needs no extraction stage at all, so it lands ready and goes
-        # straight to chunking on the next pass.
+        # A text file needs no extraction stage, but it is not queryable until it has
+        # been chunked and embedded. STATUS_EXTRACTED says exactly that: the text is in
+        # hand, the index is not. Calling it 'ready' here is what used to let a query
+        # reach a document with no chunks, which then fell back to reading the whole raw
+        # file into the prompt.
         extracted_text: str | None = None
         status = "queued"
         if target_path.suffix.lower() in TEXT_EXTENSIONS:
@@ -228,7 +242,7 @@ class IngestionPipeline:
                 encoding="utf-8",
                 errors="replace",
             )
-            status = "ready"
+            status = STATUS_EXTRACTED
 
         index_mode, graph_model = await self._default_index_mode()
         now = _now()
@@ -310,7 +324,7 @@ class IngestionPipeline:
             INSERT INTO documents(
                 id, workspace_id, filename, media_type, sha256, byte_size, status, source_path,
                 extracted_text, index_mode, graph_model, error, created_at, updated_at
-            ) VALUES (?, ?, ?, 'text/markdown', ?, ?, 'ready', ?, ?, ?, ?, NULL, ?, ?)
+            ) VALUES (?, ?, ?, 'text/markdown', ?, ?, 'extracted', ?, ?, ?, ?, NULL, ?, ?)
             """,
             (
                 document_id,
@@ -356,7 +370,7 @@ class IngestionPipeline:
         pending = await self.database.fetch_all_async(
             """
             SELECT id FROM documents
-            WHERE status IN ('queued', 'processing')
+            WHERE status IN ('queued', 'extracted', 'processing')
             ORDER BY created_at
             """
         )
@@ -397,8 +411,11 @@ class IngestionPipeline:
                 return
             # A text upload and ``index_text`` both arrive already extracted; re-reading
             # them would only replace the stored text with an identical copy.
+            # Legacy rows written before STATUS_EXTRACTED existed still say 'ready'
+            # here, so both spellings count as already extracted.
             already_read = (
-                str(document["status"]) == "ready" and document["extracted_text"] is not None
+                str(document["status"]) in {STATUS_EXTRACTED, "ready"}
+                and document["extracted_text"] is not None
             )
             if already_read:
                 job_id, created_at = self._create_job(
@@ -532,7 +549,10 @@ class IngestionPipeline:
             "FROM documents WHERE id = ?",
             (document_id,),
         )
-        if not document or document["status"] != "ready":
+        # The gate is "extraction produced text", not "the document is queryable" — a
+        # re-index of an already-ready document has to pass here too, and a fresh upload
+        # sits at STATUS_EXTRACTED until this call promotes it.
+        if not document or str(document["status"]) not in {STATUS_EXTRACTED, "ready"}:
             return False
 
         index_mode = str(document["index_mode"] or "simple")
