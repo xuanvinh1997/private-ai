@@ -22,12 +22,14 @@ from private_ai.mcp.adapter import (
     render_result,
 )
 from private_ai.mcp.client import (
+    AGENT_TOOLS,
     BUILTIN_SERVERS,
     READ_ONLY_TOOLS,
     McpHub,
     agent_tool_names,
 )
 from private_ai.mcp.servers import (
+    artifacts,
     core_server,
     rag_graph,
     rag_hybrid,
@@ -94,9 +96,19 @@ async def test_the_core_server_publishes_the_documented_tool_set(
         (rag_graph, {"rag.graph.search", "rag.graph.neighborhood", "rag.graph.entities"}),
         (rag_summary, {"rag.summary.digest", "rag.summary.outline"}),
         (rag_web, {"rag.web.search"}),
+        (
+            artifacts,
+            {
+                "artifacts.list",
+                "artifacts.create_chart",
+                "artifacts.create_diagram",
+                "artifacts.create_document",
+                "artifacts.create_slides",
+            },
+        ),
     ],
 )
-async def test_each_strategy_server_publishes_only_its_own_tools(
+async def test_each_secondary_server_publishes_only_its_own_tools(
     services: AppServices,
     module: object,
     expected: set[str],
@@ -117,6 +129,7 @@ async def test_every_retrieval_tool_repeats_the_untrusted_framing(
 async def test_every_built_in_server_is_mountable_and_named(services: AppServices) -> None:
     assert set(BUILTIN_SERVERS.values()) == {
         "core",
+        "artifacts",
         "rag.vector",
         "rag.keyword",
         "rag.hybrid",
@@ -134,13 +147,13 @@ def test_dots_become_double_underscores_and_back() -> None:
     mangled = f"rag{NAME_SEPARATOR}graph{NAME_SEPARATOR}neighborhood"
     assert alias_for("rag.graph.neighborhood") == mangled
     assert name_for(alias_for("rag.graph.neighborhood")) == "rag.graph.neighborhood"
-    for name in READ_ONLY_TOOLS:
+    for name in AGENT_TOOLS:
         assert "." not in alias_for(name)
         assert name_for(alias_for(name)) == name
 
 
 def test_the_advertised_names_are_the_mangled_ones(services: AppServices) -> None:
-    assert agent_tool_names() == sorted(alias_for(name) for name in READ_ONLY_TOOLS)
+    assert agent_tool_names() == sorted(alias_for(name) for name in AGENT_TOOLS)
     assert all("." not in name for name in agent_tool_names())
 
 
@@ -273,9 +286,11 @@ async def test_the_hub_mounts_every_built_in_server_in_process(hub: McpHub) -> N
     assert set(hub.servers()) == set(BUILTIN_SERVERS.values())
 
 
-async def test_the_hub_hands_the_agent_only_read_only_tools(hub: McpHub) -> None:
+async def test_the_hub_hands_the_agent_the_read_only_tools_and_the_artifact_writers(
+    hub: McpHub,
+) -> None:
     names = {tool.name for tool in await hub.tools()}
-    assert names == {alias_for(name) for name in READ_ONLY_TOOLS}
+    assert names == {alias_for(name) for name in AGENT_TOOLS}
     for mutating in MUTATING_TOOLS:
         assert alias_for(mutating) not in names
 

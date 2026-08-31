@@ -6,9 +6,12 @@ build reads identically in this one.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 __all__ = [
+    "TONES",
+    "Tone",
     "badge_class",
     "elide",
     "format_bytes",
@@ -18,6 +21,7 @@ __all__ = [
     "format_relative_time",
     "initials_of",
     "short_model_name",
+    "notice_tone",
     "stage_label",
     "status_label",
 ]
@@ -132,6 +136,42 @@ BADGE_CLASSES: dict[str, str] = {
     "failed": "badge-danger",
     "needs_ocr": "badge-danger",
 }
+
+
+@dataclass(frozen=True)
+class Tone:
+    """How one severity looks and reads, wherever it is shown."""
+
+    icon: str
+    token: str
+    label: str
+
+
+# One vocabulary for both notification surfaces. They used to keep separate maps that had
+# drifted into contradicting each other — the bell drew "info" as a green tick, the toast
+# drew it as a blue circle — so the same event looked like two different things depending
+# on where the user saw it.
+TONES: dict[str, Tone] = {
+    "success": Tone("check", "success", "Đã xong"),
+    "info": Tone("info", "accent", "Thông tin"),
+    "warn": Tone("alert-triangle", "warn", "Cảnh báo"),
+    "error": Tone("circle-alert", "danger", "Lỗi"),
+}
+
+# Names other layers already use for the same four severities.
+_TONE_ALIASES: dict[str, str] = {
+    "alert": "error",
+    "danger": "error",
+    "failed": "error",
+    "warning": "warn",
+    "ok": "success",
+}
+
+
+def notice_tone(tone: str) -> Tone:
+    """The look of one severity; anything unknown reads as information, never as fine."""
+    key = (tone or "").strip().casefold()
+    return TONES.get(_TONE_ALIASES.get(key, key), TONES["info"])
 
 
 def badge_class(state: str) -> str:

@@ -1,8 +1,8 @@
 """What every Private AI MCP server shares: construction, auth, transport, framing.
 
-There are seven of these servers now instead of one, so the pieces that used to sit at
+There are eight of these servers now instead of one, so the pieces that used to sit at
 the top of a single module — the bearer token, the DNS-rebinding guard, the workspace
-check every tool starts with — live here rather than being copied seven times.
+check every tool starts with — live here rather than being copied eight times.
 """
 
 from __future__ import annotations

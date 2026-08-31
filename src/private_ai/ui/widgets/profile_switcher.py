@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from private_ai.ui import icons, theme
 from private_ai.ui.format import initials_of
 from private_ai.ui.widgets.confirm_button import ConfirmButton
+from private_ai.ui.widgets.popup import RoundedPopup
 from private_ai.ui.widgets.status_pip import StatusPip
 
 MENU_ICON_PX = 15
@@ -93,22 +94,14 @@ class ProfileSwitcher(QWidget):
         self._avatar.setProperty("class", "avatar-lg")
         inner.addWidget(self._avatar)
 
-        copy = QVBoxLayout()
-        copy.setContentsMargins(0, 0, 0, 0)
-        copy.setSpacing(theme.SPACE["3xs"])
         self._name = QLabel(self._active_name, self._button)
         self._name.setProperty("class", "body-strong")
-        status = QHBoxLayout()
-        status.setContentsMargins(0, 0, 0, 0)
-        status.setSpacing(theme.SPACE["xs"])
+        inner.addWidget(self._name, 1)
+        # The pip alone, no caption. The caption read "Trên thiết bị" and never changed —
+        # a fourth copy of what the topbar and the context rail both say live, and wrong
+        # outright once the active provider is a remote one. The pip still moves.
         self._pip = StatusPip("online", self._button)
-        self._where = QLabel("Trên thiết bị", self._button)
-        self._where.setProperty("class", "muted")
-        status.addWidget(self._pip)
-        status.addWidget(self._where, 1)
-        copy.addWidget(self._name)
-        copy.addLayout(status)
-        inner.addLayout(copy, 1)
+        inner.addWidget(self._pip, 0, Qt.AlignmentFlag.AlignVCenter)
 
         caret = QLabel(self._button)
         caret.setPixmap(icons.pixmap("chevrons-up-down", 15, theme.token("muted")))
@@ -152,9 +145,7 @@ class ProfileSwitcher(QWidget):
         if self._menu is not None and self._menu.isVisible():
             self._menu.hide()
             return
-        menu = QFrame(self, Qt.WindowType.Popup)
-        menu.setProperty("class", "card")
-        menu.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        menu = RoundedPopup(self)
         menu.setMinimumWidth(max(250, self.width()))
         box = QVBoxLayout(menu)
         box.setContentsMargins(*(theme.SPACE["sm"],) * 4)

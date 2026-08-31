@@ -159,34 +159,47 @@ def test_the_header_stack_is_one_column(qapp) -> None:
 # until a screenshot showed them broken.
 
 
-async def test_the_rail_document_row_is_a_row(services, workspace_id, qapp) -> None:
-    """Name and state share a left edge, and the row is as tall as its two lines.
+async def test_the_rail_document_row_is_one_line(services, workspace_id, qapp) -> None:
+    """A rail row is one line, and a long filename is elided rather than wrapped.
 
-    This was a ``QToolButton`` holding ``"name\\nstate"`` with the icon set beside the
-    text: Qt centred the icon against the two-line block so it landed between the lines,
-    and the 32px cap every control carries left the text overlapping it.
+    The state used to be a second line under the name, so three ready documents wrote
+    "Sẵn sàng" three times down a 296px column; it is a pip and a tooltip now. What has to
+    hold is that no filename can win itself a second line and push every row below it out
+    of rhythm — the rail is a fixed column of single-line rows.
     """
+    from PySide6.QtGui import QFontMetrics
+
     from private_ai.ui import theme
     from private_ai.ui.views.chat_view import _RailDocument
 
     theme.apply_theme(qapp, "light", "normal")
-    row = _RailDocument()
-    row.set_document("d1", "2201.11903.pdf", "Sẵn sàng", busy=False)
-    row.resize(264, row.sizeHint().height())
-    row.show()
-    qapp.processEvents()
+    long_name = "bao-cao-tong-ket-quy-bon-nam-hai-nghin-khong-tram-hai-muoi-lam-ban-cuoi.pdf"
+    rows = []
+    for filename in ("2201.11903.pdf", long_name):
+        row = _RailDocument()
+        row.set_document("d1", filename, "Sẵn sàng", busy=False, pip_state="ready")
+        row.resize(264, row.sizeHint().height())
+        row.show()
+        qapp.processEvents()
+        rows.append(row)
 
-    name_x = row._name.mapTo(row, row._name.rect().topLeft()).x()
-    state_x = row._state.mapTo(row, row._state.rect().topLeft()).x()
-    mark_top = row._mark.mapTo(row, row._mark.rect().topLeft()).y()
-    name_top = row._name.mapTo(row, row._name.rect().topLeft()).y()
-    height, wanted = row.height(), row.sizeHint().height()
-    row.close()
+    short, long_row = rows
+    metrics = QFontMetrics(long_row._name.font())
+    painted = metrics.horizontalAdvance(long_row._name.text())
+    heights = [row.height() for row in rows]
+    name_x = [row._name.mapTo(row, row._name.rect().topLeft()).x() for row in rows]
+    tooltip = short.toolTip()
+    for row in rows:
+        row.close()
 
-    assert name_x == state_x, f"name at x={name_x}, state at x={state_x}"
-    assert height >= wanted, f"row clamped to {height}px, needs {wanted}px"
-    # The mark belongs to the filename, so it hangs from the first line, not the middle.
-    assert abs(mark_top - name_top) <= 2, f"mark top {mark_top} vs first line top {name_top}"
+    assert heights[0] == heights[1], (
+        f"a long filename grew its row: {heights[1]}px against {heights[0]}px"
+    )
+    assert painted <= long_row._name.width() + 1, (
+        f"filename paints {painted}px into a {long_row._name.width()}px column"
+    )
+    assert name_x[0] == name_x[1], f"names start at {name_x[0]} and {name_x[1]}"
+    assert "Sẵn sàng" in tooltip, "the state left the row without reaching the tooltip"
 
 
 async def test_popup_rows_share_a_caption_column(services, workspace_id, qapp) -> None:
@@ -274,3 +287,38 @@ async def test_the_empty_state_does_not_stretch_the_header(built, path: str) -> 
         if hint and label.height() > hint + NEAR_MISS_PX:
             overrun.append(f"{label.text()[:24]!r} {label.height()}px for a {hint}px line")
     assert not overrun, f"{path}: the empty state stretched the header: " + "; ".join(overrun)
+
+
+async def test_sidebar_rows_have_a_height(services, workspace_id, qapp) -> None:
+    """Every list row in the rail must be as tall as the stylesheet says it is.
+
+    A row builds its button, parents it, fills it — and then has to put it in the row's own
+    layout. Forgetting that last step leaves the row with an empty layout, a
+    ``minimumSizeHint`` of zero and a height of zero: the widgets all exist, ``isVisible``
+    is true, and the list paints as an empty gap. Nothing else in the suite notices.
+    """
+    from private_ai.core import repositories
+    from private_ai.ui import theme
+    from private_ai.ui.context import AppContext
+    from private_ai.ui.widgets.sidebar import Sidebar, _ConversationRow, _WorkspaceRow
+
+    theme.apply_theme(qapp, "light", "normal")
+    context = AppContext(services=services)
+    context.workspace_id = workspace_id
+    rail = Sidebar(context)
+    rail.resize(252, 860)
+    rail.show()
+    rail.set_workspaces(await repositories.list_workspaces(services.database), workspace_id)
+    rail.set_conversations(
+        await repositories.list_conversations(services.database, workspace_id), ""
+    )
+    qapp.processEvents()
+    qapp.processEvents()
+
+    flat = []
+    for kind in (_WorkspaceRow, _ConversationRow):
+        for row in rail.findChildren(kind):
+            if row.minimumSizeHint().height() <= 0:
+                flat.append(f"{kind.__name__} minimumSizeHint={row.minimumSizeHint().height()}")
+    rail.close()
+    assert not flat, "rail rows with no height of their own: " + "; ".join(flat)

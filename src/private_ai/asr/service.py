@@ -12,6 +12,7 @@ import array
 import asyncio
 import importlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -25,6 +26,11 @@ if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.core.gpu_lease import GpuLeaseManager
 
 ASR_MODEL_NAME = "nemotron-3.5-asr-streaming-0.6b"
+# How long ``close`` waits for a session to give the lock back before taking the model
+# down regardless. Long enough for a finalize in flight, short enough to quit on.
+CLOSE_TIMEOUT_SECONDS = 5.0
+
+logger = logging.getLogger(__name__)
 
 
 class AsrUnavailable(RuntimeError):
@@ -52,7 +58,14 @@ class AsrStream:
             raise AsrUnavailable("Phiên nhận dạng giọng nói đã đóng")
         if not content or len(content) % 4:
             raise ValueError("Nhận dạng giọng nói theo luồng cần khung PCM float32 little-endian")
-        return await asyncio.to_thread(self._feed_sync, content)
+        try:
+            return await asyncio.to_thread(self._feed_sync, content)
+        except BaseException:
+            # A native failure ends this session either way, and the service lock is held
+            # for as long as the session lives. Let it escape and every later dictation
+            # waits forever on a lock nobody will release.
+            await self.close()
+            raise
 
     def _feed_sync(self, content: bytes) -> dict[str, Any]:
         pcm = array.array("f")
@@ -311,12 +324,27 @@ class AsrService:
         return self._native_binding
 
     async def close(self) -> None:
-        async with self._lock:
+        """Release the model. Bounded: shutdown must not hang behind a live session.
+
+        The lock is held for the whole of a streaming session, so quitting mid-dictation
+        would otherwise block ``close_services`` indefinitely. Past the deadline the model
+        goes anyway — the process is on its way out and the VRAM reservation with it.
+        """
+        acquired = False
+        try:
+            await asyncio.wait_for(self._lock.acquire(), CLOSE_TIMEOUT_SECONDS)
+            acquired = True
+        except TimeoutError:
+            logger.warning("Đóng ASR khi phiên nhận dạng chưa trả khoá")
+        try:
             model, self._native_model = self._native_model, None
             if model is not None:
                 await asyncio.to_thread(model.close)
             if self.gpu_leases:
                 await self.gpu_leases.release(self._native_lease_owner)
+        finally:
+            if acquired:
+                self._lock.release()
 
     async def transcribe(
         self,

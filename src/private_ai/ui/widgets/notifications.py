@@ -18,7 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import QPoint, QSettings, Qt, Signal
+from PySide6.QtCore import QPoint, QRectF, QSettings, Qt, Signal
+from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -30,7 +31,8 @@ from PySide6.QtWidgets import (
 )
 
 from private_ai.ui import icons, theme
-from private_ai.ui.format import format_relative_time
+from private_ai.ui.format import format_relative_time, notice_tone
+from private_ai.ui.widgets.popup import RoundedPopup
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from collections.abc import Callable, Sequence
@@ -39,12 +41,14 @@ __all__ = ["Notice", "NotificationsButton", "NotificationsPanel"]
 
 SEEN_KEY = "ui/notifications_seen_at"
 
-_TONE_ICON = {"alert": "alert-triangle", "warn": "info", "info": "check"}
-_TONE_TOKEN = {"alert": "danger", "warn": "warn", "info": "success"}
-
 # A popup, not a page: wide enough for a notice to read as a sentence, narrow enough not
 # to cover the view it was raised from.
 _PANEL_WIDTH = theme.SPACE["4xl"] * 9 + theme.SPACE["lg"]
+# Past this the panel scrolls. Roughly six rows — enough to see there is a list.
+_PANEL_MAX_HEIGHT = theme.SPACE["4xl"] * 10 + theme.SPACE["xl"]
+_ROW_RADIUS = theme.SPACE["sm"]
+_UNREAD_BAR = theme.SPACE["3xs"]
+_ICON_SIZE = theme.SPACE["lg"] + theme.SPACE["3xs"]
 
 
 @dataclass(frozen=True)
@@ -60,27 +64,27 @@ class Notice:
 
 
 class _NoticeRow(QFrame):
+    """One notice. The unread marker is painted, not styled.
+
+    It used to be a ``setStyleSheet`` on the row — but ``QLabel`` is a ``QFrame``, so a
+    ``QFrame { border-left: … }`` rule matched every label inside it and the panel drew a
+    green bracket and a rounded plate around each individual line of text.
+    """
+
     def __init__(self, notice: Notice, unread: bool, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        tone_color = theme.token(_TONE_TOKEN.get(notice.tone, "success"))
-        border = theme.token("accent") if unread else "transparent"
-        # The unread bar has no equivalent in the stylesheet, so it is read from the tokens
-        # here; every row is rebuilt each time the panel opens, so it cannot go stale.
-        self.setStyleSheet(
-            f"QFrame {{ border-left: 3px solid {border}; "
-            f"background: {theme.token('surface') if unread else 'transparent'}; "
-            f"border-radius: 8px; }}"
-        )
+        self._unread = unread
+        spec = notice_tone(notice.tone)
 
         layout = QHBoxLayout(self)
+        # Left inset carries the unread bar; the bar is drawn inside it, not beside it.
         layout.setContentsMargins(
             theme.SPACE["md"], theme.SPACE["sm"], theme.SPACE["md"], theme.SPACE["sm"]
         )
         layout.setSpacing(theme.SPACE["md"])
 
         mark = QLabel(self)
-        mark.setPixmap(icons.pixmap(_TONE_ICON.get(notice.tone, "info"), 18, tone_color))
+        mark.setPixmap(icons.pixmap(spec.icon, _ICON_SIZE, theme.token(spec.token)))
         mark.setFixedWidth(theme.SPACE["xl"])
         mark.setAlignment(Qt.AlignmentFlag.AlignTop)
         layout.addWidget(mark)
@@ -114,27 +118,57 @@ class _NoticeRow(QFrame):
             stamp.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignRight)
             layout.addWidget(stamp)
 
+        self.setAccessibleName(notice.title)
+        self.setAccessibleDescription(f"{spec.label}. {notice.detail}".strip())
 
-class NotificationsPanel(QFrame):
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt override
+        if not self._unread:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setPen(Qt.PenStyle.NoPen)
+        # ``surface`` is what the panel itself is painted in, so the plate it used to draw
+        # was invisible and the bar was carrying the whole marker. ``surface-hover`` is the
+        # token for a row picked out of a list, and it keeps ``accent`` for the bar alone.
+        painter.setBrush(QColor(theme.token("surface-hover")))
+        painter.drawRoundedRect(QRectF(self.rect()), _ROW_RADIUS, _ROW_RADIUS)
+        painter.setBrush(QColor(theme.token("accent")))
+        painter.drawRoundedRect(
+            QRectF(0.0, float(_ROW_RADIUS), float(_UNREAD_BAR), self.height() - 2.0 * _ROW_RADIUS),
+            _UNREAD_BAR / 2,
+            _UNREAD_BAR / 2,
+        )
+        painter.end()
+
+
+class NotificationsPanel(RoundedPopup):
     closed = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Popup)
-        self.setProperty("class", "card")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        super().__init__(parent)
         self.setFixedWidth(_PANEL_WIDTH)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(*theme.CARD_MARGINS)
         outer.setSpacing(theme.CARD_SPACING)
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(theme.SPACE["sm"])
         heading = QLabel("Thông báo", self)
         heading.setProperty("class", "heading")
-        outer.addWidget(heading)
+        head.addWidget(heading)
+        head.addStretch(1)
+        # The bell already carries the count; the panel repeats it because once the panel
+        # is open the badge is behind it.
+        self._count = QLabel(self)
+        self._count.setProperty("class", "muted")
+        head.addWidget(self._count)
+        outer.addLayout(head)
 
         self._scroll = QScrollArea(self)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setMaximumHeight(420)
+        self._scroll.setMaximumHeight(_PANEL_MAX_HEIGHT)
         self._body = QWidget(self._scroll)
         self._list = QVBoxLayout(self._body)
         self._list.setContentsMargins(0, 0, 0, 0)
@@ -149,6 +183,9 @@ class NotificationsPanel(QFrame):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+        unread = sum(1 for notice in notices if is_unread(notice))
+        self._count.setText(f"{unread} mục mới" if unread else "")
+        self._count.setVisible(bool(unread))
         if not notices:
             empty = QLabel(
                 "Mọi thứ đang chạy bình thường. Chưa có gì cần bạn để mắt tới.", self._body

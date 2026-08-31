@@ -24,7 +24,7 @@ import contextlib
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication, QTextCursor
+from PySide6.QtGui import QFontMetrics, QGuiApplication, QTextCursor
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -50,11 +50,17 @@ from private_ai.core.schemas import ConversationCreate, RetrievalStrategyName
 from private_ai.ui import markdown as md
 from private_ai.ui import theme
 from private_ai.ui.a11y import describe
-from private_ai.ui.audio.capture import STATE_RECORDING, STATE_TRANSCRIBING, MicrophoneCapture
+from private_ai.ui.audio.capture import (
+    STATE_IDLE,
+    STATE_PREPARING,
+    STATE_RECORDING,
+    STATE_TRANSCRIBING,
+    MicrophoneCapture,
+)
 from private_ai.ui.dialogs.document_viewer import DocumentViewer
 from private_ai.ui.dialogs.upload_dialog import UploadDialog, accepted_paths
 from private_ai.ui.format import format_bytes, format_file_size
-from private_ai.ui.icons import icon
+from private_ai.ui.icons import icon, pixmap
 from private_ai.ui.models.documents_model import (
     document_progress,
     document_status_text,
@@ -62,8 +68,9 @@ from private_ai.ui.models.documents_model import (
 )
 from private_ai.ui.widgets.model_picker import ModelEntry, ModelPicker
 from private_ai.ui.widgets.reasoning_trail import ReasoningTrail
-from private_ai.ui.widgets.status_pip import StatusPipLabel
+from private_ai.ui.widgets.status_pip import StatusPip
 from private_ai.ui.widgets.strategy_picker import StrategyPicker, strategy_label
+from private_ai.ui.widgets.voice_meter import VoiceMeter
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     from collections.abc import Sequence
@@ -78,14 +85,18 @@ REPAINT_INTERVAL_MS = 16  # one frame; see the module docstring
 NEAR_BOTTOM_PX = 80
 CONTEXT_POLL_MS = 1_200
 RAIL_WIDTH = 296
-# A status value sits under its caption, on the column the caption's own text starts on:
-# the pip's width plus the gap ``StatusPipLabel`` puts after it.
-STATUS_TEXT_INSET = theme.SPACE["sm"] + theme.SPACE["xs"]
 RAIL_DOCUMENTS = 3
 # The citation mark is a glyph in a fixed gutter, so every filename beside it starts on
 # one edge. The composer is three lines of body text before it starts scrolling.
 _MARK_GLYPH = theme.SPACE["lg"]
 _COMPOSER_HEIGHT = theme.SPACE["4xl"] + theme.SPACE["3xl"]
+# Glyph, gap, pip: the widest mark set any rail row carries, and therefore the column all
+# of them share. See ``_rail_gutter``.
+_RAIL_GUTTER = _MARK_GLYPH + theme.SPACE["xs"] + theme.SPACE["sm"]
+
+# The rail shows a document's state as a pip, so the ingestion vocabulary has to land on
+# the pip's. Anything unrecognised stays "unknown", which reads faint rather than fine.
+_DOCUMENT_PIPS = {"ready": "ready", "failed": "failed", "needs_ocr": "warn"}
 
 STARTER_PROMPTS = (
     "Tóm tắt các tài liệu mới trong thư viện",
@@ -101,6 +112,38 @@ ON_DEVICE_TITLE = "Đang chạy trên thiết bị"
 ON_DEVICE_BODY = "Nội dung được gửi tới runtime cục bộ."
 REMOTE_TITLE = "Đang dùng máy chủ đã chọn"
 REMOTE_BODY = "Nội dung trò chuyện và tài liệu liên quan có thể rời khỏi máy này."
+
+
+def _document_pip(document: dict[str, Any], busy: bool) -> str:
+    if busy:
+        return "busy"
+    return _DOCUMENT_PIPS.get(str(document.get("status") or ""), "unknown")
+
+
+def _rail_gutter(glyph: str = "", pip: QWidget | None = None) -> QWidget:
+    """The fixed left column every rail row hangs its marks in.
+
+    Rows carry different marks — a pip alone, a glyph and a pip, a glyph alone — and laying
+    each one out on its own put the text on three columns within forty pixels of each
+    other, which reads as three failed attempts at one column. The gutter is one width, the
+    glyph is flush left in it and the pip flush right, so every row's text starts on the
+    same edge no matter which marks it has.
+    """
+    holder = QWidget()
+    holder.setFixedWidth(_RAIL_GUTTER)
+    box = QHBoxLayout(holder)
+    box.setContentsMargins(0, 0, 0, 0)
+    box.setSpacing(theme.SPACE["xs"])
+    if glyph:
+        mark = QLabel(holder)
+        mark.setPixmap(pixmap(glyph, _MARK_GLYPH, theme.token("muted")))
+        mark.setFixedWidth(_MARK_GLYPH)
+        box.addWidget(mark, 0, Qt.AlignmentFlag.AlignVCenter)
+    box.addStretch(1)
+    if pip is not None:
+        pip.setParent(holder)
+        box.addWidget(pip, 0, Qt.AlignmentFlag.AlignVCenter)
+    return holder
 
 
 def _initials(name: str) -> str:
@@ -154,12 +197,15 @@ class _FittedBrowser(QTextBrowser):
 
 
 class _RailDocument(QFrame):
-    """One document in the context rail: a mark, a filename and its state beneath it.
+    """One document in the context rail: its state as a pip, its name, nothing else.
 
-    This was a ``QToolButton`` carrying ``"name\nstatus"`` with the icon set beside the
-    text. Qt centres that icon against the whole two-line block, so it landed between the
-    lines, and the control's height cap left the two lines overlapping it. A row with a
-    name and a state under it is a row, not a button with a newline in it.
+    The state used to be a second line under the filename, so a rail holding three ready
+    documents spent three of its lines writing "Sẵn sàng" — a column of identical words
+    that said nothing about any one of them. The pip carries the state and the tooltip
+    spells it out, which halves the block and leaves the filenames scannable.
+
+    The name is elided rather than wrapped: a rail row is one line, and a wrapped filename
+    pushes every row below it out of rhythm.
     """
 
     activated = Signal(str)
@@ -168,40 +214,54 @@ class _RailDocument(QFrame):
         super().__init__(parent)
         self._document_id = ""
         self._busy = False
+        self._filename = ""
         self.setCursor(Qt.CursorShape.PointingHandCursor)
 
         row = QHBoxLayout(self)
         row.setContentsMargins(0, theme.SPACE["3xs"], 0, theme.SPACE["3xs"])
-        row.setSpacing(theme.SPACE["sm"])
+        row.setSpacing(theme.SPACE["xs"])
 
-        self._mark = QLabel(self)
-        self._mark.setPixmap(icon("book-open", size=_MARK_GLYPH).pixmap(_MARK_GLYPH, _MARK_GLYPH))
-        self._mark.setFixedWidth(_MARK_GLYPH)
-        # The mark belongs to the filename, so it hangs from the first line rather than
-        # floating to the middle of the two.
-        row.addWidget(self._mark, 0, Qt.AlignmentFlag.AlignTop)
+        self._pip = StatusPip("unknown", self)
+        row.addWidget(_rail_gutter(pip=self._pip), 0, Qt.AlignmentFlag.AlignVCenter)
 
-        copy = QVBoxLayout()
-        copy.setContentsMargins(0, 0, 0, 0)
-        copy.setSpacing(theme.SPACE["3xs"])
         self._name = QLabel(self)
         self._name.setProperty("class", "body")
-        self._name.setWordWrap(True)
-        self._state = QLabel(self)
-        self._state.setProperty("class", "muted")
-        copy.addWidget(self._name)
-        copy.addWidget(self._state)
-        row.addLayout(copy, 1)
+        row.addWidget(self._name, 1)
 
-    def set_document(self, document_id: str, filename: str, state: str, *, busy: bool) -> None:
+    def set_document(
+        self,
+        document_id: str,
+        filename: str,
+        state: str,
+        *,
+        busy: bool,
+        pip_state: str,
+    ) -> None:
         self._document_id = document_id
         self._busy = busy
-        self._name.setText(filename)
-        self._state.setText(state)
-        self.setToolTip(f"{filename} vẫn đang xử lý" if busy else f"Xem nội dung {filename}")
+        self._filename = filename
+        self._pip.set_state(pip_state)
+        self._elide()
+        # Name, state, and what a click will do — none of which needs a line of its own.
+        action = "vẫn đang xử lý" if busy else "Bấm để xem nội dung"
+        self.setToolTip(f"{filename}\n{state} · {action}")
         self.setCursor(
             Qt.CursorShape.ForbiddenCursor if busy else Qt.CursorShape.PointingHandCursor
         )
+
+    def _elide(self) -> None:
+        available = self._name.width()
+        if available <= 0 or not self._filename:
+            self._name.setText(self._filename)
+            return
+        metrics = QFontMetrics(self._name.font())
+        self._name.setText(
+            metrics.elidedText(self._filename, Qt.TextElideMode.ElideMiddle, available)
+        )
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
+        super().resizeEvent(event)
+        self._elide()
 
     def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt override
         if not self._busy and self._document_id:
@@ -438,6 +498,7 @@ class ChatView(QWidget):
         self._capture.transcriptChanged.connect(self._on_transcript)
         self._capture.stateChanged.connect(self._on_voice_state)
         self._capture.failed.connect(self._set_error)
+        self._capture.notice.connect(lambda message: self.ctx.toast(message, "info"))
 
         self.setAcceptDrops(True)
         self._build()
@@ -551,6 +612,12 @@ class ChatView(QWidget):
         describe(self._mic, "Ghi âm câu hỏi")
         tools.addWidget(self._mic)
 
+        # Sits beside the button and only while dictation is running: which of the three
+        # waits the user is in is otherwise invisible.
+        self._voice = VoiceMeter()
+        self._capture.levelChanged.connect(self._voice.push_level)
+        tools.addWidget(self._voice)
+
         tools.addStretch(1)
         self._send = QToolButton()
         self._send.setIcon(icon("chevron-right"))
@@ -572,17 +639,36 @@ class ChatView(QWidget):
         layout.setContentsMargins(*theme.CARD_MARGINS)
         layout.setSpacing(theme.SPACE["sm"])
 
-        heading = QLabel("Ngữ cảnh")
-        heading.setProperty("class", "section-label")
-        layout.addWidget(heading)
+        # The workspace name is the rail's title. An eyebrow reading "Ngữ cảnh" above it
+        # named the panel the name already stands in, and cost a line the rail cannot spare.
+        workspace_row = QHBoxLayout()
+        workspace_row.setSpacing(theme.SPACE["xs"])
+        gutter = _rail_gutter("folder")
+        gutter.setToolTip("Không gian làm việc")
+        workspace_row.addWidget(gutter, 0, Qt.AlignmentFlag.AlignVCenter)
         self._rail_workspace = QLabel("Chưa có không gian")
         self._rail_workspace.setProperty("class", "heading")
         self._rail_workspace.setWordWrap(True)
-        layout.addWidget(self._rail_workspace)
+        workspace_row.addWidget(self._rail_workspace, 1)
+        layout.addLayout(workspace_row)
 
+        # Section header, count and the add action on one line: the count is the fact the
+        # heading was missing, and "Thêm tài liệu" had a whole row to itself below the list.
+        documents_head = QHBoxLayout()
+        documents_head.setSpacing(theme.SPACE["xs"])
         documents_label = QLabel("Tài liệu")
         documents_label.setProperty("class", "section-label")
-        layout.addWidget(documents_label)
+        documents_head.addWidget(documents_label, 1)
+        self._documents_count = QLabel("")
+        self._documents_count.setProperty("class", "faint")
+        documents_head.addWidget(self._documents_count, 0, Qt.AlignmentFlag.AlignVCenter)
+        self._rail_add = QToolButton()
+        self._rail_add.setProperty("class", "icon")
+        self._rail_add.setIcon(icon("upload", size=_MARK_GLYPH))
+        describe(self._rail_add, "Thêm tài liệu vào không gian này")
+        self._rail_add.clicked.connect(lambda: self._open_upload([]))
+        documents_head.addWidget(self._rail_add, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(documents_head)
 
         self._document_rows: list[tuple[_RailDocument, QProgressBar]] = []
         for _slot in range(RAIL_DOCUMENTS):
@@ -611,52 +697,51 @@ class ChatView(QWidget):
         self._view_all.hide()
         layout.addWidget(self._view_all)
 
-        self._rail_add = QToolButton()
-        self._rail_add.setIcon(icon("upload", size=16))
-        self._rail_add.setText("Thêm tài liệu")
-        self._rail_add.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._rail_add.clicked.connect(lambda: self._open_upload([]))
-        layout.addWidget(self._rail_add)
-
-        status_label = QLabel("Trạng thái hệ thống")
+        # One heading for the three subsystems and the memory bar: they are all the same
+        # question, and two section labels in a 296px column is two lines of furniture.
+        status_label = QLabel("Hệ thống")
         status_label.setProperty("class", "section-label")
         layout.addWidget(status_label)
-        self._pips: dict[str, tuple[StatusPipLabel, QLabel]] = {}
-        for key, caption in (
-            ("provider", "Nhà cung cấp AI"),
-            ("knowledge_graph", "Kho tri thức"),
-            ("asr", "Giọng nói"),
+        self._pips: dict[str, tuple[StatusPip, QLabel]] = {}
+        for key, caption, glyph in (
+            ("provider", "Nhà cung cấp AI", "cpu"),
+            ("knowledge_graph", "Kho tri thức", "waypoints"),
+            ("asr", "Giọng nói", "mic"),
         ):
-            # Stacked, not two columns. The rail is 296px wide and these values are
-            # sentences ("Ollama cục bộ · trên thiết bị"); squeezed into the half-width
-            # right column they wrapped into a ragged block hanging off the caption.
-            entry = QVBoxLayout()
-            entry.setSpacing(theme.SPACE["3xs"])
-            pip = StatusPipLabel(caption, "unknown")
+            # The caption was its own line above the value, so three subsystems spent six
+            # lines. The glyph says which subsystem, the pip says how it is, and the value
+            # is the only part that varies enough to deserve words.
+            entry = QHBoxLayout()
+            entry.setSpacing(theme.SPACE["xs"])
+            entry.setContentsMargins(0, 0, 0, 0)
+            pip = StatusPip("unknown", self._rail)
+            gutter = _rail_gutter(glyph, pip)
+            gutter.setToolTip(caption)
+            entry.addWidget(gutter, 0, Qt.AlignmentFlag.AlignVCenter)
             value = QLabel("Đang kiểm tra…")
             value.setProperty("class", "muted")
-            value.setWordWrap(True)
-            # Indented onto the caption's own text column, past the pip beside it.
-            value.setContentsMargins(STATUS_TEXT_INSET, 0, 0, 0)
-            entry.addWidget(pip)
-            entry.addWidget(value)
+            value.setToolTip(caption)
+            entry.addWidget(value, 1)
             layout.addLayout(entry)
             self._pips[key] = (pip, value)
 
-        self._vram_title = QLabel("VRAM đang dùng")
-        self._vram_title.setProperty("class", "section-label")
-        layout.addWidget(self._vram_title)
+        # Capacity on the row, the bar under it, and what is holding the memory in the
+        # tooltip. The old block spent four lines on those same three facts.
+        vram_row = QHBoxLayout()
+        vram_row.setSpacing(theme.SPACE["xs"])
+        self._vram_mark = _rail_gutter("hard-drive")
+        vram_row.addWidget(self._vram_mark, 0, Qt.AlignmentFlag.AlignVCenter)
         self._vram_value = QLabel("Đang đo…")
         self._vram_value.setProperty("class", "muted")
-        layout.addWidget(self._vram_value)
+        vram_row.addWidget(self._vram_value, 1)
+        self._vram_detail = QLabel("")
+        self._vram_detail.setProperty("class", "faint")
+        vram_row.addWidget(self._vram_detail, 0, Qt.AlignmentFlag.AlignVCenter)
+        layout.addLayout(vram_row)
         self._vram_bar = QProgressBar()
         self._vram_bar.setRange(0, 100)
         self._vram_bar.setTextVisible(False)
         layout.addWidget(self._vram_bar)
-        self._vram_detail = QLabel("")
-        self._vram_detail.setProperty("class", "muted")
-        self._vram_detail.setWordWrap(True)
-        layout.addWidget(self._vram_detail)
 
         layout.addStretch(1)
 
@@ -700,6 +785,9 @@ class ChatView(QWidget):
 
     def on_deactivated(self) -> None:
         self._poll.stop()
+        # Leaving the view — or quitting — while dictating: the microphone stays open and
+        # the recogniser's lock stays held unless the session is torn down here.
+        self._capture.cancel()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
         super().resizeEvent(event)
@@ -1179,16 +1267,23 @@ class ChatView(QWidget):
 
     def _on_voice_state(self, state: str) -> None:
         recording = state == STATE_RECORDING
-        self._mic.setIcon(icon("mic-off" if recording else "mic"))
+        preparing = state == STATE_PREPARING
+        self._voice.set_state(state)
+        self._mic.setIcon(icon("loader" if preparing else "mic-off" if recording else "mic"))
         describe(
             self._mic,
             "Dừng ghi âm"
             if recording
+            else "Đang mở micro"
+            if preparing
             else "Đang nhận dạng giọng nói"
             if state == STATE_TRANSCRIBING
             else "Ghi âm câu hỏi",
         )
-        self._mic.setEnabled(state != STATE_TRANSCRIBING and self._stream_task is None)
+        # Recording is the one busy state with an action behind the button — stop. The
+        # other two would either open a second session or do nothing at all, and an idle
+        # button still waits on the answer currently streaming.
+        self._mic.setEnabled(recording or (state == STATE_IDLE and self._stream_task is None))
 
     # --- attachments ------------------------------------------------------
 
@@ -1282,11 +1377,13 @@ class ChatView(QWidget):
                 filename,
                 document_status_text(document),
                 busy=busy,
+                pip_state=_document_pip(document, busy),
             )
             button.show()
             bar.setValue(int(round(document_progress(document) * 100)))
             bar.setVisible(busy)
         self._documents_empty.setVisible(self._has_workspace and not self._documents)
+        self._documents_count.setText(str(self._document_total) if self._document_total else "")
         self._view_all.setVisible(self._document_total > RAIL_DOCUMENTS)
         self._view_all.setText(f"Xem toàn bộ {self._document_total} tài liệu")
         self._rail_add.setEnabled(self._has_workspace)
@@ -1303,10 +1400,14 @@ class ChatView(QWidget):
         else:
             on_device = provider.on_device
             pip.set_state("online" if online else "offline")
-            if online:
-                value.setText(f"{provider.name} · {'trên thiết bị' if on_device else 'từ xa'}")
-            else:
-                value.setText(f"{provider.name} · không phản hồi")
+            # Where it runs is the whole subject of the privacy panel at the foot of this
+            # rail, and the topbar says it a third time; here the name is enough, and the
+            # health verdict is the part this row exists to report.
+            value.setText(provider.name if online else f"{provider.name} · không phản hồi")
+            value.setToolTip(
+                f"Nhà cung cấp AI\n{provider.name} · "
+                f"{'chạy trên máy này' if on_device else 'máy chủ từ xa'}"
+            )
 
         graph_ready = await services.graph.health()
         pip, value = self._pips["knowledge_graph"]
@@ -1318,9 +1419,12 @@ class ChatView(QWidget):
         pip, value = self._pips["asr"]
         pip.set_state("online" if can_record else "not_configured")
         value.setText("Sẵn sàng" if can_record else "Chưa cấu hình")
-        self._mic.setEnabled(can_record and self._stream_task is None)
-        if not can_record:
-            describe(self._mic, "Giọng nói chưa sẵn sàng")
+        # A poll landing mid-dictation must not re-enable the button under the session,
+        # nor rename a control that is currently saying what it is doing.
+        if not self._capture.is_busy():
+            self._mic.setEnabled(can_record and self._stream_task is None)
+            if not can_record:
+                describe(self._mic, "Giọng nói chưa sẵn sàng")
 
         remote = provider is not None and not on_device
         self._privacy_title.setText(REMOTE_TITLE if remote else ON_DEVICE_TITLE)
@@ -1332,14 +1436,16 @@ class ChatView(QWidget):
         reserved = int(snapshot.get("reserved_bytes") or 0)
         leases = list(snapshot.get("leases") or [])
         percent = int(round(reserved / capacity * 100)) if capacity else 0
-        self._vram_title.setText(
-            "Bộ nhớ hợp nhất cho GPU" if is_unified_memory() else "VRAM đang dùng"
-        )
+        title = "Bộ nhớ hợp nhất cho GPU" if is_unified_memory() else "VRAM đang dùng"
         self._vram_value.setText(f"{format_bytes(reserved)} / {format_bytes(capacity)}")
         self._vram_bar.setValue(max(0, min(100, percent)))
-        self._vram_detail.setText(
-            f"{len(leases)} mô hình đang dùng" if leases else "Không có mô hình trong GPU"
+        # The count only when there is one: "0 mô hình" beside "0 GB" says it twice.
+        self._vram_detail.setText(f"{len(leases)} mô hình" if leases else "")
+        detail = (
+            f"{len(leases)} mô hình đang giữ bộ nhớ" if leases else "Không có mô hình trong GPU"
         )
+        for widget in (self._vram_mark, self._vram_value, self._vram_bar, self._vram_detail):
+            widget.setToolTip(f"{title}\n{detail}")
 
     # --- models -----------------------------------------------------------
 

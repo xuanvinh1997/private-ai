@@ -23,6 +23,7 @@ from langchain_core.embeddings import Embeddings
 from private_ai.agent.skills.registry import SkillRegistry
 from private_ai.asr.service import AsrService
 from private_ai.config import Settings, get_settings
+from private_ai.core.artifacts import ArtifactStore
 from private_ai.core.database import Database
 from private_ai.core.file_access import FileAccessService
 from private_ai.core.gpu_lease import GpuLeaseManager
@@ -155,6 +156,7 @@ def build_services(settings: Settings | None = None, *, migrate: bool = True) ->
         max_read_bytes=configured.file_read_max_bytes,
     )
     skills = SkillRegistry(database, configured)
+    artifacts = ArtifactStore(configured.artifacts_dir)
     asr = AsrService(
         data_dir=configured.asr_dir,
         executable=configured.asr_executable,
@@ -182,6 +184,7 @@ def build_services(settings: Settings | None = None, *, migrate: bool = True) ->
         memory=memory,
         files=files,
         skills=skills,
+        artifacts=artifacts,
         asr=asr,
     )
     services.strategies = StrategyRegistry(services)

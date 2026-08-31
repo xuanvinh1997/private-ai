@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from private_ai.core.schemas import RetrievalStrategyName
 from private_ai.ui import icons, theme
+from private_ai.ui.widgets.popup import RoundedPopup
 
 __all__ = ["STRATEGY_CHOICES", "StrategyPicker", "strategy_hint", "strategy_label"]
 
@@ -137,13 +138,11 @@ class _ChoiceRow(QPushButton):
         self.setAccessibleName(f"{strategy_label(value)}, {strategy_hint(value)}")
 
 
-class _Popup(QFrame):
+class _Popup(RoundedPopup):
     chosen = Signal(str)
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Popup)
-        self.setProperty("class", "card")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        super().__init__(parent)
         self.setMinimumWidth(POPUP_WIDTH)
 
         outer = QVBoxLayout(self)

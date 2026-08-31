@@ -38,6 +38,7 @@ __all__ = [
     "FRAME_SAMPLES",
     "MULTIMEDIA_AVAILABLE",
     "STATE_IDLE",
+    "STATE_PREPARING",
     "STATE_RECORDING",
     "STATE_TRANSCRIBING",
     "TARGET_SAMPLE_RATE",
@@ -60,8 +61,19 @@ TARGET_SAMPLE_RATE = 16_000
 FRAME_SAMPLES = 5_120  # 320 ms, what the ASR model expects per feed
 
 STATE_IDLE = "idle"
+# Everything between the click and the first sample: loading the model, reserving VRAM,
+# and on macOS the permission sheet. Without a state of its own the button stayed idle and
+# enabled through all of it, so the click read as ignored and a second one opened a second
+# session on top of the first.
+STATE_PREPARING = "preparing"
 STATE_RECORDING = "recording"
 STATE_TRANSCRIBING = "transcribing"
+
+# The macOS permission sheet resolves a future we cannot cancel; without a deadline a
+# dismissed sheet leaves the session preparing forever.
+PERMISSION_TIMEOUT_SECONDS = 60.0
+# Speech quieter than this over a whole session is silence, whatever the recogniser says.
+SILENCE_RMS = 0.002
 
 NO_MULTIMEDIA = "Thiếu QtMultimedia — cài PySide6-Addons để dùng micro"
 NO_MICROPHONE = "Không tìm thấy microphone nào trên máy"
@@ -69,6 +81,9 @@ NO_PERMISSION = "Ứng dụng chưa được cấp quyền dùng microphone"
 NO_FORMAT = "Thiết bị thu âm không hỗ trợ định dạng nào dùng được"
 NO_ASR = "Nhận dạng giọng nói chưa sẵn sàng"
 CAPTURE_FAILED = "Không thể mở microphone"
+BATCH_FALLBACK = "Chưa nghe trực tiếp được. Chữ sẽ hiện sau khi bạn dừng ghi."
+NO_SPEECH = "Không nghe được gì. Kiểm tra micro rồi ghi lại."
+NO_SOUND = "Micro không thu được âm thanh nào. Kiểm tra thiết bị đầu vào."
 
 
 def _to_little_endian(samples: array.array) -> bytes:
@@ -192,7 +207,9 @@ class MicrophoneCapture(QObject):
 
     transcriptChanged = Signal(str)  # merged draft, safe to write into the composer
     transcriptFinal = Signal(str)
-    stateChanged = Signal(str)  # idle | recording | transcribing
+    stateChanged = Signal(str)  # idle | preparing | recording | transcribing
+    levelChanged = Signal(float)  # 0..1 input level, for the meter beside the button
+    notice = Signal(str)  # something the user should know that is not a failure
     failed = Signal(str)
 
     def __init__(
@@ -220,6 +237,11 @@ class MicrophoneCapture(QObject):
         self._queue: asyncio.Queue[bytes | None] | None = None
         self._worker: asyncio.Task[None] | None = None
         self._batch = bytearray()
+        # Bumped by every start and every cancel: ``start`` awaits three slow calls and has
+        # to know, after each one, whether the session it is still building is the current
+        # one. Comparing state alone misses a cancel-then-start pair.
+        self._session = 0
+        self._loudest = 0.0
 
     # --- state ------------------------------------------------------------
 
@@ -244,6 +266,7 @@ class MicrophoneCapture(QObject):
         self.stateChanged.emit(state)
 
     def _fail(self, message: str) -> None:
+        self.levelChanged.emit(0.0)
         self.failed.emit(message)
         self._set_state(STATE_IDLE)
 
@@ -256,16 +279,32 @@ class MicrophoneCapture(QObject):
         if not MULTIMEDIA_AVAILABLE:
             self._fail(NO_MULTIMEDIA)
             return
+        # Claimed before the first await, so a second click lands on a busy session rather
+        # than opening one of its own.
+        self._session += 1
+        session = self._session
+        self._set_state(STATE_PREPARING)
         self._draft_base = draft_base.rstrip()
         self._batch.clear()
         self._leftover.clear()
+        self._loudest = 0.0
 
         device = QMediaDevices.defaultAudioInput()
         if device.isNull():
             self._fail(NO_MICROPHONE)
             return
-        if not await self._request_permission():
+        try:
+            granted = await asyncio.wait_for(
+                self._request_permission(),
+                PERMISSION_TIMEOUT_SECONDS,
+            )
+        except TimeoutError:
             self._fail(NO_PERMISSION)
+            return
+        if not granted:
+            self._fail(NO_PERMISSION)
+            return
+        if self._stale(session):
             return
 
         # The recogniser is opened first: a failure here should not leave the mic on, and
@@ -273,15 +312,22 @@ class MicrophoneCapture(QObject):
         try:
             self._stream = await self._services.asr.open_stream(language=self._language)
             self._streaming = True
-        except AsrUnavailable:
+        except AsrUnavailable as exc:
             self._stream = None
             self._streaming = False
             if not await self._services.asr.health():
                 self._fail(NO_ASR)
                 return
+            # Falling back to record-then-send is not a failure, but it changes what the
+            # user sees: no partial text at all until they stop. Say so.
+            logger.info("Nhận dạng theo luồng không dùng được, chuyển sang ghi rồi gửi: %s", exc)
+            self.notice.emit(BATCH_FALLBACK)
         except Exception as exc:  # a broken recogniser must not take the app with it
             logger.exception("Không mở được phiên nhận dạng giọng nói")
             self._fail(f"{NO_ASR}: {exc}")
+            return
+        if self._stale(session):
+            await self._discard_stream()
             return
 
         if not self._open_input(device):
@@ -293,6 +339,10 @@ class MicrophoneCapture(QObject):
             self._worker = run_coro(self._pump(), owner=self, on_error=self._on_worker_error)
         self._set_state(STATE_RECORDING)
 
+    def _stale(self, session: int) -> bool:
+        """True once the session being built has been cancelled or superseded."""
+        return session != self._session or self._state != STATE_PREPARING
+
     def stop(self) -> None:
         """Flush the tail and finalize. The partial text already emitted is kept."""
         if self._state != STATE_RECORDING:
@@ -301,7 +351,9 @@ class MicrophoneCapture(QObject):
         self._close_input()
         if self._streaming:
             if self._queue is None:
-                # The pump already exited — nothing is left to finalize.
+                # The pump already exited — nothing is left to finalize, but the session
+                # may still hold the recogniser's lock.
+                run_coro(self._discard_stream(), owner=self)
                 self._set_state(STATE_IDLE)
                 return
             self._queue.put_nowait(None)
@@ -309,9 +361,15 @@ class MicrophoneCapture(QObject):
         run_coro(self._finish_batch(), owner=self, on_error=self._on_worker_error)
 
     def cancel(self) -> None:
-        """Abandon the session without producing a transcript."""
+        """Abandon the session without producing a transcript.
+
+        Also the teardown path: leaving the chat view or quitting mid-dictation must give
+        the microphone and the recogniser's lock back.
+        """
         if self._state == STATE_IDLE:
             return
+        # Anything ``start`` is still awaiting belongs to a session that no longer exists.
+        self._session += 1
         self._close_input()
         self._batch.clear()
         worker, self._worker = self._worker, None
@@ -320,6 +378,7 @@ class MicrophoneCapture(QObject):
         elif self._stream is not None:
             run_coro(self._discard_stream(), owner=self)
         self._queue = None
+        self.levelChanged.emit(0.0)
         self._set_state(STATE_IDLE)
 
     # --- audio device -----------------------------------------------------
@@ -393,8 +452,28 @@ class MicrophoneCapture(QObject):
             return
         block = bytes(buffer[:usable])
         del buffer[:usable]
-        for frame in resampler.push(self._decode(block)):
+        samples = self._decode(block)
+        self._report_level(samples)
+        for frame in resampler.push(samples):
             self._dispatch(frame)
+
+    def _report_level(self, samples: Sequence[float]) -> None:
+        """Publish one level per device callback — the meter's only source of motion.
+
+        Taken before resampling: it is the same audio, it arrives every few milliseconds
+        instead of every 320 ms, and a meter that updates three times a second reads as a
+        broken animation rather than as a microphone.
+        """
+        if not samples:
+            return
+        total = 0.0
+        for value in samples:
+            total += value * value
+        rms = (total / len(samples)) ** 0.5
+        self._loudest = max(self._loudest, rms)
+        # Square root, not the raw amplitude: speech sits near the bottom of a linear
+        # scale and the meter would barely move.
+        self.levelChanged.emit(min(1.0, rms**0.5 * 2.0))
 
     def _dispatch(self, frame: bytes) -> None:
         if self._streaming and self._queue is not None:
@@ -430,6 +509,7 @@ class MicrophoneCapture(QObject):
         queue = self._queue
         if stream is None or queue is None:
             return
+        finalized = False
         try:
             while True:
                 frame = await queue.get()
@@ -438,16 +518,18 @@ class MicrophoneCapture(QObject):
                 event = await stream.feed(frame)
                 if event.get("result_changed"):
                     self._emit_partial(str(event.get("display") or ""))
-            result = await stream.finalize()
+            result = await stream.finalize()  # closes the session itself
+            finalized = True
             self._emit_final(str(result.get("text") or result.get("display") or ""))
-        except asyncio.CancelledError:
-            with contextlib.suppress(Exception):
-                await stream.close()
-            raise
         finally:
             self._stream = None
             self._queue = None
             self._worker = None
+            if not finalized:
+                # Cancelled, or ``feed`` raised. The session holds the recogniser's lock
+                # until it is closed, and nothing else is going to close it.
+                with contextlib.suppress(Exception):
+                    await stream.close()
 
     async def _finish_batch(self) -> None:
         audio, self._batch = bytes(self._batch), bytearray()
@@ -469,11 +551,18 @@ class MicrophoneCapture(QObject):
 
     def _on_worker_error(self, exc: BaseException) -> None:
         logger.exception("Nhận dạng giọng nói thất bại", exc_info=exc)
-        self._stream = None
+        stream, self._stream = self._stream, None
         self._queue = None
         self._worker = None
         self._batch.clear()
+        if stream is not None:
+            run_coro(self._release(stream), owner=self)
         self._fail(str(exc) or NO_ASR)
+
+    @staticmethod
+    async def _release(stream: Any) -> None:
+        with contextlib.suppress(Exception):
+            await stream.close()
 
     # --- text -------------------------------------------------------------
 
@@ -490,7 +579,12 @@ class MicrophoneCapture(QObject):
         merged = self._merge(text)
         self.transcriptChanged.emit(merged)
         self.transcriptFinal.emit(merged)
+        self.levelChanged.emit(0.0)
         self._set_state(STATE_IDLE)
+        if not text.strip():
+            # An empty transcript rewrites the draft with itself and looks exactly like a
+            # broken feature. Which of the two it is depends on whether anything was heard.
+            self.notice.emit(NO_SOUND if self._loudest < SILENCE_RMS else NO_SPEECH)
 
     # --- permissions ------------------------------------------------------
 

@@ -16,6 +16,7 @@ from private_ai.core import preferences as prefs
 from private_ai.core.preferences import AppPreferences, read_app_preferences
 from private_ai.ui import theme
 from private_ai.ui.async_bridge import run_coro
+from private_ai.ui.format import TONES
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
     import asyncio
@@ -172,7 +173,7 @@ class AppContext(QObject):
         return run_coro(coro, on_result, on_error, owner=self, label=label)
 
     def toast(self, message: str, tone: str = "info") -> None:
-        self.toastRequested.emit(message, tone if tone in ("success", "error", "info") else "info")
+        self.toastRequested.emit(message, tone if tone in TONES else "info")
 
     def navigate(self, view_key: str, sub_tab: str = "") -> None:
         self.navigateRequested.emit(view_key, sub_tab)

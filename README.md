@@ -115,11 +115,44 @@ prompt nhúng chúng đều kèm câu cảnh báo bằng tiếng Việt, và m�
 báo đó ngay trong phần mô tả của mình — vì mô tả tool là thứ duy nhất mô hình đọc đúng vào
 lúc nó quyết định làm gì với đoạn văn bản trả về.
 
+## Tệp do agent tạo ra
+
+Bên cạnh bảy server chỉ-đọc còn một server `artifacts` — nơi duy nhất trong ứng dụng mà agent
+được **ghi** thay vì chỉ đọc.
+
+| Tool | Sinh ra |
+| --- | --- |
+| `artifacts.create_chart` | Một trang HTML biểu đồ tương tác: đường, miền, cột, cột chồng, nến giá, phân tán, tròn. Di chuột đọc giá trị, cuộn để phóng to, kéo để trượt. |
+| `artifacts.create_diagram` | Một trang HTML sơ đồ Mermaid, kèm tệp `.mmd` chứa mã nguồn. |
+| `artifacts.create_document` | Một tệp `.docx` gồm tiêu đề, đoạn văn, danh sách, bảng và trích dẫn. |
+| `artifacts.create_slides` | Một tệp `.pptx` khổ 16:9, kèm ghi chú người trình bày. |
+| `artifacts.list` | Các tệp đã tạo trong workspace, mới nhất trước. |
+
+Việc nới ranh giới chỉ-đọc ở đây là có chủ đích và hẹp: mọi tool trong nhóm này chỉ **tạo
+tệp mới** dưới `data_dir/artifacts/<workspace>/`, tên có gắn dấu thời gian nên không bao giờ
+đè lên tệp cũ, và **không có** tool nào mở, ghi đè, di chuyển hay xóa. Điều tệ nhất một tài
+liệu độc hại có thể dụ mô hình làm là tạo ra một tệp thừa trong đúng cái thư mục sinh ra để
+chứa nó — không phải mất một tài liệu, không phải sửa được một ghi nhớ. Vì thế
+`READ_ONLY_TOOLS` giữ nguyên nghĩa đen của nó, còn thứ agent thực sự nhận là
+`AGENT_TOOLS = READ_ONLY_TOOLS | ARTIFACT_TOOLS`.
+
+Ứng dụng cũng **không tự mở** tệp nào: các tool trả về đường dẫn rồi dừng, việc mở là hành
+động người dùng thực hiện có chủ ý trên một tệp họ xem được trước.
+
+Biểu đồ được vẽ bằng canvas viết tay, nhúng thẳng vào trang, nên một tệp biểu đồ mở được
+trên máy chưa từng nối mạng. Sơ đồ Mermaid là ngoại lệ duy nhất — trang tải thư viện từ CDN
+khi có mạng, và khi không có thì hiện nguyên mã nguồn cùng lời giải thích, nên nội dung sơ
+đồ vẫn đọc được. Nhúng sẵn vài megabyte JavaScript vào repo chỉ để vẽ mấy cái hộp và mũi
+tên là cái giá không đáng trả.
+
 ## Skills
 
 Skill là một quy trình được đóng gói sẵn: một thư mục có `SKILL.md` mở đầu bằng khối
-frontmatter YAML, phần còn lại là markdown hướng dẫn. Bốn gói dựng sẵn đi kèm ứng dụng
-(`tom-tat-tai-lieu`, `truy-van-tri-thuc`, `nghien-cuu-web`, `phan-tich-du-lieu`).
+frontmatter YAML, phần còn lại là markdown hướng dẫn. Tám gói dựng sẵn đi kèm ứng dụng:
+bốn gói về truy hồi và đọc hiểu (`tom-tat-tai-lieu`, `truy-van-tri-thuc`, `nghien-cuu-web`,
+`phan-tich-du-lieu`) và bốn gói về tạo tệp (`bieu-do-tuong-tac`, `so-do-mermaid`,
+`tai-lieu-word`, `ban-trinh-chieu`) — nhóm sau đi kèm các tool `artifacts.*` bên dưới, vì
+một hướng dẫn không có công cụ đằng sau thì chỉ là văn bản.
 
 Tiết lộ dần (progressive disclosure) là điểm chính: prompt hệ thống luôn mang **danh sách
 tên + mô tả một dòng** của mọi skill đang bật; **toàn văn hướng dẫn** chỉ được chèn vào khi
@@ -225,7 +258,7 @@ conda run --no-capture-output -n private-ai python tools\dev.py
 
 ## MCP cho client bên ngoài
 
-Trong ứng dụng, bảy server nội bộ được mount **ngay trong tiến trình** trên đúng bộ
+Trong ứng dụng, tám server nội bộ được mount **ngay trong tiến trình** trên đúng bộ
 `AppServices` đang chạy — không sinh tiến trình thứ hai, không đi qua mạng, nên bản đóng gói
 vẫn hoạt động dù không cổng nào được mở.
 

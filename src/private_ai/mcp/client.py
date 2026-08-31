@@ -1,6 +1,6 @@
 """``McpHub`` — every tool the application can reach, from one object.
 
-The seven built-in servers are mounted **in process**. Nothing is spawned and nothing is
+The eight built-in servers are mounted **in process**. Nothing is spawned and nothing is
 dialled: ``create_server(services)`` hands each one the same live ``AppServices`` the UI
 is using, so the agent and a standalone server talk to the same database, the same GPU
 lease manager and the same graph store. Speaking MCP to ourselves over a socket would
@@ -29,11 +29,12 @@ if TYPE_CHECKING:  # pragma: no cover - import graph only
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BUILTIN_SERVERS", "READ_ONLY_TOOLS", "McpHub"]
+__all__ = ["AGENT_TOOLS", "ARTIFACT_TOOLS", "BUILTIN_SERVERS", "READ_ONLY_TOOLS", "McpHub"]
 
 # module path -> server id. The id is what `servers()` reports and what a log line names.
 BUILTIN_SERVERS: dict[str, str] = {
     "private_ai.mcp.servers.core_server": "core",
+    "private_ai.mcp.servers.artifacts": "artifacts",
     "private_ai.mcp.servers.rag_vector": "rag.vector",
     "private_ai.mcp.servers.rag_keyword": "rag.keyword",
     "private_ai.mcp.servers.rag_hybrid": "rag.hybrid",
@@ -73,6 +74,25 @@ READ_ONLY_TOOLS = frozenset(
         "rag.web.search",
     }
 )
+
+# The one exception to "chat may look, never touch", and it is a narrow one. These write
+# a new file into `data_dir/artifacts` and return its path; there is no tool here that
+# opens, overwrites, moves or deletes anything, and nothing outside that folder is
+# reachable. So the worst a document can talk a model into is an unwanted file in a
+# folder that exists for exactly that — not a lost document and not a rewritten memory.
+ARTIFACT_TOOLS = frozenset(
+    {
+        "artifacts.list",
+        "artifacts.create_chart",
+        "artifacts.create_diagram",
+        "artifacts.create_document",
+        "artifacts.create_slides",
+    }
+)
+
+# What the agent is handed. `READ_ONLY_TOOLS` keeps its literal meaning so the invariant
+# it exists for — no mutating tool is ever in it — stays checkable on its own.
+AGENT_TOOLS = READ_ONLY_TOOLS | ARTIFACT_TOOLS
 
 # Names an external server publishes are namespaced before the agent ever sees them, so a
 # third-party tool can neither collide with a built-in name nor impersonate one that the
@@ -215,14 +235,15 @@ class McpHub:
     async def tools(
         self,
         *,
-        allow: frozenset[str] | None = READ_ONLY_TOOLS,
+        allow: frozenset[str] | None = AGENT_TOOLS,
         workspace_id: str = "",
     ) -> list[BaseTool]:
         """Every advertised tool, as LangChain tools, minus anything ``allow`` excludes.
 
-        ``allow`` defaults to the read-only set and is passed down to the adapter, which
-        checks it again at invoke time. Filtering only here would leave a model free to
-        call a mutating tool by guessing its mangled name.
+        ``allow`` defaults to :data:`AGENT_TOOLS` — everything read-only, plus the
+        artifact writers — and is passed down to the adapter, which checks it again at
+        invoke time. Filtering only here would leave a model free to call a mutating tool
+        by guessing its mangled name.
 
         ``workspace_id`` confines the turn to one workspace: the id is stripped from every
         tool schema and forced at call time. ``workspaces.list`` is withheld entirely,
@@ -392,4 +413,4 @@ def _opener(config: dict[str, Any]):
 
 def agent_tool_names() -> list[str]:
     """The mangled names the agent will see, for a prompt that lists them."""
-    return sorted(alias_for(name) for name in READ_ONLY_TOOLS)
+    return sorted(alias_for(name) for name in AGENT_TOOLS)

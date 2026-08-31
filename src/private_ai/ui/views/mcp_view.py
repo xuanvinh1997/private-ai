@@ -1,6 +1,6 @@
 """Mounted MCP servers and the tools they publish.
 
-The seven built-ins are mounted in process and cannot be removed — they *are* the
+The eight built-ins are mounted in process and cannot be removed — they *are* the
 application's own capability surface. Only the rows the user added to ``mcp_servers``
 are editable, which is why the two lists are drawn separately.
 """
@@ -30,7 +30,7 @@ from PySide6.QtWidgets import (
 
 from private_ai.core import repositories
 from private_ai.mcp.adapter import name_for
-from private_ai.mcp.client import EXTERNAL_PREFIX, READ_ONLY_TOOLS
+from private_ai.mcp.client import AGENT_TOOLS, ARTIFACT_TOOLS, EXTERNAL_PREFIX
 from private_ai.ui.icons import icon
 from private_ai.ui.theme import (
     CARD_MARGINS,
@@ -239,13 +239,19 @@ class _ServerCard(QFrame):
             listing = QVBoxLayout()
             listing.setSpacing(SPACE["xs"])
             for tool in tools:
-                visible = tool in READ_ONLY_TOOLS
+                visible = tool in AGENT_TOOLS
                 row = QHBoxLayout()
                 row.setSpacing(TOOLBAR_SPACING)
                 label = QLabel(tool)
                 label.setProperty("class", "code")
                 row.addWidget(label, 1, Qt.AlignmentFlag.AlignVCenter)
-                mark = QLabel("Chỉ đọc · agent dùng được" if visible else "Chỉ dành cho ứng dụng")
+                if tool in ARTIFACT_TOOLS:
+                    caption = "Tạo tệp · agent dùng được"
+                elif visible:
+                    caption = "Chỉ đọc · agent dùng được"
+                else:
+                    caption = "Chỉ dành cho ứng dụng"
+                mark = QLabel(caption)
                 # Accent marks the subset the model is actually handed; the rest is neutral.
                 mark.setProperty("class", "chip-active" if visible else "chip")
                 row.addWidget(mark, 0, Qt.AlignmentFlag.AlignVCenter)

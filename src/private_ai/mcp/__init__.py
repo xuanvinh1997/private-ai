@@ -14,13 +14,21 @@ from private_ai.mcp.adapter import (
     mcp_tools_to_langchain,
     name_for,
 )
-from private_ai.mcp.client import BUILTIN_SERVERS, READ_ONLY_TOOLS, McpHub
+from private_ai.mcp.client import (
+    AGENT_TOOLS,
+    ARTIFACT_TOOLS,
+    BUILTIN_SERVERS,
+    READ_ONLY_TOOLS,
+    McpHub,
+)
 from private_ai.mcp.common import build_server, serve_http, serve_stdio
 
 __all__ = [
     "BUILTIN_SERVERS",
     "MAX_TOOL_OUTPUT_CHARS",
     "NAME_SEPARATOR",
+    "AGENT_TOOLS",
+    "ARTIFACT_TOOLS",
     "READ_ONLY_TOOLS",
     "McpHub",
     "alias_for",

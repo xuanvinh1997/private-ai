@@ -197,6 +197,12 @@ class Settings(BaseSettings):
         return self.data_dir / "skills"
 
     @property
+    def artifacts_dir(self) -> Path:
+        """Files the agent produced. Deliberately not under ``documents``: what the user
+        ingested and what a model generated must never share a folder."""
+        return self.data_dir / "artifacts"
+
+    @property
     def asr_dir(self) -> Path:
         return self.data_dir / "asr"
 

@@ -53,6 +53,10 @@ LABEL_INDENT = theme.SPACE["sm"] + theme.SPACE["3xs"]
 # button nor leaves a gap when it is hidden.
 ACTION_SLOT = 30
 
+# The berth at the end of a conversation row, wide enough for the longest relative time
+# ``format_relative_time`` produces ("Bây giờ", "59 phút") as well as the delete button.
+META_SLOT = theme.SPACE["4xl"] + theme.SPACE["sm"]
+
 # The stylesheet's icon-button size, needed here to centre the lone toggle in a collapsed
 # rail rather than let it hang off the right edge.
 ICON_BUTTON = 30
@@ -127,20 +131,37 @@ class _ElidedLabel(QLabel):
 
 
 class _ActionSlot(QWidget):
-    """A fixed-width berth for a row's delete button.
+    """A fixed-width berth at the end of a row, holding one thing at a time.
 
-    The button hides when the row is neither hovered nor current, but the berth stays, so
-    the title beside it keeps one width for the life of the row.
+    The delete button hides when the row is neither hovered nor current, but the berth
+    stays, so the title beside it keeps one width for the life of the row. A row may also
+    hand over something to show while at rest — a conversation shows its age there — and
+    the two swap in place rather than each claiming width of their own.
     """
 
-    def __init__(self, button: QPushButton, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        button: QPushButton,
+        *,
+        resting: QWidget | None = None,
+        width: int = ACTION_SLOT,
+        parent: QWidget | None = None,
+    ) -> None:
+        # Keyword-only past the button: this used to be ``(button, parent)``, and growing it
+        # silently turned an existing call's parent into the resting widget — which reparented
+        # a row's own button inside itself and hung the layout instead of raising.
         super().__init__(parent)
-        self.setFixedWidth(ACTION_SLOT)
+        self.setFixedWidth(width)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-        layout.addWidget(button)
+        # Both stretch: a hidden widget takes no space, so whichever is showing fills the
+        # berth and the row's right edge never moves.
+        if resting is not None:
+            layout.addWidget(resting, 1)
+        layout.addWidget(button, 1)
         self.button = button
+        self.resting = resting
 
 
 class _RailRow(QWidget):
@@ -150,21 +171,28 @@ class _RailRow(QWidget):
         super().__init__(parent)
         self._pinned = pinned
         self._action: ConfirmToolButton | None = None
+        self._resting: QWidget | None = None
 
-    def _watch(self, action: ConfirmToolButton) -> None:
+    def _watch(self, action: ConfirmToolButton, resting: QWidget | None = None) -> None:
         self._action = action
-        action.setVisible(self._pinned)
+        self._resting = resting
+        self._show_action(self._pinned)
+
+    def _show_action(self, showing: bool) -> None:
+        if self._action is not None:
+            self._action.setVisible(showing)
+        if self._resting is not None:
+            self._resting.setVisible(not showing)
 
     def enterEvent(self, event) -> None:  # noqa: N802 - Qt override
-        if self._action is not None:
-            self._action.setVisible(True)
+        self._show_action(True)
         super().enterEvent(event)
 
     def leaveEvent(self, event) -> None:  # noqa: N802 - Qt override
         # An armed button must survive the pointer leaving, or the second click of the
         # two-step confirm has nothing to land on.
         if self._action is not None and not self._action.is_armed():
-            self._action.setVisible(self._pinned)
+            self._show_action(self._pinned)
         super().leaveEvent(event)
 
 
@@ -204,7 +232,7 @@ class _WorkspaceRow(_RailRow):
             parent=self.button,
         )
         self.delete.confirmed.connect(lambda: self.deleted.emit(self.workspace_id))
-        inner.addWidget(_ActionSlot(self.delete, self.button))
+        inner.addWidget(_ActionSlot(self.delete, parent=self.button))
         self._watch(self.delete)
 
 
@@ -216,7 +244,8 @@ class _ConversationRow(_RailRow):
         self,
         conversation_id: str,
         title: str,
-        subtitle: str,
+        when: str,
+        detail: str,
         active: bool,
         parent=None,
     ) -> None:
@@ -227,14 +256,15 @@ class _ConversationRow(_RailRow):
         layout.setSpacing(0)
 
         button = QPushButton(self)
-        button.setProperty("class", "rail-row")
+        # The same row shape as a workspace: the recents used to be 46px and two lines
+        # deep, the second line reading "N tin nhắn · X giờ" down every row — a column of
+        # the same three words that told the eye nothing about any one conversation.
+        button.setProperty("class", "rail-item")
         button.setCheckable(True)
         button.setChecked(active)
-        button.setToolTip(title)
+        button.setToolTip(detail)
         button.clicked.connect(lambda: self.chosen.emit(conversation_id))
         inner = QHBoxLayout(button)
-        # No vertical padding: the stylesheet pins the row's height and the two lines of
-        # copy only breathe if they own all of it.
         inner.setContentsMargins(theme.SPACE["sm"], 0, theme.SPACE["3xs"], 0)
         inner.setSpacing(theme.SPACE["sm"])
         mark = QLabel(button)
@@ -242,20 +272,18 @@ class _ConversationRow(_RailRow):
             icons.pixmap("message-square", 15, theme.token("accent" if active else "muted"))
         )
         inner.addWidget(mark)
-        copy = QVBoxLayout()
-        copy.setContentsMargins(0, 0, 0, 0)
-        copy.setSpacing(0)
         head = _ElidedLabel(title, button)
         # The row is rebuilt on every selection change, so the emphasis can be a class
         # swap rather than an inline weight — which keeps the palette with the stylesheet.
         head.setProperty("class", "rail-active" if active else "body")
-        sub = QLabel(subtitle, button)
-        sub.setProperty("class", "muted")
-        copy.addWidget(head)
-        copy.addWidget(sub)
-        inner.addLayout(copy, 1)
-        layout.addWidget(button, 1)
+        inner.addWidget(head, 1)
 
+        # Age at rest, delete on hover, both in the one berth: showing the age in a column
+        # of its own would have cost the title a third of its width.
+        age = QLabel(when, button)
+        age.setProperty("class", "faint")
+        age.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        age.setToolTip(detail)
         remove = ConfirmToolButton(
             "x",
             tooltip="Xóa cuộc trò chuyện",
@@ -263,10 +291,11 @@ class _ConversationRow(_RailRow):
             parent=button,
         )
         remove.confirmed.connect(lambda: self.deleted.emit(conversation_id))
-        inner.addWidget(_ActionSlot(remove, button))
+        inner.addWidget(_ActionSlot(remove, resting=age, width=META_SLOT, parent=button))
+        layout.addWidget(button, 1)
         # The open conversation keeps its delete on screen — it is the one row a keyboard
         # user can tab into without a pointer to reveal anything.
-        self._watch(remove)
+        self._watch(remove, age)
 
 
 class Sidebar(QWidget):
@@ -484,9 +513,25 @@ class Sidebar(QWidget):
         title = str(getattr(item, "title", "") or "Cuộc trò chuyện")
         count = int(getattr(item, "message_count", 0) or 0)
         when = format_relative_time(str(getattr(item, "updated_at", "") or ""))
-        subtitle = " · ".join(part for part in (f"{count} tin nhắn", when) if part)
+        # The count is third-rank: it never distinguishes two rows in a list where every
+        # entry says "2 tin nhắn". The tooltip keeps it for whoever wants it.
+        detail = "\n".join(
+            part
+            for part in (
+                title,
+                " · ".join(
+                    piece for piece in (f"{count} tin nhắn" if count else "", when) if piece
+                ),
+            )
+            if part
+        )
         row = _ConversationRow(
-            conversation_id, title, subtitle, conversation_id == active_id, self._conversation_host
+            conversation_id,
+            title,
+            when,
+            detail,
+            conversation_id == active_id,
+            self._conversation_host,
         )
         row.chosen.connect(self.conversationChosen)
         row.deleted.connect(self.conversationDeleted)

@@ -19,6 +19,7 @@ if TYPE_CHECKING:  # pragma: no cover - import graph only
     from private_ai.agent.skills.registry import SkillRegistry
     from private_ai.asr.service import AsrService
     from private_ai.config import Settings
+    from private_ai.core.artifacts import ArtifactStore
     from private_ai.core.database import Database
     from private_ai.core.file_access import FileAccessService
     from private_ai.core.gpu_lease import GpuLeaseManager
@@ -56,6 +57,7 @@ class AppServices:
     memory: MemoryStore
     files: FileAccessService
     skills: SkillRegistry
+    artifacts: ArtifactStore
 
     # Speech
     asr: AsrService

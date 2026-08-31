@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from private_ai.ui import icons, theme
 from private_ai.ui.format import format_bytes, short_model_name
+from private_ai.ui.widgets.popup import RoundedPopup
 from private_ai.ui.widgets.status_pip import StatusPip
 
 if TYPE_CHECKING:  # pragma: no cover - import graph only
@@ -116,14 +117,12 @@ class _ModelRow(QPushButton):
         self.setAccessibleName(f"{entry.display()}, {entry.meta()}")
 
 
-class _Popup(QFrame):
+class _Popup(RoundedPopup):
     chosen = Signal(str)
     manage = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
-        super().__init__(parent, Qt.WindowType.Popup)
-        self.setProperty("class", "card")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        super().__init__(parent)
         self.setMinimumWidth(320)
 
         outer = QVBoxLayout(self)

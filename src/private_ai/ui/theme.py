@@ -23,6 +23,7 @@ logger = logging.getLogger("private_ai.ui.theme")
 __all__ = [
     "BADGE_HEIGHT",
     "CARD_MARGINS",
+    "CARD_RADIUS",
     "CARD_SPACING",
     "CONTROL_HEIGHT",
     "DARK",
@@ -184,6 +185,10 @@ TOOLBAR_SPACING = SPACE["sm"]
 # measures ``min-height`` against the content rect and adds the 1px border on each side;
 # ``tests/test_theme.py`` measures the real widgets and holds them to this number.
 CONTROL_HEIGHT = 32
+# The card's corner. Named because a popup has to paint the same shape by hand — the
+# stylesheet cannot reach a translucent top-level window.
+CARD_RADIUS = 14
+
 # Status labels are a shape, not a control: they sit *beside* 32px controls in the same
 # row, so they get their own smaller height. Any row that shows the badge on some cards
 # and not others must reserve this much, or the cards land on two different baselines.
@@ -390,6 +395,7 @@ def build_qss(tk: dict[str, str], font_scale: str = "normal") -> str:
         mono=MONO_FONTS,
         root=root,
         badge_h=BADGE_HEIGHT,
+        card_radius=CARD_RADIUS,
         f2xs=fs["2xs"],
         fxs=fs["xs"],
         fsm=fs["sm"],
@@ -804,19 +810,6 @@ QPushButton[class="rail-item"]:checked {{
 }}
 /* Two lines of copy do not fit the single-line scale; the recents rows get the height they
    need rather than clipping their own descenders. */
-QPushButton[class="rail-row"] {{
-    min-height: 46px;
-    max-height: 46px;
-    border: 0;
-    border-radius: 9px;
-    padding: 0 10px;
-    background: transparent;
-    text-align: left;
-}}
-QPushButton[class="rail-row"]:hover {{ background: {surface_hover}; }}
-QPushButton[class="rail-row"]:focus {{ background: {surface_hover}; }}
-QPushButton[class="rail-row"]:checked {{ background: {accent_soft}; }}
-
 QToolButton {{
     min-width: 30px;
     min-height: 30px;
@@ -853,7 +846,7 @@ QLineEdit QToolButton:hover, QLineEdit QToolButton:focus {{
 /* ---------- containers ---------- */
 QFrame[class="card"], QWidget[class="card"] {{
     border: 1px solid {line};
-    border-radius: 14px;
+    border-radius: {card_radius}px;
     background: {surface};
 }}
 QFrame[class="panel"], QWidget[class="panel"] {{
@@ -924,7 +917,7 @@ QComboBox:hover {{ border-color: {line_strong}; }}
 QComboBox:focus {{ border-color: {accent}; }}
 QComboBox::drop-down {{ border: 0; width: 22px; }}
 QComboBox QAbstractItemView {{
-    border: 1px solid {line};
+    border: 0;
     border-radius: 10px;
     padding: 4px;
     color: {text};

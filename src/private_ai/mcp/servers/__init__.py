@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "artifacts",
     "core_server",
     "rag_graph",
     "rag_hybrid",
