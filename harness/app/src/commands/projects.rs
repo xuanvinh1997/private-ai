@@ -11,11 +11,11 @@ use crate::protocol::{CloneProgress, ProjectKind, ProjectView};
 #[tauri::command]
 pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectView>, String> {
     let harness = state.harness().await?;
-    let current = harness.current_project().id;
+    let current = harness.current_project().map(|open| open.id);
     Ok(harness
         .projects()?
         .into_iter()
-        .map(|project| ProjectView::new(project, &current))
+        .map(|project| ProjectView::new(project, current.as_deref()))
         .collect())
 }
 
@@ -32,7 +32,7 @@ pub async fn open_project(path: String, state: State<'_, AppState>) -> Result<Pr
     }
     let project = harness.open_project(std::path::Path::new(&path)).await?;
     let id = project.id.clone();
-    Ok(ProjectView::new(project, &id))
+    Ok(ProjectView::new(project, Some(id.as_str())))
 }
 
 #[tauri::command]
@@ -54,8 +54,8 @@ pub async fn create_project(
 ) -> Result<ProjectView, String> {
     let harness = state.harness().await?;
     let project = harness.create_project(std::path::Path::new(&path), kind.into(), None)?;
-    let current = harness.current_project().id;
-    Ok(ProjectView::new(project, &current))
+    let current = harness.current_project().map(|open| open.id);
+    Ok(ProjectView::new(project, current.as_deref()))
 }
 
 /// Clone một repo rồi ghi nhận nó thành dự án.
@@ -185,8 +185,8 @@ pub async fn clone_project(
     })?;
 
     let project = harness.create_project(&path, kind.into(), Some(&url))?;
-    let current = harness.current_project().id;
-    Ok(ProjectView::new(project, &current))
+    let current = harness.current_project().map(|open| open.id);
+    Ok(ProjectView::new(project, current.as_deref()))
 }
 
 /// Huỷ bản clone đang chạy. Không có bản nào thì đây là một lệnh không làm gì.
@@ -198,4 +198,18 @@ pub fn cancel_clone(state: State<'_, AppState>) {
     if let Some(token) = state.cloning.lock().take() {
         token.cancel();
     }
+}
+
+/// Đóng dự án đang mở, quay về trò chuyện thuần tuý.
+///
+/// Huỷ mọi lượt đang chạy trước, cùng lý do như `open_project`: một lượt đang giữa chừng
+/// khi tool dưới chân nó bị gỡ ra sẽ hỏng theo cách không giải thích được cho ai.
+#[tauri::command]
+pub async fn close_project(state: State<'_, AppState>) -> Result<Vec<ProjectView>, String> {
+    let harness = state.harness().await?;
+    for (_, token) in state.running.lock().drain() {
+        token.cancel();
+    }
+    harness.close_project().await;
+    list_projects(state).await
 }

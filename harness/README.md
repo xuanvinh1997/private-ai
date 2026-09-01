@@ -40,42 +40,61 @@ thì Bash, PTY và LSP đi theo, không cần fork provider nào.
 
 Cần Rust 1.88+ và Node 20+.
 
-```
+```sh
 cd harness/ui && npm install
-cd .. && cargo test          # lõi
-npm run tauri dev --prefix ui
+cd ..                                   # phải đứng ở `harness/`
+./ui/node_modules/.bin/tauri dev
+```
+
+Tauri CLI đi qua npm, không qua `cargo install tauri-cli` — nên `cargo tauri dev` **không
+chạy** trừ khi bạn tự cài binary đó. Và lệnh phải chạy từ `harness/`: CLI tìm
+`app/tauri.conf.json` từ thư mục hiện hành đi xuống.
+
+Lần đầu mở, ứng dụng **không mở dự án nào** và trò chuyện chạy ngay. Trợ lý chưa đọc hay
+sửa được tệp cho tới khi bạn mở một dự án — đó là có chủ ý; xem `docs/ARCHITECTURE.md`.
+
+| Biến | Mặc định |
+|---|---|
+| `PAI_WORKSPACE` | *(không có)* — dự án mở sẵn. Bỏ trống thì mở lại cái gần nhất, hoặc không mở gì |
+| `PAI_MODEL` | `qwen3:8b` — chỉ dùng để **gieo** hàng provider đầu tiên |
+| `PAI_OLLAMA_URL` | `http://127.0.0.1:11434` — cũng chỉ để gieo |
+| `PAI_EMBED_MODEL` | `nomic-embed-text` — cũng chỉ để gieo |
+| `PAI_DATA_DIR` | `~/.private-ai` |
+| `PAI_CONTEXT_WINDOW` | `32768` |
+| `PAI_SKILLS_DIR` | *(tự dò)* — bộ skill dựng sẵn |
+| `PAI_LOG` | `info` |
+
+Sau lần gieo đầu, nhà cung cấp và mô hình được sửa **từ trong ứng dụng**; biến môi trường
+không còn quyền gì. Hai nguồn cho cùng một giá trị thì một nguồn sẽ luôn là nguồn người ta
+quên.
+
+Chỉ xem giao diện, không cần lõi:
+
+```sh
+npm run dev --prefix ui     # rồi mở http://localhost:5173/?demo=1
 ```
 
 ## Trạng thái
 
-**v0.1 và v0.5 xong; v1.0 còn hai mục chặn bởi phần cứng.** 233 test xanh, clippy 0 cảnh báo.
+**316 test xanh, clippy 0 cảnh báo, `tsc` sạch.**
 
-Hai mươi tool: tệp (`read` `write` `edit` `glob` `grep`), lệnh (`bash` `job_output`
-`job_kill` `job_list`), terminal PTY bền (sáu tool), mã nguồn (`symbol_search` `outline`
-`lsp`), kế hoạch (`todo_write`), và giao việc (`task`).
+Tool mà mô hình thấy, và **chúng phụ thuộc vào loại dự án đang mở**:
 
-Cộng **dự án** (mở nhiều repo, mỗi repo có phiên riêng), **trình duyệt mã nguồn**,
-vòng lặp turn/step, sổ tay phiên trên SQLite, hai adapter mô hình, giao diện có thẻ
-diff, giam tiến trình trên macOS và Linux, MCP hai chiều, nén ngữ cảnh, skill, hook, chỉ mục mã
-nguồn bằng tree-sitter, agent con, và cấu hình theo lớp.
+| Dự án | Tool |
+|---|---|
+| Mã nguồn | tệp (`read` `write` `edit` `glob` `grep`), lệnh (`bash` `job_*`), terminal PTY bền (6 tool), mã nguồn (`symbol_search` `outline` `code.graph` `code.trace` `code.overview` `lsp`), `todo_write`, `task` |
+| Tài liệu | `docs.search` `docs.read` `docs.list`, `todo_write`, `task` |
+| *(chưa mở dự án)* | `todo_write` |
 
-Đóng gói: bản macOS build, đóng gói `.app`/`.dmg` và chạy được — xem
-[hướng dẫn đóng gói](docs/PACKAGING.md). Cấu hình Windows và Linux đã viết nhưng **chưa
-từng chạy**.
+Cộng tool từ server MCP ở mọi trạng thái. Danh sách rút ngắn ở hai dòng dưới không phải
+thiếu sót: một thư viện tài liệu là một chồng tệp do người khác gửi tới, và cấp cho nó
+`bash` là mở đúng cánh cửa không nên mở.
 
-Còn lại: giam tiến trình trên Windows. Nó chặn bởi phần cứng chứ không bởi thời gian —
-một provider sandbox chưa từng chạy thật mà báo là đang giam đúng là cái thất bại mà crate
-đó sinh ra để tránh, nên nó báo `Enforcement::None` kèm lý do cho tới khi có máy để thử. Trên Linux và Windows, `bash` hiện chạy với
-đầy đủ quyền của người dùng và thứ duy nhất đứng giữa là hộp thoại duyệt — hộp thoại đó
-nói đúng điều này thay vì nói chung chung. Xem [lộ trình](docs/ROADMAP.md).
+Ngoài ra: **dự án hai loại** (mã nguồn / tài liệu, clone được từ Git), **nhiều nhà cung
+cấp mô hình** đổi được lúc đang chạy với **vai nhúng tách khỏi vai hội thoại**, **quản lý
+server MCP** kèm danh mục dựng sẵn, thư viện tài liệu tìm lai ghép BM25 + vector, đồ thị bộ
+nhớ mã nguồn, chín skill vẽ sơ đồ với mermaid dựng trong bản ghi, vòng lặp turn/step, sổ
+tay phiên trên SQLite, giam tiến trình trên macOS và Linux, MCP hai chiều, nén ngữ cảnh,
+hook, và cấu hình theo lớp.
 
-Có một bài kiểm chứng chạy với mô hình thật, mang `#[ignore]` vì nó cần một máy chủ đang
-chạy:
-
-```
-PAI_MODEL=<mô hình> cargo test -p pai-app --test live_ollama -- --ignored --nocapture
-```
-
-Nó kiểm thứ mà 196 bài kia không kiểm được: schema tool ta phát ra có đủ để một mô hình
-thật quyết định gọi tool không, tham số nó sinh ra có parse được không, và kết quả có
-quay lại được vào lượt sau không.
+Nợ còn lại và các giới hạn cố ý: `docs/ROADMAP.md`.

@@ -25,6 +25,8 @@ export default function ProjectSwitcher(props: {
   /** Mở màn hình dự án — chỗ tạo mới, clone, và lọc theo loại. */
   onSeeAll: () => void;
   onForget: (project: Project) => void;
+  /** Đóng dự án đang mở. Danh sách giữ nguyên — đây không phải `onForget`. */
+  onClose: () => void;
 }) {
   const id = createUniqueId();
   let popup: HTMLDivElement | undefined;
@@ -63,7 +65,11 @@ export default function ProjectSwitcher(props: {
         aria-haspopup="menu"
         aria-expanded={props.open}
         aria-controls={id}
-        aria-label={`Dự án: ${props.current?.name ?? "chưa mở dự án nào"}. Bấm để đổi.`}
+        aria-label={
+          props.current
+            ? `Dự án: ${props.current.name}. Bấm để đổi.`
+            : "Chưa mở dự án nào. Trợ lý chỉ trò chuyện. Bấm để mở một dự án."
+        }
         onClick={() => props.onOpenChange(!props.open)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
@@ -74,24 +80,45 @@ export default function ProjectSwitcher(props: {
         }}
         class="flex w-full items-center gap-sm rounded-panel px-sm py-xs text-left transition-colors duration-[var(--dur-fast)] disabled:cursor-progress enabled:hover:bg-[var(--overlay-hover)]"
       >
+        {/* Không dự án thì cả ô này đổi màu chứ không chỉ đổi chữ: màu nhấn nói "đang có
+            một thứ đang mở", và giữ nó lại cho một chỗ trống là nói sai. */}
         <span
-          class="grid size-7 shrink-0 place-items-center rounded-btn bg-accent-soft text-accent-ink"
-          classList={{ "motion-safe:animate-pulse": props.switching }}
+          class="grid size-7 shrink-0 place-items-center rounded-btn"
+          classList={{
+            "motion-safe:animate-pulse": props.switching,
+            "bg-accent-soft text-accent-ink": props.current !== null,
+            "bg-[var(--overlay-faint)] text-muted": props.current === null,
+          }}
         >
-          <Icon name={props.switching ? "clock" : "folder-open"} size={15} />
+          <Icon
+            name={props.switching ? "clock" : props.current ? "folder-open" : "chat"}
+            size={15}
+          />
         </span>
         <span class="flex min-w-0 flex-1 flex-col">
-          <span class="min-w-0 truncate text-sm font-medium text-ink">
+          <span
+            class="min-w-0 truncate text-sm font-medium"
+            classList={{ "text-ink": props.current !== null, "text-muted": props.current === null }}
+          >
             {props.current?.name ?? "Chưa mở dự án"}
           </span>
-          {/* Đường dẫn cắt ở *đầu*: hai dự án cùng tên chỉ khác nhau ở phần đuôi. */}
-          <span
-            class="min-w-0 truncate text-2xs text-faint"
-            dir="rtl"
-            title={props.current?.path}
+          {/* Dòng dưới **luôn** nói một điều gì đó. Một gạch ngang ở đây đọc ra là "chưa
+              nạp xong", và người dùng sẽ ngồi đợi một thứ không bao giờ tới. Đường dẫn thì
+              cắt ở *đầu*: hai dự án cùng tên chỉ khác nhau ở phần đuôi. */}
+          <Show
+            when={props.current}
+            fallback={
+              <span class="min-w-0 truncate text-2xs text-faint">
+                {props.switching ? "đang chuyển dự án…" : "Chỉ trò chuyện, không đọc tệp"}
+              </span>
+            }
           >
-            <bdi>{props.switching ? "đang chuyển dự án…" : (props.current?.path ?? "—")}</bdi>
-          </span>
+            {(current) => (
+              <span class="min-w-0 truncate text-2xs text-faint" dir="rtl" title={current().path}>
+                <bdi>{props.switching ? "đang chuyển dự án…" : current().path}</bdi>
+              </span>
+            )}
+          </Show>
         </span>
         <span class="shrink-0 text-faint">
           <Icon name="chevron-down" size={13} />
@@ -122,7 +149,7 @@ export default function ProjectSwitcher(props: {
         >
           <Show
             when={ordered().length > 0}
-            fallback={<p class="px-sm py-xs text-2xs text-faint">Chưa mở dự án nào.</p>}
+            fallback={<p class="px-sm py-xs text-2xs text-faint">Danh sách chưa có dự án nào.</p>}
           >
             <ul class="m-0 flex max-h-64 list-none flex-col gap-3xs overflow-y-auto p-0">
               <For each={ordered()}>
@@ -210,6 +237,35 @@ export default function ProjectSwitcher(props: {
               Bỏ một dự án khỏi danh sách không xoá bất cứ thứ gì trên đĩa.
             </p>
           </div>
+
+          {/* "Đóng" và "bỏ khỏi danh sách" là hai việc khác nhau nằm trong cùng một menu,
+              và đó là chỗ dễ bấm nhầm nhất màn hình này có. Ba thứ tách chúng ra: nút bỏ
+              là dấu × nằm *trên hàng của dự án*, nút đóng nằm dưới cùng sau một đường kẻ
+              riêng, và mỗi cái tự nói ra hậu quả của mình ngay dưới nhãn. */}
+          <Show when={props.current}>
+            {(current) => (
+              <div class="mt-3xs border-t border-line pt-3xs">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    close(false);
+                    props.onClose();
+                  }}
+                  aria-label={`Đóng dự án "${current().name}". Vẫn giữ trong danh sách.`}
+                  class="flex w-full flex-col gap-3xs rounded-btn px-sm py-2xs text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
+                >
+                  <span class="flex items-center gap-sm text-xs text-text">
+                    <Icon name="folder" size={14} />
+                    Đóng dự án, chỉ trò chuyện
+                  </span>
+                  <span class="text-2xs text-faint">
+                    Vẫn giữ trong danh sách. Trợ lý thôi đọc và sửa tệp cho tới khi mở lại.
+                  </span>
+                </button>
+              </div>
+            )}
+          </Show>
         </div>
       </Show>
     </div>

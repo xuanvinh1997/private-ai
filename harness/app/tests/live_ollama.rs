@@ -48,7 +48,7 @@ async fn mo_hinh_that_goi_duoc_tool_va_doc_duoc_ket_qua() {
 
     let config = Config {
         data_dir: workspace.join("du-lieu"),
-        workspace: workspace.clone(),
+        workspace: Some(workspace.clone()),
         ..Config::from_env()
     };
     let model = config.model.clone();

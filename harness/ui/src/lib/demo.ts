@@ -43,6 +43,14 @@ export function demoKnobs(): {
   menu?: string;
   /** Đóng băng trạng thái "đang chuyển dự án", thứ thật ra chỉ kéo dài một nhịp. */
   switching?: boolean;
+  /**
+   * Dự án nào đang mở: một id, hoặc `"0"` cho **không dự án nào**.
+   *
+   * `?demo=1&project=0` là trạng thái người dùng gặp **đầu tiên** sau khi cài xong — chưa
+   * chọn thư mục nào, trợ lý chỉ trò chuyện. Không có núm này thì nó là trạng thái duy
+   * nhất trong ứng dụng chưa ai nhìn thấy bao giờ, vì bộ dữ liệu mẫu luôn mở sẵn một dự án.
+   */
+  project?: string;
 } {
   try {
     const params = new URLSearchParams(window.location.search);
@@ -53,7 +61,9 @@ export function demoKnobs(): {
     const tab = params.get("tab");
     const menu = params.get("menu");
     const switching = params.get("switching");
+    const project = params.get("project");
     return {
+      ...(project === null ? {} : { project }),
       ...(state === "skeleton" || state === "empty" || state === "full" ? { state } : {}),
       ...(mode === "bubble" || mode === "document" ? { mode } : {}),
       ...(changes === null ? {} : { changes: changes !== "0" }),
@@ -91,6 +101,20 @@ export function demoModels(): ModelChoice[] {
  * đúng cái không xảy ra đó là thứ cần nhìn thấy.
  */
 export function demoSessions(projectId = "p-harness", now = Date.now()): SessionSummary[] {
+  // Không dự án nào cũng vẫn có phiên: phía Rust ghi phiên với `cwd` là `null` và coi đó
+  // là hợp lệ. Bộ này cố tình chỉ toàn câu hỏi kiến thức — một dòng phụ nhắc tới tệp ở
+  // đây sẽ vẽ ra một quá khứ mà trạng thái này không thể có.
+  if (projectId === "khong-co-du-an") {
+    return [
+      {
+        id: "kd-1",
+        title: "Hỏi nhanh về Rust",
+        updatedAt: now - 8 * MINUTE,
+        preview: "`async` nhường luồng ở mỗi điểm `await`, còn thread thì do hệ điều hành xếp.",
+      },
+      { id: "kd-2", title: "Phiên chưa dùng", updatedAt: now - 2 * 24 * 60 * MINUTE, preview: null },
+    ];
+  }
   if (projectId === "p-notes") {
     return [
       {
@@ -474,15 +498,19 @@ export function demoParked(): Record<string, ConversationNode[]> {
  *
  * Ba cái, và ba cái là số nhỏ nhất còn nhìn thấy được thứ tự "mới nhất trước" — với hai
  * cái thì mọi thứ tự đều đúng, và một menu sắp sai sẽ đi qua mà không ai nhận ra.
+ *
+ * `current` chọn dòng nào đang mở. `"0"` — hay bất kỳ id nào không có trong danh sách —
+ * nghĩa là **không dự án nào**: danh sách vẫn đủ ba dòng, đúng như sau một lần "Đóng dự
+ * án", vì đóng không bỏ dòng nào khỏi danh sách.
  */
-export function demoProjects(now = Date.now()): Project[] {
-  return [
+export function demoProjects(current = "p-harness", now = Date.now()): Project[] {
+  const all: Project[] = [
     {
       id: "p-harness",
       name: "harness",
       path: "/Users/vinhpx/Workspaces/private-ai/harness",
       lastOpenedAt: now - 3 * MINUTE,
-      isCurrent: true,
+      isCurrent: false,
       kind: "code",
       origin: null,
     },
@@ -508,6 +536,7 @@ export function demoProjects(now = Date.now()): Project[] {
       isCurrent: false,
     },
   ];
+  return all.map((entry) => ({ ...entry, isCurrent: entry.id === current }));
 }
 
 /**

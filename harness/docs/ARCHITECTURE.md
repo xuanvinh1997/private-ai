@@ -77,6 +77,22 @@ Việc phân tầng làm theo **tên plugin**, không theo tệp cấu hình và
 tệp thì bản vá của người dùng phải biết chuyện chia tầng; theo `id` thì đổi tên một hàng
 là lặng lẽ đổi tầng của nó.
 
+### Trạng thái thứ ba: không có dự án nào
+
+`Option<ProjectKind>`, không phải `ProjectKind`. `None` nghĩa là **không plugin nào của
+tầng dự án được cắm** — bộ tool còn lại đúng bằng `todo_write` cộng tool từ server MCP, và
+hội thoại chạy bình thường.
+
+Đây không phải một chế độ thêm vào để cho đủ; nó là trạng thái ứng dụng mở lên **lần đầu**.
+Bản trước không có nó: `boot` lấy thư mục hiện hành làm dự án, nên mở ứng dụng từ Finder —
+nơi thư mục hiện hành là `/` — cho một "dự án" tên `/` mà người dùng chưa bao giờ chọn,
+với `fs`, `shell` và `index` cắm vào gốc đĩa. Một mặc định tiện tay ở chỗ này là một mặc
+định cấp quyền.
+
+Thứ tự chọn dự án lúc khởi động, ba tầng: `PAI_WORKSPACE` → dự án mở gần nhất trong kho →
+không có gì. Tầng chót cũng là nơi `close_project` đưa ứng dụng về, nên nó không phải một
+nhánh riêng phải nuôi thêm — nó là cùng một trạng thái, tới từ hai đường.
+
 ### Hai loại dự án
 
 Tầng dự án còn chia tiếp một lần nữa, theo **loại** của dự án đang mở:
@@ -85,6 +101,7 @@ Tầng dự án còn chia tiếp một lần nữa, theo **loại** của dự �
 |---|---|---|
 | Mã nguồn | `skills` `fs` `subagent` `index` `lsp` `shell` `terminal` | — |
 | Tài liệu | `skills` `rag` `subagent` | `fs` `shell` `terminal` `index` `lsp` |
+| *(không có dự án)* | — | tất cả |
 
 Danh sách của dự án tài liệu ngắn hơn hẳn, và mỗi cái vắng mặt là một quyết định chứ không
 phải một chỗ chưa làm. Một thư viện tài liệu là một chồng tệp **do người khác gửi tới**.

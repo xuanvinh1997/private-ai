@@ -63,6 +63,14 @@ export interface SidebarProps {
   view: TabId;
   /** Loại dự án đang mở. Vắng mặt (lõi chưa trả lời) thì chỉ hiện mục luôn có. */
   kind?: ProjectKind;
+  /**
+   * Có dự án đang mở hay không — một câu hỏi khác với `kind === undefined`.
+   *
+   * `kind` vắng mặt có hai nghĩa: chưa mở dự án nào, hoặc lõi chưa kịp trả lời. Chỉ nghĩa
+   * thứ nhất mới được giải thích ra thành chữ; nói "chưa mở dự án" trong lúc lõi còn đang
+   * nạp là nói sai trong đúng nửa giây người dùng nhìn vào.
+   */
+  hasProject?: boolean;
   /** Số tệp đã đụng trong phiên, làm huy hiệu cho hàng "Thay đổi". */
   changeCount: number;
   /**
@@ -165,6 +173,16 @@ export default function Sidebar(props: SidebarProps) {
           />
         </div>
       </div>
+
+      {/* Không dự án thì `tabsFor` cắt sạch cả hai mục, và chỗ này thành một khoảng trắng
+          giữa ô tìm và danh sách phiên — đọc ra là "cái gì đó chưa nạp xong". Một dòng
+          chữ ngắn đắt hơn khoảng trắng đó: nó nói danh sách ngắn là do trạng thái, và nói
+          luôn cái gì làm nó dài trở lại. */}
+      <Show when={nav().length === 0 && props.hasProject === false}>
+        <p class="shrink-0 px-md pb-sm text-2xs text-faint">
+          Chưa mở dự án. Thay đổi và Thư viện tài liệu xuất hiện khi mở một dự án.
+        </p>
+      </Show>
 
       <Show when={nav().length > 0}>
         <nav aria-label="Màn hình" class="shrink-0 px-sm pb-sm">

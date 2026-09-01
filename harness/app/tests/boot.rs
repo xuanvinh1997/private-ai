@@ -17,7 +17,7 @@ fn config(dir: &TempDir) -> Config {
         // Mô hình nhúng cũng vậy: bài test không nói về thư viện tài liệu, và một tên mô
         // hình thật ở đây sẽ khiến kết quả phụ thuộc vào máy chủ có đang chạy hay không.
         embed_model: None,
-        workspace: dir.path().to_path_buf(),
+        workspace: Some(dir.path().to_path_buf()),
         ollama_url: "http://127.0.0.1:11434".into(),
         model: "mo-hinh-thu".into(),
         context_window: 32_768,
@@ -235,7 +235,7 @@ async fn meta_that_cua_tool_khop_dung_hop_dong_giao_dien() {
     std::fs::write(workspace.join("a.rs"), "fn chao() {}\nfn tam_biet() {}\n").expect("ghi tệp");
 
     let harness = boot(Config {
-        workspace: workspace.clone(),
+        workspace: Some(workspace.clone()),
         ..config(&dir)
     })
     .await
@@ -426,14 +426,18 @@ async fn khong_bo_duoc_du_an_dang_mo() {
     let harness = boot(config(&dir)).await.expect("dựng được cây");
     let current = harness.current_project();
     // Bỏ dự án đang mở khỏi danh sách sẽ để ứng dụng trỏ vào một chỗ không còn ai nhắc tới.
-    assert!(harness.forget_project(&current.id).is_err());
+    assert!(
+        harness
+            .forget_project(&current.expect("có dự án đang mở").id)
+            .is_err()
+    );
 }
 
 #[tokio::test]
 async fn danh_sach_phien_chi_co_phien_cua_du_an_dang_mo() {
     let dir = TempDir::new().expect("thư mục tạm");
     let harness = boot(config(&dir)).await.expect("dựng được cây");
-    let first = harness.workspace().display().to_string();
+    let first = harness.workspace().expect("có dự án").display().to_string();
 
     harness
         .sessions
@@ -652,6 +656,101 @@ async fn doi_nha_cung_cap_hoi_thoai_khong_keo_bo_nhung_di_theo() {
         .map(|item| item.id().to_string())
         .expect("bộ nhúng không được biến mất");
     assert_eq!(sau, truoc, "đổi provider hội thoại đã kéo bộ nhúng đi theo");
+
+    harness.shutdown().await;
+}
+
+/// Không có dự án nào thì ứng dụng **vẫn dựng lên được và vẫn trò chuyện được**.
+///
+/// Đây là trạng thái lần đầu mở ứng dụng. Trước đây nó không tồn tại: `boot` lấy thư mục
+/// hiện hành làm dự án, nên mở từ Finder cho một "dự án" tên `/` mà người dùng chưa bao
+/// giờ chọn — cùng với `fs`, `shell` và `index` cắm vào gốc đĩa.
+///
+/// Bài này khẳng định cả hai nửa. Nửa an toàn: không tool nào chạm đĩa. Nửa còn lại quan
+/// trọng ngang thế: hội thoại vẫn có tool để chạy, vì một ứng dụng "an toàn" mà không làm
+/// được gì thì người dùng chỉ kết luận là nó hỏng.
+#[tokio::test]
+async fn khong_co_du_an_thi_van_tro_chuyen_duoc() {
+    let dir = TempDir::new().expect("thư mục tạm");
+    let harness = boot(Config {
+        workspace: None,
+        ..config(&dir)
+    })
+    .await
+    .expect("dựng được cây khi không có dự án");
+
+    assert!(
+        harness.current_project().is_none(),
+        "không được tự nhận dự án"
+    );
+    assert!(harness.workspace().is_none());
+
+    let registry = harness.ctx.require::<Tools>().expect("có sổ đăng ký");
+    let names: Vec<String> = registry
+        .schemas(None)
+        .into_iter()
+        .map(|s| s.name.as_str().to_string())
+        .collect();
+
+    for cam in [
+        "bash",
+        "read",
+        "edit",
+        "write",
+        "grep",
+        "glob",
+        "symbol_search",
+        "docs.search",
+    ] {
+        assert!(
+            !names.iter().any(|n| n == cam),
+            "không có dự án mà vẫn cắm `{cam}`: {names:?}"
+        );
+    }
+    assert!(
+        names.iter().any(|n| n == "todo_write"),
+        "hội thoại phải còn tool để chạy: {names:?}"
+    );
+
+    // Và một phiên mới ghi được, không kèm thư mục nào.
+    let session = harness
+        .sessions
+        .create(pai_session::NewSession::default())
+        .await
+        .expect("tạo được phiên không thuộc dự án nào");
+    assert!(session.header().cwd.is_none());
+
+    harness.shutdown().await;
+}
+
+/// Đóng dự án đưa ứng dụng về đúng trạng thái không-có-dự-án, không phải một trạng thái
+/// thứ ba nào khác.
+#[tokio::test]
+async fn dong_du_an_thi_tool_cham_dia_bien_mat() {
+    let dir = TempDir::new().expect("thư mục tạm");
+    let harness = boot(config(&dir)).await.expect("dựng được cây");
+    let registry = harness.ctx.require::<Tools>().expect("có sổ đăng ký");
+
+    let ten = || -> Vec<String> {
+        registry
+            .schemas(None)
+            .into_iter()
+            .map(|s| s.name.as_str().to_string())
+            .collect()
+    };
+    assert!(ten().iter().any(|n| n == "bash"), "{:?}", ten());
+
+    harness.close_project().await;
+
+    assert!(harness.current_project().is_none());
+    let sau = ten();
+    for cam in ["bash", "read", "edit", "write"] {
+        assert!(
+            !sau.iter().any(|n| n == cam),
+            "đóng dự án rồi vẫn còn `{cam}`: {sau:?}"
+        );
+    }
+    assert!(sau.iter().any(|n| n == "todo_write"), "{sau:?}");
 
     harness.shutdown().await;
 }

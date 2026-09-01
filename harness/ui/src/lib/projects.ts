@@ -42,6 +42,22 @@ export function removeProject(id: string): Promise<void> {
   return invoke("remove_project", { id });
 }
 
+/**
+ * Đóng dự án đang mở, quay về trò chuyện thuần tuý.
+ *
+ * Khác `removeProject` ở đúng chỗ quan trọng nhất: **danh sách không mất dòng nào**. Cái
+ * bị tháo là nhánh plugin của tầng dự án — sau lệnh này trợ lý không còn tool nào chạm
+ * tới đĩa, còn hội thoại chạy tiếp bình thường.
+ *
+ * Lõi trả lại cả danh sách sau khi đóng, nên chỗ gọi không phải hỏi thêm một vòng nữa mới
+ * biết dòng nào còn đang sáng.
+ *
+ * Ném ra ngoài: nó chạy sau một cú bấm, và im lặng ở đó không phân biệt được với "đang chậm".
+ */
+export function closeProject(): Promise<Project[]> {
+  return invoke<Project[]>("close_project");
+}
+
 /** Tên hiển thị suy từ đường dẫn, dùng khi lõi chưa kịp trả `Project` thật. */
 export function folderName(path: string): string {
   const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/);

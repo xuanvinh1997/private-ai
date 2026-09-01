@@ -53,7 +53,7 @@ pub struct Harness {
     /// Scope của plugin thuộc dự án. Bị tháo và dựng lại mỗi lần đổi dự án.
     project_scopes: tokio::sync::Mutex<Vec<Context>>,
     projects: Arc<dyn ProjectStore>,
-    current: parking_lot::Mutex<Project>,
+    current: parking_lot::Mutex<Option<Project>>,
     /// Con trỏ tới provider đang hoạt động. Mọi chỗ cần nói chuyện với mô hình đều cầm
     /// **cái này**, không cầm một bản sao — xem `crate::llm`.
     pub llm: Arc<ActiveLlm>,
@@ -127,12 +127,20 @@ impl Harness {
         Ok(())
     }
 
-    pub fn current_project(&self) -> Project {
+    pub fn current_project(&self) -> Option<Project> {
         self.current.lock().clone()
     }
 
-    pub fn workspace(&self) -> PathBuf {
-        PathBuf::from(self.current.lock().path.clone())
+    /// Thư mục làm việc, nếu có dự án đang mở.
+    ///
+    /// `None` không phải một lỗi và không được thay bằng một mặc định: mọi chỗ gọi hàm này
+    /// đều là chỗ cần một thư mục *của người dùng*, và điền đại một thư mục vào đó là cách
+    /// một tool ghi vào chỗ không ai ngờ tới.
+    pub fn workspace(&self) -> Option<PathBuf> {
+        self.current
+            .lock()
+            .as_ref()
+            .map(|project| PathBuf::from(&project.path))
     }
 
     pub fn projects(&self) -> Result<Vec<Project>, String> {
@@ -156,7 +164,12 @@ impl Harness {
     }
 
     pub fn forget_project(&self, id: &str) -> Result<(), String> {
-        if self.current.lock().id == id {
+        if self
+            .current
+            .lock()
+            .as_ref()
+            .is_some_and(|open| open.id == id)
+        {
             // Bỏ dự án đang mở khỏi danh sách sẽ để ứng dụng trỏ vào một chỗ không còn ai
             // nhắc tới. Chuyển sang dự án khác trước, rồi mới bỏ.
             return Err("hãy chuyển sang dự án khác trước khi bỏ dự án đang mở".into());
@@ -182,7 +195,7 @@ impl Harness {
 
         let catalog = catalog(
             &self.rebuild.config,
-            Path::new(&project.path),
+            Some(Path::new(&project.path)),
             self.rebuild.llm.clone(),
             self.rebuild.embedder.clone(),
             self.rebuild.sessions.clone(),
@@ -191,7 +204,7 @@ impl Harness {
             .rebuild
             .composed
             .active()
-            .filter(|row| hop_loai(row, project.kind))
+            .filter(|row| hop_loai(row, Some(project.kind)))
         {
             let plugin = catalog.build(row).map_err(|err| err.to_string())?;
             let scope = self.rebuild.ctx.plugin(plugin.name());
@@ -199,9 +212,24 @@ impl Harness {
             scopes.push(scope);
         }
 
-        *self.current.lock() = project.clone();
+        *self.current.lock() = Some(project.clone());
         tracing::info!(path = %project.path, "đã đổi dự án");
         Ok(project)
+    }
+
+    /// Đóng dự án đang mở và **không mở cái nào thay thế**.
+    ///
+    /// Cùng một cơ chế với đổi dự án, chỉ thiếu nửa sau: tháo tầng dự án rồi dừng ở đó.
+    /// Sau lời gọi này hội thoại vẫn chạy, chỉ là không còn tool nào chạm được vào đĩa —
+    /// và đó chính là trạng thái ứng dụng mở lên lần đầu, nên nó không phải một chế độ
+    /// riêng cần nuôi thêm.
+    pub async fn close_project(&self) {
+        let mut scopes = self.project_scopes.lock().await;
+        for scope in scopes.drain(..).rev() {
+            scope.effects().dispose().await;
+        }
+        *self.current.lock() = None;
+        tracing::info!("đã đóng dự án; hội thoại chạy không có tool chạm đĩa");
     }
 
     /// Tháo cây, con trước cha, plugin cắm sau tháo trước.
@@ -226,7 +254,14 @@ pub struct Config {
     /// Bộ skill đi kèm bản cài đặt. `None` khi không tìm thấy — và đó là trạng thái hợp
     /// lệ, không phải lỗi khởi động: ứng dụng vẫn chạy, chỉ là không có skill dựng sẵn.
     pub builtin_skills: Option<PathBuf>,
-    pub workspace: PathBuf,
+    /// Dự án mở sẵn lúc khởi động. `None` = **không mở dự án nào**.
+    ///
+    /// Trước đây trường này luôn có giá trị và nó lấy thư mục hiện hành làm mặc định. Nghe
+    /// thì tiện, nhưng mở ứng dụng từ Finder cho thư mục hiện hành là `/`, và người dùng
+    /// nhận về một "dự án" tên `/` mà họ chưa bao giờ chọn — cùng với `fs`, `shell` và
+    /// `index` cắm vào gốc đĩa. Không mở gì cả là câu trả lời đúng cho "chưa ai nói mở
+    /// cái nào".
+    pub workspace: Option<PathBuf>,
     pub ollama_url: String,
     pub model: String,
     /// Cửa sổ ngữ cảnh, tính bằng token.
@@ -247,10 +282,9 @@ impl Config {
             data_dir: std::env::var("PAI_DATA_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(&home).join(".private-ai")),
-            workspace: std::env::var("PAI_WORKSPACE")
-                .map(PathBuf::from)
-                .or_else(|_| std::env::current_dir())
-                .unwrap_or_else(|_| PathBuf::from(&home)),
+            // Không lùi về thư mục hiện hành: xem tài liệu của trường. Thiếu biến này thì
+            // [`boot`] mở lại dự án gần nhất trong kho, và nếu kho rỗng thì không mở gì.
+            workspace: std::env::var("PAI_WORKSPACE").ok().map(PathBuf::from),
             ollama_url: std::env::var("PAI_OLLAMA_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:11434".into()),
             model: std::env::var("PAI_MODEL").unwrap_or_else(|_| "qwen3:8b".into()),
@@ -452,12 +486,27 @@ fn thuoc_du_an(row: &Row) -> bool {
 /// Đây là chỗ loại dự án thật sự có hiệu lực. Không có bước "tắt tool cho dự án tài liệu"
 /// nào chạy song song — một bước như thế sẽ trôi ra khỏi danh sách này và sớm muộn để sót
 /// một tool. Tool không hợp thì **không được cắm ngay từ đầu**, nên không có gì để tắt.
-fn hop_loai(row: &Row, kind: ProjectKind) -> bool {
+fn hop_loai(row: &Row, kind: Option<ProjectKind>) -> bool {
     match kind {
-        ProjectKind::Code => CODE_PLUGINS,
-        ProjectKind::Docs => DOCS_PLUGINS,
+        Some(ProjectKind::Code) => CODE_PLUGINS,
+        Some(ProjectKind::Docs) => DOCS_PLUGINS,
+        // Không có dự án nào thì **không** plugin nào của tầng dự án được cắm. Mỗi cái
+        // trong hai danh sách trên đều bắt lấy một đường dẫn lúc dựng, và không có đường
+        // dẫn nào để bắt: `fs` sẽ cấp quyền cho một thư mục không ai chọn, `shell` sẽ chạy
+        // lệnh ở đó, `index` sẽ quét nó. Hội thoại vẫn chạy — đó là toàn bộ điểm của trạng
+        // thái này, và nó là trạng thái ứng dụng mở lên lần đầu.
+        None => &[],
     }
     .contains(&row.plugin.as_str())
+}
+
+/// Chốt cuối cho plugin thuộc tầng dự án khi không có dự án nào.
+///
+/// [`hop_loai`] đã lọc chúng ra trước khi tới đây, nên hàm này lẽ ra không bao giờ chạy.
+/// Nó tồn tại để lần lọc ấy hỏng thì hỏng **ồn ào**: cách còn lại là điền một đường dẫn
+/// giả vào chỗ `fs` và `shell` nhận gốc quyền, và cái đó hỏng im lặng.
+fn khong_co_du_an() -> anyhow::Error {
+    anyhow::anyhow!("plugin này cần một dự án đang mở, nhưng chưa có dự án nào")
 }
 
 /// Sổ dựng plugin, gắn với **một** dự án.
@@ -467,14 +516,18 @@ fn hop_loai(row: &Row, kind: ProjectKind) -> bool {
 /// ra đường dẫn cũ — im lặng, và chỉ lộ ra khi người dùng thấy tool đọc nhầm repo.
 fn catalog(
     config: &Config,
-    workspace: &Path,
+    workspace: Option<&Path>,
     llm: Arc<ActiveLlm>,
     embedder: Arc<ActiveEmbedder>,
     sessions: SessionService,
 ) -> PluginCatalog {
     let mut catalog = PluginCatalog::new();
     let identity = IDENTITY.to_string();
-    let workspace = workspace.to_path_buf();
+    // Plugin thuộc tầng dự án chỉ được dựng khi có dự án — [`hop_loai`] lọc chúng ra trước
+    // khi tới đây. Chốt lại một lần nữa ở đây bằng một lỗi có chữ, thay vì điền một đường
+    // dẫn giả: nếu về sau ai đó gọi nhầm, họ đọc được vì sao thay vì thấy tool đọc nhầm
+    // thư mục.
+    let workspace = workspace.map(Path::to_path_buf);
     let data_dir = config.data_dir.clone();
     let window = config.context_window;
 
@@ -489,6 +542,9 @@ fn catalog(
         let (data_dir, workspace) = (data_dir.clone(), workspace.clone());
         let builtin = config.builtin_skills.clone();
         catalog.register("skills", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
             // Ba nguồn, quét theo thứ tự và nguồn sau **thay thế** gói trùng tên của nguồn
             // trước: bộ dựng sẵn đi kèm bản cài đặt, gói của người dùng trong kho dữ liệu,
             // rồi gói riêng của dự án nằm ngay trong repo. Thứ tự ấy là một thang thẩm
@@ -504,6 +560,9 @@ fn catalog(
     {
         let (data_dir, workspace) = (data_dir.clone(), workspace.clone());
         catalog.register("fs", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
             // Chỉ thư mục làm việc được cấp quyền. Kho dữ liệu của chính ứng dụng thì
             // không: mô hình không có việc gì trong đó, và cấp quyền "cho tiện" là cách
             // một tệp thiết lập bị sửa bởi một câu trong tài liệu người dùng vừa nạp.
@@ -523,6 +582,9 @@ fn catalog(
     {
         let (workspace, model) = (workspace.clone(), config.model.clone());
         catalog.register("subagent", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
             // Con trỏ chia sẻ, không phải bản sao adapter: agent con phải đi tới cùng
             // provider mà lượt cha đang dùng, kể cả khi người dùng vừa đổi provider.
             let llm: Arc<dyn LlmAdapter> = llm.clone();
@@ -538,6 +600,9 @@ fn catalog(
         let workspace = workspace.clone();
         let data_dir = data_dir.clone();
         catalog.register("rag", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
             // Kho tài liệu nằm trong **kho dữ liệu của ứng dụng**, không trong thư mục dự
             // án, dù thư mục dự án thoạt nghe là chỗ tự nhiên hơn. Ba lý do, và cả ba đều
             // là chuyện đã xảy ra với người dùng thật ở các sản phẩm khác:
@@ -565,6 +630,9 @@ fn catalog(
     {
         let (data_dir, workspace) = (data_dir.clone(), workspace.clone());
         catalog.register("index", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
             // Cùng bộ gốc và cùng danh sách bảo vệ với `fs`: một chỉ mục nhìn rộng hơn
             // tool đọc là một đường vòng qua đúng ranh giới mà `fs` dựng lên.
             Ok(Box::new(IndexPlugin::new(
@@ -577,6 +645,9 @@ fn catalog(
     {
         let (data_dir, workspace) = (data_dir.clone(), workspace.clone());
         catalog.register("lsp", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
             // Cùng bộ gốc và cùng danh sách bảo vệ với `fs` và `index`. Không có
             // language server nào trên máy thì plugin cắm xong mà **không đăng ký tool
             // nào** — đó là trạng thái hợp lệ, không phải lỗi khởi động.
@@ -590,10 +661,16 @@ fn catalog(
     {
         let workspace = workspace.clone();
         catalog.register("terminal", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
             Ok(Box::new(TerminalPlugin::new(workspace.clone())) as Box<dyn Plugin>)
         });
     }
     catalog.register("shell", move |_| {
+        let Some(workspace) = workspace.clone() else {
+            return Err(khong_co_du_an());
+        };
         Ok(Box::new(ShellPlugin::new(workspace.clone())) as Box<dyn Plugin>)
     });
     {
@@ -728,7 +805,27 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     let projects: Arc<dyn ProjectStore> =
         Arc::new(SqliteProjectStore::open(config.data_dir.join("du-an.db"))?);
     // Thư mục khởi động là một dự án như mọi dự án khác, chỉ khác ở chỗ nó được mở sẵn.
-    let project = projects.touch(&config.workspace)?;
+    // Dự án mở sẵn, theo ba tầng: biến môi trường, rồi cái mở gần nhất trong kho, rồi
+    // **không có gì**. Tầng chót không phải một chỗ chưa làm — nó là trạng thái lần đầu
+    // mở ứng dụng, và cũng là trạng thái sau khi người dùng bỏ dự án cuối cùng khỏi danh
+    // sách. Hội thoại vẫn chạy trong đó.
+    let project = match &config.workspace {
+        Some(path) => Some(projects.touch(path)?),
+        None => match projects.list()?.into_iter().next() {
+            // `list` trả mới nhất trước, nên phần tử đầu là cái mở gần nhất. `touch` lại
+            // để giờ mở được cập nhật, và để một thư mục đã bị xoá khỏi đĩa không làm
+            // ứng dụng chết lúc khởi động — hỏng thì bỏ qua và mở lên không có dự án.
+            Some(last) => match projects.touch(Path::new(&last.path)) {
+                Ok(project) => Some(project),
+                Err(err) => {
+                    tracing::warn!(path = %last.path, "không mở lại được dự án gần nhất: {err}");
+                    None
+                }
+            },
+            None => None,
+        },
+    };
+    let kind = project.as_ref().map(|open| open.kind);
 
     let composed = compose(&layers(&config)?)?;
     // Rút danh sách server của hàng `mcp` **một lần**, ngay chỗ cây cấu hình còn nguyên.
@@ -741,7 +838,7 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     tracing::debug!("cây plugin:\n{}", composed.dump());
     let catalog = catalog(
         &config,
-        Path::new(&project.path),
+        project.as_ref().map(|open| Path::new(open.path.as_str())),
         llm.clone(),
         embedder.clone(),
         sessions.clone(),
@@ -758,7 +855,7 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     for row in composed.active() {
         // Bỏ qua trước cả khi dựng: một hàng `rag` trong dự án mã nguồn không có gì để
         // dựng, và gọi `build` rồi vứt đi là mở một cơ sở dữ liệu chẳng ai đọc.
-        if thuoc_du_an(row) && !hop_loai(row, project.kind) {
+        if thuoc_du_an(row) && !hop_loai(row, kind) {
             continue;
         }
         let plugin = catalog.build(row)?;

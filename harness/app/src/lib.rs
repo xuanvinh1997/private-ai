@@ -383,10 +383,16 @@ async fn create_session(
     state: State<'_, AppState>,
 ) -> Result<SessionSummary, String> {
     let harness = state.harness().await?;
-    let cwd = harness.workspace().display().to_string();
+    // Phiên **không** bắt buộc thuộc một dự án. Một phiên trò chuyện thuần tuý là một
+    // phiên hợp lệ, và đó là thứ ứng dụng mở lên lần đầu; điền đại một thư mục vào `cwd`
+    // chỉ để trường ấy có giá trị là ghi vào sổ một điều không đúng.
+    let opened = NewSession {
+        cwd: harness.workspace().map(|dir| dir.display().to_string()),
+        ..NewSession::default()
+    };
     let mut session = harness
         .sessions
-        .create(NewSession::in_dir(cwd))
+        .create(opened)
         .await
         .map_err(|err| err.to_string())?;
     // Tiêu đề rỗng thì để trống hẳn: `SessionSummary` tự điền chỗ hiển thị, còn sổ giữ
@@ -430,6 +436,7 @@ pub fn run() {
             commands::projects::create_project,
             commands::projects::clone_project,
             commands::projects::cancel_clone,
+            commands::projects::close_project,
             commands::providers::list_providers,
             commands::providers::provider_presets,
             commands::providers::save_provider,

@@ -29,7 +29,8 @@ const SCOPE_LABEL: Record<ToolScope, string> = {
  *
  * Phạm vi tool thì **không** giấu sau menu "+" như ChatGPT giấu tool của nó: chọn "chạy
  * lệnh" là cấp cho mô hình quyền chạy lệnh trên máy này, và một quyền đang mở phải đọc
- * được mà không cần bấm vào đâu cả.
+ * được mà không cần bấm vào đâu cả. Cùng luật đó bắt nó phải *tắt đi trông thấy* khi chưa
+ * có dự án — xem `hasProject`.
  */
 export default function Composer(props: {
   value: string;
@@ -47,6 +48,15 @@ export default function Composer(props: {
   modelWarning?: string;
   scope: ToolScope;
   onPickScope: (scope: ToolScope) => void;
+  /**
+   * Có dự án đang mở hay không.
+   *
+   * Không có thì lõi **không cắm tool nào** của tầng dự án, nên cả ba mức phạm vi đều
+   * không có gì đằng sau. Bộ chọn phải nói ra điều đó thay vì đứng yên trông như đang bật:
+   * một quyền trông như đang mở mà thực ra rỗng là kiểu nói dối tệ nhất một giao diện
+   * quyền hạn làm được — người dùng dựa vào nó để quyết định có gửi câu tiếp theo không.
+   */
+  hasProject: boolean;
 }) {
   let composing = false;
   let field: HTMLTextAreaElement | undefined;
@@ -136,6 +146,19 @@ export default function Composer(props: {
           </p>
         </Show>
 
+        {/* `role="status"` chứ không `alert`, và câu chốt lại bằng "vẫn gửi được": đây là
+            một giới hạn đang tồn tại, không phải một thứ vừa hỏng, và người đọc phải rời
+            câu này với niềm tin rằng ô soạn tin bên dưới còn dùng được. */}
+        <Show when={!props.hasProject}>
+          <p class="flex items-start gap-2xs px-md pb-2xs text-2xs text-muted" role="status">
+            <span class="mt-3xs shrink-0">
+              <Icon name="tools" size={12} />
+            </span>
+            Chưa mở dự án nên trợ lý không có tool nào để đọc, sửa hay chạy lệnh. Tin nhắn
+            vẫn gửi bình thường.
+          </p>
+        </Show>
+
         <Show when={props.modelWarning}>
           {(message) => (
             // `role="status"` chứ không `alert`: đây là một điều kiện đang tồn tại, không
@@ -162,21 +185,38 @@ export default function Composer(props: {
             onManageProviders={props.onManageProviders}
           />
 
-          <Menu
-            variant="pill"
-            placement="up"
-            align="left"
-            icon="tools"
-            text={SCOPE_LABEL[props.scope]}
-            tone={props.scope === "shell" ? "warn" : "neutral"}
-            label={`Phạm vi tool: ${SCOPE_LABEL[props.scope]}`}
-            items={(["read", "write", "shell"] as ToolScope[]).map((scope) => ({
-              id: scope,
-              label: SCOPE_LABEL[scope],
-              icon: "tools" as const,
-              onSelect: () => props.onPickScope(scope),
-            }))}
-          />
+          {/* Vô hiệu chứ không ẩn hẳn: chỗ ngồi của bộ chọn giữ nguyên qua hai trạng thái,
+              nên người vừa đóng dự án nhìn thấy *cái gì đã đổi* thay vì thấy một nút biến
+              mất. Nó ra khỏi vòng Tab luôn — không còn lựa chọn nào để đi tới, và lý do
+              nằm ở dòng chữ ngay trên, chỗ trình đọc màn hình cũng đọc được. */}
+          <Show
+            when={props.hasProject}
+            fallback={
+              <span
+                aria-hidden="true"
+                class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-2xs text-faint line-through"
+              >
+                <Icon name="tools" size={13} />
+                {SCOPE_LABEL[props.scope]}
+              </span>
+            }
+          >
+            <Menu
+              variant="pill"
+              placement="up"
+              align="left"
+              icon="tools"
+              text={SCOPE_LABEL[props.scope]}
+              tone={props.scope === "shell" ? "warn" : "neutral"}
+              label={`Phạm vi tool: ${SCOPE_LABEL[props.scope]}`}
+              items={(["read", "write", "shell"] as ToolScope[]).map((scope) => ({
+                id: scope,
+                label: SCOPE_LABEL[scope],
+                icon: "tools" as const,
+                onSelect: () => props.onPickScope(scope),
+              }))}
+            />
+          </Show>
 
           <span class="flex-1" />
 

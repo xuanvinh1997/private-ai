@@ -11,6 +11,12 @@ import { IconButton } from "./primitives";
  * Nút duy nhất ở bên phải là công tắc bảng thay đổi — đối chiếu với "diff panel toggle"
  * của Codex, thứ nó cũng để ở đây. Nó chỉ xuất hiện khi có bảng để bật.
  *
+ * Vì thế thanh này **không** mang dòng phạm vi hay đường dẫn dự án nào: khi chưa mở dự án
+ * thì dòng đó rỗng, và một nhãn rỗng nằm cạnh tiêu đề đọc ra là lỗi vẽ chứ không đọc ra
+ * là "chưa có gì". Chỗ nói về trạng thái không-dự-án là ô soạn tin và màn hình trống, nơi
+ * còn đủ chỗ để nói cả *vì sao*. Cùng lẽ đó, chỗ gọi bỏ `onToggleChangesPanel` khi không
+ * có dự án: không tool nào chạm được tới đĩa thì bảng ấy vĩnh viễn trống.
+ *
  * Cả dải là vùng kéo cửa sổ vì cửa sổ mở ở chế độ "Overlay" — không có thanh tiêu đề nào
  * khác để kéo. Mọi control bên trong tự khai `no-drag` qua luật chung trong app.css, nên
  * thêm nút vào đây không kéo theo việc phải nhớ luật đó.

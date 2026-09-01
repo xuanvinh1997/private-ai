@@ -24,7 +24,7 @@ import {
   runDemoTurn,
 } from "./lib/demo";
 import { changesPanelOpen, setChangesPanelOpen, setDisplayMode, setSidebarOpen, sidebarOpen } from "./lib/prefs";
-import { folderName, listProjects, openProject, removeProject } from "./lib/projects";
+import { closeProject, folderName, listProjects, openProject, removeProject } from "./lib/projects";
 import type {
   ApprovalDecision,
   ConversationNode,
@@ -97,6 +97,16 @@ export default function App() {
 
   const project = () => projects().find((entry) => entry.isCurrent) ?? null;
   const projectKey = () => project()?.id ?? "khong-co-du-an";
+  /**
+   * Có dự án đang mở hay không — và đây là một trạng thái hợp lệ, không phải một lần nạp
+   * chưa xong.
+   *
+   * Lõi không tự nhận thư mục hiện hành làm dự án nữa, nên mở ứng dụng lần đầu là rơi
+   * thẳng vào đây. Không có dự án thì **không plugin nào của tầng dự án được cắm**: còn
+   * đúng `todo_write` cộng tool từ server MCP, và hội thoại chạy bình thường. Mọi màn
+   * hình hứa hẹn đọc/sửa/chạy lệnh phải đọc cờ này chứ không tự đoán từ `kind`.
+   */
+  const hasProject = () => project() !== null;
 
   // Bản ghi của phiên không mở. Giữ trong bộ nhớ thôi: nguồn sự thật là sổ tay phiên
   // bên Rust, đây chỉ là bộ đệm để chuyển qua lại không phải nạp lại.
@@ -128,14 +138,17 @@ export default function App() {
       if (knobs.mode) setDisplayMode(knobs.mode);
       if (knobs.changes !== undefined) setChangesPanelOpen(knobs.changes);
       if (knobs.sidebar !== undefined) setSidebarOpen(knobs.sidebar);
-      setProjects(demoProjects());
+      // `?demo=1&project=0` dựng ra trạng thái không-dự-án. Nó nằm trong núm vặn chứ
+      // không nằm sau một cú bấm vì đây là trạng thái *đầu tiên* người dùng gặp, và một
+      // trạng thái chỉ tới được bằng thao tác là một trạng thái không ai nhớ đi chụp.
+      setProjects(demoProjects(knobs.project ?? "p-harness"));
       // Núm vặn cho việc chụp ảnh: cả ba trạng thái dưới đây chỉ tồn tại trong một nhịp
       // bấm chuột, và không có chúng thì cách duy nhất chụp được là sửa mã.
       if (knobs.tab !== undefined && isTab(knobs.tab)) setTab(knobs.tab);
       if (knobs.menu === "project") setProjectMenuOpen(true);
       if (knobs.switching) setSwitching(true);
       if (knobs.state === "skeleton") return; // khung xương đứng yên để nhìn cho kỹ
-      const seed = demoSessions("p-harness");
+      const seed = demoSessions(projectKey());
       for (const [id, nodes] of Object.entries(demoParked())) parked.set(id, nodes);
       setSessions(seed);
       setModels(demoModels());
@@ -274,6 +287,37 @@ export default function App() {
       await adoptProject();
     } catch (err) {
       setLoadError(`Không chuyển được sang "${target.name}": ${err}`);
+    } finally {
+      setSwitching(false);
+    }
+  }
+
+  /**
+   * Đóng dự án đang mở và ở lại trong ứng dụng, chỉ trò chuyện.
+   *
+   * Đi qua đúng đường của `switchProject` — cùng cờ `switching`, cùng `adoptProject` phía
+   * sau — vì với màn hình thì đây là một lần đổi dự án nữa, chỉ khác ở chỗ đích đến là
+   * "không dự án nào". Lõi cũng tháo nhánh plugin y như vậy.
+   *
+   * Không hỏi lại trước khi đóng: danh sách không mất dòng nào và mở lại chỉ là hai cú
+   * bấm. Một hộp xác nhận cho một việc hoàn tác được chỉ dạy người dùng bấm bừa vào nút
+   * đồng ý, và làm hỏng đúng những hộp xác nhận đáng đọc — chỗ xoá phiên chẳng hạn.
+   */
+  async function closeCurrentProject() {
+    if (switching() || !hasProject()) return;
+    setSwitching(true);
+    try {
+      if (isDemo()) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 900));
+        setProjects((all) => all.map((entry) => ({ ...entry, isCurrent: false })));
+      } else {
+        // Lõi trả lại cả danh sách sau khi đóng — không dòng nào bị bỏ đi, chỉ không dòng
+        // nào còn `isCurrent`.
+        setProjects(await closeProject());
+      }
+      await adoptProject();
+    } catch (err) {
+      setLoadError(`Không đóng được dự án: ${err}`);
     } finally {
       setSwitching(false);
     }
@@ -486,6 +530,7 @@ export default function App() {
             loading={loading()}
             view={tab()}
             kind={project()?.kind}
+            hasProject={hasProject()}
             changeCount={files().length}
             subtitle={preview}
             disabled={switching()}
@@ -499,6 +544,7 @@ export default function App() {
                 onPick={(id) => void switchProject(id)}
                 onSeeAll={() => setTab("projects")}
                 onForget={forgetProject}
+                onClose={() => void closeCurrentProject()}
               />
             )}
             onSelect={(id) => void switchTo(id)}
@@ -519,8 +565,12 @@ export default function App() {
             onOpenSidebar={() => setSidebarOpen(true)}
             changesPanelOpen={tab() === "chat" ? changesPanelOpen() : undefined}
             changeCount={files().length}
+            // Không dự án thì không tool nào chạm được tới đĩa, nên bảng thay đổi vĩnh
+            // viễn trống. Một công tắc mở ra một bảng rỗng là một lời hứa suông.
             onToggleChangesPanel={
-              tab() === "chat" ? () => setChangesPanelOpen(!changesPanelOpen()) : undefined
+              tab() === "chat" && hasProject()
+                ? () => setChangesPanelOpen(!changesPanelOpen())
+                : undefined
             }
           />
 
@@ -535,6 +585,8 @@ export default function App() {
                         fallback={
                           <EmptyState
                             disabled={conversation.busy()}
+                            hasProject={hasProject()}
+                            onOpenProject={() => setTab("projects")}
                             onPick={(text) => void send(text)}
                           />
                         }
@@ -575,6 +627,7 @@ export default function App() {
                     modelWarning={modelWarning()}
                     scope={scope()}
                     onPickScope={setScope}
+                    hasProject={hasProject()}
                   />
                 </Match>
 
@@ -609,7 +662,7 @@ export default function App() {
               </Switch>
             </div>
 
-            <Show when={tab() === "chat" && changesPanelOpen()}>
+            <Show when={tab() === "chat" && changesPanelOpen() && hasProject()}>
               <ChangesPanel
                 files={files()}
                 onReveal={reveal}

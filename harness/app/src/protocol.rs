@@ -288,9 +288,12 @@ pub struct ProjectView {
 }
 
 impl ProjectView {
-    pub fn new(project: pai_project::Project, current: &str) -> ProjectView {
+    /// `current` là `None` khi **chưa mở dự án nào** — một trạng thái hợp lệ, không phải
+    /// một chỗ chưa điền. Truyền chuỗi rỗng thay cho nó thì mọi dự án đều không phải dự án
+    /// đang mở, điều đó đúng, nhưng nó đúng vì tình cờ chứ không vì ai viết ra ý ấy.
+    pub fn new(project: pai_project::Project, current: Option<&str>) -> ProjectView {
         ProjectView {
-            is_current: project.id == current,
+            is_current: current.is_some_and(|id| id == project.id),
             kind: project.kind.into(),
             origin: project.origin,
             id: project.id,
