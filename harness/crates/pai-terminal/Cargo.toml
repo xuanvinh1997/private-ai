@@ -1,0 +1,36 @@
+[package]
+name = "pai-terminal"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pai-core = { workspace = true }
+pai-sandbox = { workspace = true }
+pai-tools = { workspace = true }
+tokio = { workspace = true, features = ["time", "rt"] }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+futures = { workspace = true }
+uuid = { workspace = true }
+
+# Khai cục bộ chứ không ở `[workspace.dependencies]`: đây là crate duy nhất cần một PTY,
+# và một dòng ở gốc workspace là một lời mời cho crate thứ hai mở một PTY ở chỗ không ai
+# đi tìm. Bản 0.9 là bản mới nhất trên crates.io lúc viết; nó là ruột PTY của WezTerm,
+# nên đường đi macOS/Linux/Windows đã được một terminal thật dùng hằng ngày.
+portable-pty = "0.9"
+
+[target.'cfg(unix)'.dependencies]
+# Chỉ để gửi tín hiệu cho cả nhóm tiến trình, đúng lý do như `pai-shell`.
+libc = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }

@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from private_ai.asr.download import ModelDownloadError
 from private_ai.asr.service import ASR_MODEL_BYTES, ASR_MODEL_NAME
 from private_ai.core import repositories
 from private_ai.llm.admin import pull_fraction
@@ -225,6 +226,20 @@ class _ModelRow(QFrame):
             button.setEnabled(not working)
 
 
+def _download_reason(error: BaseException) -> str:
+    """What to tell the user, in one sentence.
+
+    ``ModelDownloadError`` was raised by the downloader, which knew whether the disk was
+    full or the checksum failed, and said so; repeating "kiểm tra mạng" over the top of it
+    would replace the answer with a guess. Anything else is unexpected and shows its own
+    message rather than being flattened into a category it may not belong to.
+    """
+    if isinstance(error, ModelDownloadError):
+        return str(error)
+    detail = str(error).strip()
+    return f"Không tải được mô hình: {detail}" if detail else "Không tải được mô hình."
+
+
 class _VoiceRow(QFrame):
     """The speech model, in the list where a user goes looking for models.
 
@@ -407,9 +422,9 @@ class _VoiceRow(QFrame):
         self._status.setText(
             "Đã huỷ tải mô hình."
             if isinstance(error, InterruptedError)
-            else "Không tải được mô hình. Kiểm tra mạng rồi thử lại."
+            else _download_reason(error)
         )
-        self._status.setToolTip(str(error))
+        self._status.setToolTip(f"{type(error).__name__}: {error}")
         self._status.show()
         self._paint()
 
@@ -564,6 +579,10 @@ class ModelsView(QWidget):
 
         def failed(error: BaseException) -> None:
             row.finish(error)
+            # Cancelling is not a failure; the row already says so and a toast on top of a
+            # deliberate action is noise.
+            if not isinstance(error, InterruptedError):
+                self._ctx.toast(_download_reason(error), "error")
 
         self._ctx.run(pull(), on_result=done, on_error=failed)
 

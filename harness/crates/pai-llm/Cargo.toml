@@ -1,0 +1,24 @@
+[package]
+name = "pai-llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pai-core = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+# rustls đã bật ở workspace: bản đóng gói phải chạy được trên máy trắng.
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# `net` chỉ cần cho bài test: máy chủ HTTP giả dựng bằng TcpListener thuần, để bộ test
+# chạy được khi rút dây mạng.
+tokio = { workspace = true, features = ["net", "rt-multi-thread", "macros", "io-util"] }
+futures = { workspace = true }

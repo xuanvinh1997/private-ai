@@ -9,7 +9,10 @@ and no compiler to run it on — the button simply stays grey with nothing to cl
 
 from __future__ import annotations
 
+import errno
+import http.client
 import sys
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -113,9 +116,49 @@ class _Response:
 
 
 def _serve(monkeypatch: pytest.MonkeyPatch, payload: bytes, *, etag: str | None = None) -> None:
-    monkeypatch.setattr(
-        asr_download.urllib.request, "urlopen", lambda _url: _Response(payload, etag=etag)
+    """Stand in for the network, running the real header logic over a fake redirect."""
+
+    def open_url(_url: str) -> tuple[_Response, str]:
+        response = _Response(payload, etag=etag)
+        recorder = asr_download._RedirectRecorder()  # noqa: SLF001
+        return response, asr_download._expected_digest(response, recorder)  # noqa: SLF001
+
+    monkeypatch.setattr(asr_download, "_open", open_url)
+
+
+def _redirect(recorder: object, headers: dict[str, str]) -> None:
+    """Drive the recorder the way ``urlopen`` does when it follows Hugging Face's 302."""
+    recorder.redirect_request(  # type: ignore[attr-defined]
+        asr_download.urllib.request.Request("https://huggingface.co/model"),
+        None,
+        302,
+        "Found",
+        headers,
+        "https://cdn/model",
     )
+
+
+def test_the_xet_etag_is_not_mistaken_for_the_files_digest() -> None:
+    """A Xet-backed repository answers with 64 hex characters that are not the SHA-256.
+
+    Reading them as one made every fresh download fail validation at exactly 100%.
+    """
+    linked = "41c99fa5fb6f3d35f68e79adc3e755eca2232a8d921178bd647b71194792b8fd"
+    xet = "bbab4ab95bf6eabcee82ed5c8fecf15dd899b090b163cb6e96d17e98c5f6586e"
+    recorder = asr_download._RedirectRecorder()  # noqa: SLF001
+    _redirect(recorder, {"x-linked-etag": f'"{linked}"', "x-xet-hash": xet})
+    cdn = _Response(b"", etag=xet)
+
+    assert asr_download._expected_digest(cdn, recorder) == linked  # noqa: SLF001
+
+
+def test_a_bare_xet_etag_is_ignored_rather_than_trusted() -> None:
+    """With no linked digest, the CDN's ETag is the Xet hash and validates nothing."""
+    xet = "bbab4ab95bf6eabcee82ed5c8fecf15dd899b090b163cb6e96d17e98c5f6586e"
+    recorder = asr_download._RedirectRecorder()  # noqa: SLF001
+    _redirect(recorder, {"x-xet-hash": xet})
+
+    assert asr_download._expected_digest(_Response(b"", etag=xet), recorder) == ""  # noqa: SLF001
 
 
 def test_the_download_reports_progress_and_records_the_digest(
@@ -144,10 +187,44 @@ def test_a_corrupted_download_leaves_nothing_behind(
     _serve(monkeypatch, b"not the model", etag="0" * 64)
     target = tmp_path / "model.gguf"
 
-    with pytest.raises(RuntimeError, match="integrity"):
+    with pytest.raises(asr_download.ModelDownloadError, match="mã kiểm tra"):
         asr_download.download("https://example/model", target)
 
     assert not target.exists()
+    assert not target.with_suffix(".gguf.part").exists()
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (urllib.error.HTTPError("https://example", 503, "busy", {}, None), "503"),
+        (urllib.error.URLError("nodename nor servname provided"), "Kiểm tra mạng"),
+        (OSError(errno.ENOSPC, "No space left on device"), "Ổ đĩa đã đầy"),
+        (OSError(errno.EACCES, "Permission denied"), "Không có quyền ghi"),
+        (http.client.IncompleteRead(b""), "ngắt giữa chừng"),
+    ],
+)
+def test_each_kind_of_failure_says_which_one_it_was(error: Exception, expected: str) -> None:
+    """One sentence naming the actual cause, not "kiểm tra mạng" over the top of all five.
+
+    The row and the toast print this verbatim, so a full disk must not read as a network
+    problem — that sent people to their router over a download that never had a chance.
+    """
+    assert expected in asr_download._reason(error, Path("/models/asr.gguf"))  # noqa: SLF001
+
+
+def test_a_transfer_failure_arrives_as_a_readable_download_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def refuse(_url: str) -> None:
+        raise urllib.error.URLError("Network is unreachable")
+
+    monkeypatch.setattr(asr_download, "_open", refuse)
+    target = tmp_path / "model.gguf"
+
+    with pytest.raises(asr_download.ModelDownloadError, match="Kiểm tra mạng"):
+        asr_download.download("https://example/model", target)
+
     assert not target.with_suffix(".gguf.part").exists()
 
 
@@ -173,6 +250,6 @@ def test_an_already_complete_model_is_not_downloaded_again(
     def refuse(_url: str) -> None:  # pragma: no cover - must never run
         raise AssertionError("đã tải lại một mô hình đã có")
 
-    monkeypatch.setattr(asr_download.urllib.request, "urlopen", refuse)
+    monkeypatch.setattr(asr_download, "_open", refuse)
     asr_download.download("https://example/model", target)
     assert asr_download.checksum_path(target).is_file()

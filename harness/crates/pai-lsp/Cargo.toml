@@ -1,0 +1,35 @@
+[package]
+name = "pai-lsp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pai-core = { workspace = true }
+pai-tools = { workspace = true }
+pai-fs = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+# Cố ý **không** có `lsp-types`.
+#
+# Crate đó đổi kiểu theo từng bản của spec, và ta chỉ dùng bảy phương thức: `initialize`,
+# `initialized`, `shutdown`, `exit`, `textDocument/{didOpen,definition,references,hover}`
+# cộng một thông báo `publishDiagnostics` đi vào. Lấy cả một cây kiểu để gọi bảy phương
+# thức là mua một lịch nâng cấp cho thứ ta không dùng, và tệ hơn: những kiểu đó `deny` các
+# trường lạ theo cách khiến một server nói hơi khác spec bị từ chối ở tầng parse, trong khi
+# `serde_json::Value` chỉ đơn giản bỏ qua phần ta không đọc. Với một tiến trình bên thứ ba
+# mà ta không kiểm soát phiên bản, khoan dung lúc đọc là đúng chiều an toàn.
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }

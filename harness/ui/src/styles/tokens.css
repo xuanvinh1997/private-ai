@@ -1,0 +1,174 @@
+/* Token dịch trung thành từ src/private_ai/ui/theme.py.
+ *
+ * Bốn màu xám ở đây lệch khỏi bản CSS gốc của app web cũ là có chủ đích: theme.py:53-57
+ * nâng chúng để đạt WCAG AA. Khi đối chiếu, lấy số của theme.py, không lấy styles.css cũ.
+ *
+ * Khối dark xuất hiện hai lần — một lần dưới [data-theme="dark"] để nút đổi theme thắng,
+ * một lần dưới prefers-color-scheme cho chế độ "system" (theme.py:239 không stamp gì cả).
+ * Lặp là cố ý: gộp lại bằng biến thì nút đổi theme không thắng được media query. */
+
+:root {
+  font-size: 15px;
+
+  --bg: #f3f6f4;
+  --sidebar: #edf2ef;
+  --surface: #ffffff;
+  --surface-soft: #f7f9f8;
+  --surface-hover: #e6ede9;
+  --ink: #17231f;
+  --text: #293732;
+  --muted: #55635d;
+  --faint: #5f6e69;
+  --line: #d8e0dc;
+  --line-strong: #87968f;
+  --accent: #176b59;
+  --accent-hover: #115747;
+  --accent-soft: #deeee8;
+  --accent-ink: #0c4d3f;
+  --on-accent: #ffffff;
+  --success: #176b59;
+  --success-soft: #deeee8;
+  --warn: #8a5a12;
+  --warn-soft: #f6ecd8;
+  --danger: #ad403c;
+  --danger-soft: #f8e5e3;
+  --shadow: rgba(36, 58, 50, 0.12);
+  --scrim: rgba(19, 31, 27, 0.42);
+
+  /* Tám màu dữ liệu — dành cho biểu đồ, không dùng cho giao diện (theme.py:120). */
+  --data-1: #1c7a63; --data-2: #3d6fb4; --data-3: #a8672c; --data-4: #7d55ab;
+  --data-5: #a8465c; --data-6: #2f8f8a; --data-7: #5c6f3a; --data-8: #8a5a86;
+
+  --font-ui: "Manrope", "Manrope Variable", "Segoe UI", "Helvetica Neue", sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", "Cascadia Mono", Consolas, monospace;
+
+  --sp-3xs: 2px; --sp-2xs: 4px; --sp-xs: 6px; --sp-sm: 8px; --sp-md: 12px;
+  --sp-lg: 16px; --sp-xl: 20px; --sp-2xl: 24px; --sp-3xl: 32px; --sp-4xl: 40px;
+
+  --page-pad-x: 24px; --page-pad-y: 20px; --page-gap: 16px;
+  --card-pad-x: 16px; --card-pad-y: 12px; --card-gap: 12px;
+  --dialog-pad-x: 24px; --dialog-pad-y: 20px; --dialog-gap: 12px;
+  --toolbar-gap: 8px;
+  --control-h: 32px; --badge-h: 26px; --cta-h: 38px;
+  --nav-h: 40px; --rail-h: 36px; --icon-btn: 30px;
+
+  --sidebar-w: 252px; --sidebar-w-collapsed: 64px;
+  --rail-w: 296px; --topbar-h: 80px;
+  --reading-measure: 720px; --rail-gutter: 30px;
+
+  /* Ba cột của vỏ mới. `--icon-rail-w` chỉ vừa đủ một nút 40px cộng lề: rail rộng hơn
+   * thì biểu tượng trôi ra khỏi trục dọc mà mắt đã quen. */
+  --icon-rail-w: 64px;
+  --session-col-w: 280px;
+  --changes-col-w: 300px;
+  /* Cây tệp rộng hơn cột phiên một chút: tên tệp thụt vào theo cấp, và ở cấp thứ tư một
+   * cột 280px chỉ còn chỗ cho vài ký tự đầu — tức là đúng phần không phân biệt được. */
+  --tree-col-w: 300px;
+  --header-h: 56px;
+  /* Chỗ cho ba nút giao thông của macOS: cửa sổ mở titleBarStyle "Overlay" nên chúng
+   * nằm đè lên nội dung của ta, không phải trên một thanh tiêu đề riêng. */
+  --titlebar-h: 34px;
+  --avatar: 28px;
+
+  /* Chuyển động: một thang ba bậc, không ai được tự đặt số ngoài thang này. */
+  --dur-fast: 110ms;
+  --dur-base: 170ms;
+  --dur-slow: 260ms;
+  --ease-out: cubic-bezier(0.22, 0.8, 0.32, 1);
+
+  /* Sắc độ dựng từ token sẵn có bằng color-mix — LobeChat có một tầng "fill" mờ mà
+   * bảng màu của ta không có, và thêm mã màu mới là thêm một màu chưa ai kiểm tương phản. */
+  --overlay-hover: color-mix(in srgb, var(--ink) 6%, transparent);
+  --overlay-active: color-mix(in srgb, var(--ink) 10%, transparent);
+  --overlay-faint: color-mix(in srgb, var(--ink) 3.5%, transparent);
+  --glass: color-mix(in srgb, var(--surface) 82%, transparent);
+  --scroll-thumb: var(--line-strong);
+
+  /* Bốn vai trò cú pháp, không phải một bảng màu thứ hai.
+   *
+   * Mỗi vai trò trỏ vào một token đã kiểm tương phản sẵn, nên bộ tô tự đúng ở cả hai
+   * theme mà không ai phải chọn thêm mã màu nào. Bốn là số vai trò tối đa còn phân biệt
+   * được bằng mắt ở cỡ chữ 12px; vai trò thứ năm chỉ làm mã nguồn trông ồn hơn. */
+  --code-comment: var(--faint);
+  --code-string: var(--warn);
+  --code-number: var(--danger);
+  --code-keyword: var(--accent);
+  /* Dòng đang được trỏ tới, ví dụ khi mở tệp từ một thẻ tool ở dòng cụ thể. Bản đục
+   * dành cho cột số dòng: cột đó `sticky` nên nền trong suốt sẽ để mã cuộn qua bên dưới. */
+  --code-line-hit: color-mix(in srgb, var(--accent) 12%, transparent);
+  --code-line-hit-solid: color-mix(in srgb, var(--accent) 12%, var(--surface));
+
+  color-scheme: light;
+}
+
+:root[data-scale="compact"] { font-size: 14px; }
+:root[data-scale="large"] { font-size: 18px; }
+
+:root[data-theme="dark"] {
+  --bg: #0b1412;
+  --sidebar: #0f1b18;
+  --surface: #13221e;
+  --surface-soft: #172923;
+  --surface-hover: #1d332c;
+  --ink: #e6efeb;
+  --text: #d2ded9;
+  --muted: #9aaba4;
+  --faint: #8a9c94;
+  --line: #294039;
+  --line-strong: #58776d;
+  --accent: #66c4aa;
+  --accent-hover: #7dd1b8;
+  --accent-soft: #173b31;
+  --accent-ink: #b9eadc;
+  --on-accent: #08201a;
+  --success: #66c4aa;
+  --success-soft: #173b31;
+  --warn: #e0b562;
+  --warn-soft: #39301c;
+  --danger: #ee8b83;
+  --danger-soft: #432725;
+  --shadow: rgba(0, 0, 0, 0.28);
+  --scrim: rgba(0, 0, 0, 0.58);
+  --data-1: #5fc4a8; --data-2: #7fb0e8; --data-3: #e0a86a; --data-4: #b79ae6;
+  --data-5: #e58fa4; --data-6: #69c6c0; --data-7: #a6bd72; --data-8: #cf9ac9;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0b1412;
+    --sidebar: #0f1b18;
+    --surface: #13221e;
+    --surface-soft: #172923;
+    --surface-hover: #1d332c;
+    --ink: #e6efeb;
+    --text: #d2ded9;
+    --muted: #9aaba4;
+    --faint: #8a9c94;
+    --line: #294039;
+    --line-strong: #58776d;
+    --accent: #66c4aa;
+    --accent-hover: #7dd1b8;
+    --accent-soft: #173b31;
+    --accent-ink: #b9eadc;
+    --on-accent: #08201a;
+    --success: #66c4aa;
+    --success-soft: #173b31;
+    --warn: #e0b562;
+    --warn-soft: #39301c;
+    --danger: #ee8b83;
+    --danger-soft: #432725;
+    --shadow: rgba(0, 0, 0, 0.28);
+    --scrim: rgba(0, 0, 0, 0.58);
+    --data-1: #5fc4a8; --data-2: #7fb0e8; --data-3: #e0a86a; --data-4: #b79ae6;
+    --data-5: #e58fa4; --data-6: #69c6c0; --data-7: #a6bd72; --data-8: #cf9ac9;
+    color-scheme: dark;
+  }
+}
+
+/* Cửa sổ hẹp: hai cột bên phải nhường chỗ cho khu làm việc thay vì bóp nó xuống dưới
+ * ngưỡng đọc được. Không giấu hẳn cột nào — giấu thì người dùng mất lối đi mà không
+ * hiểu vì sao. */
+@media (max-width: 1180px) {
+  :root { --session-col-w: 232px; --changes-col-w: 252px; --tree-col-w: 248px; }
+}

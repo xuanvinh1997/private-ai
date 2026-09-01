@@ -1,0 +1,58 @@
+[package]
+name = "pai-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Private AI Harness — coding & working agent desktop"
+
+[lib]
+name = "pai_app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+pai-core = { workspace = true }
+pai-tools = { workspace = true }
+pai-session = { workspace = true }
+pai-agent = { workspace = true }
+pai-llm = { workspace = true }
+pai-hooks = { workspace = true }
+pai-index = { workspace = true }
+pai-lsp = { workspace = true }
+pai-mcp = { workspace = true }
+pai-project = { workspace = true }
+pai-sandbox = { workspace = true }
+pai-shell = { workspace = true }
+pai-terminal = { workspace = true }
+pai-fs = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_norway = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+parking_lot = { workspace = true }
+uuid = { workspace = true }
+tokio-util = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+reqwest = { workspace = true }
+
+[dev-dependencies]
+pai-agent = { workspace = true }
+parking_lot = { workspace = true }
+tokio-util = { workspace = true }
+pai-tools = { workspace = true }
+pai-hooks = { workspace = true }
+pai-index = { workspace = true }
+pai-lsp = { workspace = true }
+pai-mcp = { workspace = true }
+pai-project = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tempfile = { workspace = true }
+pai-session = { workspace = true }

@@ -1,0 +1,383 @@
+//! Vòng đời mô hình Ollama: `/api/tags`, `/api/ps`, `/api/show`, `/api/pull`, `/api/delete`.
+//!
+//! Đây là nửa mà không thư viện client nào mô hình hoá — `async-openai` không có, và
+//! LangChain cũng không, nên bản Python phải viết 273 dòng httpx thuần (`llm/admin.py`).
+//! Chính nó là lý do crate này dùng `reqwest` trực tiếp thay vì mượn một client OpenAI:
+//! nửa quan trọng nhất của một ứng dụng chạy mô hình tại chỗ nằm ở đây, không nằm ở
+//! `/v1/chat/completions`.
+
+use std::time::Duration;
+
+use async_trait::async_trait;
+use futures::FutureExt;
+use futures::stream::{BoxStream, StreamExt};
+use serde_json::{Value, json};
+
+use crate::capabilities::{
+    Capabilities, context_length_from_model_info, normalize_ollama_capabilities,
+};
+use crate::error::LlmError;
+use crate::model::{ModelDetails, ModelInfo, ModelState, PullProgress, RunningModel};
+use crate::seam::ModelAdmin;
+use crate::wire::LineDecoder;
+
+/// Bao lâu thì coi như máy chủ đã chết, khi chỉ hỏi thăm sức khoẻ.
+const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
+
+pub struct OllamaAdmin {
+    base_url: String,
+    http: reqwest::Client,
+    /// Client riêng cho `/api/pull`, **không thời hạn**.
+    ///
+    /// Một bản tải mười gigabyte sống lâu hơn mọi ngân sách request hợp lý, nên nó không
+    /// được dùng chung client với phần còn lại. Huỷ đi bằng cách thả stream.
+    pull_http: reqwest::Client,
+}
+
+impl OllamaAdmin {
+    pub fn new(base_url: impl Into<String>, http: reqwest::Client) -> Self {
+        let base_url = base_url.into().trim_end_matches('/').to_string();
+        // `build()` chỉ hỏng khi hệ điều hành không dựng nổi TLS; khi ấy dùng lại client
+        // đã có còn hơn là ngã.
+        let pull_http = reqwest::Client::builder()
+            .build()
+            .unwrap_or_else(|_| http.clone());
+        Self {
+            base_url,
+            http,
+            pull_http,
+        }
+    }
+
+    pub async fn health(&self) -> bool {
+        self.http
+            .get(format!("{}/api/ps", self.base_url))
+            .timeout(HEALTH_TIMEOUT)
+            .send()
+            .await
+            .map(|response| response.status().is_success())
+            .unwrap_or(false)
+    }
+
+    async fn get(&self, path: &str) -> Result<Value, LlmError> {
+        let response = self
+            .http
+            .get(format!("{}{path}", self.base_url))
+            .send()
+            .await?;
+        read_json(response).await
+    }
+
+    async fn post(&self, path: &str, body: Value) -> Result<Value, LlmError> {
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base_url))
+            .json(&body)
+            .send()
+            .await?;
+        read_json(response).await
+    }
+
+    /// `/api/show` cho một mô hình, dạng thô.
+    async fn show_raw(&self, model: &str) -> Result<Value, LlmError> {
+        self.post("/api/show", json!({ "model": model, "verbose": false }))
+            .await
+    }
+}
+
+async fn read_json(response: reqwest::Response) -> Result<Value, LlmError> {
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(LlmError::from_status(status.as_u16(), &body));
+    }
+    let text = response.text().await?;
+    serde_json::from_str(&text).map_err(LlmError::from)
+}
+
+/// Đọc năng lực từ một phản hồi `/api/show`, rơi xuống đoán theo tên khi máy chủ im lặng.
+fn details_from_show(model: &str, payload: &Value) -> ModelDetails {
+    let context_window = payload
+        .get("model_info")
+        .and_then(Value::as_object)
+        .and_then(context_length_from_model_info);
+    let reported = payload
+        .get("capabilities")
+        .map(normalize_ollama_capabilities)
+        .unwrap_or_default();
+    let details = payload.get("details");
+    let family = details
+        .and_then(|d| d.get("family"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let capabilities =
+        Capabilities::from_reported(&reported, context_window).unwrap_or_else(|| {
+            // Bản Ollama cũ không có trường `capabilities`. Đoán theo tên **cộng** family,
+            // đúng như `admin.py:135-137` ghép chuỗi trước khi đoán.
+            let mut inferred =
+                Capabilities::infer(&format!("{model} {}", family.clone().unwrap_or_default()));
+            inferred.context_window = context_window;
+            inferred
+        });
+    ModelDetails {
+        capabilities,
+        family,
+        parameter_size: details
+            .and_then(|d| d.get("parameter_size"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        quantization: details
+            .and_then(|d| d.get("quantization_level"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+    }
+}
+
+#[async_trait]
+impl ModelAdmin for OllamaAdmin {
+    async fn list(&self) -> Result<Vec<ModelInfo>, LlmError> {
+        let installed = self.get("/api/tags").await?;
+        let running = self.get("/api/ps").await?;
+        let installed = installed
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        let running = running
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        let mut models = Vec::new();
+        for item in &installed {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let active = running.iter().find(|entry| {
+                entry
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .is_some_and(|other| other == name)
+            });
+            // Một POST `/api/show` cho mỗi mô hình. Đắt, nhưng đây là **nguồn có thẩm
+            // quyền** duy nhất: đoán theo tên sai đúng ở chỗ người dùng cần đúng nhất,
+            // là các bản fine-tune tự đặt tên.
+            let details = match self.show_raw(&name).await {
+                Ok(payload) => details_from_show(&name, &payload),
+                Err(err) => {
+                    tracing::debug!(%err, model = %name, "/api/show không trả lời, đoán theo tên");
+                    let family = item
+                        .get("details")
+                        .and_then(|d| d.get("family"))
+                        .and_then(Value::as_str)
+                        .unwrap_or_default();
+                    ModelDetails {
+                        capabilities: Capabilities::infer(&format!("{name} {family}")),
+                        family: (!family.is_empty()).then(|| family.to_string()),
+                        parameter_size: None,
+                        quantization: None,
+                    }
+                }
+            };
+            models.push(ModelInfo {
+                name,
+                state: if active.is_some() {
+                    ModelState::Loaded
+                } else {
+                    ModelState::Unloaded
+                },
+                size_bytes: item.get("size").and_then(Value::as_u64).unwrap_or(0),
+                vram_bytes: active
+                    .and_then(|entry| entry.get("size_vram"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                quantization: details.quantization.clone().or_else(|| {
+                    item.get("details")
+                        .and_then(|d| d.get("quantization_level"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                }),
+                modified_at: item
+                    .get("modified_at")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                capabilities: details.capabilities,
+            });
+        }
+        Ok(models)
+    }
+
+    async fn running(&self) -> Result<Vec<RunningModel>, LlmError> {
+        let payload = self.get("/api/ps").await?;
+        let models = payload
+            .get("models")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(models
+            .iter()
+            .filter_map(|item| {
+                let name = item.get("name").and_then(Value::as_str)?.to_string();
+                Some(RunningModel {
+                    name,
+                    size_bytes: item.get("size").and_then(Value::as_u64).unwrap_or(0),
+                    vram_bytes: item.get("size_vram").and_then(Value::as_u64).unwrap_or(0),
+                    expires_at: item
+                        .get("expires_at")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                })
+            })
+            .collect())
+    }
+
+    async fn show(&self, model: &str) -> Result<ModelDetails, LlmError> {
+        let payload = self.show_raw(model).await?;
+        Ok(details_from_show(model, &payload))
+    }
+
+    fn pull(&self, model: &str) -> BoxStream<'_, Result<PullProgress, LlmError>> {
+        let http = self.pull_http.clone();
+        let url = format!("{}/api/pull", self.base_url);
+        let body = json!({ "model": model, "stream": true });
+        let request = async move {
+            http.post(url)
+                .json(&body)
+                .send()
+                .await
+                .map_err(LlmError::from)
+        }
+        .boxed();
+
+        // Máy trạng thái nhỏ: gửi request → đọc byte → cắt dòng → giải mã. Không dùng
+        // `pump` vì `pump` nói bằng `StreamChunk`, còn ở đây đơn vị là tiến trình tải.
+        enum State {
+            Connecting(futures::future::BoxFuture<'static, Result<reqwest::Response, LlmError>>),
+            Reading {
+                body: BoxStream<'static, Result<Vec<u8>, LlmError>>,
+                lines: LineDecoder,
+                queue: std::collections::VecDeque<PullProgress>,
+            },
+            Done,
+        }
+
+        futures::stream::unfold(State::Connecting(request), |state| async move {
+            let mut state = state;
+            loop {
+                match state {
+                    State::Connecting(request) => match request.await {
+                        Err(err) => return Some((Err(err), State::Done)),
+                        Ok(response) => {
+                            let status = response.status();
+                            if !status.is_success() {
+                                let text = response.text().await.unwrap_or_default();
+                                return Some((
+                                    Err(LlmError::from_status(status.as_u16(), &text)),
+                                    State::Done,
+                                ));
+                            }
+                            let body = response
+                                .bytes_stream()
+                                .map(|item| {
+                                    item.map(|bytes| bytes.to_vec()).map_err(LlmError::from)
+                                })
+                                .boxed();
+                            state = State::Reading {
+                                body,
+                                lines: LineDecoder::new(),
+                                queue: std::collections::VecDeque::new(),
+                            };
+                        }
+                    },
+                    State::Reading { body, lines, queue } => {
+                        let mut body = body;
+                        let mut lines = lines;
+                        let mut queue = queue;
+                        if let Some(progress) = queue.pop_front() {
+                            return Some((Ok(progress), State::Reading { body, lines, queue }));
+                        }
+                        match body.next().await {
+                            Some(Ok(bytes)) => {
+                                for line in lines.push(&bytes) {
+                                    match decode_pull_line(&line) {
+                                        Ok(Some(progress)) => queue.push_back(progress),
+                                        Ok(None) => {}
+                                        Err(err) => return Some((Err(err), State::Done)),
+                                    }
+                                }
+                                state = State::Reading { body, lines, queue };
+                            }
+                            Some(Err(err)) => return Some((Err(err), State::Done)),
+                            None => {
+                                if let Some(rest) = lines.flush()
+                                    && let Ok(Some(progress)) = decode_pull_line(&rest)
+                                {
+                                    return Some((Ok(progress), State::Done));
+                                }
+                                return None;
+                            }
+                        }
+                    }
+                    State::Done => return None,
+                }
+            }
+        })
+        .boxed()
+    }
+
+    async fn unload(&self, model: &str) -> Result<(), LlmError> {
+        // Ollama không có động từ "nhả". `keep_alive: 0` trên `/api/generate` là cách duy
+        // nhất, và nó là đường chính thức chứ không phải mẹo.
+        self.post("/api/generate", json!({ "model": model, "keep_alive": 0 }))
+            .await?;
+        Ok(())
+    }
+
+    async fn delete(&self, model: &str) -> Result<(), LlmError> {
+        let response = self
+            .http
+            .delete(format!("{}/api/delete", self.base_url))
+            .json(&json!({ "model": model }))
+            .send()
+            .await?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(LlmError::from_status(status.as_u16(), &body));
+        }
+        Ok(())
+    }
+}
+
+fn decode_pull_line(line: &str) -> Result<Option<PullProgress>, LlmError> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
+        tracing::warn!(line = trimmed, "dòng tiến trình không đọc được, bỏ qua");
+        return Ok(None);
+    };
+    if let Some(message) = value.get("error").and_then(Value::as_str) {
+        return Err(LlmError::unavailable(message.to_string()));
+    }
+    Ok(Some(PullProgress {
+        status: value
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        digest: value
+            .get("digest")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        total: value.get("total").and_then(Value::as_u64),
+        completed: value.get("completed").and_then(Value::as_u64),
+    }))
+}

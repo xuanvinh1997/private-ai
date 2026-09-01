@@ -1,0 +1,38 @@
+[package]
+name = "pai-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+pai-core = { workspace = true }
+pai-tools = { workspace = true }
+rmcp = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+parking_lot = { workspace = true }
+
+# Bốn crate dưới đây cố tình **không** lên `[workspace.dependencies]`: chúng chỉ phục vụ
+# một việc của riêng crate này — dựng cái vỏ HTTP quanh tower service mà `rmcp` đưa ra —
+# và không crate nào khác trong workspace nói HTTP phía server. Đưa lên trên chỉ mời crate
+# khác dùng ké một thứ mà kiến trúc muốn giữ ở đúng một chỗ. Cả bốn đã có sẵn trong cây
+# phụ thuộc qua `reqwest`, nên chúng không thêm gì vào bản dựng.
+http = "1"
+http-body-util = "0.1"
+bytes = "1"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "service"] }
+# Bí mật thì phải lấy từ CSPRNG của hệ điều hành. `uuid` v7 của workspace là dấu thời gian
+# cộng một ít ngẫu nhiên — đủ cho một khoá chính, không đủ cho một cái chìa.
+rand = "0.10"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "io-util"] }
+tempfile = { workspace = true }

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Hardened runtime bật JIT cho JavaScriptCore của WebView. Không có nó thì cửa sổ
+       trắng trơn sau khi ký, và triệu chứng không hề chỉ về đây. -->
+  <key>com.apple.security.cs.allow-jit</key>
+  <true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+
+  <!-- App Sandbox **tắt**, và đây là quyết định trung tâm của bản đóng gói này. Một
+       coding agent phải đọc và sửa được thư mục làm việc mà người dùng chỉ định, và phải
+       chạy được toolchain của họ. App Sandbox không cho làm cả hai. Vòng giam thật là
+       `pai-sandbox` (seatbelt cho từng lệnh con), chứ không phải một cái hộp bọc quanh
+       chính ứng dụng. Đổi lại: bản này không lên được Mac App Store, và đó là đánh đổi
+       có chủ ý chứ không phải thiếu sót. -->
+
+  <!-- `sandbox-exec` spawn tiến trình con; không có quyền này thì mọi lệnh đều hỏng. -->
+  <key>com.apple.security.inherit</key>
+  <false/>
+</dict>
+</plist>

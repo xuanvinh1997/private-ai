@@ -1,0 +1,213 @@
+//! Một tool ở server khác, mặc lấy hình dạng của một [`Tool`] ở đây.
+//!
+//! Chỗ này là nơi ranh giới tin cậy được viết ra thành mã. Xem [`RemoteTool::meta`].
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use pai_tools::{Invocation, Tool, ToolError, ToolMeta, ToolName, ToolOutcome, ToolSchema};
+use parking_lot::RwLock;
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock};
+use rmcp::service::{Peer, RoleClient};
+use serde_json::{Value, json};
+
+use crate::dial::Reach;
+
+/// Chỗ đặt kết nối hiện hành của một server.
+///
+/// Tool cầm một `Arc<Link>` chứ không cầm một [`Peer`]: sau một lần nối lại, peer cũ là
+/// một cái ống đã đóng. Cầm thẳng peer thì mọi tool đã đăng ký đều phải được dựng lại sau
+/// mỗi lần rớt mạng, và trong khoảng giữa chúng trỏ vào một kết nối chết mà vẫn nhận lời
+/// gọi. Một ô có thể thay ruột giữ cho danh sách tool đứng yên và câu trả lời luôn đúng
+/// với hiện tại.
+#[derive(Default)]
+pub struct Link {
+    peer: RwLock<Option<Peer<RoleClient>>>,
+}
+
+impl Link {
+    pub fn new() -> Arc<Link> {
+        Arc::new(Link::default())
+    }
+
+    pub fn set(&self, peer: Peer<RoleClient>) {
+        *self.peer.write() = Some(peer);
+    }
+
+    pub fn clear(&self) {
+        *self.peer.write() = None;
+    }
+
+    pub fn peer(&self) -> Option<Peer<RoleClient>> {
+        self.peer.read().clone()
+    }
+
+    pub fn connected(&self) -> bool {
+        self.peer.read().is_some()
+    }
+}
+
+/// Một tool do người khác viết, gọi qua MCP.
+pub struct RemoteTool {
+    /// Đã mang tiền tố `ext.<server>.` — xem [`crate::naming`].
+    name: ToolName,
+    /// Tên trần, đúng như server công bố. Đây là cái được gửi đi, và nó **không** được
+    /// suy ra lại từ `name` ở chỗ gọi: suy ra lại là làm phép cắt tiền tố ở hai nơi.
+    remote: String,
+    server: String,
+    description: String,
+    parameters: Value,
+    link: Arc<Link>,
+    reach: Reach,
+}
+
+impl RemoteTool {
+    pub fn new(
+        name: ToolName,
+        remote: impl Into<String>,
+        server: impl Into<String>,
+        description: impl Into<String>,
+        parameters: Value,
+        link: Arc<Link>,
+        reach: Reach,
+    ) -> RemoteTool {
+        RemoteTool {
+            name,
+            remote: remote.into(),
+            server: server.into(),
+            description: description.into(),
+            parameters,
+            link,
+            reach,
+        }
+    }
+
+    pub fn name(&self) -> &ToolName {
+        &self.name
+    }
+
+    /// Gấp một `CallToolResult` thành thứ đường ống hiểu được.
+    ///
+    /// Khối không phải văn bản không bị vứt trong im lặng mà được thay bằng một dòng nói
+    /// rõ có gì ở đó. Vứt đi thì mô hình đọc một kết quả cụt và tưởng tool trả về ít hơn
+    /// thực tế; nhét base64 của một tấm ảnh vào ngữ cảnh thì tệ hơn nữa.
+    fn render(result: CallToolResult) -> ToolOutcome {
+        let mut parts: Vec<String> = Vec::new();
+        for block in &result.content {
+            match block {
+                ContentBlock::Text(text) => parts.push(text.text.clone()),
+                ContentBlock::Image(image) => {
+                    parts.push(format!("[ảnh {} bị lược bỏ]", image.mime_type));
+                }
+                ContentBlock::Audio(audio) => {
+                    parts.push(format!("[âm thanh {} bị lược bỏ]", audio.mime_type));
+                }
+                ContentBlock::Resource(_) => parts.push("[tài nguyên nhúng bị lược bỏ]".into()),
+                ContentBlock::ResourceLink(link) => {
+                    parts.push(format!("[liên kết tài nguyên: {}]", link.uri));
+                }
+                _ => parts.push("[khối nội dung không nhận ra]".into()),
+            }
+        }
+        let mut outcome = if result.is_error.unwrap_or(false) {
+            ToolOutcome::error(parts.join("\n"))
+        } else {
+            ToolOutcome::ok(parts.join("\n"))
+        };
+        if let Some(structured) = result.structured_content {
+            outcome = outcome.with_structured(structured);
+        }
+        outcome
+    }
+}
+
+#[async_trait]
+impl Tool for RemoteTool {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            self.name.clone(),
+            self.description.clone(),
+            self.parameters.clone(),
+        )
+    }
+
+    /// Giả định xấu nhất, và đây là chỗ duy nhất trong crate ta được phép nói về nó.
+    ///
+    /// - **`mutating: true`.** Một server MCP *có* khai `readOnlyHint`, và chính spec ghi
+    ///   rằng annotation chỉ là **gợi ý**, client không được ra quyết định dựa vào nó khi
+    ///   server không đáng tin. Ta không biết tool này làm gì; tin lời tự khai nghĩa là để
+    ///   người viết server tự quyết định mình có nằm trong tập chỉ-đọc hay không. Coi mọi
+    ///   tool ngoài là có thay đổi trạng thái thì nó rơi ra khỏi tập chỉ-đọc — chiều sai
+    ///   an toàn, và cũng đúng chiều mà [`ToolMeta::default`] đã chọn.
+    /// - **`returns_untrusted_content: true`.** Văn bản trả về do người ngoài soạn. Sổ
+    ///   đăng ký sẽ tự chèn khung cảnh báo vào mô tả tool, tức là mô hình đọc lời cảnh báo
+    ///   đúng vào lúc nó quyết định làm gì với đoạn văn bản đó.
+    /// - **`concurrency_safe: false`.** Không có gì bảo đảm server bên kia chịu được hai
+    ///   lời gọi chồng nhau, và một server hỏng vì ta gọi song song thì lỗi hiện ra ở phía
+    ///   người dùng chứ không phải phía người viết nó.
+    /// - **`leaves_device`** theo [`Reach`]: đây là thứ duy nhất ta thật sự *biết*.
+    fn meta(&self) -> ToolMeta {
+        ToolMeta {
+            mutating: true,
+            leaves_device: self.reach.leaves_device(),
+            returns_untrusted_content: true,
+            concurrency_safe: false,
+            ..ToolMeta::default()
+        }
+    }
+
+    async fn execute(&self, call: &Invocation) -> Result<ToolOutcome, ToolError> {
+        let Some(peer) = self.link.peer() else {
+            return Err(ToolError::Failed(format!(
+                "MCP server `{}` đang không kết nối.",
+                self.server
+            )));
+        };
+
+        let mut params = CallToolRequestParams::new(self.remote.clone());
+        if !call.arguments.is_empty() {
+            params = params.with_arguments(call.arguments.clone());
+        }
+
+        // Hết giờ ở tầng đường ống huỷ token này. Không theo dõi nó thì lời gọi vẫn chạy
+        // tiếp ở server bên kia sau khi kết quả đã bị vứt.
+        let cancelled = call.cancel_token();
+        let response = tokio::select! {
+            () = cancelled.cancelled() => {
+                return Err(ToolError::Failed(format!(
+                    "Lời gọi tới `{}` bị huỷ trước khi server trả lời.", self.name
+                )));
+            }
+            response = peer.call_tool_once(params) => response,
+        };
+
+        match response {
+            Ok(CallToolResponse::Complete(result)) => Ok(Self::render(result)
+                .with_meta("mcp_server", json!(self.server))
+                .with_meta("mcp_tool", json!(self.remote))),
+            // Hai nhánh dưới là những vòng thương lượng nhiều bước của spec mới. Ta chưa
+            // nối chúng vào đường ống phê duyệt, và một cái gật đầu tự động cho một yêu
+            // cầu do server bên thứ ba soạn thì đúng là thứ không nên có. Nói thật với mô
+            // hình là lựa chọn duy nhất còn lại.
+            Ok(CallToolResponse::InputRequired(_)) => Err(ToolError::Failed(format!(
+                "Server `{}` xin thêm đầu vào giữa chừng; harness chưa hỗ trợ vòng đó.",
+                self.server
+            ))),
+            Ok(CallToolResponse::Task(_)) => Err(ToolError::Failed(format!(
+                "Server `{}` trả về một task chạy nền; harness chưa hỗ trợ.",
+                self.server
+            ))),
+            Err(err) => Err(ToolError::Failed(format!(
+                "Server `{}` báo lỗi: {err}",
+                self.server
+            ))),
+            // `CallToolResponse` là non_exhaustive: một bản `rmcp` sau này thêm nhánh mới
+            // thì mã này vẫn dịch được, và câu trả lời an toàn cho một nhánh chưa biết là
+            // nói rằng ta chưa biết — không phải đoán xem nó có nghĩa gì.
+            Ok(_) => Err(ToolError::Failed(format!(
+                "Server `{}` trả về một loại kết quả harness chưa biết đọc.",
+                self.server
+            ))),
+        }
+    }
+}
