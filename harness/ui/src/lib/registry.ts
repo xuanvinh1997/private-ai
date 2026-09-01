@@ -57,10 +57,6 @@ export function toolCard(name: string): Component<ToolCardProps> | undefined {
   return toolRenderers.get(name) ?? toolFallback;
 }
 
-/** Chỉ để kiểm chứng trong test và trang demo. */
-export function registeredToolNames(): string[] {
-  return [...toolRenderers.keys()];
-}
 
 /**
  * Dọn sổ trước khi module đăng ký chạy lại.

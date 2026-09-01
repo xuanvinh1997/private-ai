@@ -48,18 +48,14 @@
   --page-pad-x: 24px; --page-pad-y: 20px; --page-gap: 16px;
   --card-pad-x: 16px; --card-pad-y: 12px; --card-gap: 12px;
   --dialog-pad-x: 24px; --dialog-pad-y: 20px; --dialog-gap: 12px;
-  --toolbar-gap: 8px;
   --control-h: 32px; --badge-h: 26px; --cta-h: 38px;
-  --icon-btn: 30px;
 
   /* Một thanh bên duy nhất, đúng như ChatGPT/Codex: không còn icon rail nào đứng trước
    * nó. 260px là bề rộng nhỏ nhất còn đọc trọn được một tiêu đề phiên hai chữ cộng dấu
    * thời gian bên phải — hẹp hơn thì mọi hàng đều cắt, và một danh sách toàn dấu ba chấm
    * không giúp chọn được gì. */
   --sidebar-w: 260px;
-  --changes-col-w: 300px;
   /* Cây của màn hình đồ thị. Rộng hơn thanh bên vì tên ký hiệu thụt vào theo cấp. */
-  --tree-col-w: 300px;
   /* Cột đọc: ChatGPT giữ hội thoại ở khoảng 48rem và căn giữa. Trải hết bề rộng trên một
    * màn hình 27" là ép mắt quét ngang 200 ký tự mỗi dòng. */
   --reading-measure: 720px;
@@ -75,13 +71,11 @@
   /* Chuyển động: một thang ba bậc, không ai được tự đặt số ngoài thang này. */
   --dur-fast: 110ms;
   --dur-base: 170ms;
-  --dur-slow: 260ms;
   --ease-out: cubic-bezier(0.22, 0.8, 0.32, 1);
 
   /* Sắc độ dựng từ token sẵn có bằng color-mix — LobeChat có một tầng "fill" mờ mà
    * bảng màu của ta không có, và thêm mã màu mới là thêm một màu chưa ai kiểm tương phản. */
   --overlay-hover: color-mix(in srgb, var(--ink) 6%, transparent);
-  --overlay-active: color-mix(in srgb, var(--ink) 10%, transparent);
   --overlay-faint: color-mix(in srgb, var(--ink) 3.5%, transparent);
   --glass: color-mix(in srgb, var(--surface) 82%, transparent);
   --scroll-thumb: var(--line-strong);
@@ -159,5 +153,5 @@
  * thanh bên vẫn thu được bằng tay, và đó là quyết định của họ chứ không của một media
  * query. */
 @media (max-width: 1180px) {
-  :root { --sidebar-w: 232px; --changes-col-w: 252px; --tree-col-w: 248px; }
+  :root { --sidebar-w: 232px; }
 }

@@ -214,7 +214,6 @@ pub trait ProjectStore: Send + Sync + 'static {
     fn touch(&self, path: &Path) -> Result<Project>;
     /// Ghi nhận một dự án mới với loại **tường minh**, và chỗ nó được clone về từ đâu.
     fn create(&self, path: &Path, kind: ProjectKind, origin: Option<&str>) -> Result<Project>;
-    fn set_kind(&self, id: &str, kind: ProjectKind) -> Result<Project>;
     fn get(&self, id: &str) -> Result<Project>;
     /// Bỏ khỏi danh sách. **Không đụng tới đĩa** — đó là thư mục của người dùng.
     fn forget(&self, id: &str) -> Result<()>;
@@ -303,21 +302,6 @@ impl ProjectStore for SqliteProjectStore {
                 ],
             )?;
             SqliteProjectStore::by_path(conn, &key)
-        })
-    }
-
-    fn set_kind(&self, id: &str, kind: ProjectKind) -> Result<Project> {
-        self.with_conn(|conn| {
-            let touched = conn.execute(
-                "UPDATE projects SET kind = ?2 WHERE id = ?1",
-                params![id, kind],
-            )?;
-            if touched == 0 {
-                return Err(ProjectError::NotFound(id.to_string()));
-            }
-            let mut stmt =
-                conn.prepare_cached(&format!("SELECT {COLUMNS} FROM projects WHERE id = ?1"))?;
-            Ok(stmt.query_row(params![id], row)?)
         })
     }
 

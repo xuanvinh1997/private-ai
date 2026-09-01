@@ -10,53 +10,6 @@ import type { CloneProgress, Project, ProjectKind } from "../protocol";
  * giờ — kể cả người viết ra nó.
  */
 
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-
-export function demoProjectList(now = Date.now()): Project[] {
-  return [
-    {
-      id: "p-harness",
-      name: "harness",
-      path: "/Users/vinhpx/Workspaces/private-ai/harness",
-      lastOpenedAt: now - 3 * MINUTE,
-      isCurrent: true,
-      kind: "code",
-      origin: null,
-    },
-    {
-      id: "p-python",
-      name: "private-ai",
-      path: "/Users/vinhpx/Workspaces/private-ai",
-      lastOpenedAt: now - 22 * HOUR,
-      isCurrent: false,
-      kind: "code",
-      origin: "https://github.com/vinhpx/private-ai.git",
-    },
-    {
-      id: "p-notes",
-      name: "so-tay",
-      path: "/Users/vinhpx/Documents/so-tay",
-      lastOpenedAt: now - 6 * DAY,
-      isCurrent: false,
-      kind: "docs",
-      origin: null,
-    },
-    {
-      // Clone qua SSH: huy hiệu nguồn gốc phải rút được host từ dạng scp, thứ `new URL`
-      // không đọc nổi. Không có mục này thì nhánh đó không bao giờ chạy trong lúc xem.
-      id: "p-quy-dinh",
-      name: "quy-dinh-noi-bo",
-      path: "/Users/vinhpx/Documents/quy-dinh-noi-bo",
-      lastOpenedAt: now - 19 * DAY,
-      isCurrent: false,
-      kind: "docs",
-      origin: "git@gitlab.noi-bo.vn:phap-che/quy-dinh.git",
-    },
-  ];
-}
-
 /** Dự án lõi sẽ trả về sau khi tạo — dùng để hộp thoại trong demo có thứ để trả. */
 export function demoCreatedProject(path: string, kind: ProjectKind): Project {
   const name = path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || path;

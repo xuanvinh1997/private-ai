@@ -546,7 +546,7 @@ export function demoProjects(current = "p-harness", now = Date.now()): Project[]
  * có nó trong dữ liệu mẫu thì đường đi quan trọng nhất của `Blocks.tsx` — đường không
  * được gọi `mermaid.render` — là đường chưa ai nhìn thấy bao giờ.
  */
-export function demoDiagramText(): string {
+function demoDiagramText(): string {
   return [
     "Đường đi của một lượt gọi provider, từ lúc agent đẩy lượt vào hàng đợi:",
     "",

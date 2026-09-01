@@ -87,7 +87,7 @@ export function IconButton(props: {
 }
 
 /** Chú giải dùng chung. Chỉ là trang trí — nội dung thật nằm ở `aria-label` của nút. */
-export function Tip(props: { side: TipSide; children: JSX.Element }) {
+function Tip(props: { side: TipSide; children: JSX.Element }) {
   return (
     <span
       aria-hidden="true"

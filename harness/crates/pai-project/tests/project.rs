@@ -153,21 +153,3 @@ fn create_va_list_tra_dung_loai_va_nguon() {
     );
     assert_eq!(danh_sach.len(), 2);
 }
-
-#[test]
-fn set_kind_doi_duoc_loai_va_noi_ra_khi_khong_co_du_an() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let store = store();
-    let du_an = store.touch(dir.path()).expect("mở được");
-    assert_eq!(du_an.kind, ProjectKind::Code);
-
-    let doi = store
-        .set_kind(&du_an.id, ProjectKind::Docs)
-        .expect("đổi được");
-    assert_eq!(doi.kind, ProjectKind::Docs);
-    assert_eq!(
-        store.get(&du_an.id).expect("đọc lại").kind,
-        ProjectKind::Docs
-    );
-    assert!(store.set_kind("khong-co", ProjectKind::Docs).is_err());
-}

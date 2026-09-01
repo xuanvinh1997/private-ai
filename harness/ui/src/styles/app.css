@@ -40,9 +40,13 @@
   --text-2xl: 1.73rem;
   --text-display: 2.13rem;
 
-  --spacing-3xs: 2px; --spacing-2xs: 4px; --spacing-xs: 6px; --spacing-sm: 8px;
-  --spacing-md: 12px; --spacing-lg: 16px; --spacing-xl: 20px; --spacing-2xl: 24px;
-  --spacing-3xl: 32px; --spacing-4xl: 40px;
+  /* Trỏ vào `--sp-*` của `tokens.css` thay vì chép lại con số. Hai thang đo cùng nội
+     dung ở hai tệp thì sớm muộn lệch nhau, và lúc đó `gap-md` và `var(--sp-md)` — hai
+     cách viết cho cùng một ý — cho ra hai khoảng cách khác nhau. */
+  --spacing-3xs: var(--sp-3xs); --spacing-2xs: var(--sp-2xs); --spacing-xs: var(--sp-xs);
+  --spacing-sm: var(--sp-sm); --spacing-md: var(--sp-md); --spacing-lg: var(--sp-lg);
+  --spacing-xl: var(--sp-xl); --spacing-2xl: var(--sp-2xl); --spacing-3xl: var(--sp-3xl);
+  --spacing-4xl: var(--sp-4xl);
 
   --radius-icon: 8px; --radius-btn: 9px; --radius-panel: 10px;
   --radius-menu: 12px; --radius-card: 14px; --radius-pill: 999px;

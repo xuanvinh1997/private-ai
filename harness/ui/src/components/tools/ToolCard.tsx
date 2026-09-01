@@ -26,7 +26,7 @@ function short(value: unknown, max = 48): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-export function summarizeArgs(args: unknown): string {
+function summarizeArgs(args: unknown): string {
   if (args === null || typeof args !== "object") return short(args);
   return Object.entries(args as Record<string, unknown>)
     .map(([key, value]) => `${key}=${short(value)}`)

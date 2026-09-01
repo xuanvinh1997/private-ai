@@ -381,7 +381,7 @@ function SessionRow(props: {
  * Cùng chiều cao hàng với danh sách thật, nếu không thì lúc dữ liệu về mọi thứ nhảy một
  * nhịp — và cú nhảy đó đắt hơn hẳn khoảng lặng mà khung xương che đi.
  */
-export function SessionSkeleton(props: { rows?: number }) {
+function SessionSkeleton(props: { rows?: number }) {
   return (
     <div class="flex flex-col gap-2xs px-md" aria-hidden="true">
       <For each={Array.from({ length: props.rows ?? 6 })}>

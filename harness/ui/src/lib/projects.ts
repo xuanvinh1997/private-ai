@@ -64,30 +64,8 @@ export function folderName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-const isAbsolute = (path: string): boolean =>
-  path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path);
 
-/**
- * Đường dẫn tuyệt đối, dựng từ gốc dự án khi chỗ gọi chỉ có đường dẫn tương đối.
- *
- * Hai nguồn đường dẫn trong ứng dụng nói hai thứ tiếng khác nhau, và đó không phải lỗi
- * của bên nào: `list_tree` trả đường dẫn tuyệt đối vì nó phải chứng minh được tệp nằm
- * trong dự án, còn `ToolMeta` mang đường dẫn tương đối vì đó là thứ mô hình đọc được.
- * `read_file` chuẩn hoá đường dẫn nó nhận, nên một đường dẫn tương đối ở đó sẽ được giải
- * theo thư mục làm việc của tiến trình — im lặng trỏ ra ngoài dự án. Quy về một mối ở
- * đây, đúng một lần, tại chỗ mở tệp.
- */
-export function absolutePath(root: string | null, path: string): string {
-  if (root === null || isAbsolute(path)) return path;
-  return `${root.replace(/[/\\]+$/, "")}/${path}`;
-}
 
-/** Bỏ tiền tố gốc dự án khi hiện cho người đọc. Gốc dự án là thứ ai cũng đã biết. */
-export function displayPath(root: string | null, path: string): string {
-  if (root === null) return path;
-  const base = `${root.replace(/[/\\]+$/, "")}/`;
-  return path.startsWith(base) ? path.slice(base.length) : path;
-}
 
 /**
  * Tạo một dự án từ một thư mục có sẵn, kèm **loại** của nó.
