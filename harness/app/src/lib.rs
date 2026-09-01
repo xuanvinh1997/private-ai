@@ -458,6 +458,7 @@ pub fn run() {
             commands::mcp::set_mcp_enabled,
             commands::mcp::reload_mcp_servers,
             commands::docs::list_documents,
+            commands::docs::sync_library,
             commands::docs::library_stats,
             commands::docs::add_documents,
             commands::docs::remove_document,

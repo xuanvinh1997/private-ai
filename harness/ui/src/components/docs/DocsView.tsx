@@ -4,6 +4,7 @@ import {
   addDocuments,
   libraryStats,
   listDocuments,
+  syncLibrary,
   pickDocuments,
   removeDocument,
 } from "../../lib/docs";
@@ -61,12 +62,27 @@ export default function DocsView(props: {
       setLoading(false);
       return;
     }
-    // Hai lệnh này nuốt lỗi ở tầng `docs.ts` và trả về giá trị nói thật, nên ở đây không
-    // có nhánh lỗi: màn hình mở ra được kể cả khi thư viện không trả lời.
+    // Hiện ngay cái đã biết, rồi mới quét. Chờ quét xong mới vẽ gì cả là để người dùng
+    // nhìn một màn hình trống trong lúc thư mục vài trăm tệp chạy qua.
     const [list, health] = await Promise.all([listDocuments(), libraryStats()]);
     setDocs(list);
     setStats(health);
     setLoading(false);
+
+    // Rồi đồng bộ với thư mục. **Đây là chỗ trả lời câu "chọn folder mà không thấy tệp
+    // nào"**: thư mục dự án là thư viện, nên mở màn hình ra là quét, không đợi ai bấm.
+    // Lõi bỏ qua tệp không đổi, nên lần mở thứ hai gần như không tốn gì.
+    try {
+      const sau = await syncLibrary(note);
+      setDocs(sau);
+      setStats(await libraryStats());
+    } catch (err) {
+      // Quét hỏng không được xoá mất danh sách vừa hiện: những gì đã nạp lần trước vẫn
+      // tìm được, và đó vẫn là một thư viện dùng được.
+      setError(`Không quét được thư mục: ${err}`);
+    } finally {
+      setIngest(null);
+    }
   };
 
   // Nạp lại khi đổi dự án. Không dùng `onMount` vì component sống qua nhiều dự án khác

@@ -421,8 +421,33 @@ pub struct LibraryStats {
     /// **chỉ từ khoá** thay vì trả về rỗng.
     pub embedder: Option<String>,
     pub semantic_ready: bool,
-    /// Câu tiếng Việt giải thích khi `semantic_ready` là `false`.
+    /// Câu tiếng Việt giải thích khi `semantic_ready` là `false`, **hoặc** khi thư viện
+    /// trống trong lúc thư mục thì không.
     pub reason: Option<String>,
+    /// Thư mục tài liệu của người dùng.
+    ///
+    /// Giao diện phải chỉ ra được nó. Câu hỏi "vì sao không thấy tệp nào" bắt đầu bằng
+    /// việc người dùng kiểm lại họ đã chỉ vào đâu, và một màn hình không nói ra thư mục
+    /// nào đang được quét thì không trả lời được câu ấy.
+    pub root: String,
+    pub files_seen: u32,
+    /// Bỏ qua vì chạm trần — kích thước tệp hoặc trần số tệp.
+    pub files_skipped: u32,
+    pub unreadable: u32,
+    /// Còn trong thư mục nhưng người dùng đã bỏ khỏi thư viện.
+    pub excluded: u32,
+    /// Lần quét gần nhất, epoch mili-giây. `None` là **chưa quét lần nào** — khác hẳn
+    /// "quét rồi và không có gì", và giao diện phải phân biệt hai câu đó.
+    pub scanned_at: Option<i64>,
+    /// Đang quét: `(xong, tổng)`. `None` là không có lượt quét nào đang chạy.
+    pub scanning: Option<ScanProgress>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanProgress {
+    pub done: u32,
+    pub total: u32,
 }
 
 /// Một đoạn khớp, đủ để dựng thẻ trích dẫn.

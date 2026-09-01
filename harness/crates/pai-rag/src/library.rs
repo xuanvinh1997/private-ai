@@ -1047,6 +1047,7 @@ fn plan_paths(store: &Store, root: &Path, paths: Vec<PathBuf>) -> Plan {
 /// chỗ họ sẽ đi tìm nó là thư mục họ đã chọn. Trùng tên thì thêm hậu tố chứ không ghi đè —
 /// tệp bị ghi đè ở đây là tệp của người khác, và một lần ghi đè im lặng là một lần mất dữ
 /// liệu mà không ai biết đã mất cái gì.
+///
 /// Trả về đường dẫn trong thư mục dự án, kèm `origin` — chỗ tệp đến từ đó khi nó vừa được
 /// chép vào, và `None` khi nó vốn đã nằm sẵn ở đó.
 fn bring_in(root: &Path, source: &Path) -> Result<(PathBuf, Option<String>), RagError> {

@@ -97,6 +97,16 @@ export function demoLibraryStats(): LibraryStats {
     embedder: "nomic-embed-text",
     semanticReady: false,
     reason: "Còn 16 đoạn chưa nhúng xong.",
+    root: "/Users/vinhpx/Documents/NCS",
+    filesSeen: 8,
+    // Hai tệp chạm trần kích thước và một tệp không đọc được: bộ mẫu phải cho thấy được
+    // khoảng cách giữa "thư mục có 8 tệp" và "thư viện có 6", nếu không thì dòng giải
+    // thích ấy là dòng chưa ai nhìn thấy bao giờ.
+    filesSkipped: 1,
+    unreadable: 1,
+    excluded: 0,
+    scannedAt: Date.now() - 4 * 60_000,
+    scanning: null,
   };
 }
 

@@ -30,7 +30,10 @@ fn library(harness: &Harness) -> Result<Arc<dyn DocLibrary>, String> {
 fn view(doc: Document) -> DocumentView {
     DocumentView {
         id: doc.id,
-        path: doc.origin,
+        // Đường dẫn **thật** trong thư mục dự án, không phải chỗ tệp đến từ đâu: người
+        // dùng bấm vào một hàng là để mở đúng tệp đó, và `origin` có thể trỏ vào một chỗ
+        // đã bị di chuyển từ lâu.
+        path: doc.path.display().to_string(),
         title: doc.title,
         format: doc.format.as_str().to_string(),
         bytes: doc.bytes,
@@ -63,6 +66,16 @@ pub async fn library_stats(state: State<'_, AppState>) -> Result<LibraryStats, S
         embedder: stats.embedder,
         semantic_ready: stats.semantic_ready,
         reason: stats.reason,
+        root: stats.root.display().to_string(),
+        files_seen: stats.files_seen,
+        files_skipped: stats.files_skipped,
+        unreadable: stats.unreadable,
+        excluded: stats.excluded,
+        scanned_at: stats.scanned_at,
+        scanning: stats.scanning.map(|item| crate::protocol::ScanProgress {
+            done: item.done,
+            total: item.total,
+        }),
     })
 }
 
@@ -99,6 +112,46 @@ pub async fn add_documents(
             // Cửa sổ đóng giữa chừng không phải lý do bỏ dở việc nạp: những tệp đã sao
             // vào kho sẽ nằm đó dở dang nếu ta dừng ở đây.
             tracing::debug!("không gửi được tiến trình nạp: {err}");
+        }
+    }
+    drop(stream);
+
+    Ok(library
+        .documents()
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .map(view)
+        .collect())
+}
+
+/// Quét lại thư mục dự án và đồng bộ thư viện với nó.
+///
+/// **Thư mục dự án là thư viện.** Người dùng chỉ vào một thư mục tài liệu và mong trợ lý
+/// đọc được những gì đang nằm trong đó — không phải mong được thêm lại từng tệp một.
+///
+/// Không chạy trong `Library::open`: một lần quét đồng bộ ở đó là đóng băng cửa sổ hàng
+/// chục giây mà không có gì trên màn hình nói vì sao. Ở đây nó có kênh tiến trình, huỷ
+/// được bằng cách đóng cửa sổ, và giao diện vẽ được từng bước.
+#[tauri::command]
+pub async fn sync_library(
+    on_progress: Channel<IngestProgress>,
+    state: State<'_, AppState>,
+) -> Result<Vec<DocumentView>, String> {
+    let harness = state.harness().await?;
+    let library = library(&harness)?;
+
+    let mut stream = library.sync();
+    while let Some(event) = stream.next().await {
+        let progress = IngestProgress {
+            path: event.path,
+            stage: event.stage.as_str().to_string(),
+            done: event.done,
+            total: event.total,
+            finished: event.finished,
+            error: event.error,
+        };
+        if let Err(err) = on_progress.send(progress) {
+            tracing::debug!("không gửi được tiến trình quét: {err}");
         }
     }
     drop(stream);

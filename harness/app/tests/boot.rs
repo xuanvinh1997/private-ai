@@ -754,3 +754,72 @@ async fn dong_du_an_thi_tool_cham_dia_bien_mat() {
 
     harness.shutdown().await;
 }
+
+/// Mở một thư mục làm dự án tài liệu thì **thấy ngay tệp đang nằm trong đó**.
+///
+/// Đây là bài khoá lại đúng câu hỏi người dùng đã hỏi: *"tại sao chọn folder nhưng phần
+/// mềm không thấy file nào"*. Trước đây thư mục ấy không bao giờ được quét — thư viện chỉ
+/// chứa tệp thêm tay, và bản sao của chúng nằm trong một thư mục ẩn.
+///
+/// Khẳng định đi qua **seam `Docs` thật** sau khi cây plugin đã cắm, chứ không gọi thẳng
+/// `pai-rag`: chỗ hỏng lần trước không nằm trong `pai-rag` mà nằm ở chỗ nối — nó không hề
+/// biết thư mục người dùng chọn là thư mục nào.
+#[tokio::test]
+async fn mo_thu_muc_tai_lieu_thi_thay_ngay_tep_trong_do() {
+    use futures::StreamExt;
+    use pai_project::ProjectKind;
+    use pai_rag::Docs;
+
+    let dir = TempDir::new().expect("thư mục tạm");
+    let harness = boot(config(&dir)).await.expect("dựng được cây");
+
+    // Một thư mục có sẵn tài liệu, y như thư mục người dùng đã chỉ vào.
+    let thu_vien = TempDir::new().expect("thư mục tạm");
+    let goc = thu_vien.path().canonicalize().expect("phân giải");
+    std::fs::write(
+        goc.join("ghi-chu.md"),
+        "# Ghi chú\n\nNội dung thử nghiệm.\n",
+    )
+    .expect("ghi");
+    std::fs::write(goc.join("bang.csv"), "ten,tuoi\nan,30\n").expect("ghi");
+    std::fs::write(goc.join("anh.png"), [0x89, 0x50, 0x4e, 0x47]).expect("ghi");
+
+    harness
+        .create_project(&goc, ProjectKind::Docs, None)
+        .expect("ghi nhận được dự án tài liệu");
+    harness.open_project(&goc).await.expect("mở được");
+
+    let library = harness
+        .ctx
+        .get::<Docs>()
+        .expect("dự án tài liệu phải có thư viện");
+
+    // Trước khi quét, thư viện trống — và `Library::open` cố ý không tự quét, vì một lần
+    // quét đồng bộ lúc cắm plugin là đóng băng cửa sổ không có thanh tiến trình nào.
+    assert_eq!(library.documents().expect("đọc được").len(), 0);
+
+    let mut stream = library.sync();
+    while stream.next().await.is_some() {}
+    drop(stream);
+
+    let docs = library.documents().expect("đọc được");
+    let ten: Vec<String> = docs
+        .iter()
+        .map(|doc| {
+            doc.path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        })
+        .collect();
+    assert!(ten.iter().any(|n| n == "ghi-chu.md"), "{ten:?}");
+    assert!(ten.iter().any(|n| n == "bang.csv"), "{ten:?}");
+    assert!(!ten.iter().any(|n| n == "anh.png"), "nạp cả ảnh: {ten:?}");
+
+    // Và tệp gốc **vẫn nằm nguyên chỗ cũ**, không bị chép đi đâu.
+    assert!(goc.join("ghi-chu.md").is_file());
+    let stats = library.stats().expect("đọc được");
+    assert_eq!(stats.root, goc, "thư viện đang soi vào nhầm thư mục");
+
+    harness.shutdown().await;
+}

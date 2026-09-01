@@ -48,6 +48,15 @@ export async function libraryStats(): Promise<LibraryStats> {
     embedder: null,
     semanticReady: false,
     reason: "Không hỏi được tình trạng thư viện.",
+    root: "",
+    filesSeen: 0,
+    filesSkipped: 0,
+    unreadable: 0,
+    excluded: 0,
+    // `null` chứ không phải `0`: chưa hỏi được thì cũng chưa biết đã quét lần nào chưa,
+    // và `0` ở đây sẽ hiện thành "quét lúc 1/1/1970".
+    scannedAt: null,
+    scanning: null,
   };
   if (!inTauri()) return unknown;
   try {
@@ -76,6 +85,20 @@ export function addDocuments(
 }
 
 /** Bỏ một tài liệu khỏi thư viện, kèm mọi đoạn đã cắt từ nó. */
+/**
+ * Quét lại thư mục dự án.
+ *
+ * Chạy khi mở màn hình thư viện, không phải khi người dùng bấm một nút: thư mục là thư
+ * viện, và bắt họ bấm "quét" để thấy tệp của chính mình là bắt họ làm việc của máy. Lõi
+ * bỏ qua tệp không đổi nên lần chạy thứ hai gần như miễn phí.
+ */
+export function syncLibrary(onProgress: (p: IngestProgress) => void): Promise<DocumentView[]> {
+  if (!inTauri()) return Promise.resolve([]);
+  const channel = new Channel<IngestProgress>();
+  channel.onmessage = onProgress;
+  return invoke<DocumentView[]>("sync_library", { onProgress: channel });
+}
+
 export function removeDocument(id: string): Promise<void> {
   return invoke("remove_document", { id });
 }

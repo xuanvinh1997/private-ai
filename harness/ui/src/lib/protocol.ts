@@ -284,6 +284,7 @@ export interface DocumentView {
 
 export interface IngestProgress {
   path: string;
+  /** `reading` `stored` `failed` `skipped` `removed` `finished`. */
   stage: string;
   done: number;
   total: number;
@@ -299,6 +300,22 @@ export interface LibraryStats {
   embedder: string | null;
   semanticReady: boolean;
   reason: string | null;
+  /**
+   * Thư mục tài liệu của người dùng.
+   *
+   * Màn hình phải chỉ ra được nó: câu hỏi "vì sao không thấy tệp nào" bắt đầu bằng việc
+   * người dùng kiểm lại họ đã chỉ vào đâu.
+   */
+  root: string;
+  filesSeen: number;
+  /** Bỏ qua vì chạm trần — kích thước tệp hoặc trần số tệp. */
+  filesSkipped: number;
+  unreadable: number;
+  /** Còn trong thư mục nhưng người dùng đã bỏ khỏi thư viện. */
+  excluded: number;
+  /** `null` là **chưa quét lần nào** — khác hẳn "quét rồi và không có gì". */
+  scannedAt: number | null;
+  scanning: { done: number; total: number } | null;
 }
 
 export interface DocumentHit {
