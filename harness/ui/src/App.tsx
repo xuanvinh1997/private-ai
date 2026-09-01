@@ -24,7 +24,14 @@ import {
   runDemoTurn,
 } from "./lib/demo";
 import { changesPanelOpen, setChangesPanelOpen, setDisplayMode, setSidebarOpen, sidebarOpen } from "./lib/prefs";
-import { closeProject, folderName, listProjects, openProject, removeProject } from "./lib/projects";
+import {
+  closeProject,
+  folderName,
+  listProjects,
+  openProject,
+  removeProject,
+  setProjectKind,
+} from "./lib/projects";
 import { titleFromMessage } from "./lib/sessions";
 import type {
   AgentEvent,
@@ -32,13 +39,15 @@ import type {
   ConversationNode,
   ModelChoice,
   Project,
+  ProjectKind,
   SessionSummary,
+  ToolScope,
 } from "./lib/protocol";
 import { TranscriptActionsProvider } from "./lib/transcriptActions";
 import { useDragDrop } from "./hooks/useDragDrop";
 import ApprovalDialog from "./components/ApprovalDialog";
 import ChangesPanel, { ChangesBoard } from "./components/ChangesPanel";
-import Composer, { type ToolScope } from "./components/Composer";
+import Composer from "./components/Composer";
 import EmptyState from "./components/EmptyState";
 import { usableForChat } from "./components/ModelPicker";
 import ProjectSwitcher from "./components/ProjectSwitcher";
@@ -90,6 +99,9 @@ export default function App() {
   // lần thì kết quả về sau của phiên cũ không được ghi đè lên phiên mới.
   const [loadingSession, setLoadingSession] = createSignal<string | null>(null);
   const [loadError, setLoadError] = createSignal<string | null>(null);
+  // Phạm vi tool của **lượt kế**, không phải một thiết lập được lưu: nó đi kèm mỗi lần
+  // gửi và chết theo phiên làm việc của cửa sổ. Không ghi vào `prefs` là cố ý — một mức
+  // quyền khôi phục lại sau khi mở app là một mức quyền không ai vừa chọn.
   const [scope, setScope] = createSignal<ToolScope>("write");
 
   const [projects, setProjects] = createSignal<Project[]>([]);
@@ -313,6 +325,26 @@ export default function App() {
    * bấm. Một hộp xác nhận cho một việc hoàn tác được chỉ dạy người dùng bấm bừa vào nút
    * đồng ý, và làm hỏng đúng những hộp xác nhận đáng đọc — chỗ xoá phiên chẳng hạn.
    */
+  /// Đổi loại dự án đang mở.
+  ///
+  /// Đi qua đúng đường của `switchProject` — cùng cờ `switching`, cùng `adoptProject` phía
+  /// sau — vì lõi tháo và cắm lại cả tầng plugin y như khi đổi dự án. Khác đường thì cờ
+  /// bận sẽ không bật, và người dùng bấm tiếp trong lúc tool đang bị gỡ ra.
+  async function swapProjectKind(kind: ProjectKind) {
+    const open = project();
+    if (open === null || switching()) return;
+    setSwitching(true);
+    setLoadError(null);
+    try {
+      setProjects(await setProjectKind(open.id, kind));
+      await adoptProject();
+    } catch (err) {
+      setLoadError(`Không đổi được loại dự án: ${err}`);
+    } finally {
+      setSwitching(false);
+    }
+  }
+
   async function closeCurrentProject() {
     if (switching() || !hasProject()) return;
     setSwitching(true);
@@ -526,10 +558,13 @@ export default function App() {
         if (currentId() !== cuaLuot) return;
         conversation.applyEvent(event);
       };
+      // Chốt phạm vi cùng lúc với phiên: người dùng đổi mức trong lúc lượt đang chạy
+      // thì lượt này vẫn chạy đúng mức nó đã được gửi đi, và mức mới thuộc về lượt sau.
+      const quyen = scope();
       if (isDemo() || !inTauri()) {
-        await runDemoTurn(trimmed, applyIfCurrent, waitForApproval);
+        await runDemoTurn(trimmed, quyen, applyIfCurrent, waitForApproval);
       } else {
-        await sendMessage(cuaLuot, trimmed, applyIfCurrent);
+        await sendMessage(cuaLuot, trimmed, quyen, applyIfCurrent);
       }
     } catch (err) {
       conversation.applyEvent({ kind: "error", message: String(err) });
@@ -619,6 +654,7 @@ export default function App() {
                 onSeeAll={() => setTab("projects")}
                 onForget={forgetProject}
                 onClose={() => void closeCurrentProject()}
+                onSwapKind={(kind) => void swapProjectKind(kind)}
               />
             )}
             onSelect={(id) => void switchTo(id)}

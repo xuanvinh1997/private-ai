@@ -165,6 +165,27 @@ impl Harness {
             .map_err(|err| err.to_string())
     }
 
+    /// Đổi loại của một dự án, và **cắm lại tầng plugin ngay** nếu đó là dự án đang mở.
+    ///
+    /// Đổi loại mà không cắm lại thì hàng trong kho nói một đằng còn bộ tool đang chạy nói
+    /// một nẻo, cho tới lần mở lại tiếp theo — và người dùng vừa bấm đổi loại thì họ chờ
+    /// hiệu lực ngay, không chờ tới lần khởi động sau.
+    pub async fn set_project_kind(&self, id: &str, kind: ProjectKind) -> Result<Project, String> {
+        let project = self
+            .projects
+            .set_kind(id, kind)
+            .map_err(|err| err.to_string())?;
+        if self
+            .current
+            .lock()
+            .as_ref()
+            .is_some_and(|open| open.id == id)
+        {
+            self.open_project(Path::new(&project.path)).await?;
+        }
+        Ok(project)
+    }
+
     pub fn forget_project(&self, id: &str) -> Result<(), String> {
         if self
             .current

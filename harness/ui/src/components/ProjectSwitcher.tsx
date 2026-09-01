@@ -1,5 +1,5 @@
 import { createUniqueId, For, onCleanup, Show } from "solid-js";
-import type { Project } from "../lib/protocol";
+import type { Project, ProjectKind } from "../lib/protocol";
 import { relativeTime } from "../lib/sessions";
 import Icon from "./Icon";
 
@@ -27,6 +27,8 @@ export default function ProjectSwitcher(props: {
   onForget: (project: Project) => void;
   /** Đóng dự án đang mở. Danh sách giữ nguyên — đây không phải `onForget`. */
   onClose: () => void;
+  /** Đổi loại dự án đang mở. */
+  onSwapKind: (kind: ProjectKind) => void;
 }) {
   const id = createUniqueId();
   let popup: HTMLDivElement | undefined;
@@ -245,6 +247,31 @@ export default function ProjectSwitcher(props: {
           <Show when={props.current}>
             {(current) => (
               <div class="mt-3xs border-t border-line pt-3xs">
+                {/* Loại được đặt một lần lúc ghi nhận và mở lại thì giữ nguyên. Không có
+                    nút này thì một thư mục vào nhầm loại là ngõ cụt vĩnh viễn: một repo
+                    lỡ ghi nhận thành thư viện tài liệu sẽ không bao giờ có `read` hay
+                    `bash`, và người dùng chỉ thấy trợ lý nói nó không có tool nào. */}
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    close(false);
+                    props.onSwapKind(current().kind === "code" ? "docs" : "code");
+                  }}
+                  class="flex w-full flex-col gap-3xs rounded-btn px-sm py-2xs text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
+                >
+                  <span class="flex items-center gap-sm text-xs text-text">
+                    <Icon name={current().kind === "code" ? "library" : "code"} size={14} />
+                    {current().kind === "code"
+                      ? "Chuyển thành thư viện tài liệu"
+                      : "Chuyển thành dự án mã nguồn"}
+                  </span>
+                  <span class="text-2xs text-faint">
+                    {current().kind === "code"
+                      ? "Trợ lý thôi sửa tệp và chạy lệnh; nó tìm và đọc tài liệu trong thư mục."
+                      : "Trợ lý đọc, sửa được tệp và chạy được lệnh trong thư mục này."}
+                  </span>
+                </button>
                 <button
                   type="button"
                   role="menuitem"

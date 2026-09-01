@@ -8,7 +8,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use pai_tools::{Invocation, Tool, ToolError, ToolMeta, ToolOutcome, ToolSchema, json_schema_for};
+use pai_tools::{
+    Invocation, Overflow, Tool, ToolError, ToolMeta, ToolOutcome, ToolSchema, json_schema_for,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -19,6 +21,10 @@ use crate::provider::FsProvider;
 
 /// Đọc quá nhiều dòng một lúc thì phần đầu bị đẩy ra khỏi cửa sổ ngữ cảnh trước khi mô
 /// hình dùng tới. Hai nghìn là chỗ dsh dừng lại, và không có lý do gì để khác.
+///
+/// Đây là **lựa chọn mặc định của người gọi**, không phải trần. Trần là ngân sách token,
+/// và hai thứ đó độc lập: một tệp JSON tối giản 100 dòng vẫn vượt ngân sách trong khi một
+/// tệp Rust 2000 dòng thưa thì không, nên `limit` không thay được cho việc đo.
 const DEFAULT_LIMIT: usize = 2000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -35,13 +41,24 @@ pub struct Read {
     fs: Arc<dyn FsProvider>,
     roots: FileRoots,
     ledger: Arc<ReadLedger>,
+    overflow: Overflow,
 }
 
 impl Read {
     pub const NAME: &'static str = "read";
 
-    pub fn new(fs: Arc<dyn FsProvider>, roots: FileRoots, ledger: Arc<ReadLedger>) -> Read {
-        Read { fs, roots, ledger }
+    pub fn new(
+        fs: Arc<dyn FsProvider>,
+        roots: FileRoots,
+        ledger: Arc<ReadLedger>,
+        overflow: Overflow,
+    ) -> Read {
+        Read {
+            fs,
+            roots,
+            ledger,
+            overflow,
+        }
     }
 }
 
@@ -51,7 +68,9 @@ impl Tool for Read {
         ToolSchema::new(
             Read::NAME,
             "Đọc một tệp văn bản trên đĩa. Kết quả có đánh số dòng. Mặc định đọc 2000 \
-             dòng đầu; dùng `offset` và `limit` để đọc tiếp phần sau.",
+             dòng đầu; dùng `offset` và `limit` để đọc tiếp phần sau. Kết quả quá dài bị \
+             gấp lại thành phần đầu và phần cuối, kèm chỉ dẫn đọc tiếp — không có gì bị \
+             vứt đi.",
             json_schema_for::<ReadArgs>(),
         )
     }
@@ -99,6 +118,16 @@ impl Tool for Read {
         // Ghi nhận *sau* khi đọc thành công: một lần đọc hỏng không mở khoá cho `edit`.
         self.ledger.note_read(&resolved);
 
+        // Ngân sách áp **sau** `offset`/`limit`: hai thứ đó là ý muốn của người gọi, còn
+        // ngân sách là trần trên của kết quả. Số dòng lấy tiếp tính từ số dòng trọn vẹn
+        // trong phần đầu — một dòng bị cắt làm đôi chưa được coi là đã đọc.
+        let folded = self.overflow.fold(&call.name, rendered, |split| {
+            format!(
+                "Đọc tiếp bằng `read` với `file_path` như cũ và `offset: {}`.",
+                start + split.head_lines + 1
+            )
+        });
+
         let meta = json!({
             "path": resolved.display().to_string(),
             "offset": start + 1,
@@ -106,6 +135,10 @@ impl Tool for Read {
             "total_lines": total,
             "lang": resolved.extension().and_then(|e| e.to_str()),
         });
-        Ok(ToolOutcome::ok(rendered).with_meta("read", meta))
+        let mut outcome = ToolOutcome::ok(folded.content).with_meta("read", meta);
+        if let Some(handle) = folded.spill {
+            outcome.meta.insert("spill".into(), handle.to_json());
+        }
+        Ok(outcome)
     }
 }

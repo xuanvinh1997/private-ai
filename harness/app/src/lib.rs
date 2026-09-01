@@ -12,12 +12,14 @@ mod commands;
 pub mod harness;
 mod llm;
 pub mod protocol;
+pub mod scope;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use pai_agent::TurnSink;
+use pai_agent::{Driver, Prompt, TurnSink};
 use pai_session::{NewSession, SessionEvent};
+use pai_tools::{ToolPipeline, Tools};
 use parking_lot::Mutex;
 use serde::Deserialize;
 use tauri::ipc::Channel;
@@ -28,7 +30,9 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::Approvals;
 use crate::coalesce::Coalescer;
 use crate::harness::{Config, Harness};
-use crate::protocol::{AgentEvent, ApprovalDecision, HistoryNode, ModelChoice, SessionSummary};
+use crate::protocol::{
+    AgentEvent, ApprovalDecision, HistoryNode, ModelChoice, SessionSummary, ToolScope,
+};
 
 #[derive(Default)]
 pub(crate) struct AppState {
@@ -111,9 +115,16 @@ impl TurnSink for ChannelSink {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SendMessage {
-    session_id: String,
-    text: String,
+pub struct SendMessage {
+    pub session_id: String,
+    pub text: String,
+    /// Quyền tool cho **riêng lượt này**.
+    ///
+    /// Không `#[serde(default)]`: một mặc định ở đây nghĩa là một giao diện cũ hoặc một
+    /// lời gọi thiếu trường vẫn chạy được, im lặng, ở một mức quyền không ai chọn. Thiếu
+    /// trường thì lệnh hỏng ngay tại biên và người dùng đọc được lý do — to hơn nhiều so
+    /// với một lượt chạy quá quyền.
+    pub scope: ToolScope,
 }
 
 /// Chạy một lượt, phát sự kiện về giao diện.
@@ -135,7 +146,13 @@ async fn send_message(
         .insert(input.session_id.clone(), cancel.clone());
 
     let sink = ChannelSink(Coalescer::spawn(on_event.clone()));
-    let result = run_turn(&harness, &input, cancel, &sink).await;
+    // Người duyệt ôm chính `Channel` của lượt này: câu hỏi phải đi ra đúng cửa sổ đã gửi
+    // câu hỏi đi. Xem `approval::TurnApprover`.
+    let approver: Arc<dyn pai_tools::Approver> = Arc::new(approval::TurnApprover::new(
+        state.approvals.clone(),
+        on_event.clone(),
+    ));
+    let result = run_turn(&harness, &input, cancel, &sink, approver).await;
 
     state.running.lock().remove(&input.session_id);
 
@@ -160,8 +177,29 @@ async fn send_message(
     Ok(())
 }
 
+/// Chạy một lượt trong phạm vi tool người dùng vừa chọn.
+///
+/// Phạm vi được mở ra rồi **dọn ngay tại đây**, trong cùng một hàm, vì đó là thứ khiến nó
+/// là phạm vi của một lượt chứ không phải một thiết lập: không có đường nào để một lần hạ
+/// quyền sống sót sang lượt sau, kể cả khi lượt này hỏng giữa chừng.
 async fn run_turn(
     harness: &Harness,
+    input: &SendMessage,
+    cancel: CancellationToken,
+    sink: &ChannelSink,
+    approver: Arc<dyn pai_tools::Approver>,
+) -> Result<String, String> {
+    let turn_ctx = scope::mo_pham_vi(&harness.ctx, input.scope, approver)?;
+    let result = drive_turn(harness, &turn_ctx, input, cancel, sink).await;
+    // Dọn bất đồng bộ, nên nó không thể là một `Drop`. Đây là chỗ hạn chế được gỡ.
+    turn_ctx.effects().dispose().await;
+    result
+}
+
+/// Thân của [`run_turn`], tách ra để mọi đường thoát đều đi qua đúng một lần dọn phạm vi.
+async fn drive_turn(
+    harness: &Harness,
+    turn_ctx: &pai_core::Context,
     input: &SendMessage,
     cancel: CancellationToken,
     sink: &ChannelSink,
@@ -182,8 +220,30 @@ async fn run_turn(
         .count() as u64
         + 1;
 
-    harness
-        .driver
+    // Vòng lặp của lượt chạy trong ngữ cảnh **của lượt**, không phải ngữ cảnh gốc: cả
+    // hai tầng lọc quyền — danh sách schema gửi cho mô hình và lần tra cứu tên lúc gọi —
+    // đọc phạm vi từ chính `Context` này. Dựng ở đây nên rẻ: `Driver` chỉ là vài con trỏ.
+    //
+    // Nhà cung cấp và mô hình đọc từ `harness.driver` ngay lúc bắt đầu lượt, đúng luật
+    // "chốt một lần cho cả lượt" mà `Driver::drive` đã giữ: đổi provider giữa chừng có
+    // hiệu lực từ lượt sau.
+    let registry = harness
+        .ctx
+        .require::<Tools>()
+        .map_err(|err| err.to_string())?;
+    let prompt = harness
+        .ctx
+        .require::<Prompt>()
+        .map_err(|err| err.to_string())?;
+    let driver = Driver::new(
+        turn_ctx.clone(),
+        harness.driver.llm(),
+        Arc::new(ToolPipeline::new(turn_ctx, registry)),
+        prompt,
+        harness.driver.model(),
+    );
+
+    driver
         .run_turn(
             &mut session,
             turn,
@@ -441,6 +501,7 @@ pub fn run() {
             commands::projects::clone_project,
             commands::projects::cancel_clone,
             commands::projects::close_project,
+            commands::projects::set_project_kind,
             commands::providers::list_providers,
             commands::providers::provider_presets,
             commands::providers::save_provider,

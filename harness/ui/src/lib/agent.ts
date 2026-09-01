@@ -5,6 +5,7 @@ import type {
   HistoryNode,
   ModelChoice,
   SessionSummary,
+  ToolScope,
 } from "./protocol";
 
 /**
@@ -31,15 +32,20 @@ export const inTauri = (): boolean => {
  *
  * Việc gộp token (coalescing) nằm ở phía Rust: mỗi lần vượt biên IPC của Tauri đắt hơn
  * nhiều so với một signal của Qt, nên phát từng token một sẽ nghẽn khi mô hình chạy nhanh.
+ *
+ * `scope` đi kèm **mỗi lượt** và là tham số bắt buộc — lõi không có giá trị mặc định nào
+ * để rơi vào. Đó là chủ ý: một mặc định ở đây nghĩa là quên gửi trường này thì lượt vẫn
+ * chạy, im lặng, ở một mức quyền không ai chọn.
  */
 export function sendMessage(
   sessionId: string,
   text: string,
+  scope: ToolScope,
   onEvent: (event: AgentEvent) => void,
 ): Promise<void> {
   const channel = new Channel<AgentEvent>();
   channel.onmessage = onEvent;
-  return invoke("send_message", { input: { sessionId, text }, onEvent: channel });
+  return invoke("send_message", { input: { sessionId, text, scope }, onEvent: channel });
 }
 
 /**

@@ -26,6 +26,7 @@
 //! vào mô tả tool**, vì mô tả tool là thứ duy nhất mô hình đọc đúng vào lúc nó quyết định
 //! làm gì với văn bản trả về.
 
+pub mod budget;
 pub mod builtin;
 pub mod name;
 pub mod pipeline;
@@ -36,11 +37,12 @@ pub mod seam;
 pub mod spill;
 pub mod tool;
 
+pub use budget::{BYTES_PER_TOKEN, DEFAULT_TOKEN_BUDGET, Folded, Overflow, Split, approx_tokens};
 pub use name::{ToolName, WIRE_SEPARATOR};
 pub use pipeline::{
-    APPROVAL_TIMEOUT, ApprovalRequest, Approver, DEFAULT_SPILL_THRESHOLD, Execute, PostDecision,
-    PostExecute, PostRequest, PreDecision, PreExecute, PreRequest, ResolvedCall, ToolGuard,
-    ToolPipeline, ToolResult, not_available,
+    APPROVAL_TIMEOUT, ApprovalRequest, Approver, Execute, PostDecision, PostExecute, PostRequest,
+    PreDecision, PreExecute, PreRequest, ResolvedCall, ToolGuard, ToolPipeline, ToolResult,
+    not_available,
 };
 pub use plugin::ToolsPlugin;
 pub use registry::{Resolution, ToolRegistry, ToolRestriction};

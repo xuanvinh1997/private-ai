@@ -46,14 +46,34 @@ export interface SearchGroup {
  * dsh có `presentCall`/`presentResult` phía host nhưng bản web KHÔNG dùng; nó đọc thẳng
  * `meta`. Ta chép đúng chỗ đó: giao diện tự render từ sự kiện thô, không có API trình bày.
  */
+/** Vé lấy lại toàn văn khi output đã bị cắt cho vừa ngân sách token. */
+export interface SpillMeta {
+  id: string;
+  tool: string;
+  /** Kích thước toàn văn, tính bằng ký tự Unicode. */
+  chars: number;
+  lines: number;
+}
+
 export interface ToolMeta {
   diffs?: DiffHunk[];
+  /**
+   * Vé lấy lại toàn văn khi output đã bị cắt cho vừa ngân sách token.
+   *
+   * Mô hình lấy lại bằng tool `spill_read`; giao diện dùng nó để vẽ lối xem đầy đủ.
+   */
+  spill?: SpillMeta;
   read?: {
     path: string;
     offset: number;
     lines: ReadLine[];
     total_lines: number;
     lang?: string | null;
+    /**
+     * Đã cắt bớt. Không có cờ này thì "đọc hết tệp" và "đọc phần đầu và phần cuối" trông
+     * giống hệt nhau, và người đọc kết luận "hết rồi" ở đúng chỗ lõi ngừng đọc.
+     */
+    truncated?: boolean;
   };
   search?: {
     shape: "matches" | "paths";
@@ -84,6 +104,16 @@ export interface TodoItem {
 
 /** Quyết định duyệt. Chỉ hai giá trị: không có "nhớ lựa chọn" trong từ vựng. */
 export type ApprovalDecision = "allowed_once" | "rejected";
+
+/**
+ * Quyền tool cấp cho **một lượt** — bản sao của `ToolScope` trong app/src/protocol.rs.
+ *
+ * Đi kèm từng tin nhắn chứ không phải một thiết lập lưu lại: người dùng hạ quyền cho đúng
+ * một câu hỏi rồi nâng lại là chuyện thường, còn một thiết lập dính là thứ họ quên mất
+ * mình đã đặt. Lõi đọc trường này và siết sổ đăng ký tool theo nó, ở **cả hai tầng** —
+ * lúc liệt kê cho mô hình và lúc mô hình gọi thật.
+ */
+export type ToolScope = "read" | "write" | "shell";
 
 export type AgentEvent =
   | { kind: "token"; text: string }

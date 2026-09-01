@@ -22,10 +22,6 @@ pub struct Approvals {
     pending: Mutex<HashMap<String, oneshot::Sender<ApprovalDecision>>>,
 }
 
-// `ask` và `cancel_all` là nửa dành cho lõi: vòng lặp agent gọi chúng khi một tool xin
-// duyệt. Chúng chưa có nơi gọi cho tới khi `pai-agent` được nối vào, nhưng viết sẵn ở
-// đây vì hợp đồng fail-closed phải nằm cùng chỗ với phần giao diện trả lời.
-#[allow(dead_code)]
 impl Approvals {
     /// Hỏi, rồi chờ. Trả về quyết định — không bao giờ trả lỗi, vì mọi đường hỏng đều
     /// quy về `Rejected`.
@@ -83,5 +79,47 @@ impl Approvals {
             drop(tx);
             send(AgentEvent::ApprovalCancel { request_id });
         }
+    }
+}
+
+/// Cầu nối giữa seam [`Approval`] của lõi và hộp thoại trong cửa sổ.
+///
+/// Phải dựng **theo từng lượt**, không dựng một lần lúc khởi động: câu hỏi duyệt đi ra
+/// bằng chính `Channel` của lượt đã sinh ra nó. Một cầu nối dùng chung sẽ phải chọn xem
+/// gửi câu hỏi tới cửa sổ nào khi hai lượt chạy song song, và mọi cách chọn đều sai.
+///
+/// # Vì sao tệp này từng vô dụng
+///
+/// `Approvals` có đủ hai nửa — hỏi và trả lời — nhưng **không ai cắm nó vào seam
+/// `Approval`**. Đường ống tool thì fail-closed: không có provider nghĩa là mọi lời xin
+/// duyệt đều bị từ chối. Nên `bash` chưa từng chạy được một lần nào trong sản phẩm thật,
+/// và triệu chứng lại giống hệt "mô hình không biết gọi tool". Đúng luật 10 của
+/// `docs/CONTRACT.md`, ở dạng tệ nhất: một khả năng có mặt trong danh sách tool, có mặt
+/// trong giao diện, và không tồn tại.
+pub struct TurnApprover {
+    approvals: Arc<Approvals>,
+    channel: Channel<AgentEvent>,
+}
+
+impl TurnApprover {
+    pub fn new(approvals: Arc<Approvals>, channel: Channel<AgentEvent>) -> TurnApprover {
+        TurnApprover { approvals, channel }
+    }
+}
+
+#[async_trait::async_trait]
+impl pai_tools::Approver for TurnApprover {
+    async fn approve(&self, request: &pai_tools::ApprovalRequest) -> bool {
+        let decision = self
+            .approvals
+            .ask(
+                &self.channel,
+                &request.call_id,
+                &request.name.to_string(),
+                serde_json::Value::Object(request.arguments.clone()),
+                Some(request.reason.clone()),
+            )
+            .await;
+        decision == ApprovalDecision::AllowedOnce
     }
 }

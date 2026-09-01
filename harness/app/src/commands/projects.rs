@@ -213,3 +213,24 @@ pub async fn close_project(state: State<'_, AppState>) -> Result<Vec<ProjectView
     harness.close_project().await;
     list_projects(state).await
 }
+
+/// Đổi loại của một dự án.
+///
+/// Loại được đặt một lần lúc ghi nhận và `open_project` cố ý giữ nguyên nó, nên không có
+/// lệnh này thì một thư mục vào nhầm loại là một ngõ cụt: người dùng chỉ thấy trợ lý nói
+/// nó không có tool nào để đọc tệp, và không có gì trên màn hình nói vì sao.
+#[tauri::command]
+pub async fn set_project_kind(
+    id: String,
+    kind: ProjectKind,
+    state: State<'_, AppState>,
+) -> Result<Vec<ProjectView>, String> {
+    let harness = state.harness().await?;
+    // Huỷ lượt đang chạy: đổi loại là tháo và cắm lại cả tầng plugin, và một lượt đang
+    // giữa chừng khi tool dưới chân nó bị gỡ ra sẽ hỏng không giải thích được cho ai.
+    for (_, token) in state.running.lock().drain() {
+        token.cancel();
+    }
+    harness.set_project_kind(&id, kind.into()).await?;
+    list_projects(state).await
+}

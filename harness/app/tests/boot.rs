@@ -823,3 +823,138 @@ async fn mo_thu_muc_tai_lieu_thi_thay_ngay_tep_trong_do() {
 
     harness.shutdown().await;
 }
+
+/// Đổi **từ** dự án tài liệu **sang** dự án mã nguồn thì tool đọc/sửa/chạy quay lại.
+///
+/// Bộ test đang có chỉ đi một chiều — mã nguồn sang tài liệu — và chiều đó xanh. Chiều
+/// ngược lại chưa ai đi qua, mà đó mới là chiều người dùng gặp: họ mở một thư viện tài
+/// liệu, rồi chuyển sang repo của mình và thấy trợ lý nói nó không có tool nào để liệt kê
+/// tệp.
+#[tokio::test]
+async fn doi_tu_du_an_tai_lieu_sang_ma_nguon_thi_tool_quay_lai() {
+    use pai_project::ProjectKind;
+
+    let dir = TempDir::new().expect("thư mục tạm");
+    let harness = boot(config(&dir)).await.expect("dựng được cây");
+    let registry = harness.ctx.require::<Tools>().expect("có sổ đăng ký");
+    let ten = || -> Vec<String> {
+        registry
+            .schemas(None)
+            .into_iter()
+            .map(|s| s.name.as_str().to_string())
+            .collect()
+    };
+
+    let thu_vien = TempDir::new().expect("thư mục tạm");
+    let goc_docs = thu_vien.path().canonicalize().expect("phân giải");
+    harness
+        .create_project(&goc_docs, ProjectKind::Docs, None)
+        .expect("ghi nhận");
+    harness.open_project(&goc_docs).await.expect("mở được");
+    assert!(!ten().iter().any(|n| n == "read"), "{:?}", ten());
+
+    // Rồi sang một dự án mã nguồn.
+    let repo = TempDir::new().expect("thư mục tạm");
+    let goc_code = repo.path().canonicalize().expect("phân giải");
+    std::fs::write(goc_code.join("a.rs"), "fn main() {}\n").expect("ghi");
+    harness
+        .create_project(&goc_code, ProjectKind::Code, None)
+        .expect("ghi nhận");
+    harness.open_project(&goc_code).await.expect("mở được");
+
+    let sau = ten();
+    for can in [
+        "read",
+        "write",
+        "edit",
+        "glob",
+        "grep",
+        "bash",
+        "symbol_search",
+    ] {
+        assert!(
+            sau.iter().any(|n| n == can),
+            "sang dự án mã nguồn mà thiếu `{can}`: {sau:?}"
+        );
+    }
+    // Và tool của thư viện tài liệu **đi hẳn**, không nằm lại chồng lên.
+    for cam in ["docs.search", "docs.read", "docs.list"] {
+        assert!(
+            !sau.iter().any(|n| n == cam),
+            "tool tài liệu còn nằm lại trong dự án mã nguồn: {sau:?}"
+        );
+    }
+
+    // Đọc được một tệp thật, không chỉ có tên tool trong danh sách.
+    let pipeline = pai_tools::ToolPipeline::new(&harness.ctx, registry.clone());
+    let doc = pipeline
+        .execute(
+            "c1",
+            "read",
+            serde_json::json!({ "file_path": goc_code.join("a.rs") }),
+        )
+        .await;
+    assert!(!doc.is_error, "không đọc được: {}", doc.content);
+    assert!(doc.content.contains("fn main"));
+
+    harness.shutdown().await;
+}
+
+/// Đổi loại một dự án **đang mở** thì bộ tool đổi theo ngay.
+///
+/// Loại được đặt một lần lúc ghi nhận và `open_project` cố ý giữ nguyên nó — nên không có
+/// đường đổi loại thì một thư mục vào nhầm loại là ngõ cụt vĩnh viễn. Bài này khoá cả hai
+/// nửa: hàng trong kho đổi, **và** bộ tool đang chạy đổi theo mà không cần khởi động lại.
+#[tokio::test]
+async fn doi_loai_du_an_dang_mo_thi_bo_tool_doi_theo_ngay() {
+    use pai_project::ProjectKind;
+
+    let dir = TempDir::new().expect("thư mục tạm");
+    let repo = TempDir::new().expect("thư mục tạm");
+    let goc = repo.path().canonicalize().expect("phân giải");
+    let harness = boot(Config {
+        workspace: Some(goc.clone()),
+        ..config(&dir)
+    })
+    .await
+    .expect("dựng được cây");
+
+    let registry = harness.ctx.require::<Tools>().expect("có sổ đăng ký");
+    let ten = || -> Vec<String> {
+        registry
+            .schemas(None)
+            .into_iter()
+            .map(|s| s.name.as_str().to_string())
+            .collect()
+    };
+    assert!(ten().iter().any(|n| n == "bash"), "{:?}", ten());
+
+    let id = harness.current_project().expect("có dự án").id;
+    harness
+        .set_project_kind(&id, ProjectKind::Docs)
+        .await
+        .expect("đổi được loại");
+
+    let sau = ten();
+    assert!(
+        !sau.iter().any(|n| n == "bash"),
+        "đổi sang tài liệu mà còn `bash`: {sau:?}"
+    );
+    assert!(sau.iter().any(|n| n == "docs.search"), "{sau:?}");
+
+    // Và đổi ngược lại cũng phải chạy — đây mới là chiều người dùng cần khi họ lỡ ghi
+    // nhận một repo thành thư viện tài liệu.
+    harness
+        .set_project_kind(&id, ProjectKind::Code)
+        .await
+        .expect("đổi lại được");
+    let lai = ten();
+    for can in ["read", "grep", "bash"] {
+        assert!(
+            lai.iter().any(|n| n == can),
+            "đổi về mã nguồn mà thiếu `{can}`: {lai:?}"
+        );
+    }
+
+    harness.shutdown().await;
+}

@@ -36,8 +36,18 @@ impl SpillRef {
 pub trait SpillStore: Send + Sync + 'static {
     /// Cất toàn văn, trả về vé.
     fn spill(&self, tool: &ToolName, full: &str) -> SpillRef;
-    /// Lấy lại toàn văn. `None` nếu vé không còn giá trị.
-    fn read(&self, handle: &SpillRef) -> Option<String>;
+
+    /// Lấy lại toàn văn từ **mã vé**. `None` nếu vé không còn giá trị.
+    ///
+    /// Nguyên thuỷ là mã chứ không phải cả vé, vì thứ mô hình cầm được chỉ có mã: vé đầy
+    /// đủ nằm ở `meta`, và `meta` không đi ra tới mô hình. Một kho chỉ tra được bằng cả
+    /// vé là một kho mà `spill_read` không gọi tới được.
+    fn read_id(&self, id: &str) -> Option<String>;
+
+    /// Tiện dụng cho host, nơi cả vé vẫn còn trong tay.
+    fn read(&self, handle: &SpillRef) -> Option<String> {
+        self.read_id(&handle.id)
+    }
 }
 
 /// Bản cài đặt trong bộ nhớ, sống bằng phiên.
@@ -76,7 +86,7 @@ impl SpillStore for MemorySpillStore {
         }
     }
 
-    fn read(&self, handle: &SpillRef) -> Option<String> {
-        self.entries.get(&handle.id).map(|entry| entry.clone())
+    fn read_id(&self, id: &str) -> Option<String> {
+        self.entries.get(id).map(|entry| entry.clone())
     }
 }

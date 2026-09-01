@@ -5,6 +5,8 @@
 //! phải giam giữ được, và trộn chúng vào đây sẽ khiến crate nền tảng bảo mật phụ thuộc
 //! vào chính những thứ nó phải canh.
 
+pub mod spill_read;
 pub mod todo;
 
+pub use spill_read::{SpillRead, SpillReadArgs};
 pub use todo::{TodoItem, TodoStatus, TodoWrite, TodoWriteArgs};

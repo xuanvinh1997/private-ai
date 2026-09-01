@@ -10,6 +10,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use pai_core::{Context, Plugin};
 
+use crate::builtin::spill_read::SpillRead;
 use crate::builtin::todo::TodoWrite;
 use crate::registry::ToolRegistry;
 use crate::seam::{Spill, Tools};
@@ -30,6 +31,10 @@ impl Plugin for ToolsPlugin {
         // mạng, và không có gì để tắt đi. Một plugin cho một tool không có phụ thuộc nào
         // chỉ là một tệp nữa phải đọc.
         ctx.keep(registry.register(Arc::new(TodoWrite::new())));
+        // `spill_read` đăng ký cùng chỗ với kho, vì nó là nửa còn lại của cùng một cơ
+        // chế: cất phần dư mà không có đường lấy lại thì lời nhắn "toàn văn vẫn còn" chỉ
+        // là một câu để mô hình tin rồi đi tiếp.
+        ctx.keep(registry.register(Arc::new(SpillRead::new(ctx))));
         ctx.keep(ctx.provide::<Tools>(registry)?);
         let spill: Arc<dyn SpillStore> = Arc::new(MemorySpillStore::default());
         ctx.keep(ctx.provide::<Spill>(spill)?);

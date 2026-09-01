@@ -5,6 +5,7 @@ import type {
   ModelChoice,
   Project,
   SessionSummary,
+  ToolScope,
 } from "./protocol";
 
 /**
@@ -400,6 +401,7 @@ export function demoNodes(): ConversationNode[] {
  */
 export async function runDemoTurn(
   text: string,
+  scope: ToolScope,
   onEvent: (event: AgentEvent) => void,
   settleApproval: () => Promise<void> = async () => {},
 ): Promise<void> {
@@ -433,6 +435,22 @@ export async function runDemoTurn(
       },
     },
   });
+
+  // Phạm vi chỉ đọc thì lõi thật **không quảng cáo** `edit` nữa, nên bản demo cũng không
+  // được diễn cảnh sửa tệp: một trang demo hứa nhiều hơn sản phẩm là cùng một lời nói dối
+  // mà bộ chọn phạm vi sinh ra để chấm dứt.
+  if (scope === "read") {
+    onEvent({ kind: "todo", items: [
+      { id: "1", text: "Đọc tệp liên quan", status: "done" },
+      { id: "2", text: "Áp thay đổi", status: "cancelled" },
+    ] });
+    for (const word of "Lượt này ở phạm vi chỉ đọc nên mình chưa sửa được tệp. Nâng lên \"Đọc và ghi\" rồi nhắn lại là mình áp thay đổi.".split(" ")) {
+      onEvent({ kind: "token", text: `${word} ` });
+      await wait(40);
+    }
+    onEvent({ kind: "final", message_id: "demo" });
+    return;
+  }
 
   onEvent({ kind: "tool_start", call_id: "demo-2", name: "edit", args: { file_path: "crates/pai-core/src/config.rs", old_string: OLD_CONFIG, new_string: NEW_CONFIG } });
   onEvent({

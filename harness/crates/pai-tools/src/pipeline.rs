@@ -33,10 +33,11 @@ use futures::future::BoxFuture;
 use pai_core::{Context, Notify, ScopeKey, Waterfall};
 use serde_json::{Map, Value, json};
 
+use crate::budget::{DEFAULT_TOKEN_BUDGET, Overflow};
 use crate::name::ToolName;
 use crate::registry::{Resolution, ToolRegistry};
 use crate::schema::ToolMeta;
-use crate::seam::{Approval, Elicitation, Spill};
+use crate::seam::{Approval, Elicitation};
 use crate::tool::{Invocation, Tool, ToolOutcome};
 
 /// Bao lâu thì một câu hỏi phê duyệt không được trả lời bị coi là "không".
@@ -44,9 +45,6 @@ use crate::tool::{Invocation, Tool, ToolOutcome};
 /// Có một thời hạn là bắt buộc: không có nó, một hộp thoại bị che khuất sau cửa sổ khác
 /// giữ cả lượt lại vô hạn, và cách người dùng thoát ra sẽ là giết ứng dụng.
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// Ngưỡng mặc định trước khi output được cất vào kho tràn.
-pub const DEFAULT_SPILL_THRESHOLD: usize = 8_000;
 
 // --- quyết định ------------------------------------------------------------------------
 
@@ -191,7 +189,9 @@ pub struct ToolPipeline {
     ctx: Context,
     registry: Arc<ToolRegistry>,
     scope: Option<ScopeKey>,
-    spill_threshold: usize,
+    /// Ngân sách tính bằng token xấp xỉ, không bằng dòng và không bằng ký tự. Xem
+    /// [`crate::budget`].
+    budget: usize,
     approval_timeout: Duration,
 }
 
@@ -203,13 +203,15 @@ impl ToolPipeline {
             scope: ctx.scope_key(),
             ctx: ctx.clone(),
             registry,
-            spill_threshold: DEFAULT_SPILL_THRESHOLD,
+            budget: DEFAULT_TOKEN_BUDGET,
             approval_timeout: APPROVAL_TIMEOUT,
         }
     }
 
-    pub fn with_spill_threshold(mut self, chars: usize) -> ToolPipeline {
-        self.spill_threshold = chars;
+    /// Ngân sách tính bằng **token xấp xỉ**. Đây là trần cuối cùng, áp cho cả những tool
+    /// không tự áp — tool MCP của bên thứ ba chẳng hạn.
+    pub fn with_token_budget(mut self, tokens: usize) -> ToolPipeline {
+        self.budget = tokens.max(1);
         self
     }
 
@@ -461,25 +463,23 @@ impl ToolPipeline {
         outcome
     }
 
-    /// Cất phần dư vào kho thay vì cắt bỏ nó.
+    /// Trần cuối cùng: cất phần dư vào kho thay vì cắt bỏ nó.
+    ///
+    /// Đây là lưới đỡ, không phải chỗ cắt chính. Tool nào tự áp ngân sách — `read`,
+    /// `grep`, `bash` — ra tới đây đã vừa rồi, nên hàm này không đụng vào. Cái nó bắt là
+    /// những tool không biết luật này tồn tại, mà tool MCP của bên thứ ba thì luôn vậy.
     fn spill(&self, name: &ToolName, outcome: &mut ToolOutcome) {
-        if outcome.content.chars().count() <= self.spill_threshold {
-            return;
-        }
-        let Some(store) = self.ctx.get::<Spill>() else {
-            // Không có kho thì gửi nguyên văn. Dài còn sửa được; mất thì không.
-            tracing::warn!(tool = %name, "output vượt ngưỡng nhưng chưa có kho tràn nào cắm vào");
-            return;
-        };
+        let overflow = Overflow::new(&self.ctx).with_budget(self.budget);
         let full = std::mem::take(&mut outcome.content);
-        let handle = store.spill(name, &full);
-        let head: String = full.chars().take(self.spill_threshold).collect();
-        let rest = handle.chars.saturating_sub(self.spill_threshold);
-        outcome.content = format!(
-            "{head}\n\n[… còn {rest} ký tự. Toàn văn được giữ nguyên vẹn tại `{}` \
-             ({} dòng); không có gì bị cắt bỏ.]",
-            handle.id, handle.lines
-        );
-        outcome.meta.insert("spill".into(), handle.to_json());
+        // Lời chỉ dẫn ở đây cố tình chung chung: đường ống không biết tool này phân
+        // trang bằng tham số nào. Tool nào biết thì đã tự gấp trước khi tới đây và nói
+        // được câu cụ thể hơn.
+        let folded = overflow.fold(name, full, |_| {
+            "Gọi lại tool với tham số hẹp hơn nếu bạn chỉ cần một phần.".to_string()
+        });
+        outcome.content = folded.content;
+        if let Some(handle) = folded.spill {
+            outcome.meta.insert("spill".into(), handle.to_json());
+        }
     }
 }

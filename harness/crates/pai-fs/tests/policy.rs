@@ -6,13 +6,23 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use pai_core::Context;
 use pai_fs::path::FileRoots;
 use pai_fs::provider::{FsProvider, LocalFs};
 use pai_fs::tools::{edit::Edit, glob::GlobTool, grep::Grep, read::Read, write::Write};
 use pai_fs::{ReadLedger, looks_binary};
-use pai_tools::{Invocation, Tool, ToolName, ToolOutcome};
+use pai_tools::{Invocation, Overflow, Tool, ToolName, ToolOutcome};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
+
+/// Ngân sách không có kho tràn nào phía sau, nên nó không cắt gì.
+///
+/// Cố ý: những bài trong tệp này kiểm chính sách đường dẫn và hình dạng kết quả, và một
+/// lần cắt xen vào giữa sẽ khiến chúng đỏ vì một lý do không liên quan. Việc cắt được
+/// kiểm riêng ở `budget.rs`.
+fn no_budget() -> Overflow {
+    Overflow::new(&Context::root())
+}
 
 fn call(name: &str, args: Value) -> Invocation {
     let map: Map<String, Value> = args.as_object().cloned().unwrap_or_default();
@@ -48,7 +58,7 @@ async fn dau_cham_cham_va_symlink_khong_thoat_khoi_goc() {
     let secret = outside.path().join("ngoai.txt");
     std::fs::write(&secret, "không được đọc").unwrap();
 
-    let read = Read::new(fs, roots, ledger);
+    let read = Read::new(fs, roots, ledger, no_budget());
 
     // Đi lên bằng `..`.
     let escape = root.join("..").join(secret.file_name().unwrap());
@@ -83,7 +93,7 @@ async fn duong_dan_duoc_bao_ve_khong_doc_duoc_va_khong_hien_trong_listing() {
     std::fs::write(&secret, "mã thông báo").unwrap();
     std::fs::write(root.join("thuong.txt"), "bình thường").unwrap();
 
-    let read = Read::new(fs, roots.clone(), ledger);
+    let read = Read::new(fs, roots.clone(), ledger, no_budget());
     let err = read
         .execute(&call(
             "read",
@@ -120,7 +130,7 @@ async fn tep_nhi_phan_bi_tu_choi_thay_vi_tra_ve_rac() {
     let binary = root.join("a.bin");
     std::fs::write(&binary, [0x00, 0x01, 0x02]).unwrap();
 
-    let err = Read::new(fs, roots, ledger)
+    let err = Read::new(fs, roots, ledger, no_budget())
         .execute(&call(
             "read",
             json!({ "file_path": binary.display().to_string() }),
@@ -187,7 +197,7 @@ async fn so_dong_trong_hunk_la_so_dong_that_trong_tep() {
     let before: String = (1..=20).map(|n| format!("dòng {n}\n")).collect();
     std::fs::write(&file, &before).unwrap();
 
-    let read = Read::new(fs.clone(), roots.clone(), ledger);
+    let read = Read::new(fs.clone(), roots.clone(), ledger, no_budget());
     read_ok(&read, &file).await;
 
     let outcome = Edit::new(fs, roots)
@@ -251,7 +261,7 @@ async fn grep_bo_qua_tep_nhi_phan_va_dem_du_tong_so() {
     binary.push(0);
     std::fs::write(root.join("b.bin"), binary).unwrap();
 
-    let outcome = Grep::new(roots)
+    let outcome = Grep::new(roots, no_budget())
         .execute(&call("grep", json!({ "pattern": "cần tìm" })))
         .await
         .expect("tìm được");

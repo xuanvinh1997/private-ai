@@ -15,7 +15,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use pai_core::{Context, Plugin};
 use pai_core::{Middleware, Next};
-use pai_tools::{PreDecision, PreExecute, PreRequest, Tools};
+use pai_tools::{Overflow, PreDecision, PreExecute, PreRequest, Tools};
 
 use crate::jobs::Jobs;
 use crate::provider::{LocalShell, Shell, ShellExecutor};
@@ -114,7 +114,12 @@ impl Plugin for ShellPlugin {
         }
 
         let tools = ctx.require::<Tools>()?;
-        ctx.keep(tools.register(Arc::new(Bash::new(shell, jobs.clone(), self.cwd.clone()))));
+        ctx.keep(tools.register(Arc::new(Bash::new(
+            shell,
+            jobs.clone(),
+            self.cwd.clone(),
+            Overflow::new(ctx),
+        ))));
         ctx.keep(tools.register(Arc::new(JobOutput::new(jobs.clone()))));
         ctx.keep(tools.register(Arc::new(JobKill::new(jobs.clone()))));
         ctx.keep(tools.register(Arc::new(JobList::new(jobs))));

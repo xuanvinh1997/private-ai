@@ -58,6 +58,18 @@ export function closeProject(): Promise<Project[]> {
   return invoke<Project[]>("close_project");
 }
 
+/**
+ * Đổi loại một dự án.
+ *
+ * Loại được đặt một lần lúc ghi nhận, và mở lại thì giữ nguyên — nên không có lệnh này
+ * thì một thư mục vào nhầm loại là ngõ cụt: một repo lỡ ghi nhận thành thư viện tài liệu
+ * sẽ mãi mãi không có `read`, `grep` hay `bash`, và người dùng chỉ thấy trợ lý nói nó
+ * không có tool nào để đọc tệp.
+ */
+export function setProjectKind(id: string, kind: ProjectKind): Promise<Project[]> {
+  return invoke<Project[]>("set_project_kind", { id, kind });
+}
+
 /** Tên hiển thị suy từ đường dẫn, dùng khi lõi chưa kịp trả `Project` thật. */
 export function folderName(path: string): string {
   const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/);

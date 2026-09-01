@@ -615,6 +615,9 @@ impl Tool for Verbose {
 
 /// Khoá: **output dài được giữ nguyên vẹn.** Bản Python cắt ở 6000 ký tự và mất phần dư;
 /// ở đây ngưỡng chỉ quyết định mô hình đọc bao nhiêu, không quyết định cái gì còn tồn tại.
+///
+/// Ngân sách nói bằng **token xấp xỉ** chứ không bằng ký tự, nên 100 ký tự cũ là 25 token
+/// mới (byte chia bốn). Khẳng định không đổi — chỉ đơn vị của cái trần đổi.
 #[tokio::test]
 async fn output_dai_duoc_cat_vao_kho_chu_khong_bi_cat_cut() {
     let root = Context::root();
@@ -625,7 +628,7 @@ async fn output_dai_duoc_cat_vao_kho_chu_khong_bi_cat_cut() {
         .provide::<Spill>(store.clone() as Arc<dyn SpillStore>)
         .expect("cắm được");
 
-    let pipeline = ToolPipeline::new(&root, registry.clone()).with_spill_threshold(100);
+    let pipeline = ToolPipeline::new(&root, registry.clone()).with_token_budget(25);
     let outcome = pipeline.execute("c1", "files__read", json!({})).await;
 
     assert!(!outcome.is_error);
@@ -644,7 +647,7 @@ async fn output_dai_duoc_cat_vao_kho_chu_khong_bi_cat_cut() {
     let registry = ToolRegistry::new(&root);
     bare.keep(registry.register(Arc::new(Verbose)));
     let outcome = ToolPipeline::new(&bare, registry.clone())
-        .with_spill_threshold(100)
+        .with_token_budget(25)
         .execute("c1", "files__read", json!({}))
         .await;
     assert_eq!(outcome.content.chars().count(), 5_000);

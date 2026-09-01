@@ -16,7 +16,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
-use pai_tools::{Invocation, Tool, ToolError, ToolMeta, ToolOutcome, ToolSchema, json_schema_for};
+use pai_tools::{
+    Invocation, Overflow, Tool, ToolError, ToolMeta, ToolOutcome, ToolSchema, json_schema_for,
+};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::json;
@@ -43,13 +45,24 @@ pub struct Bash {
     shell: Arc<dyn ShellExecutor>,
     jobs: Arc<Jobs>,
     cwd: PathBuf,
+    overflow: Overflow,
 }
 
 impl Bash {
     pub const NAME: &'static str = "bash";
 
-    pub fn new(shell: Arc<dyn ShellExecutor>, jobs: Arc<Jobs>, cwd: PathBuf) -> Bash {
-        Bash { shell, jobs, cwd }
+    pub fn new(
+        shell: Arc<dyn ShellExecutor>,
+        jobs: Arc<Jobs>,
+        cwd: PathBuf,
+        overflow: Overflow,
+    ) -> Bash {
+        Bash {
+            shell,
+            jobs,
+            cwd,
+            overflow,
+        }
     }
 }
 
@@ -60,7 +73,8 @@ impl Tool for Bash {
             Bash::NAME,
             "Chạy một lệnh shell trong thư mục làm việc. Với tiến trình sống lâu (máy chủ \
              phát triển, theo dõi tệp), đặt `run_in_background` rồi lấy kết quả bằng \
-             `job_output`.",
+             `job_output`. Output quá dài được gấp lại thành phần đầu và phần cuối; toàn \
+             văn vẫn lấy lại được.",
             json_schema_for::<BashArgs>(),
         )
     }
@@ -143,6 +157,15 @@ impl Tool for Bash {
             rendered = "(không có output)".to_string();
         }
 
+        // Output lệnh cũng là output lớn: `cargo build` một kho vừa phải nhả ra vài trăm
+        // KiB, và phần đuôi — nơi có mã thoát và dòng lỗi cuối — là phần đáng giá nhất.
+        // Vì thế giữ cả hai đầu chứ không chỉ đầu.
+        let folded = self.overflow.fold(&call.name, rendered, |_| {
+            "Chạy lại và lọc ngay trong lệnh (`| tail -n 200`, `| grep …`) nếu bạn cần \
+             phần giữa."
+                .to_string()
+        });
+
         let meta = json!({
             "command": args.command,
             "cwd": shown_cwd,
@@ -155,6 +178,10 @@ impl Tool for Bash {
 
         // Mã thoát khác 0 **không** phải `is_error`: lệnh đã chạy đúng như được bảo, và
         // một bộ test đỏ là kết quả hữu ích chứ không phải một lần gọi tool hỏng.
-        Ok(ToolOutcome::ok(rendered).with_meta("terminal", meta))
+        let mut outcome = ToolOutcome::ok(folded.content).with_meta("terminal", meta);
+        if let Some(handle) = folded.spill {
+            outcome.meta.insert("spill".into(), handle.to_json());
+        }
+        Ok(outcome)
     }
 }

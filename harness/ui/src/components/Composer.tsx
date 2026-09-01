@@ -1,14 +1,11 @@
 import { createSignal, Show } from "solid-js";
 import { useDragDrop } from "../hooks/useDragDrop";
 import { displayMode } from "../lib/prefs";
-import type { ModelChoice } from "../lib/protocol";
+import type { ModelChoice, ToolScope } from "../lib/protocol";
 import Icon from "./Icon";
 import Menu from "./Menu";
 import ModelPicker from "./ModelPicker";
 import { IconButton } from "./primitives";
-
-/** Phạm vi tool cho lượt kế. Chỉ là ý định của người dùng — lõi vẫn canh lại lúc gọi. */
-export type ToolScope = "read" | "write" | "shell";
 
 const SCOPE_LABEL: Record<ToolScope, string> = {
   read: "Chỉ đọc",
@@ -31,6 +28,11 @@ const SCOPE_LABEL: Record<ToolScope, string> = {
  * lệnh" là cấp cho mô hình quyền chạy lệnh trên máy này, và một quyền đang mở phải đọc
  * được mà không cần bấm vào đâu cả. Cùng luật đó bắt nó phải *tắt đi trông thấy* khi chưa
  * có dự án — xem `hasProject`.
+ *
+ * Mức đang hiện là **mức sẽ đi kèm lượt kế**, không phải một thiết lập được lưu ở đâu đó:
+ * mỗi lần gửi, giá trị này đi thẳng vào `send_message` và lõi siết sổ đăng ký tool theo
+ * nó cho đúng lượt ấy. Nhãn ở đây vì vậy đọc được như một lời hứa kiểm chứng được, chứ
+ * không phải một cái công tắc trang trí.
  */
 export default function Composer(props: {
   value: string;

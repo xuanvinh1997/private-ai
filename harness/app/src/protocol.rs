@@ -41,6 +41,12 @@ pub struct ReadMeta {
     pub lines: Vec<ReadLine>,
     pub total_lines: u32,
     pub lang: Option<String>,
+    /// Đã cắt bớt để vừa ngân sách. `SearchMeta` có trường này từ đầu; `ReadMeta` thì
+    /// không, nên giao diện không phân biệt được "đọc hết tệp" với "đọc phần đầu và phần
+    /// cuối" — và một tệp bị cắt mà không nói ra thì người đọc kết luận "hết rồi" ở đúng
+    /// chỗ lõi ngừng đọc.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,12 +100,30 @@ pub struct TerminalMeta {
 pub struct ToolMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diffs: Option<Vec<DiffHunk>>,
+    /// Vé lấy lại toàn văn khi output đã bị cắt cho vừa ngân sách token.
+    ///
+    /// Mô hình lấy lại bằng tool `spill_read`; giao diện dùng nó để vẽ một lối xem đầy đủ.
+    /// Thiếu trường này thì serde vứt lặng lẽ khoá `spill` mà tool đã ghi, và cả hai bên
+    /// đều mất đường tới bản đầy đủ — mô hình thì còn `spill_read`, người dùng thì không
+    /// còn gì.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spill: Option<SpillMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub read: Option<ReadMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub search: Option<SearchMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub terminal: Option<TerminalMeta>,
+}
+
+/// Vé lấy lại toàn văn. Mirror của `pai_tools::SpillRef`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SpillMeta {
+    pub id: String,
+    pub tool: String,
+    /// Kích thước toàn văn, tính bằng ký tự Unicode.
+    pub chars: u64,
+    pub lines: u64,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -125,6 +149,27 @@ pub struct TodoItem {
 pub enum ApprovalDecision {
     AllowedOnce,
     Rejected,
+}
+
+/// Quyền tool mà người dùng cấp cho **một lượt**.
+///
+/// Đi kèm từng tin nhắn chứ không phải là một thiết lập lưu lại, và đó là một quyết định
+/// chứ không phải một thiếu sót: hạ quyền cho đúng một câu hỏi rồi nâng lại là cách người
+/// ta thật sự dùng bộ chọn này, còn một thiết lập dính là thứ người dùng quên mất mình đã
+/// đặt — rồi hoặc ngạc nhiên vì trợ lý không làm được gì, hoặc tưởng mình đang được che
+/// chắn trong khi không.
+///
+/// Thứ tự các biến thể là thứ tự **nới dần**, và phép ánh xạ sang hạn chế thật nằm ở
+/// `crate::scope`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolScope {
+    /// Chỉ tool tự khai `mutating: false`.
+    Read,
+    /// Thêm tool sửa tệp; không có tool chạy lệnh.
+    Write,
+    /// Toàn bộ, kể cả quyền thi hành lệnh trên máy này.
+    Shell,
 }
 
 /// Một sự kiện trong đời một lượt.
