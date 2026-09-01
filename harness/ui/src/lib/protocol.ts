@@ -220,6 +220,9 @@ export interface Project {
   path: string;
   lastOpenedAt: number;
   isCurrent: boolean;
+  kind: ProjectKind;
+  /** URL đã clone về. `null` = thư mục vốn có sẵn trên máy. */
+  origin: string | null;
 }
 
 /**
@@ -247,4 +250,220 @@ export interface FileView {
   lang: string | null;
   totalLines: number;
   truncated: boolean;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * Dự án hai loại, thư viện tài liệu, provider, và MCP.
+ *
+ * Bản gốc nằm ở `app/src/protocol.rs`; hai đầu khớp bằng tay, nên sửa ở đây phải sửa cả
+ * bên kia trong cùng một commit.
+ * ───────────────────────────────────────────────────────────────────────────── */
+
+/**
+ * Mã nguồn, hay một chồng tài liệu.
+ *
+ * Không phải một nhãn để lọc: nó chọn tầng plugin nào được cắm. Dự án tài liệu không có
+ * `bash` và không có `edit` — người ta không sửa mã trong một thư mục toàn PDF, và cấp
+ * quyền chạy lệnh cho một chỗ toàn tệp người ngoài gửi tới là mở đúng cánh cửa không nên
+ * mở.
+ */
+export type ProjectKind = "code" | "docs";
+
+/** Tiến trình `git clone`. `percent` vắng ở những pha git không đếm được. */
+export interface CloneProgress {
+  phase: string;
+  percent: number | null;
+  line: string | null;
+  finished: boolean;
+  path: string | null;
+  error: string | null;
+}
+
+export type DocumentFormat = "pdf" | "docx" | "markdown" | "text" | "html" | "csv" | "code";
+
+/** Một tài liệu trong thư viện. */
+export interface DocumentView {
+  id: string;
+  path: string;
+  title: string;
+  format: DocumentFormat;
+  bytes: number;
+  chunks: number;
+  /**
+   * Đã có vector chưa. `false` mà `error` là `null` nghĩa là **đang xếp hàng**, không
+   * phải hỏng — và giao diện phải nói đúng như vậy, vì tìm bằng từ khoá đã chạy được rồi.
+   */
+  embedded: boolean;
+  addedAt: number;
+  error: string | null;
+}
+
+export interface IngestProgress {
+  path: string;
+  stage: string;
+  done: number;
+  total: number;
+  finished: boolean;
+  error: string | null;
+}
+
+/** Sức khoẻ thư viện — đủ để nói **vì sao** câu trả lời kém, thay vì chỉ nói nó kém. */
+export interface LibraryStats {
+  documents: number;
+  chunks: number;
+  embeddedChunks: number;
+  embedder: string | null;
+  semanticReady: boolean;
+  reason: string | null;
+}
+
+export interface DocumentHit {
+  documentId: string;
+  title: string;
+  path: string;
+  ordinal: number;
+  text: string;
+  score: number;
+  matchedBy: "keyword" | "semantic" | "both";
+}
+
+export type ProviderKind = "ollama" | "openai";
+
+/**
+ * Một provider đã cấu hình. **Không bao giờ mang khoá API.**
+ *
+ * `hasKey` thay cho chính cái khoá: giao diện chỉ cần biết ô nhập nên hiện "đã đặt" hay
+ * hiện trống. Một khoá đi qua IPC là một khoá nằm sẵn trong mọi công cụ gỡ lỗi đang mở.
+ */
+export interface Provider {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  hasKey: boolean;
+  enabled: boolean;
+  onDevice: boolean;
+  active: boolean;
+  model: string | null;
+}
+
+export interface ProviderPreset {
+  id: string;
+  name: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  needsKey: boolean;
+  onDevice: boolean;
+  defaultModel: string | null;
+  homepage: string;
+  hint: string;
+}
+
+/** Gửi lên khi lưu. `apiKey` là `null` nghĩa là **giữ nguyên khoá cũ**, không phải xoá. */
+export interface ProviderInput {
+  id: string | null;
+  name: string;
+  kind: ProviderKind;
+  baseUrl: string;
+  apiKey: string | null;
+  enabled: boolean;
+  model: string | null;
+}
+
+export interface ProviderProbe {
+  ok: boolean;
+  message: string;
+  models: ModelChoice[];
+}
+
+export type McpState = "connected" | "connecting" | "failed" | "disabled";
+
+export interface McpServer {
+  name: string;
+  transport: "stdio" | "http";
+  target: string;
+  enabled: boolean;
+  state: McpState;
+  tools: string[];
+  error: string | null;
+}
+
+export interface McpEnvVar {
+  key: string;
+  label: string;
+  required: boolean;
+  secret: boolean;
+}
+
+export interface McpCatalogEntry {
+  id: string;
+  name: string;
+  summary: string;
+  command: string;
+  args: string[];
+  env: McpEnvVar[];
+  homepage: string;
+  /** `node`, `python`, `docker` — cảnh báo trước, chứ không để người dùng nhìn `failed`. */
+  requires: string[];
+}
+
+export interface McpServerInput {
+  name: string;
+  transport: "stdio" | "http";
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+  cwd: string | null;
+  url: string;
+  headers: Record<string, string>;
+  enabled: boolean;
+}
+
+export type GraphNodeKind =
+  | "function"
+  | "method"
+  | "struct"
+  | "class"
+  | "trait"
+  | "interface"
+  | "enum"
+  | "module"
+  | "constant"
+  | "type";
+
+export interface GraphNode {
+  id: string;
+  name: string;
+  kind: GraphNodeKind;
+  path: string;
+  line: number;
+}
+
+export type GraphEdgeKind =
+  | "calls"
+  | "imports"
+  | "contains"
+  | "implements"
+  | "extends"
+  | "references";
+
+export interface GraphEdge {
+  src: string;
+  dst: string;
+  kind: GraphEdgeKind;
+}
+
+export interface GraphView {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  /** Đã cắt bớt để vẽ được: một đỉnh bốn trăm cạnh vẽ ra là một quả cầu đen. */
+  truncated: boolean;
+}
+
+export interface IndexStats {
+  files: number;
+  symbols: number;
+  edges: number;
+  languages: [string, number][];
+  scannedAt: number | null;
 }

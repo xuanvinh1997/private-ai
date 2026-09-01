@@ -259,7 +259,7 @@ pub enum HistoryNode {
 }
 
 /// Một mô hình mà máy chủ đang có.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelChoice {
     pub id: String,
@@ -294,4 +294,242 @@ impl ProjectView {
             last_opened_at: project.last_opened_at,
         }
     }
+}
+
+// ───────────────────────────────────────────────────────────────────────────────
+// Dự án hai loại, thư viện tài liệu, provider, và MCP.
+//
+// Bốn nhóm dưới đây được thêm cùng một lượt vì chúng là **một** thay đổi về sản phẩm:
+// một dự án giờ có thể là mã nguồn hoặc tài liệu, và cái loại đó quyết định tool nào
+// được cắm, màn hình nào mở ra, và mô hình nào trả lời. Tách chúng ra thành bốn đợt
+// nghĩa là có một khoảng thời gian giao diện biết về `kind` mà lõi thì chưa.
+// ───────────────────────────────────────────────────────────────────────────────
+
+/// Một dự án là mã nguồn, hay là một chồng tài liệu.
+///
+/// Đây không phải một nhãn để lọc danh sách: nó chọn **tầng plugin** nào được cắm. Dự án
+/// mã nguồn có `fs`/`shell`/`index`/`lsp`/`terminal`; dự án tài liệu có `rag` và không có
+/// gì chạy được lệnh. Một dự án tài liệu không cần `bash`, và cấp cho nó `bash` "cho
+/// tiện" là mở một đường thi hành lệnh vào một thư mục toàn tệp người ngoài gửi tới.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectKind {
+    Code,
+    Docs,
+}
+
+/// Tiến trình `git clone`, phát trên một `Channel` trong lúc lệnh đang chạy.
+///
+/// Một bản clone vài trăm megabyte không có thời hạn hợp lý nào, nên giao diện phải thấy
+/// nó đang nhúc nhích. `percent` vắng mặt ở những pha mà git không đếm được — và một
+/// thanh tiến trình đứng im ở 0% thì tệ hơn hẳn một dòng chữ nói "đang phân giải delta".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloneProgress {
+    /// Pha do git tự đặt tên: "Đang đếm đối tượng", "Đang nhận", "Đang phân giải delta".
+    pub phase: String,
+    pub percent: Option<u8>,
+    /// Dòng thô, giữ lại cho khung "chi tiết" khi có sự cố.
+    pub line: Option<String>,
+    pub finished: bool,
+    /// Thư mục đã clone xong. Chỉ có ở sự kiện cuối, và chỉ khi thành công.
+    pub path: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Một tài liệu trong thư viện của dự án tài liệu.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentView {
+    pub id: String,
+    /// Đường dẫn tới bản sao trong kho của dự án, không phải chỗ người dùng lấy nó.
+    pub path: String,
+    pub title: String,
+    /// `pdf`, `docx`, `markdown`, `text`, `html`, `csv`, `code`.
+    pub format: String,
+    pub bytes: u64,
+    pub chunks: u32,
+    /// Đã có vector chưa. `false` mà không có `error` nghĩa là **đang xếp hàng**, không
+    /// phải hỏng: tìm bằng từ khoá vẫn chạy trong lúc chờ.
+    pub embedded: bool,
+    pub added_at: i64,
+    pub error: Option<String>,
+}
+
+/// Tiến trình nạp tài liệu vào thư viện.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestProgress {
+    /// Tệp đang xử lý.
+    pub path: String,
+    pub stage: String,
+    pub done: u32,
+    pub total: u32,
+    pub finished: bool,
+    pub error: Option<String>,
+}
+
+/// Sức khoẻ của thư viện tài liệu, đủ để giao diện nói **vì sao** câu trả lời kém.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryStats {
+    pub documents: u32,
+    pub chunks: u32,
+    pub embedded_chunks: u32,
+    /// Mô hình nhúng đang dùng. `None` = chưa cấu hình được, và khi đó tìm kiếm lùi về
+    /// **chỉ từ khoá** thay vì trả về rỗng.
+    pub embedder: Option<String>,
+    pub semantic_ready: bool,
+    /// Câu tiếng Việt giải thích khi `semantic_ready` là `false`.
+    pub reason: Option<String>,
+}
+
+/// Một đoạn khớp, đủ để dựng thẻ trích dẫn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentHit {
+    pub document_id: String,
+    pub title: String,
+    pub path: String,
+    pub ordinal: u32,
+    pub text: String,
+    pub score: f32,
+    /// `keyword`, `semantic`, hoặc `both` — người đọc cần biết vì sao đoạn này được chọn.
+    pub matched_by: String,
+}
+
+/// Một provider đã cấu hình, như giao diện thấy nó. **Không mang khoá API.**
+///
+/// `has_key` thay cho chính cái khoá: giao diện chỉ cần biết ô nhập nên hiện "đã đặt" hay
+/// hiện trống, và một khoá đi qua IPC là một khoá nằm trong log của mọi công cụ gỡ lỗi
+/// đang mở.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderView {
+    pub id: String,
+    pub name: String,
+    /// `ollama` hoặc `openai`.
+    pub kind: String,
+    pub base_url: String,
+    pub has_key: bool,
+    pub enabled: bool,
+    /// Endpoint không rời loopback: dữ liệu không đi đâu cả, và giao diện nói ra điều đó.
+    pub on_device: bool,
+    pub active: bool,
+    /// Mô hình đang chọn cho provider này.
+    pub model: Option<String>,
+}
+
+/// Một mục dựng sẵn trong danh mục provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderPreset {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    pub base_url: String,
+    pub needs_key: bool,
+    pub on_device: bool,
+    pub default_model: Option<String>,
+    /// Chỗ lấy khoá, hoặc chỗ tải máy chủ về.
+    pub homepage: String,
+    pub hint: String,
+}
+
+/// Kết quả thử một cấu hình provider **trước khi lưu nó**.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderProbe {
+    pub ok: bool,
+    pub message: String,
+    pub models: Vec<ModelChoice>,
+}
+
+/// Một server MCP như giao diện thấy nó.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerView {
+    pub name: String,
+    /// `stdio` hoặc `http`.
+    pub transport: String,
+    /// Dòng lệnh hoặc URL, rút gọn để hiện trên một dòng.
+    pub target: String,
+    pub enabled: bool,
+    /// `connected`, `connecting`, `failed`, `disabled`.
+    pub state: String,
+    /// Tên tool đã cắm, đã mang tiền tố `ext.<name>.`.
+    pub tools: Vec<String>,
+    pub error: Option<String>,
+}
+
+/// Một biến môi trường mà một mục danh mục cần người dùng điền.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpEnvVar {
+    pub key: String,
+    pub label: String,
+    pub required: bool,
+    /// Che khi gõ, và không gửi ngược ra giao diện sau khi lưu.
+    pub secret: bool,
+}
+
+/// Một server dựng sẵn mà người dùng cắm bằng một cú bấm.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct McpCatalogEntry {
+    pub id: String,
+    pub name: String,
+    pub summary: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: Vec<McpEnvVar>,
+    pub homepage: String,
+    /// Cần gì có sẵn trên máy: `node`, `python`, `docker`. Giao diện cảnh báo trước khi
+    /// người dùng bấm cắm rồi nhìn một server `failed` mà không hiểu vì sao.
+    pub requires: Vec<String>,
+}
+
+/// Một đỉnh trong đồ thị mã nguồn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphNodeView {
+    pub id: String,
+    pub name: String,
+    /// `function`, `method`, `struct`, `class`, `trait`, `interface`, `enum`, `module`,
+    /// `constant`, `type`.
+    pub kind: String,
+    pub path: String,
+    pub line: u32,
+}
+
+/// Một cạnh. `kind`: `calls`, `imports`, `contains`, `implements`, `extends`, `references`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphEdgeView {
+    pub src: String,
+    pub dst: String,
+    pub kind: String,
+}
+
+/// Một lát cắt của đồ thị, đủ nhỏ để vẽ.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GraphView {
+    pub nodes: Vec<GraphNodeView>,
+    pub edges: Vec<GraphEdgeView>,
+    /// Đã cắt bớt để vẽ được. Một đỉnh có bốn trăm cạnh thì vẽ ra là một quả cầu đen.
+    pub truncated: bool,
+}
+
+/// Tình trạng chỉ mục mã nguồn.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexStats {
+    pub files: u32,
+    pub symbols: u32,
+    pub edges: u32,
+    /// `(ngôn ngữ, số tệp)`, nhiều trước.
+    pub languages: Vec<(String, u32)>,
+    /// Lần quét gần nhất, epoch mili-giây.
+    pub scanned_at: Option<i64>,
 }

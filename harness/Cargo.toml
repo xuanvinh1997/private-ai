@@ -58,6 +58,13 @@ indexmap = "2"
 libc = "0.2"
 similar = "2"
 serde_norway = "0.9"
+# --- tầng tài liệu ---
+# Rút chữ khỏi PDF và DOCX. Cả hai đều thuần Rust: một bản đóng gói không được đòi
+# `pdftotext` hay LibreOffice có sẵn trên máy người dùng.
+pdf-extract = "0.9"
+zip = { version = "8", default-features = false, features = ["deflate"] }
+quick-xml = "0.38"
+sha2 = "0.10"
 tempfile = "3"
 
 # --- crate nội bộ ---
@@ -75,6 +82,8 @@ pai-agent = { path = "crates/pai-agent" }
 pai-hooks = { path = "crates/pai-hooks" }
 pai-index = { path = "crates/pai-index" }
 pai-lsp = { path = "crates/pai-lsp" }
+pai-rag = { path = "crates/pai-rag" }
+pai-providers = { path = "crates/pai-providers" }
 
 [profile.dev]
 opt-level = 1

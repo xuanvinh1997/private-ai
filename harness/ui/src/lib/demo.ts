@@ -479,6 +479,8 @@ export function demoProjects(now = Date.now()): Project[] {
       path: "/Users/vinhpx/Workspaces/private-ai/harness",
       lastOpenedAt: now - 3 * MINUTE,
       isCurrent: true,
+      kind: "code",
+      origin: null,
     },
     {
       id: "p-python",
@@ -486,12 +488,19 @@ export function demoProjects(now = Date.now()): Project[] {
       path: "/Users/vinhpx/Workspaces/private-ai",
       lastOpenedAt: now - 22 * 60 * MINUTE,
       isCurrent: false,
+      kind: "code",
+      // Dự án duy nhất trong bộ mẫu được clone về: nhãn nguồn gốc phải có chỗ để lộ ra.
+      origin: "https://github.com/vinhpx/private-ai.git",
     },
     {
       id: "p-notes",
       name: "so-tay",
       path: "/Users/vinhpx/Documents/so-tay",
       lastOpenedAt: now - 6 * 24 * 60 * MINUTE,
+      // Một dự án tài liệu trong danh sách, nếu không thì nhánh `docs` của mọi màn hình
+      // không bao giờ được nhìn thấy ở chế độ trình diễn.
+      kind: "docs",
+      origin: null,
       isCurrent: false,
     },
   ];

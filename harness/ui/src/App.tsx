@@ -320,6 +320,8 @@ export default function App() {
           path,
           lastOpenedAt: Date.now(),
           isCurrent: true,
+          kind: "code",
+          origin: null,
         };
         setProjects((all) => [
           created,

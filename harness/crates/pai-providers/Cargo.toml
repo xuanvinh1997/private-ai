@@ -1,0 +1,24 @@
+[package]
+name = "pai-providers"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Kho provider mô hình, danh mục dựng sẵn, và đường đổi provider lúc đang chạy"
+
+[dependencies]
+pai-core = { workspace = true }
+pai-llm = { workspace = true }
+async-trait = { workspace = true }
+futures = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+rusqlite = { workspace = true }
+reqwest = { workspace = true }
+arc-swap = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
