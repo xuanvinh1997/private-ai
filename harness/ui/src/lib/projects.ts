@@ -1,9 +1,10 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "./agent";
-import type { FileView, Project, TreeEntry } from "./protocol";
+import type { CloneProgress, FileView, Project, ProjectKind, TreeEntry } from "./protocol";
 
 /**
- * Bốn lệnh dự án và hai lệnh duyệt mã nguồn.
+ * Lệnh dự án, lệnh clone, và hai lệnh duyệt mã nguồn.
  *
  * Chia làm hai nhóm theo cách xử lý lỗi, và ranh giới là "người dùng có đang đứng chờ
  * một thứ hiện lên không":
@@ -56,12 +57,6 @@ export function readFile(path: string): Promise<FileView> {
   return invoke<FileView>("read_file", { path });
 }
 
-/* Không có `pickDirectory()` trong tệp này, và đó là một khoảng trống có chủ đích: hộp
- * thoại chọn thư mục của hệ điều hành cần `@tauri-apps/plugin-dialog`, thứ chưa nằm
- * trong `package.json`. Thêm nó từ phía giao diện là sửa cả `Cargo.toml` lẫn danh sách
- * quyền của Tauri — việc của phía Rust. Cho tới lúc đó `OpenProjectDialog` nhận đường
- * dẫn bằng tay, và kéo thả một thư mục vào cửa sổ là lối không phải gõ. */
-
 /** Tên hiển thị suy từ đường dẫn, dùng khi lõi chưa kịp trả `Project` thật. */
 export function folderName(path: string): string {
   const parts = path.replace(/[/\\]+$/, "").split(/[/\\]/);
@@ -91,4 +86,115 @@ export function displayPath(root: string | null, path: string): string {
   if (root === null) return path;
   const base = `${root.replace(/[/\\]+$/, "")}/`;
   return path.startsWith(base) ? path.slice(base.length) : path;
+}
+
+/**
+ * Tạo một dự án từ một thư mục có sẵn, kèm **loại** của nó.
+ *
+ * Loại được người dùng chọn chứ không được lõi đoán, và đó là chủ ý: đoán "thư mục này
+ * trông giống mã nguồn" rồi cắm tầng tool mã nguồn vào một thư mục toàn tệp người ngoài
+ * gửi tới là cấp quyền chạy lệnh cho đúng chỗ không nên cấp. Một lần chọn sai của người
+ * dùng thì sửa được; một lần đoán sai của máy thì không ai nhìn thấy để mà sửa.
+ */
+export function createProject(path: string, kind: ProjectKind): Promise<Project> {
+  return invoke<Project>("create_project", { path, kind });
+}
+
+export interface CloneRequest {
+  url: string;
+  parent: string;
+  /** Tên thư mục đích. Vắng thì lõi suy từ URL. */
+  name?: string;
+  /** `1` = chỉ lấy lịch sử gần nhất. Vắng nghĩa là clone đầy đủ. */
+  depth?: number;
+  /**
+   * Loại dự án sau khi clone xong. Mặc định `"code"`.
+   *
+   * Có mặt vì lõi bắt buộc phải nhận một loại, và bỏ trống để lõi đoán là đúng cái bẫy
+   * `createProject` đã tránh. Mặc định `"code"` vì lối vào duy nhất dẫn tới đây là nút
+   * "Clone từ Git" ở nhóm mã nguồn — không phải một suy đoán, mà là chỗ người dùng bấm.
+   */
+  kind?: ProjectKind;
+}
+
+/**
+ * Clone một repo về rồi mở nó làm dự án.
+ *
+ * Tiến trình đi qua `Channel` chứ không qua `listen`, cùng lý do với `sendMessage`:
+ * channel gắn với đúng một lần clone và tự dọn khi bị bỏ, nên một hộp thoại đã đóng
+ * không còn listener nào sống sót để vẽ tiếp lên màn hình đã biến mất.
+ *
+ * Ném ra ngoài. Clone hỏng là chuyện thường — URL sai, không có mạng, thư mục đã tồn tại
+ * — và mỗi lý do đó cần đến được mắt người dùng nguyên văn, vì chỉ git mới biết nó là gì.
+ */
+export function cloneProject(
+  req: CloneRequest,
+  onProgress: (p: CloneProgress) => void,
+): Promise<Project> {
+  const channel = new Channel<CloneProgress>();
+  channel.onmessage = onProgress;
+  // Trải phẳng chứ không gói trong `req`: lõi nhận từng tham số một, và một object lồng
+  // sẽ tới nơi dưới dạng một tham số không ai đọc — lỗi chỉ lộ ra lúc chạy.
+  return invoke<Project>("clone_project", {
+    url: req.url,
+    parent: req.parent,
+    name: req.name,
+    depth: req.depth,
+    kind: req.kind ?? "code",
+    onProgress: channel,
+  });
+}
+
+/**
+ * Huỷ lần clone đang chạy.
+ *
+ * Nuốt lỗi, giống `cancelTurn`: người dùng đã quyết định dừng rồi, và một hộp lỗi vì
+ * "không huỷ được" chỉ thêm một thứ nữa phải đóng. Lời cuối vẫn thuộc về `cloneProject`,
+ * thứ sẽ trả về hoặc ném ngay sau đó.
+ */
+export async function cancelClone(): Promise<void> {
+  if (!inTauri()) return;
+  try {
+    await invoke("cancel_clone");
+  } catch (err) {
+    console.error("không huỷ được lần clone", err);
+  }
+}
+
+/**
+ * Hộp thoại chọn thư mục của hệ điều hành. `null` = người dùng bấm huỷ.
+ *
+ * Ngoài Tauri thì trả `null` chứ không ném: `npm run dev` trong trình duyệt không có hộp
+ * thoại nào, và ở đó lối gõ tay vẫn phải mở được dự án. Lỗi thật của plugin thì để nó
+ * ném — một hộp thoại hệ thống bấm vào rồi không có gì xảy ra là thứ không ai gỡ được.
+ */
+export async function pickDirectory(title?: string): Promise<string | null> {
+  if (!inTauri()) return null;
+  const picked = await open({ directory: true, multiple: false, title });
+  return typeof picked === "string" ? picked : null;
+}
+
+/**
+ * Host của một URL nguồn gốc, để làm huy hiệu.
+ *
+ * Huy hiệu chỉ có chỗ cho vài ký tự, và phần phân biệt được giữa hai URL clone là *máy
+ * chủ* chứ không phải đường dẫn — hai repo cùng tên trên GitHub và trên một GitLab nội
+ * bộ là hai thứ khác nhau. Dạng scp (`git@host:user/repo.git`) không phải URL hợp lệ với
+ * `new URL`, nên phải bắt riêng thay vì để nó rơi xuống nhánh trả nguyên chuỗi.
+ */
+export function originHost(origin: string): string {
+  const scp = /^[^@/]+@([^:/]+):/.exec(origin);
+  if (scp?.[1] !== undefined) return scp[1];
+  try {
+    return new URL(origin).host || origin;
+  } catch {
+    return origin;
+  }
+}
+
+/** Tên thư mục suy từ URL repo, dùng làm gợi ý mặc định trong hộp thoại clone. */
+export function repoNameFromUrl(url: string): string {
+  const cleaned = url.trim().replace(/\/+$/, "").replace(/\.git$/i, "");
+  const tail = cleaned.split(/[/:]/).pop() ?? "";
+  return tail;
 }

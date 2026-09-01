@@ -2,16 +2,45 @@ import { For } from "solid-js";
 import Icon, { type IconName } from "./Icon";
 import { Tip } from "./primitives";
 import { setTheme, theme, type ThemeChoice } from "../lib/theme";
+import type { ProjectKind } from "../lib/protocol";
 
-export type TabId = "chat" | "diff" | "code" | "terminal" | "settings";
+export type TabId =
+  | "chat"
+  | "projects"
+  | "diff"
+  | "code"
+  | "graph"
+  | "library"
+  | "terminal"
+  | "settings";
 
-const TABS: { id: TabId; label: string; icon: IconName }[] = [
-  { id: "chat", label: "Hội thoại", icon: "chat" },
-  { id: "diff", label: "Thay đổi", icon: "diff" },
-  { id: "code", label: "Mã nguồn", icon: "code" },
-  { id: "terminal", label: "Terminal", icon: "terminal" },
-  { id: "settings", label: "Cài đặt", icon: "settings" },
+/**
+ * Tab, và **loại dự án nào thấy được nó**.
+ *
+ * `kinds: null` là "luôn hiện". Việc lọc nằm ở đây chứ không nằm rải trong `App`, vì đây
+ * là chỗ duy nhất biết danh sách đầy đủ — một tab mới thêm vào bảng này mà quên khai loại
+ * sẽ hiện ở mọi nơi, và đó là kiểu quên rẻ nhất để phát hiện.
+ *
+ * Cắt tab **của loại kia** đi chứ không làm mờ nó: một nút mờ nói rằng có thứ gì đó đang
+ * bị khoá và người dùng phải tìm cách mở, trong khi sự thật là nó không áp dụng ở đây.
+ */
+const TABS: { id: TabId; label: string; icon: IconName; kinds: ProjectKind[] | null }[] = [
+  { id: "chat", label: "Hội thoại", icon: "chat", kinds: null },
+  { id: "projects", label: "Dự án", icon: "folder-open", kinds: null },
+  { id: "diff", label: "Thay đổi", icon: "diff", kinds: ["code"] },
+  { id: "code", label: "Mã nguồn", icon: "code", kinds: ["code"] },
+  { id: "graph", label: "Đồ thị mã nguồn", icon: "graph", kinds: ["code"] },
+  { id: "library", label: "Thư viện tài liệu", icon: "library", kinds: ["docs"] },
+  { id: "terminal", label: "Terminal", icon: "terminal", kinds: ["code"] },
+  { id: "settings", label: "Cài đặt", icon: "settings", kinds: null },
 ];
+
+/** Tab hiện được cho một loại dự án. `App` dùng nó để sửa tab khi đổi dự án. */
+export function tabsFor(kind: ProjectKind | undefined): TabId[] {
+  return TABS.filter((tab) => tab.kinds === null || (kind !== undefined && tab.kinds.includes(kind))).map(
+    (tab) => tab.id,
+  );
+}
 
 const NEXT_THEME: Record<ThemeChoice, ThemeChoice> = {
   light: "dark",
@@ -41,9 +70,12 @@ const THEME_LABEL: Record<ThemeChoice, string> = {
 export default function Rail(props: {
   active: TabId;
   onSelect: (tab: TabId) => void;
+  /** Loại dự án đang mở. Vắng mặt (lõi chưa trả lời) thì chỉ hiện tab luôn có. */
+  kind?: ProjectKind;
   /** Đang chuyển dự án: mọi tab đều đang nói về một cây tệp sắp không còn đúng nữa. */
   disabled?: boolean;
 }) {
+  const visible = () => TABS.filter((tab) => tab.kinds === null || (props.kind !== undefined && tab.kinds.includes(props.kind)));
   return (
     <nav
       aria-label="Khu vực làm việc"
@@ -60,7 +92,7 @@ export default function Rail(props: {
         <Icon name="sparkle" size={17} />
       </div>
 
-      <For each={TABS}>
+      <For each={visible()}>
         {(tab) => (
           <span class="group/tip relative">
             <button

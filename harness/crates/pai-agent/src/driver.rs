@@ -16,6 +16,7 @@
 
 use std::sync::Arc;
 
+use arc_swap::ArcSwap;
 use futures::FutureExt;
 use futures::StreamExt;
 use pai_core::Context;
@@ -60,12 +61,22 @@ pub trait TurnSink: Send + Sync {
 pub struct Silent;
 impl TurnSink for Silent {}
 
+/// Vòng lặp, cộng cái nó đang nói chuyện cùng.
+///
+/// `llm` và `model` nằm sau [`ArcSwapAny`] chứ không phải là hai trường thường: người
+/// dùng đổi nhà cung cấp trong lúc ứng dụng đang chạy, và dựng lại cả `Driver` cho mỗi
+/// lần đổi nghĩa là dựng lại mọi thứ treo trên nó — đường ống tool, prompt, các scope
+/// plugin — chỉ để thay một con trỏ. Đọc bằng `load_full()`, ghi bằng `store()`, không
+/// khoá nào bị giữ qua một `.await`.
 pub struct Driver {
     ctx: Context,
-    llm: Arc<dyn LlmAdapter>,
+    /// Một `Arc` bọc ngoài một `Arc`, vì `arc-swap` chỉ hoán đổi được `Arc<T>` với `T`
+    /// có kích thước biết trước, còn `dyn LlmAdapter` thì không. Cái giá là một lần
+    /// truy con trỏ, trả đúng một lần cho mỗi lượt.
+    llm: ArcSwap<Arc<dyn LlmAdapter>>,
     tools: Arc<ToolPipeline>,
     prompt: Arc<SystemPrompt>,
-    model: String,
+    model: ArcSwap<String>,
     /// Trần số bước trong một lượt.
     max_steps: u64,
 }
@@ -80,12 +91,32 @@ impl Driver {
     ) -> Driver {
         Driver {
             ctx,
-            llm,
+            llm: ArcSwap::from_pointee(llm),
             tools,
             prompt,
-            model: model.into(),
+            model: ArcSwap::from_pointee(model.into()),
             max_steps: 12,
         }
+    }
+
+    /// Đổi provider. Có hiệu lực từ **lượt sau**, không phải từ bước sau — xem [`Driver::drive`].
+    pub fn set_llm(&self, llm: Arc<dyn LlmAdapter>) {
+        self.llm.store(Arc::new(llm));
+    }
+
+    /// Đổi mô hình. Cùng một luật thời điểm như [`Driver::set_llm`].
+    pub fn set_model(&self, model: impl Into<String>) {
+        self.model.store(Arc::new(model.into()));
+    }
+
+    /// Provider đang được ghim. Dành cho màn hình trạng thái và cho bài kiểm chứng.
+    pub fn llm(&self) -> Arc<dyn LlmAdapter> {
+        Arc::clone(&self.llm.load())
+    }
+
+    /// Mô hình đang được ghim.
+    pub fn model(&self) -> String {
+        self.model.load().as_str().to_string()
     }
 
     pub fn with_max_steps(mut self, steps: u64) -> Driver {
@@ -132,6 +163,15 @@ impl Driver {
     ) -> anyhow::Result<TurnEndReason> {
         let mut pending = input;
         let mut step = 0u64;
+
+        // Chốt provider và mô hình **một lần cho cả lượt**, ngay tại đây. Một lượt là
+        // nhiều bước, và mỗi bước gửi lại toàn bộ lịch sử: đọc lại `llm` ở đầu mỗi bước
+        // thì một cú đổi provider giữa chừng làm nửa hội thoại bay tới máy chủ này và
+        // nửa kia tới máy chủ khác — với hai tokenizer, hai cách hiểu tool call, và một
+        // bản ghi không giải thích nổi vì sao câu trả lời đứt mạch. Cú đổi vẫn xảy ra,
+        // chỉ là nó có hiệu lực từ lượt kế tiếp.
+        let llm: Arc<dyn LlmAdapter> = Arc::clone(&self.llm.load());
+        let model = self.model.load_full();
 
         loop {
             step += 1;
@@ -185,7 +225,16 @@ impl Driver {
 
             let last_round = step >= self.max_steps;
             let assistant = self
-                .one_step(session, turn, step, last_round, &cancel, sink)
+                .one_step(
+                    session,
+                    turn,
+                    step,
+                    last_round,
+                    &cancel,
+                    sink,
+                    llm.as_ref(),
+                    &model,
+                )
                 .await?;
             let calls = assistant.tool_calls();
 
@@ -220,6 +269,7 @@ impl Driver {
     }
 
     /// Một lần gọi mô hình, từ lúc dựng request tới lúc message vào sổ.
+    #[allow(clippy::too_many_arguments)]
     async fn one_step(
         &self,
         session: &mut Session,
@@ -228,6 +278,10 @@ impl Driver {
         last_round: bool,
         cancel: &CancellationToken,
         sink: &dyn TurnSink,
+        // Bản chốt của lượt, do `drive` truyền xuống. Cố tình **không** đọc lại từ
+        // `self` ở đây: xem bình luận trong `drive`.
+        llm: &dyn LlmAdapter,
+        model: &str,
     ) -> anyhow::Result<LlmMessage> {
         let history = to_llm_history(&session.derive_messages());
         let mut messages = Vec::with_capacity(history.len() + 1);
@@ -255,7 +309,7 @@ impl Driver {
                 .collect()
         };
 
-        let mut request = ChatRequest::new(&self.model)
+        let mut request = ChatRequest::new(model)
             .with_messages(messages)
             .with_tools(tools);
         let request = self
@@ -267,7 +321,7 @@ impl Driver {
             .await;
 
         let mut assembler = pai_llm::BlockAssembler::new();
-        let mut stream = self.llm.stream(request);
+        let mut stream = llm.stream(request);
         let mut interrupted = false;
         let mut failure = None;
 

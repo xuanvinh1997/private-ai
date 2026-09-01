@@ -1,3 +1,4 @@
+import { demoDiagramText } from "./fixtures/graph";
 import type { DisplayMode } from "./prefs";
 import type {
   AgentEvent,
@@ -152,6 +153,11 @@ const NEW_CONFIG = `fn load(path: &Path) -> Result<Config, ConfigError> {
 /** Một bản ghi đủ mọi loại node — dùng để mắt kiểm tra từng thẻ cạnh nhau. */
 export function demoNodes(): ConversationNode[] {
   return [
+    // Bốn đường đi của bộ dựng khối — mermaid đúng, mermaid sai cú pháp, khối mã ngôn ngữ
+    // khác, và một khối chưa đóng rào. Cái nào không có ở đây là cái chưa ai nhìn thấy
+    // bao giờ, và ba trong bốn đường đó chỉ hiện ra khi có gì đó không hoàn hảo.
+    { id: "d-u0", kind: "user", text: "Vẽ giúp mình kiến trúc của cây plugin." },
+    { id: "d-diagram", kind: "assistant", text: demoDiagramText(), streaming: false },
     { id: "d-u1", kind: "user", text: "Bỏ hết unwrap trong bộ nạp cấu hình giúp mình." },
     {
       id: "d-todo",

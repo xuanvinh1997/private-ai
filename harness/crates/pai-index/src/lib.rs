@@ -20,12 +20,21 @@
 //! # Hình dạng
 //!
 //! ```text
-//! lang      bảng ngôn ngữ + truy vấn. Thêm một ngôn ngữ = thêm một hàng
-//! extract   cây cú pháp -> ký hiệu, cha–con suy từ bao hàm phạm vi byte
-//! store     SQLite: `files` (mtime + kích thước), `symbols`, và một bảng FTS5
+//! lang      bảng ngôn ngữ + hai truy vấn. Thêm một ngôn ngữ = thêm một hàng
+//! extract   cây cú pháp -> ký hiệu + tham chiếu, cả hai suy từ bao hàm phạm vi byte
+//! graph     từ vựng của đồ thị, và chỗ nói ra rằng cạnh là phỏng đoán theo tên
+//! store     SQLite: `files`, `symbols`, FTS5, `refs` (chưa phân giải), `edges` (đã)
 //! index     seam `Index` + bản cài đặt quét trên đĩa. Tăng dần là bất biến của nó
-//! tools     `symbol_search` và `outline`
+//! tools     `symbol_search`, `outline`, `code.graph`, `code.trace`, `code.overview`
 //! ```
+//!
+//! # Đồ thị, và mức độ nó dám hứa
+//!
+//! Đỉnh là ký hiệu, cạnh là quan hệ. Đúng **một** loại cạnh là sự thật cú pháp —
+//! `contains`; năm loại còn lại là phỏng đoán theo tên, vì không có phân tích kiểu ở đây.
+//! Điều đó không được giấu đi ở bất kỳ tầng nào: xem [`graph::NAME_BASED_NOTICE`], thứ đi
+//! kèm mọi kết quả tool. Cùng lý do khiến `pai-sandbox` báo `Enforcement::Partial` thay
+//! vì làm tròn lên thành "có giam".
 //!
 //! Hai chỗ bản Python thua, và cả hai đều rẻ ở đây: nó **không có FTS5** nên mỗi câu hỏi
 //! là một lần quét toàn bộ, và nó **không có chỉ mục tăng dần** nên mỗi lần quét là một
@@ -33,6 +42,7 @@
 
 pub mod error;
 pub mod extract;
+pub mod graph;
 pub mod index;
 pub mod lang;
 pub mod plugin;
@@ -41,8 +51,12 @@ pub mod symbol;
 pub mod tools;
 
 pub use error::IndexError;
-pub use extract::Extractor;
-pub use index::{CodeIndex, Index, SymbolIndex, SyncReport};
+pub use extract::{Extraction, Extractor};
+pub use graph::{
+    CentralSymbol, DirectorySummary, EdgeKind, GraphEdge, GraphNode, NAME_BASED_NOTICE,
+    Neighborhood, Overview, Reference, Stats,
+};
+pub use index::{CodeIndex, Index, MAX_DEPTH, MAX_NODES, MAX_PATHS, SymbolIndex, SyncReport};
 pub use lang::{LANGUAGES, Lang};
 pub use plugin::IndexPlugin;
 pub use store::Store;

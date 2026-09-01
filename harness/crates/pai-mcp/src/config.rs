@@ -36,6 +36,10 @@ pub enum ConfigError {
     EmptyCommand(String),
     #[error("server `{0}` khai url `{1}`: chỉ chấp nhận http:// hoặc https://")]
     BadUrl(String, String),
+    /// Nói **thiếu cái gì**, không chỉ nói là thiếu: người dùng đang nhìn một biểu mẫu và
+    /// cần biết ô nào còn trống, chứ không cần biết rằng có một ô nào đó còn trống.
+    #[error("mục `{0}` trong danh mục còn thiếu giá trị bắt buộc: {1}")]
+    MissingValue(String, String),
 }
 
 /// Đường tới một server. Hai cái, đúng bằng hai cái mà spec định nghĩa.

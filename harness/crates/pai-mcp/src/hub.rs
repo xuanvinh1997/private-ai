@@ -29,7 +29,7 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::config::{CONNECT_TIMEOUT, ConfigError, DEFAULT_MAX_RETRIES, ServerConfig};
-use crate::dial::{ConfigDialer, Dialer, Reach};
+use crate::dial::{ConfigDialers, Dialer, DialerFactory, Reach};
 use crate::naming::qualify;
 use crate::remote::{Link, RemoteTool};
 
@@ -53,6 +53,29 @@ pub enum ServerState {
         reason: String,
     },
     Stopped,
+}
+
+/// Một server, đủ để giao diện vẽ một hàng và trả lời được câu hỏi của người dùng.
+///
+/// Ba trường sau cùng đều là những thứ [`McpHub::state`] một mình không nói được, và đều là
+/// thứ người dùng hỏi đầu tiên khi có gì đó không chạy: *cắm được bao nhiêu tool, tên gì,
+/// và nếu hỏng thì hỏng vì cái gì.*
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ServerStatus {
+    pub name: String,
+    pub state: ServerState,
+    /// Tên **đầy đủ đã mang tiền tố**: `ext.<server>.<tool>`.
+    ///
+    /// Chỗ này dễ sai đúng một cách: hub biết tên từ xa, nhưng cái người dùng phải thấy là
+    /// cái mô hình thật sự gọi. Hiện tên trần thì người dùng đi tìm một tool không tồn tại
+    /// trong sổ đăng ký, và không ai giải thích được vì sao.
+    pub tools: Vec<String>,
+    /// Lý do **lần hỏng gần nhất**, giữ lại kể cả sau khi đã nối lại được.
+    ///
+    /// Một server chập chờn nối lại thành công rồi lại đứt sẽ không để lại dấu vết nào nếu
+    /// ta xoá lý do mỗi lần nối được; người dùng chỉ thấy một danh sách tool lúc có lúc
+    /// không.
+    pub error: Option<String>,
 }
 
 /// Kết quả của một lần cắm server.
@@ -84,6 +107,17 @@ impl Default for RetryPolicy {
     }
 }
 
+/// Chỗ task giám sát ghi lại những gì [`McpHub::status`] đọc ra.
+///
+/// Không dùng thêm một `watch` nữa vì đây không phải thứ ai đó chờ đợi trên đó — nó chỉ
+/// được đọc lúc giao diện vẽ lại, và một ô có khoá là thứ rẻ nhất làm được việc đó.
+#[derive(Default)]
+struct Report {
+    /// Đã mang tiền tố, đúng như trong sổ đăng ký.
+    tools: Mutex<Vec<String>>,
+    error: Mutex<Option<String>>,
+}
+
 struct Mounted {
     /// Ảnh chụp cấu hình, để [`McpHub::reload`] biết cái gì đổi. `None` cho server cắm
     /// bằng [`McpHub::mount_dialer`] — không có cấu hình thì không so được, nên coi như
@@ -92,19 +126,30 @@ struct Mounted {
     cancel: CancellationToken,
     handle: JoinHandle<()>,
     state: watch::Receiver<ServerState>,
+    report: Arc<Report>,
 }
 
 /// Mọi server bên thứ ba mà ứng dụng đang nói chuyện.
 pub struct McpHub {
     registry: Arc<ToolRegistry>,
     servers: Mutex<HashMap<String, Mounted>>,
+    dialers: Arc<dyn DialerFactory>,
 }
 
 impl McpHub {
     pub fn new(registry: Arc<ToolRegistry>) -> Arc<McpHub> {
+        McpHub::with_dialers(registry, Arc::new(ConfigDialers))
+    }
+
+    /// Cùng cái hub, khác cách mở kết nối. Xem [`DialerFactory`].
+    pub fn with_dialers(
+        registry: Arc<ToolRegistry>,
+        dialers: Arc<dyn DialerFactory>,
+    ) -> Arc<McpHub> {
         Arc::new(McpHub {
             registry,
             servers: Mutex::new(HashMap::new()),
+            dialers,
         })
     }
 
@@ -122,7 +167,7 @@ impl McpHub {
         };
         let name = config.name.clone();
         let fingerprint = fingerprint(&config);
-        let dialer: Arc<dyn Dialer> = Arc::new(ConfigDialer::new(config));
+        let dialer = self.dialers.make(&config);
         Ok(self.install(name, dialer, policy, Some(fingerprint)).await)
     }
 
@@ -151,6 +196,7 @@ impl McpHub {
         let (state_tx, state_rx) = watch::channel(ServerState::Connecting);
         let (first_tx, first_rx) = oneshot::channel();
         let link = Link::new();
+        let report = Arc::new(Report::default());
 
         let supervisor = Supervisor {
             name: name.clone(),
@@ -158,6 +204,7 @@ impl McpHub {
             registry: self.registry.clone(),
             link,
             state: state_tx,
+            report: report.clone(),
             ct: cancel.clone(),
             policy,
         };
@@ -170,6 +217,7 @@ impl McpHub {
                 cancel,
                 handle,
                 state: state_rx,
+                report,
             },
         );
 
@@ -273,6 +321,29 @@ impl McpHub {
     pub fn state(&self, name: &str) -> Option<ServerState> {
         Some(self.servers.lock().get(name)?.state.borrow().clone())
     }
+
+    /// Ảnh chụp mọi server đang cắm, xếp theo tên để giao diện không nhảy hàng giữa hai
+    /// lần vẽ.
+    ///
+    /// Chỉ những server **đang cắm**: một server bị tắt không có kết nối, không có tool, và
+    /// không có gì để nói ở đây — trạng thái "tắt" là chuyện của kho cấu hình, xem
+    /// [`crate::store`].
+    pub fn status(&self) -> Vec<ServerStatus> {
+        let mut out: Vec<ServerStatus> = {
+            let servers = self.servers.lock();
+            servers
+                .iter()
+                .map(|(name, mounted)| ServerStatus {
+                    name: name.clone(),
+                    state: mounted.state.borrow().clone(),
+                    tools: mounted.report.tools.lock().clone(),
+                    error: mounted.report.error.lock().clone(),
+                })
+                .collect()
+        };
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
 }
 
 fn fingerprint(config: &ServerConfig) -> String {
@@ -281,17 +352,20 @@ fn fingerprint(config: &ServerConfig) -> String {
     serde_json::to_string(config).unwrap_or_default()
 }
 
-/// Đăng ký một danh sách tool từ xa, trả về guard của từng cái.
+/// Đăng ký một danh sách tool từ xa, trả về guard của từng cái **và tên đã mang tiền tố**.
 ///
 /// Thả `Vec<Guard>` là gỡ sạch. Đó là lý do nó được trả ra chứ không được cất vào trong.
+/// Tên trả về cùng chỗ với guard, vì đó là chỗ duy nhất biết cái nào **thật sự** vào được
+/// sổ — hai cái bị bỏ qua ở dưới không được phép hiện ra trong danh sách người dùng đọc.
 fn register_tools(
     registry: &Arc<ToolRegistry>,
     server: &str,
     tools: &[rmcp::model::Tool],
     link: &Arc<Link>,
     reach: Reach,
-) -> Vec<Guard> {
+) -> (Vec<Guard>, Vec<String>) {
     let mut guards = Vec::new();
+    let mut names = Vec::new();
     for tool in tools {
         // Tiền tố được đặt **ở đây** — chỗ đầu tiên cái tên từ xa chạm vào hệ thống của
         // ta, trước sổ đăng ký, trước log, trước mọi con mắt.
@@ -319,6 +393,7 @@ fn register_tools(
         }
 
         let parameters = Value::Object((*tool.input_schema).clone());
+        names.push(name.as_str().to_string());
         guards.push(registry.register(Arc::new(RemoteTool::new(
             name,
             tool.name.to_string(),
@@ -329,7 +404,7 @@ fn register_tools(
             reach,
         ))));
     }
-    guards
+    (guards, names)
 }
 
 fn backoff(attempt: u32) -> Duration {
@@ -350,6 +425,7 @@ struct Supervisor {
     registry: Arc<ToolRegistry>,
     link: Arc<Link>,
     state: watch::Sender<ServerState>,
+    report: Arc<Report>,
     ct: CancellationToken,
     policy: RetryPolicy,
 }
@@ -411,7 +487,7 @@ impl Supervisor {
             };
 
             self.link.set(service.peer().clone());
-            let guards = register_tools(
+            let (guards, names) = register_tools(
                 &self.registry,
                 &self.name,
                 &tools,
@@ -419,6 +495,7 @@ impl Supervisor {
                 self.dialer.reach(),
             );
             let count = guards.len();
+            *self.report.tools.lock() = names;
             tracing::info!(server = %self.name, tools = count, "MCP server đã sẵn sàng");
             let _ = self.state.send(ServerState::Ready { tools: count });
             settle(&mut first, Mount::Connected { tools: count });
@@ -442,6 +519,9 @@ impl Supervisor {
             // của server này được phép còn nằm trong danh sách quảng cáo cho mô hình.
             drop(guards);
             self.link.clear();
+            // Danh sách tool phải rỗng đúng lúc sổ đăng ký rỗng. Lệch nhau một nhịp là
+            // giao diện mời người dùng gọi một tool vừa biến mất.
+            self.report.tools.lock().clear();
 
             if self.ct.is_cancelled() {
                 break;
@@ -476,6 +556,10 @@ impl Supervisor {
         reason: String,
     ) -> bool {
         tracing::warn!(server = %self.name, %reason, "MCP server không dùng được");
+        // Ghi lý do ngay, và **không** xoá nó ở lần nối thành công sau: đây là câu trả lời
+        // cho "vì sao lúc nãy nó hỏng", mà câu hỏi đó luôn được hỏi sau khi mọi thứ có vẻ
+        // đã ổn trở lại.
+        *self.report.error.lock() = Some(reason.clone());
         // Báo kết quả lần đầu **ngay bây giờ**, trước khi ngủ: chỗ gọi `mount` đang chờ, và
         // bắt nó chờ hết cả chuỗi thử lại là bắt cửa sổ ứng dụng chờ theo.
         settle(

@@ -1,0 +1,11 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Quyền tối thiểu cho cửa sổ chính. Chỉ có hộp thoại chọn thư mục và mở liên kết ra trình duyệt ngoài — mọi việc còn lại đi qua lệnh của chính ứng dụng, nơi ranh giới workspace được kiểm ở phía Rust.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "opener:default",
+    "dialog:allow-open"
+  ]
+}

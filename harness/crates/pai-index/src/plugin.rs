@@ -1,8 +1,8 @@
 //! Cắm chỉ mục vào cây.
 //!
-//! Một plugin, một provider, hai tool. Gỡ nó ra là mất `symbol_search` và `outline`, và
-//! không mất gì khác: không tool nào của crate khác gọi vào chỉ mục, nên không có luật
-//! nào ở lại canh giữ những tool không còn ở đó.
+//! Một plugin, một provider, năm tool. Gỡ nó ra là mất `symbol_search`, `outline` và ba
+//! tool đồ thị, và không mất gì khác: không tool nào của crate khác gọi vào chỉ mục, nên
+//! không có luật nào ở lại canh giữ những tool không còn ở đó.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -13,8 +13,11 @@ use pai_fs::FileRoots;
 use pai_tools::Tools;
 
 use crate::index::{CodeIndex, Index, SymbolIndex};
+use crate::tools::graph::CodeGraph;
 use crate::tools::outline::Outline;
+use crate::tools::overview::CodeOverview;
 use crate::tools::symbol_search::SymbolSearch;
+use crate::tools::trace::CodeTrace;
 
 pub struct IndexPlugin {
     roots: FileRoots,
@@ -87,6 +90,9 @@ impl Plugin for IndexPlugin {
 
         let tools = ctx.require::<Tools>()?;
         ctx.keep(tools.register(Arc::new(SymbolSearch::new(index.clone()))));
+        ctx.keep(tools.register(Arc::new(CodeGraph::new(index.clone()))));
+        ctx.keep(tools.register(Arc::new(CodeTrace::new(index.clone()))));
+        ctx.keep(tools.register(Arc::new(CodeOverview::new(index.clone()))));
         ctx.keep(tools.register(Arc::new(Outline::new(index, self.roots.clone()))));
         Ok(())
     }

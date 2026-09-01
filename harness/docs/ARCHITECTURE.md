@@ -60,8 +60,8 @@ cần một đường dẫn không?**
 
 | Tầng | Plugin | Vòng đời |
 |---|---|---|
-| Ứng dụng | `tools` `agent` `compaction` `hooks` `sandbox` `mcp` | dựng một lần, sống bằng tiến trình |
-| Dự án | `fs` `shell` `terminal` `index` `lsp` `skills` `subagent` | tháo và cắm lại mỗi lần đổi dự án |
+| Ứng dụng | `tools` `agent` `compaction` `hooks` `sandbox` `mcp` `providers` | dựng một lần, sống bằng tiến trình |
+| Dự án | `fs` `shell` `terminal` `index` `lsp` `rag` `skills` `subagent` | tháo và cắm lại mỗi lần đổi dự án |
 
 Đổi dự án **là** tháo tầng dưới rồi cắm lại với đường dẫn mới. Không có bước "cập nhật gốc
 của fs", "đổi cwd của shell", "trỏ chỉ mục sang chỗ khác". Mỗi bước như thế là một chỗ để
@@ -77,6 +77,32 @@ Việc phân tầng làm theo **tên plugin**, không theo tệp cấu hình và
 tệp thì bản vá của người dùng phải biết chuyện chia tầng; theo `id` thì đổi tên một hàng
 là lặng lẽ đổi tầng của nó.
 
+### Hai loại dự án
+
+Tầng dự án còn chia tiếp một lần nữa, theo **loại** của dự án đang mở:
+
+| Loại | Plugin được cắm | Không có |
+|---|---|---|
+| Mã nguồn | `skills` `fs` `subagent` `index` `lsp` `shell` `terminal` | — |
+| Tài liệu | `skills` `rag` `subagent` | `fs` `shell` `terminal` `index` `lsp` |
+
+Danh sách của dự án tài liệu ngắn hơn hẳn, và mỗi cái vắng mặt là một quyết định chứ không
+phải một chỗ chưa làm. Một thư viện tài liệu là một chồng tệp **do người khác gửi tới**.
+Cấp cho nó `shell` và `edit` nghĩa là thứ duy nhất đứng giữa một câu trong một tệp PDF và
+một lệnh chạy trên máy người dùng là việc mô hình có nghe theo câu đó hay không — và điều
+đó không phải một ranh giới, nó là một hy vọng. `index` và `lsp` cũng vắng mặt vì lý do
+đơn giản hơn: chúng phân tích mã nguồn, và ở đây không có mã nguồn.
+
+Điều quan trọng về mặt thi hành: **không có bước "tắt tool cho dự án tài liệu"**. Tool
+không hợp thì không được cắm ngay từ đầu, nên không có gì để tắt và không có gì để quên
+tắt. Một bước lọc chạy song song với đường cắm plugin sẽ trôi ra khỏi nó — đó chính là
+cái bẫy mà việc chia hai tầng đã tránh được một lần rồi, và chia theo loại tránh lại lần
+nữa bằng đúng cách ấy.
+
+Loại là thuộc tính của **hàng trong kho**, không phải của thư mục. Mở lại một dự án bằng
+`touch` giữ nguyên loại; chỉ `create` mới đặt nó. Nếu mở lại mà loại đổi được thì tập tool
+sẽ đổi dưới chân người dùng vì một lý do họ không nhìn thấy.
+
 ## Cây crate
 
 ```
@@ -89,7 +115,10 @@ pai-shell      Seam thi hành lệnh + tool bash.
 pai-sandbox    Seam giam tiến trình. Seatbelt (macOS), Landlock (Linux), restricted token (Windows).
 pai-mcp        Client cho server bên thứ ba + một server duy nhất phơi cả sổ đăng ký ra ngoài.
 pai-agent      Vòng lặp turn/step. Là plugin, thay được.
-pai-project    Danh sách dự án, cây tệp và nội dung tệp cho *người đọc*.
+pai-index      Chỉ mục ký hiệu + đồ thị bộ nhớ mã nguồn (tree-sitter, SQLite FTS5).
+pai-rag        Thư viện tài liệu: rút chữ, cắt đoạn, nhúng vector, tìm lai ghép.
+pai-providers  Kho provider mô hình, danh mục dựng sẵn, đổi provider lúc đang chạy.
+pai-project    Danh sách dự án, clone từ Git, cây tệp và nội dung tệp cho *người đọc*.
 pai-app        Vỏ Tauri: lệnh invoke và kênh sự kiện. Cố tình mỏng.
 ```
 

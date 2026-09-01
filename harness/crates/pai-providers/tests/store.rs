@@ -1,0 +1,146 @@
+//! Bất biến của kho provider.
+//!
+//! Ba trong bốn bài dưới đây khoá một lỗi *đã* xảy ra ở những bản trước của cùng một
+//! chức năng: khoá API bốc hơi khi người dùng chỉ sửa cái tên, khoá lọt vào log, và một
+//! con trỏ "đang hoạt động" trỏ vào hàng vừa bị xoá. Không bài nào chạm mạng.
+
+use pai_llm::ProviderKind;
+use pai_providers::{ProviderInput, ProviderStore, SqliteProviderStore, StoredProvider};
+
+fn store() -> SqliteProviderStore {
+    SqliteProviderStore::open_in_memory().expect("mở kho")
+}
+
+fn them(store: &SqliteProviderStore, name: &str, key: Option<&str>) -> StoredProvider {
+    let mut input = ProviderInput::create(
+        name,
+        ProviderKind::OpenAiCompatible,
+        "https://api.openai.com/v1",
+    );
+    input.api_key = key.map(str::to_string);
+    store.save(input).expect("lưu")
+}
+
+#[test]
+fn khoa_vang_mat_la_giu_nguyen_chu_khong_phai_xoa() {
+    let store = store();
+    let saved = them(&store, "OpenAI", Some("bi-mat"));
+
+    // `None`: giao diện gửi lên một biểu mẫu không có ô khoá, vì nó chưa bao giờ nhận
+    // được khoá để mà gửi lại.
+    let doi_ten = store
+        .save(
+            ProviderInput::create(
+                "OpenAI nhà",
+                ProviderKind::OpenAiCompatible,
+                "https://api.openai.com/v1",
+            )
+            .with_id(saved.id()),
+        )
+        .expect("đổi tên");
+    assert_eq!(doi_ten.config.api_key, "bi-mat");
+    assert_eq!(doi_ten.config.name, "OpenAI nhà");
+
+    // `Some("k")`: đổi thật.
+    let doi_khoa = store
+        .save(
+            ProviderInput::create(
+                "OpenAI nhà",
+                ProviderKind::OpenAiCompatible,
+                "https://api.openai.com/v1",
+            )
+            .with_id(saved.id())
+            .with_api_key("k"),
+        )
+        .expect("đổi khoá");
+    assert_eq!(doi_khoa.config.api_key, "k");
+
+    // `Some("")`: đường duy nhất để xoá khoá.
+    let xoa_khoa = store
+        .save(
+            ProviderInput::create(
+                "OpenAI nhà",
+                ProviderKind::OpenAiCompatible,
+                "https://api.openai.com/v1",
+            )
+            .with_id(saved.id())
+            .with_api_key(""),
+        )
+        .expect("xoá khoá");
+    assert_eq!(xoa_khoa.config.api_key, "");
+    assert!(!xoa_khoa.has_key());
+}
+
+#[test]
+fn khoa_khong_bao_gio_lot_vao_debug() {
+    let store = store();
+    let saved = them(&store, "OpenAI", Some("sk-khong-duoc-in-ra"));
+
+    let in_ra = format!("{saved:?}");
+    assert!(
+        !in_ra.contains("sk-khong-duoc-in-ra"),
+        "khoá lọt ra Debug: {in_ra}"
+    );
+    assert!(in_ra.contains("<đã đặt>"), "phải nói là có khoá: {in_ra}");
+
+    // Cả khi nó đi kèm cả danh sách — `{:?}` trên một `Vec` gọi `Debug` của từng phần tử.
+    let danh_sach = format!("{:?}", store.list().expect("liệt kê"));
+    assert!(!danh_sach.contains("sk-khong-duoc-in-ra"));
+}
+
+#[test]
+fn xoa_cai_dang_hoat_dong_thi_cai_khac_len_thay() {
+    let store = store();
+    let mot = them(&store, "Một", None);
+    let hai = them(&store, "Hai", None);
+
+    let dang_chay = store.activate(mot.id(), Some("mo-hinh")).expect("ghim");
+    assert!(dang_chay.active);
+    assert_eq!(dang_chay.model.as_deref(), Some("mo-hinh"));
+
+    store.remove(mot.id()).expect("xoá");
+
+    let con_lai = store.active().expect("đọc").expect("phải còn một cái");
+    assert_eq!(con_lai.id(), hai.id());
+    assert!(
+        store
+            .list()
+            .expect("liệt kê")
+            .iter()
+            .all(|row| row.id() != mot.id())
+    );
+
+    // Xoá nốt cái cuối: không còn ai hoạt động, và đó là một câu trả lời hợp lệ chứ không
+    // phải một id chết.
+    store.remove(hai.id()).expect("xoá nốt");
+    assert!(store.active().expect("đọc").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn tep_co_so_du_lieu_chi_chu_no_doc_duoc() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("thư mục tạm");
+    let path = dir.path().join(pai_providers::DB_FILE);
+    let store = SqliteProviderStore::open(&path).expect("mở kho");
+    them(&store, "OpenAI", Some("bi-mat"));
+
+    let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+    assert_eq!(mode & 0o777, 0o600, "quyền thực tế: {:o}", mode & 0o777);
+}
+
+#[cfg(unix)]
+#[test]
+fn tep_qua_ho_thi_bi_siet_lai_luc_mo() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let dir = tempfile::tempdir().expect("thư mục tạm");
+    let path = dir.path().join(pai_providers::DB_FILE);
+    std::fs::write(&path, b"").expect("tạo tệp");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("nới quyền");
+
+    let _store = SqliteProviderStore::open(&path).expect("mở kho");
+    let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
+}

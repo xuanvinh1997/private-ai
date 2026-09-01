@@ -18,15 +18,21 @@ use pai_core::{Composed, Context, Layer, Plugin, PluginCatalog, Row, compose};
 use pai_fs::FsPlugin;
 use pai_hooks::{HookConfig, HooksPlugin};
 use pai_index::IndexPlugin;
-use pai_llm::{LlmAdapter, ModelAdmin, OllamaAdapter, OllamaAdmin};
+use pai_llm::{AdapterRegistry, LlmAdapter, OllamaAdapter, ProviderKind};
 use pai_lsp::LspPlugin;
 use pai_mcp::{ExposeOptions, McpPlugin, ServerConfig, token_path};
-use pai_project::{Project, ProjectStore, SqliteProjectStore};
+use pai_project::{Project, ProjectKind, ProjectStore, SqliteProjectStore};
+use pai_providers::{
+    DB_FILE, ProviderInput, ProviderRuntime, ProviderStore, Providers, SqliteProviderStore,
+};
+use pai_rag::{Embedder, OllamaEmbedder, OpenAiEmbedder, RagPlugin};
 use pai_sandbox::SandboxPlugin;
 use pai_session::{SessionService, SessionStore, SqliteSessionStore};
 use pai_shell::ShellPlugin;
 use pai_terminal::TerminalPlugin;
 use pai_tools::{ToolPipeline, ToolRegistry, Tools, ToolsPlugin};
+
+use crate::llm::{ActiveEmbedder, ActiveLlm};
 
 /// Lời tự giới thiệu đứng đầu mọi prompt.
 const IDENTITY: &str = "\
@@ -48,7 +54,18 @@ pub struct Harness {
     project_scopes: tokio::sync::Mutex<Vec<Context>>,
     projects: Arc<dyn ProjectStore>,
     current: parking_lot::Mutex<Project>,
-    admin: Arc<dyn ModelAdmin>,
+    /// Con trỏ tới provider đang hoạt động. Mọi chỗ cần nói chuyện với mô hình đều cầm
+    /// **cái này**, không cầm một bản sao — xem `crate::llm`.
+    pub llm: Arc<ActiveLlm>,
+    pub embedder: Arc<ActiveEmbedder>,
+    pub providers: Arc<ProviderRuntime>,
+    /// Server MCP khai trong **hàng cấu hình** (`patch.yaml`), giữ nguyên để mỗi lần nạp
+    /// lại còn truyền vào được.
+    ///
+    /// `pai_mcp::apply` gỡ mọi server không nằm trong danh sách nó nhận. Truyền một danh
+    /// sách rỗng nghĩa là server người dùng khai trong bản vá biến mất ngay lần nạp lại
+    /// đầu tiên — im lặng, và họ sẽ đi tìm xem bản vá của mình hỏng ở đâu.
+    pub mcp_rows: Vec<ServerConfig>,
     /// Đủ để dựng lại tầng dự án. Giữ nguyên `Config` thì tiện hơn, nhưng nó mang cả
     /// `workspace` — và một trường nói "thư mục làm việc" mà không còn đúng sau lần đổi
     /// dự án đầu tiên là một cái bẫy đặt sẵn.
@@ -59,7 +76,8 @@ pub struct Harness {
 struct Rebuild {
     ctx: Context,
     config: Config,
-    llm: Arc<dyn LlmAdapter>,
+    llm: Arc<ActiveLlm>,
+    embedder: Arc<ActiveEmbedder>,
     sessions: SessionService,
     composed: Composed,
 }
@@ -71,7 +89,15 @@ impl Harness {
     /// trạng thái bình thường lúc khởi động, và một hộp thoại lỗi ở đó chỉ dạy người dùng
     /// bấm cho qua.
     pub async fn models(&self) -> Vec<crate::protocol::ModelChoice> {
-        match self.admin.list().await {
+        // Hỏi provider **đang hoạt động**, không hỏi một `OllamaAdmin` dựng lúc khởi động.
+        // Bản dựng lúc khởi động sẽ vẫn liệt kê kho của máy chủ cũ sau khi người dùng đổi
+        // sang một provider khác — im lặng, và trông y hệt như đúng.
+        let Some(admin) = self.llm.admin() else {
+            // Provider từ xa không có nửa vòng đời mô hình. Danh sách rỗng là câu trả lời
+            // đúng ở đây; giao diện lấy tên mô hình từ lần thử kết nối.
+            return Vec::new();
+        };
+        match admin.list().await {
             Ok(models) => models
                 .into_iter()
                 .map(|model| crate::protocol::ModelChoice {
@@ -87,6 +113,25 @@ impl Harness {
         }
     }
 
+    /// Đẩy provider đang hoạt động ra mọi chỗ cầm con trỏ chia sẻ.
+    ///
+    /// `ProviderRuntime` tự lo phần `Driver`; đây là nửa còn lại — agent con, phần quản
+    /// trị mô hình, và bộ nhúng của thư viện tài liệu. Gọi nó sau **mọi** thay đổi
+    /// provider, và chỉ gọi nó, để không có đường thứ hai nào quên mất một chỗ.
+    pub async fn apply_provider(&self) -> Result<(), String> {
+        self.providers
+            .apply_active()
+            .await
+            .map_err(|err| err.to_string())?;
+        apply_llm(
+            &self.providers,
+            &self.llm,
+            &self.embedder,
+            &self.rebuild.config,
+        );
+        Ok(())
+    }
+
     pub fn current_project(&self) -> Project {
         self.current.lock().clone()
     }
@@ -97,6 +142,22 @@ impl Harness {
 
     pub fn projects(&self) -> Result<Vec<Project>, String> {
         self.projects.list().map_err(|err| err.to_string())
+    }
+
+    /// Ghi nhận một thư mục thành dự án với loại tường minh. **Không mở nó.**
+    ///
+    /// Tách khỏi [`Harness::open_project`] vì hai việc có hai ngữ nghĩa khác nhau về loại:
+    /// mở thì giữ nguyên loại đã có, tạo thì đặt loại. Gộp lại thành một hàm có tham số
+    /// `Option<ProjectKind>` sẽ đúng ở cả hai chỗ gọi, và sai ở chỗ gọi thứ ba.
+    pub fn create_project(
+        &self,
+        path: &Path,
+        kind: ProjectKind,
+        origin: Option<&str>,
+    ) -> Result<Project, String> {
+        self.projects
+            .create(path, kind, origin)
+            .map_err(|err| err.to_string())
     }
 
     pub fn forget_project(&self, id: &str) -> Result<(), String> {
@@ -128,13 +189,14 @@ impl Harness {
             &self.rebuild.config,
             Path::new(&project.path),
             self.rebuild.llm.clone(),
+            self.rebuild.embedder.clone(),
             self.rebuild.sessions.clone(),
         );
         for row in self
             .rebuild
             .composed
             .active()
-            .filter(|row| thuoc_du_an(row))
+            .filter(|row| hop_loai(row, project.kind))
         {
             let plugin = catalog.build(row).map_err(|err| err.to_string())?;
             let scope = self.rebuild.ctx.plugin(plugin.name());
@@ -166,11 +228,17 @@ impl Harness {
 
 pub struct Config {
     pub data_dir: PathBuf,
+    /// Bộ skill đi kèm bản cài đặt. `None` khi không tìm thấy — và đó là trạng thái hợp
+    /// lệ, không phải lỗi khởi động: ứng dụng vẫn chạy, chỉ là không có skill dựng sẵn.
+    pub builtin_skills: Option<PathBuf>,
     pub workspace: PathBuf,
     pub ollama_url: String,
     pub model: String,
     /// Cửa sổ ngữ cảnh, tính bằng token.
     pub context_window: usize,
+    /// Mô hình nhúng cho thư viện tài liệu. `None` = để `build_embedder` chọn theo loại
+    /// nhà cung cấp, vì tên mặc định của mỗi bên một khác.
+    pub embed_model: Option<String>,
 }
 
 impl Config {
@@ -178,6 +246,7 @@ impl Config {
     pub fn from_env() -> Config {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         Config {
+            builtin_skills: builtin_skills(),
             data_dir: std::env::var("PAI_DATA_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(&home).join(".private-ai")),
@@ -191,12 +260,129 @@ impl Config {
             // Hỏi máy chủ được thì tốt hơn, nhưng khởi động không nên phụ thuộc vào việc
             // máy chủ có đang chạy hay không. Con số này là chỗ lùi về, và nó thấp hơn
             // thực tế — nén sớm hơn cần thiết thì mất token, nén muộn thì mất cả lượt.
+            embed_model: std::env::var("PAI_EMBED_MODEL").ok(),
             context_window: std::env::var("PAI_CONTEXT_WINDOW")
                 .ok()
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(32_768),
         }
     }
+}
+
+/// Tên thư mục riêng cho một dự án trong kho dữ liệu.
+///
+/// Tên thư mục cộng một băm của đường dẫn đầy đủ, theo đúng lối `pai-index` đã dùng: chỉ
+/// tên thì hai repo cùng tên `harness` ở hai chỗ sẽ dùng chung một thư viện, còn chỉ băm
+/// thì không ai nhìn vào thư mục dữ liệu mà đoán được nó thuộc dự án nào.
+fn project_slug(workspace: &Path) -> String {
+    let name = workspace
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "du-an".to_string());
+    // FNV-1a 64 bit, viết tay vì đây là chỗ duy nhất cần băm và một crate băm cho một
+    // chuỗi đường dẫn là một phụ thuộc phải nuôi qua từng bản phát hành.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in workspace.display().to_string().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let safe: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!("{safe}-{hash:016x}")
+}
+
+/// Nửa còn lại của việc đổi provider.
+///
+/// Đọc từ **kho**, không đọc từ `Driver`. Đọc từ `Driver` thì lúc chưa cấu hình được
+/// provider nào, `driver.llm()` vẫn đang là chính [`ActiveLlm`] — và đặt nó làm cái mà
+/// `ActiveLlm` trỏ tới là dựng một vòng lặp vô hạn ngay trong đường gửi token. Kho thì
+/// không bao giờ trả về chính nó.
+fn apply_llm(
+    runtime: &ProviderRuntime,
+    llm: &ActiveLlm,
+    embedder: &ActiveEmbedder,
+    config: &Config,
+) {
+    let active = match runtime.store().active() {
+        Ok(Some(active)) => active,
+        Ok(None) => return,
+        Err(err) => {
+            tracing::warn!("không đọc được nhà cung cấp đang chọn: {err}");
+            return;
+        }
+    };
+    match runtime.registry().adapter(&active.config) {
+        Ok(adapter) => llm.set(adapter),
+        Err(err) => {
+            tracing::warn!("không dựng được adapter: {err}");
+            return;
+        }
+    }
+    embedder.set(Some(build_embedder(&active.config, config)));
+}
+
+/// Bộ nhúng cho một provider.
+///
+/// Mô hình nhúng **khác** mô hình hội thoại, và tên mặc định của nó khác nhau theo từng
+/// nhà cung cấp — nên nó không dùng chung `config.model`. `PAI_EMBED_MODEL` đè lên cả hai
+/// nhánh, vì người đặt biến đó biết rõ họ đang muốn gì.
+fn build_embedder(provider: &pai_llm::ProviderConfig, config: &Config) -> Arc<dyn Embedder> {
+    match provider.kind {
+        ProviderKind::Ollama => {
+            let model = config
+                .embed_model
+                .clone()
+                .unwrap_or_else(|| "nomic-embed-text".to_string());
+            Arc::new(OllamaEmbedder::new(&provider.base_url, model))
+        }
+        ProviderKind::OpenAiCompatible => {
+            let model = config
+                .embed_model
+                .clone()
+                .unwrap_or_else(|| "text-embedding-3-small".to_string());
+            Arc::new(OpenAiEmbedder::new(
+                &provider.base_url,
+                model,
+                provider.api_key.clone(),
+            ))
+        }
+    }
+}
+
+/// Thư mục skill đi kèm bản cài đặt.
+///
+/// Dò theo đường dẫn thay vì hỏi `AppHandle`, vì [`boot`] chạy trước khi có handle nào và
+/// đổi chữ ký của nó chỉ để lấy một đường dẫn là kéo cả Tauri vào một hàm vốn không biết
+/// gì về Tauri. Ba chỗ, theo đúng thứ tự đáng tin:
+///
+/// 1. `PAI_SKILLS_DIR` — lối thoát cho người phát triển và cho bộ test.
+/// 2. `…/Contents/Resources/skills` — chỗ Tauri đặt tài nguyên trong bản `.app` của macOS.
+/// 3. `…/skills` cạnh chính tệp thực thi — chỗ nó nằm khi chạy `tauri dev` và trên Linux.
+/// 4. `<mã nguồn>/skills` — chỉ khi chạy từ cây mã nguồn.
+///
+/// Không có cái nào thì trả `None`. Một danh sách skill rỗng là một danh sách skill rỗng;
+/// nó không đáng để chặn khởi động.
+fn builtin_skills() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("PAI_SKILLS_DIR") {
+        let path = PathBuf::from(explicit);
+        return path.is_dir().then_some(path);
+    }
+    let exe = std::env::current_exe().ok()?;
+    let near_exe = exe.parent()?;
+    let candidates = [
+        near_exe.join("../Resources/skills"),
+        near_exe.join("skills"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skills"),
+    ];
+    candidates.into_iter().find(|path| path.is_dir())
 }
 
 /// Cây plugin mặc định, viết bằng chính định dạng mà người dùng vá.
@@ -240,6 +426,9 @@ patches:
     id: subagent
     plugin: subagent
   - op: insert
+    id: rag
+    plugin: rag
+  - op: insert
     id: index
     plugin: index
   - op: insert
@@ -268,12 +457,39 @@ patches:
 /// thứ" chạy song song với đường cắm plugin, hai đường đó sẽ trôi ra khỏi nhau và đường
 /// thứ hai sẽ luôn thiếu một thứ. Ở đây không có đường thứ hai: [`Harness::open_project`]
 /// gọi đúng `dispose()` rồi đúng `apply()`.
-const PROJECT_PLUGINS: &[&str] = &[
+/// Dự án mã nguồn: đọc, sửa, chạy, tra.
+const CODE_PLUGINS: &[&str] = &[
     "skills", "fs", "subagent", "index", "lsp", "shell", "terminal",
 ];
 
+/// Dự án tài liệu: **chỉ tìm và đọc**.
+///
+/// Danh sách này ngắn hơn hẳn, và mỗi cái vắng mặt là một quyết định chứ không phải một
+/// chỗ chưa làm. Một thư viện tài liệu là một chồng tệp do người khác gửi tới; cấp cho nó
+/// `shell` hay `edit` là mở đường thi hành lệnh và ghi đè tệp ở đúng nơi nội dung không
+/// đáng tin nhất đang nằm. `index` và `lsp` cũng không có mặt: chúng phân tích mã nguồn,
+/// và ở đây không có mã nguồn.
+const DOCS_PLUGINS: &[&str] = &["skills", "rag", "subagent"];
+
+/// Plugin thuộc tầng dự án — tháo ra và cắm lại mỗi lần đổi dự án.
+///
+/// Mỗi cái trong đây bắt lấy một đường dẫn lúc dựng. Đổi dự án nghĩa là những giá trị đó
+/// đổi, và cách duy nhất đúng để đổi chúng là dựng lại.
 fn thuoc_du_an(row: &Row) -> bool {
-    PROJECT_PLUGINS.contains(&row.plugin.as_str())
+    CODE_PLUGINS.contains(&row.plugin.as_str()) || DOCS_PLUGINS.contains(&row.plugin.as_str())
+}
+
+/// Plugin thuộc tầng dự án **và** hợp với loại của dự án đang mở.
+///
+/// Đây là chỗ loại dự án thật sự có hiệu lực. Không có bước "tắt tool cho dự án tài liệu"
+/// nào chạy song song — một bước như thế sẽ trôi ra khỏi danh sách này và sớm muộn để sót
+/// một tool. Tool không hợp thì **không được cắm ngay từ đầu**, nên không có gì để tắt.
+fn hop_loai(row: &Row, kind: ProjectKind) -> bool {
+    match kind {
+        ProjectKind::Code => CODE_PLUGINS,
+        ProjectKind::Docs => DOCS_PLUGINS,
+    }
+    .contains(&row.plugin.as_str())
 }
 
 /// Sổ dựng plugin, gắn với **một** dự án.
@@ -284,7 +500,8 @@ fn thuoc_du_an(row: &Row) -> bool {
 fn catalog(
     config: &Config,
     workspace: &Path,
-    llm: Arc<dyn LlmAdapter>,
+    llm: Arc<ActiveLlm>,
+    embedder: Arc<ActiveEmbedder>,
     sessions: SessionService,
 ) -> PluginCatalog {
     let mut catalog = PluginCatalog::new();
@@ -302,14 +519,18 @@ fn catalog(
     });
     {
         let (data_dir, workspace) = (data_dir.clone(), workspace.clone());
+        let builtin = config.builtin_skills.clone();
         catalog.register("skills", move |_| {
-            // Hai nguồn: gói của người dùng trong kho dữ liệu, và gói riêng của dự án nằm
-            // ngay trong repo. Gói của dự án quét sau nên nó **thay thế** gói trùng tên —
-            // một repo nói khác đi về quy trình của chính nó thì nó đúng.
-            Ok(Box::new(SkillsPlugin::new([
-                data_dir.join("skills"),
-                workspace.join(".pai/skills"),
-            ])) as Box<dyn Plugin>)
+            // Ba nguồn, quét theo thứ tự và nguồn sau **thay thế** gói trùng tên của nguồn
+            // trước: bộ dựng sẵn đi kèm bản cài đặt, gói của người dùng trong kho dữ liệu,
+            // rồi gói riêng của dự án nằm ngay trong repo. Thứ tự ấy là một thang thẩm
+            // quyền — một repo nói khác đi về quy trình của chính nó thì nó đúng, và người
+            // dùng đè lên bộ dựng sẵn thì họ đúng.
+            let mut roots = Vec::with_capacity(3);
+            roots.extend(builtin.clone());
+            roots.push(data_dir.join("skills"));
+            roots.push(workspace.join(".pai/skills"));
+            Ok(Box::new(SkillsPlugin::new(roots)) as Box<dyn Plugin>)
         });
     }
     {
@@ -334,11 +555,39 @@ fn catalog(
     {
         let (workspace, model) = (workspace.clone(), config.model.clone());
         catalog.register("subagent", move |_| {
+            // Con trỏ chia sẻ, không phải bản sao adapter: agent con phải đi tới cùng
+            // provider mà lượt cha đang dùng, kể cả khi người dùng vừa đổi provider.
+            let llm: Arc<dyn LlmAdapter> = llm.clone();
             Ok(Box::new(SubagentPlugin::new(
-                llm.clone(),
+                llm,
                 sessions.clone(),
                 model.clone(),
                 workspace.display().to_string(),
+            )) as Box<dyn Plugin>)
+        });
+    }
+    {
+        let workspace = workspace.clone();
+        let data_dir = data_dir.clone();
+        catalog.register("rag", move |_| {
+            // Kho tài liệu nằm trong **kho dữ liệu của ứng dụng**, không trong thư mục dự
+            // án, dù thư mục dự án thoạt nghe là chỗ tự nhiên hơn. Ba lý do, và cả ba đều
+            // là chuyện đã xảy ra với người dùng thật ở các sản phẩm khác:
+            //
+            //   - Thư viện giữ một **bản sao** của mọi tài liệu. Đổ nó vào thư mục dự án
+            //     là nhân đôi dung lượng ngay trước mắt người dùng, trong đúng thư mục họ
+            //     vừa thả hai mươi tệp PDF vào.
+            //   - Bản sao đó là nguồn dựng lại chỉ mục. Nằm trong thư mục người dùng thì
+            //     một lần dọn tay sẽ làm tài liệu biến mất khỏi thư viện mà không ai báo.
+            //   - `Library::remove` xoá bản sao. Xoá tệp trong thư mục của người dùng là
+            //     việc một thư viện không nên tự làm, kể cả khi tệp đó do nó tạo ra.
+            let embedder: Option<Arc<dyn Embedder>> = Some(embedder.clone());
+            Ok(Box::new(RagPlugin::new(
+                data_dir
+                    .join("du-an")
+                    .join(project_slug(&workspace))
+                    .join("tai-lieu"),
+                embedder,
             )) as Box<dyn Plugin>)
         });
     }
@@ -383,7 +632,7 @@ fn catalog(
         let data_dir = data_dir.clone();
         catalog.register("mcp", move |value| {
             let row: McpRow = serde_json::from_value(value.clone())?;
-            let mut plugin = McpPlugin::new(row.servers);
+            let mut plugin = McpPlugin::new(row.servers).storing(data_dir.join("mcp.json"));
             // Phơi ra ngoài **tắt mặc định**. Mở một cổng, kể cả cổng loopback, là một
             // hành động hướng ra ngoài; nó phải là thứ người dùng bật, không phải thứ họ
             // phát hiện ra là đang chạy.
@@ -466,17 +715,37 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         Arc::new(SqliteSessionStore::open(config.data_dir.join("phien.db"))?);
     let sessions = SessionService::new(store);
     let http = reqwest::Client::new();
-    let llm: Arc<dyn LlmAdapter> = Arc::new(OllamaAdapter::new(
+
+    // Kho provider, và một lần gieo nếu nó rỗng.
+    //
+    // Cấu hình môi trường (`PAI_OLLAMA_URL`, `PAI_MODEL`) không biến mất — nó trở thành
+    // **hàng đầu tiên trong kho** thay vì một đường đi song song. Nhờ vậy có đúng một
+    // nguồn sự thật cho "đang nói chuyện với ai", và người dùng sửa được nó từ trong ứng
+    // dụng thay vì phải đi tìm biến môi trường đã đặt ở đâu.
+    let providers: Arc<dyn ProviderStore> =
+        Arc::new(SqliteProviderStore::open(config.data_dir.join(DB_FILE))?);
+    if providers.list()?.is_empty() {
+        let seeded = providers.save(
+            ProviderInput::create(
+                "Ollama trên máy này",
+                ProviderKind::Ollama,
+                config.ollama_url.clone(),
+            )
+            .with_model(config.model.clone()),
+        )?;
+        providers.activate(seeded.id(), Some(&config.model))?;
+    }
+
+    // Con trỏ tới provider đang hoạt động. Dựng **trước** vòng lặp plugin vì `subagent`
+    // cần nó lúc cắm, và dựng nó rỗng rồi điền sau nghĩa là có một khoảng thời gian nó
+    // trỏ vào hư không.
+    let boot_adapter: Arc<dyn LlmAdapter> = Arc::new(OllamaAdapter::new(
         "ollama",
         &config.ollama_url,
         http.clone(),
     ));
-    // Nửa quản trị đứng riêng với nửa hội thoại: liệt kê và nạp/nhả mô hình không phải
-    // việc của vòng lặp agent, và trộn chúng lại là cho vòng lặp một quyền nó không cần.
-    let admin: Arc<dyn ModelAdmin> = Arc::new(OllamaAdmin::new(
-        config.ollama_url.trim_end_matches('/').to_string(),
-        http,
-    ));
+    let llm = Arc::new(ActiveLlm::new(boot_adapter));
+    let embedder = Arc::new(ActiveEmbedder::empty());
 
     let projects: Arc<dyn ProjectStore> =
         Arc::new(SqliteProjectStore::open(config.data_dir.join("du-an.db"))?);
@@ -484,11 +753,19 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     let project = projects.touch(&config.workspace)?;
 
     let composed = compose(&layers(&config)?)?;
+    // Rút danh sách server của hàng `mcp` **một lần**, ngay chỗ cây cấu hình còn nguyên.
+    let mcp_rows = composed
+        .active()
+        .find(|row| row.plugin == "mcp")
+        .and_then(|row| serde_json::from_value::<McpRow>(row.config.clone()).ok())
+        .map(|row| row.servers)
+        .unwrap_or_default();
     tracing::debug!("cây plugin:\n{}", composed.dump());
     let catalog = catalog(
         &config,
         Path::new(&project.path),
         llm.clone(),
+        embedder.clone(),
         sessions.clone(),
     );
 
@@ -501,6 +778,11 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     let mut scopes = Vec::new();
     let mut project_scopes = Vec::new();
     for row in composed.active() {
+        // Bỏ qua trước cả khi dựng: một hàng `rag` trong dự án mã nguồn không có gì để
+        // dựng, và gọi `build` rồi vứt đi là mở một cơ sở dữ liệu chẳng ai đọc.
+        if thuoc_du_an(row) && !hop_loai(row, project.kind) {
+            continue;
+        }
         let plugin = catalog.build(row)?;
         let scope = ctx.plugin(plugin.name());
         plugin.apply(&scope).await?;
@@ -517,11 +799,33 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
 
     let driver = Arc::new(Driver::new(
         ctx.clone(),
-        llm.clone(),
+        llm.clone() as Arc<dyn LlmAdapter>,
         pipeline,
         prompt,
         config.model.clone(),
     ));
+
+    // Tầng provider dựng **sau** `Driver` vì nó cần chính cái `Driver` ấy để đẩy adapter
+    // vào. Nó không phải một hàng plugin vì lý do đó: một plugin được cắm trước khi
+    // `Driver` tồn tại, nên nó sẽ phải nhận một `Driver` chưa có — và một seam nhận giá
+    // trị điền sau là một seam có một khoảng thời gian trả lời sai.
+    let runtime = Arc::new(ProviderRuntime::new(
+        providers.clone(),
+        Arc::new(AdapterRegistry::new(http.clone())),
+        driver.clone(),
+        http.clone(),
+    ));
+    // Giao guard cho scope gốc thay vì giữ nó trong `Harness`: `Guard` bọc một
+    // `Box<dyn FnOnce + Send>` nên nó không `Sync`, mà `Harness` thì nằm trong `State` của
+    // Tauri và phải `Sync`. Scope gốc sống bằng tiến trình, nên vòng đời không đổi — chỉ
+    // đổi chỗ cất.
+    ctx.keep(ctx.provide::<Providers>(runtime.clone())?);
+    // Máy chưa cấu hình gì là trạng thái bình thường lúc mới cài, không phải lỗi khởi
+    // động: ứng dụng vẫn mở, và màn hình provider là chỗ người dùng sửa nó.
+    if let Err(err) = runtime.apply_active().await {
+        tracing::warn!("chưa dùng được nhà cung cấp nào: {err}");
+    }
+    apply_llm(&runtime, &llm, &embedder, &config);
     Ok(Harness {
         ctx: ctx.clone(),
         sessions: sessions.clone(),
@@ -531,13 +835,17 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         project_scopes: tokio::sync::Mutex::new(project_scopes),
         projects,
         current: parking_lot::Mutex::new(project),
-        admin,
+        providers: runtime,
+        mcp_rows,
         rebuild: Rebuild {
             ctx,
             config,
-            llm,
+            llm: llm.clone(),
+            embedder: embedder.clone(),
             sessions,
             composed,
         },
+        llm,
+        embedder,
     })
 }

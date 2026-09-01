@@ -16,8 +16,9 @@ use tokio_util::sync::CancellationToken;
 use crate::config::ServerConfig;
 use crate::expose::RegistryServer;
 use crate::hub::{McpHub, Mount};
-use crate::seam::Mcp;
+use crate::seam::{Mcp, McpConfig};
 use crate::serve::{serve_http, serve_stdio};
+use crate::store::{McpStore, apply, merge};
 use crate::token::{McpToken, token_path};
 
 /// Phơi sổ đăng ký ra ngoài ở đâu.
@@ -48,6 +49,7 @@ impl ExposeOptions {
 #[derive(Default)]
 pub struct McpPlugin {
     servers: Vec<ServerConfig>,
+    store: Option<PathBuf>,
     expose: Option<ExposeOptions>,
 }
 
@@ -55,8 +57,19 @@ impl McpPlugin {
     pub fn new(servers: Vec<ServerConfig>) -> McpPlugin {
         McpPlugin {
             servers,
+            store: None,
             expose: None,
         }
+    }
+
+    /// Chỗ đặt kho server người dùng tự quản.
+    ///
+    /// Tuỳ chọn, và phải tuỳ chọn: một `patch.yaml` đang khai sẵn server phải chạy y như
+    /// trước dù chưa ai bật màn hình quản lý MCP lên bao giờ. Có kho thì kho được **hợp
+    /// nhất** với hàng cấu hình — xem [`merge`] — chứ không thay thế nó.
+    pub fn storing(mut self, path: impl Into<PathBuf>) -> McpPlugin {
+        self.store = Some(path.into());
+        self
     }
 
     pub fn exposing(mut self, options: ExposeOptions) -> McpPlugin {
@@ -81,18 +94,42 @@ impl Plugin for McpPlugin {
                 .defer_async("mcp/hub", move || async move { hub.shutdown().await });
         }
 
+        // Kho được cắm làm seam trước khi nối bất cứ thứ gì: màn hình quản lý MCP phải mở
+        // ra được ngay cả khi mọi server đều đang hỏng, và danh sách người dùng khai không
+        // phụ thuộc vào việc có nối được hay không.
+        let store = match &self.store {
+            Some(path) => {
+                let store = Arc::new(McpStore::open(path.clone()));
+                ctx.keep(ctx.provide::<McpConfig>(store.clone())?);
+                Some(store)
+            }
+            None => None,
+        };
+
         // Nối server bên thứ ba **trong nền**. Mỗi cái được phép ngốn tới hai mươi giây
         // trước khi bị coi là không có ở đó, và cộng dồn lại thì cửa sổ ứng dụng đứng im
         // chờ những server không phải của ta — đúng cái mà "best-effort" tồn tại để tránh.
-        let servers = self.servers.clone();
+        //
+        // Lượt khởi động đi qua đúng đường mà mọi thay đổi sau này đi: [`apply`], tức là
+        // [`McpHub::reload`]. Một đường riêng cho lượt đầu là một đường không ai chạy lại,
+        // và nó sẽ trôi ra khỏi đường kia mà không ai nhận ra.
+        let rows = self.servers.clone();
         let hub_for_mount = hub.clone();
         tokio::spawn(async move {
-            for config in servers {
-                if !config.enabled {
-                    continue;
-                }
-                let name = config.name.clone();
-                match hub_for_mount.mount(config).await {
+            let report = match &store {
+                Some(store) => match apply(&hub_for_mount, store, &rows).await {
+                    Ok(report) => report,
+                    Err(err) => {
+                        // Kho hỏng không được kéo theo hàng cấu hình: người dùng vẫn phải
+                        // có những server mà bản cài đặt mồi sẵn cho họ.
+                        tracing::warn!(%err, "không đọc được kho MCP, chỉ dùng hàng cấu hình");
+                        hub_for_mount.reload(merge(rows, Vec::new())).await
+                    }
+                },
+                None => hub_for_mount.reload(rows).await,
+            };
+            for (name, result) in report {
+                match result {
                     Ok(Mount::Connected { tools }) => {
                         tracing::info!(server = %name, tools, "đã cắm MCP server");
                     }

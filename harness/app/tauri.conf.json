@@ -35,6 +35,9 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "resources": [
+      "../skills/**/*"
+    ],
     "category": "DeveloperTool",
     "shortDescription": "Coding agent chạy trên máy bạn",
     "longDescription": "Trợ lý lập trình chạy hoàn toàn trên máy người dùng: đọc và sửa mã nguồn trong thư mục làm việc, chạy lệnh trong vòng giam, và không gửi gì ra ngoài ngoài lời gọi tới máy chủ mô hình mà người dùng chỉ định.",

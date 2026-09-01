@@ -13,8 +13,10 @@
 //! cùng một thư mục — qua symlink, qua `..` — phải là một dự án, nếu không người dùng sẽ
 //! có hai hàng trong danh sách trỏ cùng một chỗ, mỗi hàng nhớ một nửa lịch sử.
 
+mod clone;
 mod store;
 mod tree;
 
-pub use store::{Project, ProjectError, ProjectStore, SqliteProjectStore};
+pub use clone::{CloneError, CloneEvent, CloneRequest, clone};
+pub use store::{Project, ProjectError, ProjectKind, ProjectStore, SqliteProjectStore};
 pub use tree::{FileView, TreeEntry, list_tree, read_file};

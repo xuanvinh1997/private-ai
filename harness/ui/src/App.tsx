@@ -1,4 +1,4 @@
-import { createMemo, createSignal, Match, onCleanup, onMount, Show, Switch } from "solid-js";
+import { createEffect, createMemo, createSignal, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import {
   answerApproval,
   cancelTurn,
@@ -58,7 +58,10 @@ import Icon from "./components/Icon";
 import { IconButton } from "./components/primitives";
 import OpenProjectDialog from "./components/OpenProjectDialog";
 import ProjectSwitcher from "./components/ProjectSwitcher";
-import Rail, { type TabId } from "./components/Rail";
+import Rail, { tabsFor, type TabId } from "./components/Rail";
+import ProjectsView from "./components/projects/ProjectsView";
+import DocsView from "./components/docs/DocsView";
+import GraphExplorer from "./components/graph/GraphExplorer";
 import SessionPalette from "./components/SessionPalette";
 import SessionPanel from "./components/SessionPanel";
 import SettingsView from "./components/SettingsView";
@@ -87,6 +90,13 @@ export default function App() {
   const [draft, setDraft] = createSignal("");
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [tab, setTab] = createSignal<TabId>("chat");
+
+  // Đổi dự án có thể làm chính tab đang mở biến mất khỏi rail — mở một thư viện tài liệu
+  // trong lúc đang đứng ở tab Mã nguồn chẳng hạn. Không sửa thì rail không còn nút nào
+  // sáng và khung nội dung trống trơn, trông y hệt một lỗi vẽ.
+  createEffect(() => {
+    if (!tabsFor(project()?.kind).includes(tab())) setTab("chat");
+  });
   const [loading, setLoading] = createSignal(true);
   const [models, setModels] = createSignal<ModelChoice[]>([]);
   const [model, setModel] = createSignal(MODEL_CHUA_BIET);
@@ -397,7 +407,12 @@ export default function App() {
   // Thả một thư mục vào cửa sổ là mở nó. Không đoán trước xem đường dẫn là thư mục hay
   // tệp: chỉ lõi mới nhìn được đĩa, và một luật đoán ở đây sẽ từ chối nhầm những thư mục
   // có dấu chấm trong tên.
+  // Thả một thư mục vào cửa sổ là mở nó thành dự án — nhưng **chỉ** khi không có màn
+  // hình nào khác đang nhận cú thả. Màn hình dự án và thư viện tài liệu đều gắn cùng cái
+  // hook này, và Tauri phát sự kiện cho mọi người nghe: không có chốt ở đây thì một tệp
+  // PDF thả vào thư viện cũng bị đem đi mở thành dự án.
   useDragDrop((paths) => {
+    if (tab() === "projects" || tab() === "library") return;
     const first = paths[0];
     if (first !== undefined) void openFolder(first);
   });
@@ -524,7 +539,7 @@ export default function App() {
       }}
     >
       <div class="flex h-full bg-bg">
-        <Rail active={tab()} onSelect={setTab} disabled={switching()} />
+        <Rail active={tab()} onSelect={setTab} kind={project()?.kind} disabled={switching()} />
 
         <Show when={tab() === "chat" && sessionPanelOpen()}>
           <SessionPanel
@@ -659,6 +674,34 @@ export default function App() {
                   />
                 </Match>
 
+                <Match when={tab() === "projects"}>
+                  <ProjectsView
+                    projects={projects()}
+                    switching={switching()}
+                    error={dialogError()}
+                    onOpen={(picked) => void switchProject(picked.id)}
+                    onForget={forgetProject}
+                    onCreated={async () => {
+                      setProjects(await listProjects());
+                      await adoptProject();
+                    }}
+                  />
+                </Match>
+
+                <Match when={tab() === "library"}>
+                  {/* `resetKey` là đường dẫn dự án: đổi dự án là nạp lại thư viện từ đầu.
+                      Dùng id thì một dự án bị bỏ rồi thêm lại sẽ mang id mới cho cùng một
+                      thư viện, và màn hình nạp lại một thứ không đổi. */}
+                  <DocsView resetKey={project()?.path ?? ""} name={project()?.name} />
+                </Match>
+
+                <Match when={tab() === "graph"}>
+                  <GraphExplorer
+                    projectName={project()?.name ?? "Chưa mở dự án"}
+                    onOpenFile={(path) => showFile(path)}
+                  />
+                </Match>
+
                 <Match when={tab() === "settings"}>
                   <SettingsView />
                 </Match>
@@ -716,8 +759,11 @@ export default function App() {
 
 const TAB_TITLE: Record<TabId, string> = {
   chat: "Hội thoại",
+  projects: "Dự án",
   diff: "Thay đổi trong phiên",
   code: "Mã nguồn",
+  graph: "Đồ thị mã nguồn",
+  library: "Thư viện tài liệu",
   terminal: "Terminal",
   settings: "Cài đặt",
 };

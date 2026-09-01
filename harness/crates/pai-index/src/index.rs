@@ -8,8 +8,16 @@
 //!
 //! Vì thế lần quét thường xuyên nhất chỉ là một loạt `stat`: đọc `mtime` và kích thước,
 //! so với bảng `files`, và dừng ở đó cho mọi tệp không đổi. Parse chỉ xảy ra ở phần chênh.
+//!
+//! # Trần, và vì sao chúng là trần cứng chứ không phải mặc định
+//!
+//! Ba con số dưới đây — [`MAX_DEPTH`], [`MAX_NODES`], [`MAX_PATHS`] — không nhận giá trị
+//! từ người gọi, chỉ cắt xuống. Một đỉnh bậc bốn trăm trả về nguyên vẹn là một quả cầu
+//! đen trên màn hình và mười nghìn token trong cửa sổ ngữ cảnh, và cả hai hậu quả đó đều
+//! xảy ra **sau** khi lời gọi đã thành công, tức là quá muộn để người gọi tự sửa. Cái duy
+//! nhất người gọi cần biết là nó đã bị cắt, và [`Neighborhood::truncated`] nói ra.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -22,9 +30,27 @@ use pai_fs::FileRoots;
 
 use crate::error::IndexError;
 use crate::extract::Extractor;
+use crate::graph::{EdgeKind, GraphEdge, GraphNode, Neighborhood, Overview, Stats};
 use crate::lang::{self, Lang};
 use crate::store::Store;
 use crate::symbol::{Symbol, SymbolKind};
+
+/// Xa hơn bốn bước thì lát cắt không còn là "quanh ký hiệu này" nữa mà là "gần hết repo",
+/// và một đồ thị bằng cả repo trả lời được đúng bằng số câu hỏi mà không có đồ thị nào.
+pub const MAX_DEPTH: u32 = 4;
+/// Trần số đỉnh của một lân cận.
+pub const MAX_NODES: usize = 200;
+/// Bao nhiêu đỉnh khi người gọi không nói gì.
+pub const DEFAULT_NODES: usize = 60;
+/// Trần số đường đi của một lần truy vết.
+pub const MAX_PATHS: usize = 40;
+/// Trần số lần mở rộng của một lần truy vết. Một đồ thị có chu trình dày làm số đường đi
+/// nổ theo hàm mũ trước khi kịp chạm [`MAX_PATHS`]; cái này chặn thời gian, cái kia chặn
+/// kích thước kết quả.
+const TRACE_BUDGET: usize = 4_000;
+/// Bao nhiêu thư mục và bao nhiêu ký hiệu trung tâm trong một bản đồ kiến trúc.
+const OVERVIEW_DIRS: usize = 40;
+const OVERVIEW_CENTRAL: usize = 20;
 
 /// Kết quả một lần đồng bộ. Đây là số để đọc log bằng, không phải để mô hình đọc.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -35,6 +61,8 @@ pub struct SyncReport {
     pub parsed: usize,
     /// Số tệp đã biến mất khỏi đĩa và vừa bị quên.
     pub forgotten: usize,
+    /// Số cạnh trong đồ thị sau lần quét.
+    pub edges: usize,
 }
 
 #[async_trait]
@@ -52,6 +80,26 @@ pub trait SymbolIndex: Send + Sync + 'static {
     /// `Ok(None)` nghĩa là tệp không nằm trong chỉ mục — khác hẳn `Ok(Some(vec![]))`, là
     /// một tệp đã quét và thật sự không có ký hiệu nào.
     async fn outline(&self, path: &Path) -> Result<Option<Vec<Symbol>>, IndexError>;
+
+    /// Lát cắt quanh một ký hiệu. `depth` và `limit` đều bị cắt xuống trần cứng, và
+    /// [`Neighborhood::truncated`] nói ra khi điều đó xảy ra.
+    async fn neighborhood(
+        &self,
+        symbol: &str,
+        depth: u32,
+        limit: usize,
+    ) -> Result<Neighborhood, IndexError>;
+
+    /// Các đường đi **ngược** theo cạnh `calls`: ai gọi, rồi ai gọi cái đó.
+    async fn callers(&self, symbol: &str, depth: u32) -> Result<Vec<Vec<GraphNode>>, IndexError>;
+
+    /// Các đường đi **xuôi** theo cạnh `calls`.
+    async fn callees(&self, symbol: &str, depth: u32) -> Result<Vec<Vec<GraphNode>>, IndexError>;
+
+    /// Bản đồ kiến trúc: thư mục, ngôn ngữ, ký hiệu bậc cao nhất.
+    async fn overview(&self) -> Result<Overview, IndexError>;
+
+    async fn stats(&self) -> Result<Stats, IndexError>;
 }
 
 pub enum Index {}
@@ -103,6 +151,22 @@ impl CodeIndex {
     pub fn symbol_count(&self) -> Result<i64, IndexError> {
         self.store.symbol_count()
     }
+
+    pub fn edge_count(&self) -> Result<i64, IndexError> {
+        self.store.edge_count()
+    }
+
+    /// Cạnh quan sát được **trong một tệp**, đã kèm cả hai đầu.
+    ///
+    /// Nó không nằm trên seam vì mô hình không hỏi câu này; nó nằm ở đây vì một bài kiểm
+    /// chứng phải khẳng định được một cạnh **cụ thể** tồn tại, chứ không phải "có hơn
+    /// không cạnh".
+    pub fn edges_of_file(
+        &self,
+        path: &Path,
+    ) -> Result<Vec<(GraphNode, EdgeKind, GraphNode)>, IndexError> {
+        self.store.edges_of_file(&path.display().to_string())
+    }
 }
 
 #[async_trait]
@@ -139,6 +203,39 @@ impl SymbolIndex for CodeIndex {
         })
         .await
     }
+
+    async fn neighborhood(
+        &self,
+        symbol: &str,
+        depth: u32,
+        limit: usize,
+    ) -> Result<Neighborhood, IndexError> {
+        let store = self.store.clone();
+        let symbol = symbol.to_string();
+        blocking(move || neighborhood(&store, &symbol, depth, limit)).await
+    }
+
+    async fn callers(&self, symbol: &str, depth: u32) -> Result<Vec<Vec<GraphNode>>, IndexError> {
+        let store = self.store.clone();
+        let symbol = symbol.to_string();
+        blocking(move || trace(&store, &symbol, depth, false)).await
+    }
+
+    async fn callees(&self, symbol: &str, depth: u32) -> Result<Vec<Vec<GraphNode>>, IndexError> {
+        let store = self.store.clone();
+        let symbol = symbol.to_string();
+        blocking(move || trace(&store, &symbol, depth, true)).await
+    }
+
+    async fn overview(&self) -> Result<Overview, IndexError> {
+        let store = self.store.clone();
+        blocking(move || store.overview(OVERVIEW_DIRS, OVERVIEW_CENTRAL)).await
+    }
+
+    async fn stats(&self) -> Result<Stats, IndexError> {
+        let store = self.store.clone();
+        blocking(move || store.stats()).await
+    }
 }
 
 async fn blocking<T, F>(body: F) -> Result<T, IndexError>
@@ -150,6 +247,176 @@ where
         Ok(result) => result,
         Err(err) => Err(IndexError::Unavailable(err.to_string())),
     }
+}
+
+/// Lát cắt quanh một ký hiệu, mở dần từng vòng.
+///
+/// Mở theo vòng chứ không đệ quy vì mỗi vòng là **một** câu truy vấn cho cả biên giới,
+/// chứ không phải một câu cho mỗi đỉnh; và vì trần phải được kiểm sau mỗi vòng, không
+/// phải sau khi đã trót lấy hết.
+fn neighborhood(
+    store: &Store,
+    symbol: &str,
+    depth: u32,
+    limit: usize,
+) -> Result<Neighborhood, IndexError> {
+    let seeds = store.nodes_named(symbol)?;
+    if seeds.is_empty() {
+        return Ok(Neighborhood::default());
+    }
+    let reach = depth.min(MAX_DEPTH);
+    let cap = limit.clamp(1, MAX_NODES);
+    let edge_cap = cap.saturating_mul(4);
+    let mut truncated = depth > MAX_DEPTH || limit > MAX_NODES;
+
+    let mut order: Vec<i64> = Vec::new();
+    let mut seen: HashSet<i64> = HashSet::new();
+    for node in &seeds {
+        if seen.insert(node.id) {
+            order.push(node.id);
+        }
+    }
+    if order.len() > cap {
+        order.truncate(cap);
+        seen = order.iter().copied().collect();
+        truncated = true;
+    }
+
+    let mut edges: Vec<GraphEdge> = Vec::new();
+    let mut recorded: HashSet<GraphEdge> = HashSet::new();
+    let mut frontier = order.clone();
+    for _ in 0..reach {
+        if frontier.is_empty() {
+            break;
+        }
+        let mut next: Vec<i64> = Vec::new();
+        let mut queued: HashSet<i64> = HashSet::new();
+        for edge in store.edges_touching(&frontier)? {
+            if recorded.insert(edge) {
+                edges.push(edge);
+            }
+            for id in [edge.src, edge.dst] {
+                if !seen.contains(&id) && queued.insert(id) {
+                    next.push(id);
+                }
+            }
+        }
+        if edges.len() > edge_cap {
+            edges.truncate(edge_cap);
+            truncated = true;
+        }
+        let room = cap.saturating_sub(order.len());
+        if next.len() > room {
+            next.truncate(room);
+            truncated = true;
+        }
+        for id in &next {
+            seen.insert(*id);
+            order.push(*id);
+        }
+        frontier = next;
+    }
+
+    // Một cạnh có một đầu nằm ngoài tập đỉnh là một cạnh không vẽ được và không đọc được.
+    // Nó chỉ xuất hiện khi đã cắt, và `truncated` đã nói điều đó rồi.
+    edges.retain(|edge| seen.contains(&edge.src) && seen.contains(&edge.dst));
+
+    let mut fetched: HashMap<i64, GraphNode> = store
+        .nodes_by_ids(&order)?
+        .into_iter()
+        .map(|node| (node.id, node))
+        .collect();
+    let nodes: Vec<GraphNode> = order
+        .iter()
+        .filter_map(|id| fetched.remove(id))
+        .collect::<Vec<_>>();
+
+    Ok(Neighborhood {
+        nodes,
+        edges,
+        truncated,
+    })
+}
+
+/// Các đường đi theo cạnh `calls`, một chiều.
+///
+/// Chỉ `calls`: `contains` nối mọi tệp với mọi ký hiệu của nó, nên để nó vào thì mọi hàm
+/// đều "gọi tới" mọi hàm cùng tệp qua hai bước, và câu trả lời hết nói lên điều gì.
+fn trace(
+    store: &Store,
+    symbol: &str,
+    depth: u32,
+    forward: bool,
+) -> Result<Vec<Vec<GraphNode>>, IndexError> {
+    let seeds = store.nodes_named(symbol)?;
+    let reach = depth.clamp(1, MAX_DEPTH);
+    let mut found: Vec<Vec<i64>> = Vec::new();
+    let mut budget = TRACE_BUDGET;
+
+    'seeds: for seed in &seeds {
+        let mut stack: Vec<Vec<i64>> = vec![vec![seed.id]];
+        while let Some(path) = stack.pop() {
+            if found.len() >= MAX_PATHS || budget == 0 {
+                break 'seeds;
+            }
+            budget -= 1;
+            let Some(last) = path.last().copied() else {
+                continue;
+            };
+            if path.len() as u32 > reach {
+                found.push(path);
+                continue;
+            }
+            let mut next: Vec<i64> = Vec::new();
+            for edge in store.step(&[last], EdgeKind::Calls, forward)? {
+                let id = if forward { edge.dst } else { edge.src };
+                if !path.contains(&id) && !next.contains(&id) {
+                    next.push(id);
+                }
+            }
+            if next.is_empty() {
+                // Một đường đi chỉ có mình cái đỉnh xuất phát không phải một đường đi.
+                if path.len() > 1 {
+                    found.push(path);
+                }
+                continue;
+            }
+            for id in next {
+                let mut branch = path.clone();
+                branch.push(id);
+                stack.push(branch);
+            }
+        }
+    }
+
+    found.sort();
+    found.dedup();
+    let ids: Vec<i64> = {
+        let mut all: Vec<i64> = found.iter().flatten().copied().collect();
+        all.sort_unstable();
+        all.dedup();
+        all
+    };
+    let nodes: HashMap<i64, GraphNode> = store
+        .nodes_by_ids(&ids)?
+        .into_iter()
+        .map(|node| (node.id, node))
+        .collect();
+    let mut paths: Vec<Vec<GraphNode>> = found
+        .into_iter()
+        .map(|path| {
+            path.into_iter()
+                .filter_map(|id| nodes.get(&id).cloned())
+                .collect::<Vec<_>>()
+        })
+        .filter(|path| path.len() > 1)
+        .collect();
+    paths.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| names(a).cmp(&names(b))));
+    Ok(paths)
+}
+
+fn names(path: &[GraphNode]) -> Vec<&str> {
+    path.iter().map(|node| node.name.as_str()).collect()
 }
 
 /// Dấu vân tay của một tệp trên đĩa: đủ để nói "không đổi", không đủ để nói "giống hệt".
@@ -183,9 +450,9 @@ fn scan(
         }
         match std::fs::read_to_string(path) {
             Ok(source) => {
-                let symbols = extractor.extract(print.lang, path, &source);
+                let found = extractor.extract(print.lang, path, &source);
                 parses.fetch_add(1, Ordering::Relaxed);
-                store.replace_file(path, print.lang.name, print.mtime, print.size, &symbols)?;
+                store.replace_file(path, print.lang.name, print.mtime, print.size, &found)?;
                 parsed += 1;
             }
             Err(err) => {
@@ -193,7 +460,13 @@ fn scan(
                 // vào bảng với **không ký hiệu nào**. Bỏ qua im lặng thì nó bị đọc hỏng
                 // lại ở mọi lần quét sau; ghi lại thì nó im cho tới khi có người sửa nó.
                 tracing::debug!(path, error = %err, "bỏ qua tệp không đọc được");
-                store.replace_file(path, print.lang.name, print.mtime, print.size, &[])?;
+                store.replace_file(
+                    path,
+                    print.lang.name,
+                    print.mtime,
+                    print.size,
+                    &Default::default(),
+                )?;
             }
         }
     }
@@ -206,11 +479,29 @@ fn scan(
     let forgotten = gone.len();
     store.forget_files(&gone)?;
 
+    // Phân giải lại **toàn kho** khi có bất cứ thứ gì đổi, và không làm gì khi không có gì
+    // đổi. Một tệp mới có thể là đích của những cạnh đã nằm chờ trong `refs` từ lâu, nên
+    // "chỉ phân giải lại tệp vừa đổi" sẽ để chúng nằm chờ mãi mãi.
+    let edges = if parsed > 0 || forgotten > 0 {
+        store.rebuild_edges()?
+    } else {
+        store.edge_count()? as usize
+    };
+    store.mark_scanned(now_ms())?;
+
     Ok(SyncReport {
         scanned: current.len(),
         parsed,
         forgotten,
+        edges,
     })
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|since| since.as_millis() as i64)
+        .unwrap_or_default()
 }
 
 fn walk(roots: &FileRoots) -> Result<HashMap<String, Fingerprint>, IndexError> {

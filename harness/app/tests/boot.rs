@@ -11,6 +11,12 @@ use tempfile::TempDir;
 fn config(dir: &TempDir) -> Config {
     Config {
         data_dir: dir.path().join("du-lieu"),
+        // Bộ skill dựng sẵn cố tình để trống: bài test nói về cây plugin, và một thư mục
+        // skill thật trên máy chạy test sẽ làm kết quả đổi theo máy.
+        builtin_skills: None,
+        // Mô hình nhúng cũng vậy: bài test không nói về thư viện tài liệu, và một tên mô
+        // hình thật ở đây sẽ khiến kết quả phụ thuộc vào máy chủ có đang chạy hay không.
+        embed_model: None,
         workspace: dir.path().to_path_buf(),
         ollama_url: "http://127.0.0.1:11434".into(),
         model: "mo-hinh-thu".into(),
@@ -468,4 +474,118 @@ async fn danh_sach_phien_chi_co_phien_cua_du_an_dang_mo() {
         .filter(|h| h.cwd.as_deref() == Some(other_root.display().to_string().as_str()))
         .collect();
     assert_eq!(mine.len(), 1);
+}
+
+/// Dự án tài liệu **không được** có tool sửa tệp hay chạy lệnh.
+///
+/// Đây là khẳng định bảo mật của cả tính năng "dự án hai loại". Một thư viện tài liệu là
+/// một chồng tệp do người khác gửi tới; nếu `bash` và `edit` vẫn còn đó thì cái duy nhất
+/// ngăn cách một câu trong một tệp PDF với một lệnh chạy trên máy người dùng là việc mô
+/// hình có nghe theo hay không — và đó không phải một ranh giới.
+///
+/// Bài test khẳng định bằng **danh sách tool thật** sau khi đổi dự án, chứ không bằng việc
+/// đọc lại hằng số cấu hình: hằng số nói ý định, danh sách nói cái thật sự đã cắm.
+#[tokio::test]
+async fn du_an_tai_lieu_khong_co_tool_sua_tep_hay_chay_lenh() {
+    use pai_project::ProjectKind;
+
+    let dir = TempDir::new().expect("thư mục tạm");
+    let harness = boot(config(&dir)).await.expect("dựng được cây");
+    let registry = harness.ctx.require::<Tools>().expect("có sổ đăng ký");
+
+    let ten = |registry: &pai_tools::ToolRegistry| -> Vec<String> {
+        registry
+            .schemas(None)
+            .into_iter()
+            .map(|s| s.name.as_str().to_string())
+            .collect()
+    };
+
+    // Dự án mã nguồn khởi động: bộ tool đầy đủ.
+    let truoc = ten(&registry);
+    assert!(
+        truoc.iter().any(|n| n == "bash") && truoc.iter().any(|n| n == "read"),
+        "dự án mã nguồn thiếu tool cơ bản: {truoc:?}"
+    );
+
+    // Một thư mục khác, ghi nhận là dự án tài liệu **trước khi** mở nó.
+    let thu_vien = TempDir::new().expect("thư mục tạm");
+    let goc = thu_vien.path().canonicalize().expect("phân giải");
+    harness
+        .create_project(&goc, ProjectKind::Docs, None)
+        .expect("ghi nhận được dự án tài liệu");
+    harness.open_project(&goc).await.expect("mở được");
+
+    let sau = ten(&registry);
+    for cam in [
+        "bash",
+        "read",
+        "edit",
+        "write",
+        "symbol_search",
+        "grep",
+        "glob",
+    ] {
+        assert!(
+            !sau.iter().any(|n| n == cam),
+            "dự án tài liệu vẫn còn tool `{cam}`: {sau:?}"
+        );
+    }
+
+    // Và nó **có** thứ của riêng nó: ba tool tài liệu. Khẳng định cả hai chiều, vì
+    // "không có tool nguy hiểm" mà cũng không có tool nào dùng được thì là một dự án chết
+    // chứ không phải một dự án an toàn.
+    for can in ["docs.search", "docs.read", "docs.list"] {
+        assert!(
+            sau.iter().any(|n| n == can),
+            "dự án tài liệu thiếu tool `{can}`: {sau:?}"
+        );
+    }
+
+    // Và loại được giữ lại: mở lại lần nữa không âm thầm biến nó thành dự án mã nguồn.
+    harness.open_project(&goc).await.expect("mở lại được");
+    let lai = ten(&registry);
+    assert!(
+        !lai.iter().any(|n| n == "bash"),
+        "mở lại làm dự án tài liệu mọc lại `bash`: {lai:?}"
+    );
+}
+
+/// Bộ skill đi kèm bản cài đặt thật sự tới được prompt.
+///
+/// `builtin_skills()` dò bốn chỗ theo đường dẫn, và cả bốn đều là loại thứ chỉ sai khi
+/// đóng gói hoặc khi đổi bố cục thư mục — nghĩa là không bao giờ sai lúc viết mã, và luôn
+/// sai lúc phát hành. Bài này neo nó lại: chín skill trong `harness/skills/` phải xuất
+/// hiện trong prompt mà mô hình đọc, chứ không chỉ nằm trên đĩa.
+#[tokio::test]
+async fn skill_dung_san_di_toi_duoc_prompt() {
+    use pai_agent::Prompt;
+
+    let dir = TempDir::new().expect("thư mục tạm");
+    let skills = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills");
+    assert!(skills.is_dir(), "không tìm thấy {}", skills.display());
+
+    let harness = boot(Config {
+        builtin_skills: Some(skills),
+        ..config(&dir)
+    })
+    .await
+    .expect("dựng được cây");
+
+    let prompt = harness.ctx.require::<Prompt>().expect("có prompt");
+    let text = prompt.assemble();
+    for ten in [
+        "so-do-luong",
+        "so-do-tuan-tu",
+        "so-do-lop",
+        "so-do-thuc-the",
+        "so-do-trang-thai",
+        "so-do-kien-truc",
+        "so-do-tu-duy",
+        "duong-thoi-gian",
+        "so-do-hanh-trinh",
+    ] {
+        assert!(text.contains(ten), "prompt thiếu skill `{ten}`");
+    }
+    harness.shutdown().await;
 }

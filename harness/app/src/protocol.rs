@@ -282,16 +282,44 @@ pub struct ProjectView {
     pub path: String,
     pub last_opened_at: i64,
     pub is_current: bool,
+    pub kind: ProjectKind,
+    /// URL đã clone về. `None` là thư mục vốn có sẵn trên máy.
+    pub origin: Option<String>,
 }
 
 impl ProjectView {
     pub fn new(project: pai_project::Project, current: &str) -> ProjectView {
         ProjectView {
             is_current: project.id == current,
+            kind: project.kind.into(),
+            origin: project.origin,
             id: project.id,
             name: project.name,
             path: project.path,
             last_opened_at: project.last_opened_at,
+        }
+    }
+}
+
+/// Hai enum cùng chuỗi wire, ở hai tầng.
+///
+/// Kho không được phép biết về giao diện, và giao diện không được phép phụ thuộc vào hình
+/// dạng của kho — nên loại dự án tồn tại hai lần, và chỗ này là cây cầu. Một `From` mười
+/// dòng rẻ hơn hẳn việc `pai-project` phải kéo theo `serde(rename_all)` của tầng trình bày.
+impl From<pai_project::ProjectKind> for ProjectKind {
+    fn from(kind: pai_project::ProjectKind) -> ProjectKind {
+        match kind {
+            pai_project::ProjectKind::Code => ProjectKind::Code,
+            pai_project::ProjectKind::Docs => ProjectKind::Docs,
+        }
+    }
+}
+
+impl From<ProjectKind> for pai_project::ProjectKind {
+    fn from(kind: ProjectKind) -> pai_project::ProjectKind {
+        match kind {
+            ProjectKind::Code => pai_project::ProjectKind::Code,
+            ProjectKind::Docs => pai_project::ProjectKind::Docs,
         }
     }
 }
@@ -532,4 +560,40 @@ pub struct IndexStats {
     pub languages: Vec<(String, u32)>,
     /// Lần quét gần nhất, epoch mili-giây.
     pub scanned_at: Option<i64>,
+}
+
+/// Cấu hình provider **gửi lên từ giao diện**.
+///
+/// `api_key` mang một ngữ nghĩa ba trạng thái mà kiểu `Option<String>` nói đúng nhưng
+/// người đọc dễ lướt qua: `None` là **giữ nguyên khoá cũ**, `Some("")` là **xoá khoá**, và
+/// `Some(k)` là đặt khoá mới. Giao diện không bao giờ nhận lại khoá, nên nó không thể gửi
+/// lại khoá — và một `save` làm mất khoá mỗi lần người dùng sửa tên provider là lỗi chắc
+/// chắn xảy ra nếu chỗ này gộp `None` với `Some("")`.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderInputWire {
+    pub id: Option<String>,
+    pub name: String,
+    /// `ollama` hoặc `openai`.
+    pub kind: String,
+    pub base_url: String,
+    pub api_key: Option<String>,
+    pub enabled: bool,
+    pub model: Option<String>,
+}
+
+/// Một server MCP gửi lên từ giao diện.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct McpServerInputWire {
+    pub name: String,
+    /// `stdio` hoặc `http`.
+    pub transport: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub cwd: Option<String>,
+    pub url: String,
+    pub headers: std::collections::BTreeMap<String, String>,
+    pub enabled: bool,
 }

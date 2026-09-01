@@ -7,6 +7,7 @@ license.workspace = true
 description = "Thư viện tài liệu: nạp, cắt đoạn, nhúng vector, và tìm lai ghép"
 
 [dependencies]
+anyhow = { workspace = true }
 pai-core = { workspace = true }
 pai-tools = { workspace = true }
 async-trait = { workspace = true }
@@ -26,5 +27,15 @@ zip = { workspace = true }
 quick-xml = { workspace = true }
 
 [dev-dependencies]
+# Bài kiểm chứng là một crate riêng, nên nó không thấy `[dependencies]` của thư viện.
+# Bốn dòng dưới đây lặp lại những gì đã có ở trên chỉ vì lý do đó, không phải vì crate
+# cần thêm phụ thuộc nào.
+pai-core = { workspace = true }
+pai-tools = { workspace = true }
+futures = { workspace = true }
+# Chỉ để bài kiểm chứng hạ `user_version` xuống bản cũ và dựng lại đường lệch schema.
+rusqlite = { workspace = true }
+serde_json = { workspace = true }
+zip = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

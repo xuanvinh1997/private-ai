@@ -18,6 +18,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
 anyhow = { workspace = true }
+# Đổi provider lúc đang chạy: `Driver` giữ adapter sau một ô hoán đổi được, đọc trên
+# đường nóng mà không khoá.
+arc-swap = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 serde_norway = { workspace = true }

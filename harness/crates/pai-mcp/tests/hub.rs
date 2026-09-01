@@ -12,7 +12,10 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use pai_core::Context;
-use pai_mcp::{Dialer, McpHub, McpTransport, Mount, Reach, RetryPolicy, ServerConfig, ServerState};
+use pai_mcp::{
+    Dialer, DialerFactory, McpHub, McpTransport, Mount, Reach, RetryPolicy, ServerConfig,
+    ServerState,
+};
 use pai_tools::{
     Invocation, Resolution, Tool, ToolMeta, ToolName, ToolOutcome, ToolRegistry, ToolSchema,
     UNTRUSTED_NOTICE,
@@ -124,6 +127,32 @@ impl Dialer for FakeDialer {
     fn reach(&self) -> Reach {
         Reach::InProcess
     }
+}
+
+/// Dựng [`FakeDialer`] từ một cấu hình, để bài kiểm chứng đi qua **đúng** đường
+/// [`McpHub::reload`] mà người dùng đi, chứ không qua một cửa riêng chỉ test mới dùng.
+///
+/// Quy ước: đối số của cấu hình chính là danh sách tool mà server giả sẽ công bố.
+struct FakeFactory;
+
+impl DialerFactory for FakeFactory {
+    fn make(&self, config: &ServerConfig) -> Arc<dyn Dialer> {
+        let tools = match &config.transport {
+            McpTransport::Stdio { args, .. } => args.clone(),
+            McpTransport::Http { .. } => Vec::new(),
+        };
+        let tools: Vec<&str> = tools.iter().map(String::as_str).collect();
+        Arc::new(FakeDialer::new(&tools))
+    }
+}
+
+fn fake_config(name: &str, tools: &[&str]) -> ServerConfig {
+    let mut config = ServerConfig::stdio(name, "gia");
+    config.max_retries = 0;
+    if let McpTransport::Stdio { args, .. } = &mut config.transport {
+        *args = tools.iter().map(|tool| tool.to_string()).collect();
+    }
+    config
 }
 
 // --- một tool nội bộ có thể tự nhận ra mình -------------------------------------------
@@ -402,4 +431,96 @@ async fn reload_chi_dung_vao_cai_da_doi() {
     assert_eq!(report.len(), 1);
     assert!(report[0].1.is_err());
     assert!(hub.servers().is_empty());
+}
+
+/// `status()` hiện đúng cái tên mà mô hình gọi — tên **đã mang tiền tố**.
+///
+/// Hub biết tên trần vì đó là cái server công bố; giao diện phải hiện tên đầy đủ vì đó là
+/// cái duy nhất tra ra được trong sổ đăng ký. Lẫn hai thứ đó thì người dùng đọc một cái
+/// tên rồi đi tìm một tool không tồn tại.
+#[tokio::test]
+async fn status_tra_ten_tool_da_mang_tien_to() {
+    let (_ctx, _registry, hub) = setup();
+    hub.mount_dialer(
+        "github",
+        Arc::new(FakeDialer::new(&["search", "issues"])),
+        fast(),
+    )
+    .await;
+
+    let status = hub.status();
+    assert_eq!(status.len(), 1);
+    assert_eq!(status[0].name, "github");
+    assert_eq!(status[0].state, ServerState::Ready { tools: 2 });
+    assert_eq!(
+        status[0].tools,
+        vec![
+            "ext.github.search".to_string(),
+            "ext.github.issues".to_string()
+        ]
+    );
+    assert!(
+        status[0].error.is_none(),
+        "chưa hỏng lần nào thì chưa có lý do"
+    );
+
+    // Một server không nối được nói ra lý do, và giữ lại lý do đó.
+    let broken = Arc::new(FakeDialer::new(&["x"]));
+    broken.down.store(true, Ordering::SeqCst);
+    hub.mount_dialer("hong", broken, fast()).await;
+
+    let status = hub.status();
+    assert_eq!(
+        status.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
+        ["github", "hong"],
+        "danh sách phải xếp theo tên để giao diện không nhảy hàng"
+    );
+    assert!(status[1].tools.is_empty());
+    let reason = status[1]
+        .error
+        .clone()
+        .expect("server hỏng phải nói vì sao");
+    assert!(
+        reason.contains("server giả đang tắt"),
+        "lý do thật: {reason}"
+    );
+}
+
+/// Tắt một server bằng `reload` **không** đụng tới tool của server khác.
+///
+/// Khẳng định bằng danh sách tool thật trong sổ đăng ký, vì đó là thứ mô hình nhìn thấy;
+/// một `state` nói "Ready" trong khi sổ đăng ký đã bị dọn sạch vẫn là bài kiểm chứng xanh
+/// và một ứng dụng hỏng.
+#[tokio::test]
+async fn tat_mot_server_khong_lam_dut_tool_cua_server_khac() {
+    let ctx = Context::root();
+    let registry = ToolRegistry::new(&ctx);
+    let hub = McpHub::with_dialers(registry.clone(), Arc::new(FakeFactory));
+
+    let alpha = fake_config("alpha", &["a1"]);
+    let beta = fake_config("beta", &["b1", "b2"]);
+
+    hub.reload(vec![alpha.clone(), beta.clone()]).await;
+    assert_eq!(
+        names(&registry),
+        vec![
+            "ext.alpha.a1".to_string(),
+            "ext.beta.b1".to_string(),
+            "ext.beta.b2".to_string()
+        ]
+    );
+
+    let mut tat = alpha.clone();
+    tat.enabled = false;
+    hub.reload(vec![tat, beta]).await;
+
+    assert_eq!(
+        names(&registry),
+        vec!["ext.beta.b1".to_string(), "ext.beta.b2".to_string()],
+        "chỉ alpha được gỡ, beta không được đụng tới"
+    );
+    assert_eq!(hub.servers(), vec!["beta".to_string()]);
+    let status = hub.status();
+    assert_eq!(status.len(), 1);
+    assert_eq!(status[0].tools, vec!["ext.beta.b1", "ext.beta.b2"]);
 }

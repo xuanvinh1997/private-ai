@@ -57,6 +57,25 @@ pub trait Dialer: Send + Sync + 'static {
     }
 }
 
+/// Cách dựng một [`Dialer`] từ một cấu hình.
+///
+/// Một tầng gián tiếp mỏng, và nó có đúng một lý do: bài kiểm chứng của [`crate::hub`] phải
+/// đi qua **đúng đường `reload` thật** — cùng phép so cấu hình, cùng phép cắm và gỡ — mà
+/// không cần một server MCP thật trên máy chạy CI. Không có nó thì mọi bài về hot-reload
+/// chỉ kiểm được đường `mount_dialer`, tức là kiểm một đường mà người dùng không bao giờ đi.
+pub trait DialerFactory: Send + Sync + 'static {
+    fn make(&self, config: &ServerConfig) -> std::sync::Arc<dyn Dialer>;
+}
+
+/// Bản thật: transport lấy đúng từ cấu hình.
+pub struct ConfigDialers;
+
+impl DialerFactory for ConfigDialers {
+    fn make(&self, config: &ServerConfig) -> std::sync::Arc<dyn Dialer> {
+        std::sync::Arc::new(ConfigDialer::new(config.clone()))
+    }
+}
+
 /// [`Dialer`] dựng từ cấu hình người dùng khai.
 pub struct ConfigDialer {
     config: ServerConfig,

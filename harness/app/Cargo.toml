@@ -16,6 +16,9 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+# Hộp thoại chọn thư mục của hệ điều hành. Chỉ `open`: ứng dụng không bao giờ ghi tệp
+# qua hộp thoại — mọi đường ghi đều đi qua tool đã bị `pai-fs` chặn theo gốc dự án.
+tauri-plugin-dialog = "2"
 pai-core = { workspace = true }
 pai-tools = { workspace = true }
 pai-session = { workspace = true }
@@ -39,6 +42,13 @@ tracing-subscriber = { workspace = true }
 parking_lot = { workspace = true }
 uuid = { workspace = true }
 tokio-util = { workspace = true }
+tokio-stream = { workspace = true }
+indexmap = { workspace = true }
+futures = { workspace = true }
+async-trait = { workspace = true }
+arc-swap = { workspace = true }
+pai-providers = { workspace = true }
+pai-rag = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }

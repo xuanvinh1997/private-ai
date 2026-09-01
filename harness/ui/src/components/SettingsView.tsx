@@ -1,18 +1,67 @@
-import { For, type JSX } from "solid-js";
+import { createSignal, For, Match, Switch, type JSX } from "solid-js";
 import { displayMode, setDisplayMode, type DisplayMode } from "../lib/prefs";
 import { setTheme, theme, type ThemeChoice } from "../lib/theme";
 import Icon, { type IconName } from "./Icon";
+import ProvidersView from "./providers/ProvidersView";
+import McpView from "./mcp/McpView";
+
+type Page = "giao-dien" | "provider" | "mcp";
+
+const PAGES: { id: Page; label: string; icon: IconName }[] = [
+  { id: "giao-dien", label: "Giao diện", icon: "monitor" },
+  { id: "provider", label: "Nhà cung cấp mô hình", icon: "server" },
+  { id: "mcp", label: "Server MCP", icon: "plug" },
+];
 
 /**
- * Trang cài đặt.
+ * Trang cài đặt, ba mục.
  *
- * Chỉ chứa thứ đổi được ngay và thấy được ngay. Mọi lựa chọn ở đây là một `radiogroup`
- * chứ không phải một dãy nút rời: đó là những lựa chọn loại trừ nhau, và trình đọc màn
- * hình cần biết điều đó để đọc "2 trên 3" thay vì đọc ba cái nút không liên quan.
+ * Ba mục nằm ở đây thay vì ba nút nữa trên rail vì rail là thứ người ta học vị trí — thêm
+ * nút thứ chín vào một cột dọc là bắt họ học lại. Hai mục provider và MCP cũng thuộc cùng
+ * một loại việc: cấu hình một lần rồi quên đi, không phải nơi ta quay lại mỗi lượt.
  */
 export default function SettingsView() {
+  const [page, setPage] = createSignal<Page>("giao-dien");
+
   return (
     <div class="min-h-0 flex-1 overflow-y-auto px-(--page-pad-x) py-(--page-pad-y)">
+      <nav
+        aria-label="Mục cài đặt"
+        class="mx-auto mb-2xl flex max-w-(--reading-measure) gap-3xs rounded-panel border border-line bg-sidebar p-3xs"
+      >
+        <For each={PAGES}>
+          {(item) => (
+            <button
+              type="button"
+              onClick={() => setPage(item.id)}
+              aria-current={page() === item.id ? "page" : undefined}
+              class="flex flex-1 items-center justify-center gap-2xs rounded-panel px-sm py-2xs text-xs font-medium text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink aria-[current=page]:bg-accent-soft aria-[current=page]:text-accent-ink"
+            >
+              <Icon name={item.icon} size={15} />
+              {item.label}
+            </button>
+          )}
+        </For>
+      </nav>
+
+      <Switch>
+        <Match when={page() === "provider"}>
+          <ProvidersView />
+        </Match>
+        <Match when={page() === "mcp"}>
+          <McpView />
+        </Match>
+        <Match when={page() === "giao-dien"}>
+          <Appearance />
+        </Match>
+      </Switch>
+    </div>
+  );
+}
+
+function Appearance() {
+  return (
+    <>
       <div class="mx-auto flex max-w-(--reading-measure) flex-col gap-2xl">
         <Section title="Giao diện" desc="Áp dụng ngay, nhớ lại ở lần mở sau.">
           <Choice<ThemeChoice>
@@ -46,7 +95,7 @@ export default function SettingsView() {
           </dl>
         </Section>
       </div>
-    </div>
+    </>
   );
 }
 

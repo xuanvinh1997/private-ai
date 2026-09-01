@@ -65,6 +65,33 @@ quyền của người dùng và chỉ được chặn bởi hộp thoại duy�
 | 22 | Sandbox Windows (restricted token) | **L** — cần máy Windows để kiểm chứng |
 | 23 | Đóng gói và ký: macOS xong, hai nền tảng kia là cấu hình chưa chạy | **M** ◐ |
 
+## v1.1 — dự án hai loại, provider, MCP
+
+Đợt này trả lời một câu hỏi mà bản v1.0 né: ứng dụng chỉ làm được **một** việc, trên
+**một** máy chủ mô hình, với **một** bộ tool dựng sẵn. Ba cái "một" đó là ba trần.
+
+| # | Việc | Nơi | Cỡ |
+|---|---|---|---|
+| 24 | Dự án có loại: mã nguồn / tài liệu | `pai-project` | **M** ✅ |
+| 25 | Clone từ Git, có tiến trình và huỷ được | `pai-project` | **M** ✅ |
+| 26 | Thư viện tài liệu: nạp nhiều định dạng, cắt đoạn, nhúng vector, tìm lai ghép | `pai-rag` | **XL** ✅ |
+| 27 | Đồ thị bộ nhớ mã nguồn: cạnh gọi/nhập/chứa/kế thừa | `pai-index` | **L** ✅ |
+| 28 | Bộ skill vẽ chín loại sơ đồ, và giao diện dựng mermaid | `skills/`, `ui` | **M** ✅ |
+| 29 | Nhiều provider mô hình, đổi được lúc đang chạy | `pai-providers` | **L** ✅ |
+| 30 | Quản lý server MCP trong ứng dụng, kèm danh mục dựng sẵn | `pai-mcp` | **L** ✅ |
+
+Ba luật mới, và cả ba đều là luật về **sự trung thực**, cùng họ với `Enforcement` của
+`pai-sandbox`:
+
+- Đồ thị mã nguồn phân giải lời gọi **theo tên**, không phân tích kiểu. Cạnh là suy đoán,
+  và cả tool lẫn giao diện phải nói ra điều đó. Một đồ thị trình bày như sự thật khiến
+  người đọc kết luận sai và tự tin.
+- Thư viện tài liệu **vẫn dùng được khi chưa nhúng xong**: tìm bằng từ khoá chạy ngay, và
+  `LibraryStats` nói rõ phần ngữ nghĩa còn thiếu gì. "Chưa xong" và "hỏng" là hai trạng
+  thái, và gộp chúng lại là dạy người dùng bỏ cuộc.
+- Khoá API **không bao giờ đi ngược ra giao diện**. Giao diện chỉ biết `hasKey`, và để
+  trống ô khoá nghĩa là *giữ nguyên*, không phải *xoá*.
+
 ## Cái gì của bản Python đi tiếp, cái gì dừng lại
 
 **Đi tiếp** — ranh giới bảo mật (lọc hai tầng, ghim workspace, đường dẫn được bảo vệ,
@@ -72,12 +99,34 @@ khung cảnh báo nội dung không đáng tin), memory cá nhân, skill, danh m
 lease, và bộ token thiết kế.
 
 **Dừng lại** — LightRAG và đồ thị thực thể do mô hình sinh (đồ thị AST từ tree-sitter
-tốt hơn hẳn cho mã nguồn), MarkItDown và tầng OCR, ASR, `graph_view`, thư viện tài liệu,
-và bốn tool `artifacts.create_*`. Không cái nào phục vụ một coding agent, và chúng là
-toàn bộ lý do phải giữ một sidecar Python.
+tốt hơn hẳn cho mã nguồn), MarkItDown và tầng OCR, ASR, `graph_view`, và bốn tool
+`artifacts.create_*`. Không cái nào phục vụ một coding agent, và chúng là toàn bộ lý do
+phải giữ một sidecar Python.
+
+> **Sửa lại ở v1.1:** thư viện tài liệu nằm trong danh sách "dừng lại" ở trên là một
+> quyết định đúng cho một coding agent và sai cho sản phẩm này. Nó quay lại, nhưng không
+> quay lại như cũ: `pai-rag` rút chữ bằng Rust thuần (`pdf-extract`, `zip` + `quick-xml`)
+> chứ không gọi MarkItDown, và nó là **một loại dự án riêng** chứ không phải một khả năng
+> luôn bật. Cái bị bỏ là sidecar Python, không phải tính năng.
 
 > Nói cách khác: **coding agent bằng Rust thuần là khả thi; port nguyên Private AI sang
 > Rust thuần thì không.** Việc thu hẹp phạm vi chính là thứ mở đường cho bản Rust thuần.
+
+## Nợ còn lại của v1.1
+
+Ba chỗ đã biết là chưa xong, viết ra để không ai phải phát hiện lại:
+
+| Chỗ | Trạng thái |
+|---|---|
+| `OllamaEmbedder` / `OpenAiEmbedder` chưa gọi mạng thật lần nào | Phần phân tích JSON mới chỉ đúng theo tài liệu API. Đây là chỗ đầu tiên nên chạy tay. |
+| PDF có dấu tiếng Việt | Test dựng được PDF hợp lệ nhưng chữ ASCII; PDF thật do Word/LaTeX sinh dùng font nhúng có `ToUnicode`, đường đó chưa ai đi qua. |
+| Cosine quét tuyến tính toàn bảng `vectors` | Ước lượng bắt đầu chậm quanh 100.000 đoạn. Chưa benchmark ở quy mô đó. |
+| `mcp-server-sqlite` trong danh mục | Bản tham chiếu đã bị gỡ khỏi repo `modelcontextprotocol/servers`; gói còn trên PyPI nhưng không còn được bảo trì. |
+| Danh mục MCP chỉ dựng được server `stdio` | `McpCatalogEntry` trên dây không có trường `url`, nên GitHub đi đường Docker thay vì endpoint remote. |
+
+Và một giới hạn **cố ý**, không phải nợ: đồ thị mã nguồn phân giải lời gọi theo tên, không
+phân tích kiểu. Gọi qua biến, qua trait object hay qua con trỏ hàm không sinh cạnh nào. Cả
+tool lẫn giao diện đều nói ra điều đó ở chỗ người đọc thấy được.
 
 ## Rủi ro đã biết
 

@@ -8,7 +8,9 @@
 
 mod approval;
 mod coalesce;
+mod commands;
 pub mod harness;
+mod llm;
 pub mod protocol;
 
 use std::collections::HashMap;
@@ -26,22 +28,25 @@ use tokio_util::sync::CancellationToken;
 use crate::approval::Approvals;
 use crate::coalesce::Coalescer;
 use crate::harness::{Config, Harness};
-use crate::protocol::{
-    AgentEvent, ApprovalDecision, HistoryNode, ModelChoice, ProjectView, SessionSummary,
-};
+use crate::protocol::{AgentEvent, ApprovalDecision, HistoryNode, ModelChoice, SessionSummary};
 
 #[derive(Default)]
-struct AppState {
+pub(crate) struct AppState {
     approvals: Arc<Approvals>,
     /// Dựng một lần, lúc lệnh đầu tiên tới. Dựng trong `setup` thì một lỗi cấu hình sẽ
     /// hiện ra dưới dạng cửa sổ không mở được, không kèm lý do nào người dùng đọc được.
     harness: OnceCell<Arc<Harness>>,
     /// Một token huỷ cho mỗi lượt đang chạy, tra theo phiên.
-    running: Mutex<HashMap<String, CancellationToken>>,
+    pub(crate) running: Mutex<HashMap<String, CancellationToken>>,
+    /// Bản clone đang chạy, nếu có.
+    ///
+    /// Một cái, không phải một bảng: người dùng clone một repo tại một thời điểm, và một
+    /// bảng ở đây sẽ đòi giao diện phải sinh và giữ một khoá cho một thứ chỉ có một.
+    pub(crate) cloning: Mutex<Option<CancellationToken>>,
 }
 
 impl AppState {
-    async fn harness(&self) -> Result<Arc<Harness>, String> {
+    pub(crate) async fn harness(&self) -> Result<Arc<Harness>, String> {
         self.harness
             .get_or_try_init(|| async {
                 harness::boot(Config::from_env())
@@ -359,60 +364,6 @@ async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelChoice>, Str
 }
 
 #[tauri::command]
-async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectView>, String> {
-    let harness = state.harness().await?;
-    let current = harness.current_project().id;
-    Ok(harness
-        .projects()?
-        .into_iter()
-        .map(|project| ProjectView::new(project, &current))
-        .collect())
-}
-
-/// Đổi dự án.
-///
-/// Nặng ở phía lõi — nó tháo và cắm lại cả một nhánh plugin — nên huỷ mọi lượt đang chạy
-/// trước: một lượt đang giữa chừng khi tool dưới chân nó bị gỡ ra sẽ hỏng theo cách không
-/// giải thích được cho ai.
-#[tauri::command]
-async fn open_project(path: String, state: State<'_, AppState>) -> Result<ProjectView, String> {
-    let harness = state.harness().await?;
-    for (_, token) in state.running.lock().drain() {
-        token.cancel();
-    }
-    let project = harness.open_project(std::path::Path::new(&path)).await?;
-    let id = project.id.clone();
-    Ok(ProjectView::new(project, &id))
-}
-
-#[tauri::command]
-async fn remove_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
-    state.harness().await?.forget_project(&id)
-}
-
-#[tauri::command]
-async fn list_tree(
-    path: Option<String>,
-    depth: Option<usize>,
-    state: State<'_, AppState>,
-) -> Result<Vec<pai_project::TreeEntry>, String> {
-    let harness = state.harness().await?;
-    let root = harness.workspace();
-    let at = path.map(std::path::PathBuf::from);
-    pai_project::list_tree(&root, at.as_deref(), depth.unwrap_or(1)).map_err(|err| err.to_string())
-}
-
-#[tauri::command]
-async fn read_file(
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<pai_project::FileView, String> {
-    let harness = state.harness().await?;
-    pai_project::read_file(&harness.workspace(), std::path::Path::new(&path))
-        .map_err(|err| err.to_string())
-}
-
-#[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
     let harness = state.harness().await?;
     let headers = harness
@@ -460,6 +411,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             send_message,
@@ -472,11 +424,35 @@ pub fn run() {
             rename_session,
             delete_session,
             list_models,
-            list_projects,
-            open_project,
-            remove_project,
-            list_tree,
-            read_file
+            commands::projects::list_projects,
+            commands::projects::open_project,
+            commands::projects::remove_project,
+            commands::projects::list_tree,
+            commands::projects::read_file,
+            commands::projects::create_project,
+            commands::projects::clone_project,
+            commands::projects::cancel_clone,
+            commands::providers::list_providers,
+            commands::providers::provider_presets,
+            commands::providers::save_provider,
+            commands::providers::remove_provider,
+            commands::providers::set_active_provider,
+            commands::providers::set_provider_model,
+            commands::providers::probe_provider,
+            commands::mcp::list_mcp_servers,
+            commands::mcp::mcp_catalog,
+            commands::mcp::save_mcp_server,
+            commands::mcp::remove_mcp_server,
+            commands::mcp::set_mcp_enabled,
+            commands::mcp::reload_mcp_servers,
+            commands::graph::index_stats,
+            commands::graph::graph_neighborhood,
+            commands::graph::graph_trace,
+            commands::docs::list_documents,
+            commands::docs::library_stats,
+            commands::docs::add_documents,
+            commands::docs::remove_document,
+            commands::docs::search_documents
         ])
         .build(tauri::generate_context!())
         .expect("không khởi động được cửa sổ ứng dụng")

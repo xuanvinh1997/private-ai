@@ -1,6 +1,6 @@
-import { Show } from "solid-js";
 import type { NodeProps } from "../../lib/registry";
 import { useTranscriptActions } from "../../lib/transcriptActions";
+import Blocks from "../markdown/Blocks";
 import MessageShell, { type MessageAction } from "../MessageShell";
 
 /**
@@ -98,15 +98,11 @@ export function AssistantMessage(props: NodeProps<"assistant">) {
       busy={props.node.streaming}
       actions={list()}
     >
-      <div class="text-base whitespace-pre-wrap text-text">
-        {props.node.text}
-        <Show when={props.node.streaming}>
-          <span
-            class="ml-3xs inline-block h-3.5 w-[2px] translate-y-[2px] bg-accent motion-safe:animate-pulse"
-            aria-hidden="true"
-          />
-        </Show>
-      </div>
+      {/* Chữ trợ lý đi qua bộ dựng khối: khối rào ```mermaid thành hình, khối rào khác
+          thành khối mã có nhãn, phần còn lại vẫn là chữ `whitespace-pre-wrap` như cũ.
+          Con trỏ nhấp nháy chuyển vào `Blocks` vì chỗ đặt nó phụ thuộc vào khối cuối
+          cùng đang là chữ hay đang là một khối mã chưa đóng rào. */}
+      <Blocks text={props.node.text} streaming={props.node.streaming} />
     </MessageShell>
   );
 }

@@ -9,11 +9,15 @@ description = "Kho provider mô hình, danh mục dựng sẵn, và đường đ
 [dependencies]
 pai-core = { workspace = true }
 pai-llm = { workspace = true }
+# `Driver` là đầu kia của cú đổi provider: kho không có nghĩa gì nếu không có ai để đẩy
+# adapter mới vào.
+pai-agent = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
+uuid = { workspace = true }
 reqwest = { workspace = true }
 arc-swap = { workspace = true }
 thiserror = { workspace = true }
@@ -21,4 +25,11 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+# Bài kiểm chứng "đổi mô hình giữa lượt" phải chạy một lượt thật, nên nó cần đủ giàn của
+# một lượt: sổ phiên, đường ống tool, và một adapter giả biết dừng lại giữa chừng.
+pai-core = { workspace = true }
+pai-session = { workspace = true }
+pai-tools = { workspace = true }
+async-trait = { workspace = true }
+tokio-util = { workspace = true }

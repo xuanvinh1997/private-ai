@@ -439,9 +439,9 @@ async fn chi_muc_tren_dia_song_qua_lan_mo_lai() {
 }
 
 /// Đường vào thật của sản phẩm là plugin, không phải `CodeIndex::new`. Bài này giữ cho
-/// nó chạy được: dựng cây, cắm chỉ mục, và thấy đúng hai tool xuất hiện trong sổ đăng ký.
+/// nó chạy được: dựng cây, cắm chỉ mục, và thấy đủ năm tool xuất hiện trong sổ đăng ký.
 #[tokio::test]
-async fn plugin_cam_dung_hai_tool_va_mot_provider() {
+async fn plugin_cam_dung_nam_tool_va_mot_provider() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().canonicalize().unwrap();
     std::fs::write(root.join("kho.rs"), RUST_SOURCE).unwrap();
@@ -461,11 +461,15 @@ async fn plugin_cam_dung_hai_tool_va_mot_provider() {
         .into_iter()
         .map(|schema| schema.name.to_string())
         .collect();
-    assert!(
-        names.iter().any(|name| name == "symbol_search"),
-        "{names:?}"
-    );
-    assert!(names.iter().any(|name| name == "outline"), "{names:?}");
+    for wanted in [
+        "symbol_search",
+        "outline",
+        "code.graph",
+        "code.trace",
+        "code.overview",
+    ] {
+        assert!(names.iter().any(|name| name == wanted), "{names:?}");
+    }
 
     // Tên tệp chỉ mục được suy từ thư mục làm việc, nên hai workspace không dùng chung
     // một kho — triệu chứng của việc đó là kết quả của một dự án khác.
