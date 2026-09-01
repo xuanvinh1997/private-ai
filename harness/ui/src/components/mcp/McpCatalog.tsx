@@ -2,7 +2,7 @@ import { Key } from "@solid-primitives/keyed";
 import { createSignal, For, Show } from "solid-js";
 import type { McpCatalogEntry, McpServerInput } from "../../lib/protocol";
 import Icon from "./../Icon";
-import { Banner, Button, DialogShell, ExternalLink } from "./../providers/FormKit";
+import { Banner, Button, DialogShell, ExternalLink } from "../settings/FormKit";
 
 /** Tên người đọc được của mấy thứ phải có sẵn trên máy. */
 const REQUIRES: Record<string, string> = {

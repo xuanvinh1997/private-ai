@@ -958,3 +958,45 @@ async fn doi_loai_du_an_dang_mo_thi_bo_tool_doi_theo_ngay() {
 
     harness.shutdown().await;
 }
+
+/// Màn hình Quyền đọc được **mức giam thật**, không phải một chỗ trống.
+///
+/// `describe_harness` chỉ nói hàng `sandbox` có cắm hay không — nó in cây cấu hình, không
+/// in `Enforcement`. Nên trước lệnh này, màn hình quyền chỉ nói được "vòng giam đang được
+/// cắm", mà câu đó đúng với cả một vòng giam thủng lẫn một vòng giam không tồn tại. Đó là
+/// đúng thứ mà `pai-sandbox` được thiết kế để không bao giờ nói.
+#[tokio::test]
+async fn man_hinh_quyen_doc_duoc_muc_giam_that() {
+    let dir = TempDir::new().expect("thư mục tạm");
+    let harness = boot(config(&dir)).await.expect("dựng được cây");
+
+    let sandbox = harness
+        .ctx
+        .get::<pai_sandbox::Sandbox>()
+        .expect("vòng giam phải được cắm");
+    let muc = sandbox.enforcement();
+
+    // Mức nào cũng được — cái phải đúng là **nhãn có nghĩa** và lý do đi kèm khi thủng.
+    assert!(
+        ["full", "partial", "none"].contains(&muc.label()),
+        "nhãn lạ: {}",
+        muc.label()
+    );
+    if !muc.is_full() {
+        assert!(
+            muc.reason().is_some_and(|r| !r.trim().is_empty()),
+            "vòng giam không kín mà không nói vì sao"
+        );
+    }
+
+    // Và thư mục ghi được luôn chứa chính dự án đang mở — nếu không thì mọi lần ghi đều
+    // bị chặn và triệu chứng sẽ giống hệt "tool hỏng".
+    let goc = harness.workspace().expect("có dự án");
+    let roots = pai_sandbox::writable_roots(&pai_sandbox::Policy::workspace_write(goc.clone()));
+    assert!(
+        roots.iter().any(|dir| goc.starts_with(dir) || dir == &goc),
+        "thư mục dự án không nằm trong vùng ghi được: {roots:?}"
+    );
+
+    harness.shutdown().await;
+}

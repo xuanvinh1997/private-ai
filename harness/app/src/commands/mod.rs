@@ -13,3 +13,4 @@ pub mod docs;
 pub mod mcp;
 pub mod projects;
 pub mod providers;
+pub mod system;

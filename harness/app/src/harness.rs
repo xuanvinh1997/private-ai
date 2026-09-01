@@ -129,6 +129,12 @@ impl Harness {
         Ok(())
     }
 
+    /// Tệp vá của người dùng. Có thể chưa tồn tại — màn hình cài đặt vẫn phải chỉ ra nó
+    /// để người dùng biết tạo ở đâu.
+    pub fn patch_path(&self) -> PathBuf {
+        self.rebuild.config.data_dir.join("patch.yaml")
+    }
+
     pub fn current_project(&self) -> Option<Project> {
         self.current.lock().clone()
     }

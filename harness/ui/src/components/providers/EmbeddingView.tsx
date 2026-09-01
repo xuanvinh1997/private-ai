@@ -8,7 +8,7 @@ import {
 } from "../../lib/providers";
 import type { EmbeddingProbe, EmbeddingSetting, Provider } from "../../lib/protocol";
 import ConfirmDialog from "./ConfirmDialog";
-import { Banner, Button, Row, RowGroup, SectionHead, Select, TextField } from "./FormKit";
+import { Banner, Button, Row, RowGroup, SectionHead, Select, TextField } from "../settings/FormKit";
 
 const NONE: EmbeddingSetting = {
   providerId: null,
@@ -148,7 +148,7 @@ export default function EmbeddingView() {
   return (
     <div class="flex flex-col gap-2xl">
       <SectionHead
-        title="Mô hình nhúng"
+        title="Máy chủ giữ vai nhúng"
         desc="Mô hình biến tài liệu thành vector để tìm theo ý nghĩa. Nó tách hẳn khỏi mô hình trò chuyện, và chọn riêng ở đây."
       />
 

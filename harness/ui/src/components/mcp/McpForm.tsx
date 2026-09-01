@@ -4,7 +4,7 @@ import { parseMcpJson } from "../../lib/mcp";
 import type { McpServer, McpServerInput } from "../../lib/protocol";
 import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
-import { Banner, Button, DialogShell, PillChoice, TextArea, TextField } from "./../providers/FormKit";
+import { Banner, Button, DialogShell, PillChoice, TextArea, TextField } from "../settings/FormKit";
 
 /** Một dòng danh sách có ô nhập. `id` chỉ tồn tại để `<Key>` giữ được tiêu điểm bàn phím. */
 interface Row {

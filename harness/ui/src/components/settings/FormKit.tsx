@@ -3,15 +3,16 @@ import { useFocusTrap } from "../../hooks/useFocusTrap";
 import Icon, { type IconName } from "./../Icon";
 
 /**
- * Mấy mảnh biểu mẫu dùng chung của hai màn hình provider và MCP.
+ * Ngôn ngữ chung của **mọi** trang cài đặt: hàng, nhóm hàng, công tắc, ô chọn, hộp thoại.
  *
- * Gom lại một chỗ vì cả hai màn hình đều là *cùng một thứ*: một danh sách cấu hình, một
- * hộp thoại sửa, một dãy ô nhập có nhãn. Chép ra hai bản thì hai bản lệch nhau ở đúng
+ * Gom lại một chỗ vì mọi trang cài đặt đều là *cùng một thứ*: một danh sách cấu hình, một
+ * hộp thoại sửa, một dãy ô nhập có nhãn. Chép ra nhiều bản thì các bản lệch nhau ở đúng
  * những chi tiết không nhìn thấy — nhãn gắn với ô nhập, vòng tiêu điểm, chiều cao control
  * — và lệch ở đó thì chỉ người dùng bàn phím phát hiện ra.
  *
- * Lúc tích hợp thì nâng tệp này lên `components/` cạnh `primitives.tsx`; nó nằm trong
- * `providers/` chỉ vì đợt việc này sở hữu đúng hai thư mục.
+ * Tệp nằm trong `settings/` chứ không trong `providers/` vì đó là sự thật: hai trang
+ * provider chỉ là hai trong bảy trang dùng nó. Hai kiểu hàng trong cùng một màn hình cài
+ * đặt đọc ra là hai màn hình bị dán vào nhau, nên đây là bộ **duy nhất** được dùng.
  *
  * Mọi prop **chứa JSX** ở đây khai là hàm (`footer`, `aside`). Solid biên dịch prop
  * thành getter, và một prop JSX được đọc hai lần sẽ dựng ra hai bản DOM chồng lên nhau —

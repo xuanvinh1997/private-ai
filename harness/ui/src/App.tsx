@@ -24,7 +24,7 @@ import {
   runDemoTurn,
 } from "./lib/demo";
 import { listMcpServers } from "./lib/mcp";
-import { changesPanelOpen, setChangesPanelOpen, setDisplayMode, setSidebarOpen, sidebarOpen } from "./lib/prefs";
+import { changesPanelOpen, defaultToolScope, setChangesPanelOpen, setDisplayMode, setSidebarOpen, sidebarOpen } from "./lib/prefs";
 import {
   closeProject,
   folderName,
@@ -91,7 +91,7 @@ export default function App() {
   // Trang cài đặt do đây giữ, không do `SettingsView` giữ: thanh bên có một hàng đi thẳng
   // tới trang MCP, và một trạng thái nằm trong màn hình con sẽ bỏ qua cú bấm ấy mỗi khi
   // màn hình cài đặt đã mở sẵn.
-  const [settingsPage, setSettingsPage] = createSignal<SettingsPage>("giao-dien");
+  const [settingsPage, setSettingsPage] = createSignal<SettingsPage>("chung");
 
   // Đổi dự án có thể làm chính màn hình đang mở biến mất khỏi thanh bên — mở một thư viện
   // tài liệu trong lúc đang đứng ở màn hình Thay đổi chẳng hạn. Không sửa thì thanh bên
@@ -106,10 +106,14 @@ export default function App() {
   // lần thì kết quả về sau của phiên cũ không được ghi đè lên phiên mới.
   const [loadingSession, setLoadingSession] = createSignal<string | null>(null);
   const [loadError, setLoadError] = createSignal<string | null>(null);
-  // Phạm vi tool của **lượt kế**, không phải một thiết lập được lưu: nó đi kèm mỗi lần
-  // gửi và chết theo phiên làm việc của cửa sổ. Không ghi vào `prefs` là cố ý — một mức
-  // quyền khôi phục lại sau khi mở app là một mức quyền không ai vừa chọn.
-  const [scope, setScope] = createSignal<ToolScope>("write");
+  // Phạm vi tool của **lượt kế**: nó đi kèm mỗi lần gửi và không được ghi lại ở đâu.
+  //
+  // Điểm xuất phát thì đến từ trang Quyền (`defaultToolScope`), và đó là chỗ *duy nhất*
+  // ghi được. Ranh giới ấy quan trọng: đổi mức trong ô soạn tin là một quyết định cho
+  // lượt sắp gửi và nó chết theo cửa sổ, còn đổi mức ở trang Quyền là một quyết định về
+  // mọi lượt sau này. Gộp hai thứ lại — cho ô soạn tin ghi ngược vào thiết lập — thì một
+  // lần bật shell cho đúng một câu hỏi sẽ lặng lẽ ở lại đó mãi.
+  const [scope, setScope] = createSignal<ToolScope>(defaultToolScope());
 
   const [projects, setProjects] = createSignal<Project[]>([]);
   // Đổi dự án là lõi tháo và cắm lại cả một nhánh plugin. Trong lúc đó mọi thứ trên màn
@@ -668,6 +672,20 @@ export default function App() {
       }}
     >
       <div class="flex h-full bg-bg">
+        {/* Khu làm việc gói trong một lớp riêng chỉ vì một lý do: khi cài đặt mở, cả lớp
+            này phải thành `inert`. Màn hình cài đặt phủ kín cửa sổ nên mắt không thấy gì
+            bên dưới, nhưng Tab thì vẫn đi xuống được — và một người dùng bàn phím sẽ đi
+            lạc vào một ô soạn tin họ không nhìn thấy. `inert` gỡ cả nhánh khỏi vòng Tab
+            lẫn khỏi cây trợ năng, đúng thứ `aria-hidden` một mình không làm được. */}
+        <div
+          class="flex min-w-0 flex-1"
+          ref={(el) => {
+            // Đặt bằng `toggleAttribute` chứ không bằng một prop JSX: `inert` chưa có
+            // trong kiểu JSX của Solid, và một `as any` để lách kiểu ở đây sẽ tắt luôn
+            // việc kiểm kiểu cho mọi prop khác của thẻ này.
+            createEffect(() => el.toggleAttribute("inert", tab() === "settings"));
+          }}
+        >
         <Show when={sidebarOpen()}>
           <Sidebar
             sessions={sessions()}
@@ -706,7 +724,7 @@ export default function App() {
             onRename={rename}
             onDelete={remove}
             onGo={(view) => {
-              if (view === "settings") setSettingsPage("giao-dien");
+              if (view === "settings") setSettingsPage("chung");
               setTab(view);
             }}
             onOpenMcp={() => {
@@ -853,9 +871,6 @@ export default function App() {
                   <DocsView resetKey={project()?.path ?? ""} name={project()?.name} />
                 </Match>
 
-                <Match when={tab() === "settings"}>
-                  <SettingsView page={settingsPage()} onPage={setSettingsPage} />
-                </Match>
               </Switch>
             </div>
 
@@ -868,6 +883,23 @@ export default function App() {
             </Show>
           </div>
         </main>
+        </div>
+
+        {/* Cài đặt là một chế độ **chiếm trọn cửa sổ**, nên nó nằm ngoài `<main>` chứ
+            không nằm trong `<Switch>` của khu làm việc: thanh bên và ô soạn tin không có
+            việc gì ở đó, và để chúng lấp ló bên cạnh là mời người dùng bấm nhầm vào một
+            phiên trong lúc đang sửa một khoá API. Cây bên dưới vẫn được giữ nguyên chứ
+            không tháo đi — quay về hội thoại thì bản ghi vẫn ở đúng chỗ đang đọc.
+
+            `z-30`, thấp hơn hộp thoại (`z-50`): hộp thoại duyệt và bảng chọn phiên vẫn
+            phải nổi lên trên cài đặt. */}
+        <Show when={tab() === "settings"}>
+          <SettingsView
+            page={settingsPage()}
+            onPage={setSettingsPage}
+            onClose={() => setTab("chat")}
+          />
+        </Show>
 
         <Show when={conversation.approval()}>
           {(request) => <ApprovalDialog request={request()} onDecide={decideApproval} />}

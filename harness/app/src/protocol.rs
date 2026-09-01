@@ -725,3 +725,36 @@ pub struct McpServerInputWire {
     pub headers: std::collections::BTreeMap<String, String>,
     pub enabled: bool,
 }
+
+/// Vòng giam tiến trình, như giao diện thấy nó.
+///
+/// Cùng tinh thần với [`pai_sandbox::Enforcement`]: đây là **báo cáo sự thật, không phải
+/// lời hứa**. `mode` nói kernel đang thi hành tới đâu, `reason` nói nó thủng ở chỗ nào khi
+/// nó thủng. Một màn hình quyền hạn im lặng về chuyện này dạy người dùng tin vào một
+/// ranh giới có thể không tồn tại trên máy của họ.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SandboxStatus {
+    /// `full`, `partial`, hoặc `none`.
+    pub mode: String,
+    /// Vì sao chỉ thủng hoặc vì sao không có gì. `None` khi `mode` là `full`.
+    pub reason: Option<String>,
+    /// Thư mục lệnh được phép ghi vào.
+    pub writable_roots: Vec<String>,
+    /// `macos`, `linux`, `windows` — mức giam khác nhau theo nền tảng, và người đọc cần
+    /// biết họ đang đứng trên nền nào để hiểu con số kia.
+    pub platform: String,
+}
+
+/// Một hook đang cài, chỉ đọc.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HookRow {
+    pub command: String,
+    /// Tool mà hook này áp vào. Rỗng = mọi tool.
+    pub tools: Vec<String>,
+    /// Hạn giờ riêng, giây. `None` = dùng mặc định của lõi.
+    pub timeout_secs: Option<u64>,
+    /// Lớp cấu hình đã khai nó — bản dựng sẵn hay tệp vá của người dùng.
+    pub origin: String,
+}

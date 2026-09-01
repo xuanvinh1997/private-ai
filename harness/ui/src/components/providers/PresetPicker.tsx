@@ -1,7 +1,7 @@
 import { For, Show } from "solid-js";
 import type { ProviderPreset } from "../../lib/protocol";
 import Icon from "./../Icon";
-import { Button, DialogShell, ExternalLink } from "./FormKit";
+import { Button, DialogShell, ExternalLink } from "../settings/FormKit";
 
 /**
  * Lưới các nhà cung cấp dựng sẵn.

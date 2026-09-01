@@ -523,7 +523,10 @@ pub fn run() {
             commands::docs::library_stats,
             commands::docs::add_documents,
             commands::docs::remove_document,
-            commands::docs::search_documents
+            commands::docs::search_documents,
+            commands::system::sandbox_status,
+            commands::system::list_hooks,
+            commands::system::hook_config_path
         ])
         .build(tauri::generate_context!())
         .expect("không khởi động được cửa sổ ứng dụng")

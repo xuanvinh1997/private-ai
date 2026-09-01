@@ -14,7 +14,7 @@ import type { ModelChoice, Provider, ProviderInput, ProviderPreset } from "../..
 import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
 import ConfirmDialog from "./ConfirmDialog";
-import { Banner, Button, Row, RowGroup, SectionHead, Select, Toggle } from "./FormKit";
+import { Banner, Button, Row, RowGroup, SectionHead, Select, Toggle } from "../settings/FormKit";
 import PresetPicker from "./PresetPicker";
 import ProviderForm from "./ProviderForm";
 

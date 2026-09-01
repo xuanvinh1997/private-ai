@@ -2,7 +2,7 @@ import { createSignal, For, Show } from "solid-js";
 import { probeProvider, suggestedEmbeddingModel } from "../../lib/providers";
 import type { Provider, ProviderInput, ProviderKind, ProviderProbe } from "../../lib/protocol";
 import Icon from "./../Icon";
-import { Banner, Button, DialogShell, PillChoice, TextField } from "./FormKit";
+import { Banner, Button, DialogShell, PillChoice, TextField } from "../settings/FormKit";
 
 /**
  * Ba trạng thái của ô khoá API, và **chỉ** ba.

@@ -1,4 +1,5 @@
 import { createSignal, type Accessor } from "solid-js";
+import type { ToolScope } from "./protocol";
 
 /**
  * Tuỳ chọn hiển thị, nhớ giữa các lần mở.
@@ -61,3 +62,28 @@ function flag(key: string, fallback: boolean): [Accessor<boolean>, (value: boole
  */
 export const [sidebarOpen, setSidebarOpen] = flag("pai-sidebar", true);
 export const [changesPanelOpen, setChangesPanelOpen] = flag("pai-changes-panel", false);
+
+const isToolScope = (raw: string): raw is ToolScope =>
+  raw === "read" || raw === "write" || raw === "shell";
+
+/**
+ * Phạm vi tool mà **một lượt mới** bắt đầu ở đó.
+ *
+ * Đây là một thiết lập, không phải trạng thái của lượt: bộ chọn trong ô soạn tin vẫn là
+ * của từng lượt và vẫn đổi được ở đó bất cứ lúc nào. Thứ được nhớ lại chỉ là điểm xuất
+ * phát — chính vì thế nó nằm ở trang Quyền chứ không nằm trong ô soạn tin.
+ *
+ * Mặc định vẫn là `write` như bản cũ chốt cứng trong `App.tsx`: đổi mặc định trong cùng
+ * một lần thay giao diện là đổi hai thứ rồi không biết thứ nào gây ra khác biệt. Ai muốn
+ * mở app lên ở mức chỉ-đọc thì chọn lấy, và lựa chọn đó mới là thứ được nhớ.
+ *
+ * `shell` **được phép** lưu. Nghe nguy hiểm, nhưng nó là một lựa chọn người dùng đã cố ý
+ * bấm ở trang Quyền, cạnh một câu nói thẳng rằng mức đó cho thi hành lệnh trên máy này —
+ * khác hẳn một mức quyền tự leo lên mà không ai chọn. Còn giao diện thì luôn hiện mức
+ * đang có ngay trong ô soạn tin, nên nó không bao giờ là một quyền mở lén.
+ */
+export const [defaultToolScope, setDefaultToolScope] = persisted<ToolScope>(
+  "pai-tool-scope-mac-dinh",
+  "write",
+  isToolScope,
+);

@@ -12,7 +12,7 @@ import type { McpCatalogEntry, McpServer, McpServerInput, McpState } from "../..
 import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
 import ConfirmDialog from "./../providers/ConfirmDialog";
-import { Banner, Button, Row, RowGroup, SectionHead, Toggle } from "./../providers/FormKit";
+import { Banner, Button, Row, RowGroup, SectionHead, Toggle } from "../settings/FormKit";
 import McpCatalog from "./McpCatalog";
 import McpForm from "./McpForm";
 
@@ -124,7 +124,7 @@ export default function McpView() {
   return (
     <div class="flex flex-col gap-2xl">
       <SectionHead
-        title="Server MCP"
+        title="Server đang cắm"
         desc="Cắm thêm công cụ từ bên ngoài: kho mã, cơ sở dữ liệu, hệ thống theo dõi lỗi."
         actions={() => (
           <>
