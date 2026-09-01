@@ -1,6 +1,20 @@
-import { createSignal, createUniqueId, For, onCleanup, Show } from "solid-js";
+import { createMemo, createSignal, createUniqueId, For, onCleanup, Show } from "solid-js";
 import type { ModelChoice } from "../lib/protocol";
 import Icon from "./Icon";
+
+/**
+ * Mô hình có được phép đứng trong bộ chọn hội thoại không.
+ *
+ * Giấu đúng nhóm **chỉ** nhúng được. Chọn một mô hình nhúng để trò chuyện là hội thoại
+ * chết — nó không sinh chữ — nên nó không được có mặt ở đây.
+ *
+ * Lọc theo `chat === true` thoạt nhìn chặt hơn nhưng sai hướng: một máy chủ Ollama đời cũ
+ * không có trường `capabilities` buộc lõi đoán năng lực theo tên, và một lần đoán trượt khi
+ * ấy làm biến mất một mô hình người dùng đang dùng được. Hiện thừa một dòng thì họ chọn
+ * nhầm một lần rồi thôi; giấu nhầm một dòng thì họ không có cách nào tìm lại nó.
+ */
+export const usableForChat = (choice: ModelChoice): boolean =>
+  !(choice.embedding && !choice.chat);
 
 /**
  * Bộ chọn mô hình, ngồi **trong** ô soạn tin.
@@ -29,6 +43,7 @@ export default function ModelPicker(props: {
 }) {
   const id = createUniqueId();
   const [open, setOpen] = createSignal(false);
+  const choices = createMemo(() => props.models.filter(usableForChat));
   let popup: HTMLDivElement | undefined;
   let trigger: HTMLButtonElement | undefined;
 
@@ -101,16 +116,22 @@ export default function ModelPicker(props: {
           // có chỗ nào để rơi vào.
           class="absolute bottom-full left-0 z-40 mb-3xs flex w-[min(22rem,72vw)] flex-col rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
         >
+          {/* Hai lý do rỗng, hai câu khác nhau. "Chưa hỏi được máy chủ" là một thứ có thể
+              hỏng ở mạng; "chỉ có mô hình nhúng" là một máy chủ trả lời tử tế mà không có
+              gì dùng được ở đây, và việc phải làm là đi nạp một mô hình trò chuyện. Gộp
+              lại thành một câu là dạy người dùng đi sửa nhầm chỗ. */}
           <Show
-            when={props.models.length > 0}
+            when={choices().length > 0}
             fallback={
               <p class="m-0 px-sm py-xs text-2xs text-faint">
-                Chưa hỏi được máy chủ mô hình nào.
+                {props.models.length === 0
+                  ? "Chưa hỏi được máy chủ mô hình nào."
+                  : "Máy chủ chỉ có mô hình nhúng — chưa có mô hình nào trò chuyện được."}
               </p>
             }
           >
             <ul class="m-0 flex max-h-72 list-none flex-col gap-3xs overflow-y-auto p-0">
-              <For each={props.models}>
+              <For each={choices()}>
                 {(choice) => (
                   <li>
                     <button

@@ -58,10 +58,20 @@ impl Tool for DocsList {
             .map_err(|err| ToolError::Failed(err.to_string()))?;
 
         if documents.is_empty() {
-            return Ok(ToolOutcome::ok(
-                "Thư viện tài liệu của dự án này đang trống. Người dùng phải kéo tệp vào \
-                 cửa sổ Tài liệu; không có tool nào nạp tài liệu thay họ được.",
-            ));
+            // Kể cả lời báo trống cũng phải nói **vì sao** trống: thư viện là thư mục dự
+            // án, nên câu trả lời gần như luôn nằm ở thư mục đó — chưa có tệp nào đọc
+            // được, hay thư mục không mở được. `stats().reason` đã dựng sẵn câu ấy.
+            let mut lines = vec![
+                "Thư viện tài liệu của dự án này đang trống. Không có tool nào nạp tài liệu \
+                 được — thư viện là thư mục của dự án, và người dùng thêm tệp bằng cách đặt \
+                 tệp vào đó."
+                    .to_string(),
+            ];
+            if let Some(reason) = stats.reason {
+                lines.push(String::new());
+                lines.push(reason);
+            }
+            return Ok(ToolOutcome::ok(lines.join("\n")));
         }
 
         let mut lines = Vec::with_capacity(documents.len() + 1);

@@ -1,9 +1,14 @@
 //! Kho: SQLite, FTS5, và một bảng vector.
 //!
-//! Một tệp cơ sở dữ liệu cho **mỗi dự án tài liệu**, nằm cạnh thư mục chứa bản sao tệp.
-//! Không dùng chung một kho cho mọi dự án, vì triệu chứng của việc dùng chung là
-//! `docs.search` trả về một đoạn từ thư viện của dự án khác — một câu trả lời trông y hệt
-//! một câu trả lời sai bình thường, nên không ai lần ra nguyên nhân.
+//! Một tệp cơ sở dữ liệu cho **mỗi dự án tài liệu**. Không dùng chung một kho cho mọi dự
+//! án, vì triệu chứng của việc dùng chung là `docs.search` trả về một đoạn từ thư viện của
+//! dự án khác — một câu trả lời trông y hệt một câu trả lời sai bình thường, nên không ai
+//! lần ra nguyên nhân.
+//!
+//! Kho này là **chỉ mục soi vào thư mục dự án**, không phải bản gốc của gì cả. Chữ nằm
+//! trong tệp của người dùng; ở đây chỉ có thứ suy ra được từ chúng. Đó là lý do mọi quyết
+//! định bên dưới nghiêng về "dựng lại được" thay vì "giữ bằng mọi giá" — xem
+//! `docs/CONTRACT.md`, luật 12.
 //!
 //! # Bốn quyết định
 //!
@@ -19,10 +24,16 @@
 //! hỏng. Đổi lại, ta kiểm `application_id` trước khi ghi và tệp này nằm trong thư mục dữ
 //! liệu do chính ứng dụng tạo — nó không phải một tệp người dùng mở từ ngoài vào.
 //!
-//! **2. `sha256` là danh tính của nội dung.** Người dùng kéo cùng một tệp vào hai lần —
-//! từ Downloads rồi từ Desktop — và hai hàng tài liệu giống hệt nhau trong danh sách là
-//! một lỗi họ nhìn thấy ngay. Băm nội dung thay vì so đường dẫn, vì đường dẫn đổi còn nội
-//! dung thì không.
+//! **2. Đường dẫn là danh tính, `mtime` + kích thước là dấu vân tay.** Thư viện là thư
+//! mục dự án, nên một hàng `documents` ứng với **một tệp đang nằm ở đó**, và hai tệp là
+//! hai hàng kể cả khi nội dung giống hệt nhau — người dùng nhìn thấy hai tệp trong thư
+//! mục của họ, và một danh sách hiện một hàng là danh sách nói dối. Bản trước băm nội dung
+//! làm danh tính vì lúc ấy kho giữ **bản sao**; giờ không còn bản sao nào để gộp.
+//!
+//! Dấu vân tay thì đi theo `pai-index`: `mtime` + kích thước, không băm. Băm nội dung mọi
+//! tệp ở mọi lần quét là đọc lại cả thư mục mỗi lần — đúng cái giá mà chỉ mục tăng dần
+//! sinh ra để khỏi phải trả. Nó bỏ sót đúng một trường hợp: sửa tệp mà giữ nguyên cả độ
+//! dài lẫn `mtime`, và cách duy nhất tạo ra nó là đặt lại `mtime` bằng tay.
 //!
 //! **3. Xoá bằng lệnh tường minh, không dựa vào `ON DELETE CASCADE`.** SQLite chỉ kích
 //! hoạt trigger cho những hàng bị xoá theo dây chuyền khi `recursive_triggers` bật. Xoá
@@ -34,6 +45,7 @@
 //! **4. Lệch schema thì dựng lại — nhưng chỉ khi còn dựng lại được.** Xem
 //! [`ensure_schema`].
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -48,18 +60,20 @@ type Result<T> = std::result::Result<T, RagError>;
 /// `'PRAG'`. Mở nhầm một tệp SQLite khác thì thấy ngay, trước khi ghi vào.
 const APPLICATION_ID: i32 = 0x50524147;
 /// Bản 2 thêm bảng `meta`, và cùng với nó là việc nhớ **bộ nhúng nào đã sinh ra những
-/// vector đang nằm trong kho** — xem [`Store::forget_vectors`].
-const SCHEMA_VERSION: i32 = 2;
+/// vector đang nằm trong kho** — xem [`Store::forget_vectors`]. Bản 3 đổi danh tính tài
+/// liệu từ băm nội dung sang **đường dẫn**, thêm `mtime` để quét tăng dần, và thêm bảng
+/// `excluded` — cả ba đều là hệ quả của việc thư mục dự án trở thành thư viện.
+const SCHEMA_VERSION: i32 = 3;
 
 const SCHEMA: &str = r#"
 CREATE TABLE documents (
   id        TEXT    PRIMARY KEY,
-  path      TEXT    NOT NULL,
+  path      TEXT    NOT NULL UNIQUE,
   origin    TEXT    NOT NULL,
   title     TEXT    NOT NULL,
   format    TEXT    NOT NULL,
-  sha256    TEXT    NOT NULL UNIQUE,
   bytes     INTEGER NOT NULL,
+  mtime     INTEGER NOT NULL,
   added_at  INTEGER NOT NULL,
   error     TEXT
 ) STRICT;
@@ -112,6 +126,28 @@ CREATE TABLE meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
+
+-- Tệp còn nằm trong thư mục dự án nhưng người dùng đã bỏ khỏi thư viện.
+--
+-- Bảng này tồn tại vì `remove` không còn xoá tệp: không có nó thì lần quét ngay sau đó
+-- nạp lại đúng cái tài liệu người dùng vừa bỏ đi, và một nút bấm không có tác dụng là
+-- một nút bấm dạy người dùng rằng phần mềm không nghe lời họ.
+CREATE TABLE excluded (
+  path TEXT PRIMARY KEY,
+  at   INTEGER NOT NULL
+) STRICT;
+
+-- Tệp thư viện đã thử đọc và không đọc được, kèm dấu vân tay lúc thử.
+--
+-- Không có bảng này thì mỗi lần quét lại đi rút chữ lại đúng những tệp đã hỏng — một PDF
+-- cụt làm `pdf-extract` hoảng loạn ở mọi lần mở dự án — và bất biến "quét lại một thư mục
+-- không đổi thì không rút chữ lại tệp nào" chỉ còn đúng với thư mục toàn tệp lành.
+CREATE TABLE failures (
+  path   TEXT    PRIMARY KEY,
+  mtime  INTEGER NOT NULL,
+  size   INTEGER NOT NULL,
+  reason TEXT    NOT NULL
+) STRICT;
 "#;
 
 /// Danh tính bộ nhúng đã sinh ra những vector đang nằm trong kho.
@@ -121,6 +157,13 @@ pub const META_EMBEDDER_DIM: &str = "embedder.dim";
 /// Bộ nhúng **trước đó**, ghi lúc xoá vector và xoá đi khi nhúng lại xong. Đây là thứ
 /// khiến `stats()` nói được "đang nhúng lại vì đổi mô hình" thay vì "đang xếp hàng".
 pub const META_EMBEDDER_PREVIOUS: &str = "embedder.previous";
+/// Số tệp lần quét gần nhất nhìn thấy trong thư mục dự án.
+pub const META_SCAN_FILES: &str = "scan.files";
+/// Số tệp lần quét gần nhất bỏ qua vì chạm trần.
+pub const META_SCAN_SKIPPED: &str = "scan.skipped";
+/// Lúc quét xong lần gần nhất, millis. Ghi vào kho chứ không giữ trong bộ nhớ: giao diện
+/// phải nói được "quét lúc nào" ngay khi vừa mở ứng dụng, trước lần quét đầu tiên.
+pub const META_SCAN_AT: &str = "scan.at";
 
 /// Một hàng `documents` như kho thấy nó.
 #[derive(Clone, Debug)]
@@ -136,6 +179,14 @@ pub struct DocumentRow {
     pub chunks: u32,
     /// Mọi đoạn của tài liệu đều đã có vector.
     pub embedded: bool,
+}
+
+/// Dấu vân tay của một tệp đã nạp — đủ để nói "không đổi", không đủ để nói "giống hệt".
+/// Cùng phép so với `pai_index::store::FileState`, và cùng lý do.
+#[derive(Clone, Copy, Debug)]
+pub struct FileState {
+    pub mtime: i64,
+    pub size: i64,
 }
 
 /// Một hàng `chunks`, đủ để dựng một trích dẫn.
@@ -175,15 +226,15 @@ pub struct Store {
 }
 
 impl Store {
-    /// `files_dir` là thư mục chứa bản sao tệp. Kho cần biết nó để trả lời được câu hỏi
-    /// "dựng lại chỉ mục thì có dựng lại được không" — xem [`ensure_schema`].
-    pub fn open(path: &Path, files_dir: &Path) -> Result<Store> {
+    /// `root` là **thư mục tài liệu của người dùng**. Kho cần biết nó để trả lời được câu
+    /// hỏi "dựng lại chỉ mục thì có dựng lại được không" — xem [`ensure_schema`].
+    pub fn open(path: &Path, root: &Path) -> Result<Store> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|err| RagError::io(parent.display(), err))?;
         }
         Store::from_connection(
             Connection::open(path).map_err(|err| RagError::Store(err.to_string()))?,
-            files_dir,
+            root,
         )
     }
 
@@ -195,9 +246,9 @@ impl Store {
         )
     }
 
-    fn from_connection(mut conn: Connection, files_dir: &Path) -> Result<Store> {
+    fn from_connection(mut conn: Connection, root: &Path) -> Result<Store> {
         configure(&conn)?;
-        let opened = ensure_schema(&mut conn, files_dir)?;
+        let opened = ensure_schema(&mut conn, root)?;
         Ok(Store {
             conn: Mutex::new(conn),
             opened,
@@ -216,22 +267,47 @@ impl Store {
         body(&mut guard)
     }
 
-    /// Tài liệu mang đúng nội dung này, nếu đã có.
-    pub fn by_sha(&self, sha: &str) -> Result<Option<String>> {
+    /// Tài liệu đang nằm ở đúng đường dẫn này, nếu đã có.
+    pub fn by_path(&self, path: &str) -> Result<Option<String>> {
         self.with(|conn| {
             Ok(conn
                 .query_row(
-                    "SELECT id FROM documents WHERE sha256 = ?1",
-                    params![sha],
+                    "SELECT id FROM documents WHERE path = ?1",
+                    params![path],
                     |row| row.get(0),
                 )
                 .optional()?)
         })
     }
 
+    /// Đường dẫn và dấu vân tay của mọi tài liệu đã nạp.
+    ///
+    /// Đây là **một nửa** của phép quét tăng dần; nửa kia là một loạt `stat` trên đĩa. Hai
+    /// bên khớp nhau thì tệp không đi qua bộ rút chữ lần nào nữa — xem [`crate::library`].
+    pub fn known_files(&self) -> Result<HashMap<String, FileState>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare("SELECT path, mtime, bytes FROM documents")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    FileState {
+                        mtime: row.get(1)?,
+                        size: row.get(2)?,
+                    },
+                ))
+            })?;
+            let mut known = HashMap::new();
+            for row in rows {
+                let (path, state) = row?;
+                known.insert(path, state);
+            }
+            Ok(known)
+        })
+    }
+
     /// Ghi một tài liệu và toàn bộ đoạn của nó, trong một giao dịch.
     ///
-    /// Cùng `sha256` thì **cập nhật**, không chèn: tài liệu giữ nguyên mã, nên mọi trích
+    /// Cùng đường dẫn thì **cập nhật**, không chèn: tài liệu giữ nguyên mã, nên mọi trích
     /// dẫn đã phát ra cho mô hình vẫn trỏ đúng chỗ. Đoạn thì thay sạch — một tài liệu
     /// được nạp lại có thể *mất* đoạn chứ không chỉ thêm, và lần ra cái đã mất tốn hơn là
     /// viết lại cả nhóm.
@@ -243,8 +319,8 @@ impl Store {
         origin: &str,
         title: &str,
         format: Format,
-        sha: &str,
         bytes: u64,
+        mtime: i64,
         added_at: i64,
         chunks: &[Chunk],
     ) -> Result<()> {
@@ -253,24 +329,24 @@ impl Store {
             let tx = conn.transaction()?;
             tx.execute(
                 "INSERT INTO documents \
-                 (id, path, origin, title, format, sha256, bytes, added_at, error) \
+                 (id, path, origin, title, format, bytes, mtime, added_at, error) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL) \
-                 ON CONFLICT(sha256) DO UPDATE SET \
-                 path = ?2, origin = ?3, title = ?4, format = ?5, bytes = ?7, error = NULL",
+                 ON CONFLICT(path) DO UPDATE SET \
+                 origin = ?3, title = ?4, format = ?5, bytes = ?6, mtime = ?7, error = NULL",
                 params![
                     id,
                     path,
                     origin,
                     title,
                     format.as_str(),
-                    sha,
                     bytes as i64,
+                    mtime,
                     added_at
                 ],
             )?;
             let id: String = tx.query_row(
-                "SELECT id FROM documents WHERE sha256 = ?1",
-                params![sha],
+                "SELECT id FROM documents WHERE path = ?1",
+                params![path],
                 |row| row.get(0),
             )?;
             forget_chunks(&tx, &id)?;
@@ -495,6 +571,142 @@ impl Store {
         })
     }
 
+    /// Quên những tài liệu nằm ở các đường dẫn này. Trả về số hàng đã đi.
+    ///
+    /// Đường dẫn chứ không phải mã, vì người gọi là lần quét: nó biết **tệp nào đã biến
+    /// mất khỏi đĩa**, không biết mã của chúng. Cùng thứ tự xoá với
+    /// [`Store::remove_document`], và vì đúng cùng một lý do.
+    pub fn forget_paths(&self, paths: &[String]) -> Result<usize> {
+        if paths.is_empty() {
+            return Ok(0);
+        }
+        self.with(|conn| {
+            let tx = conn.transaction()?;
+            let mut gone = 0usize;
+            for path in paths {
+                let id: Option<String> = tx
+                    .query_row(
+                        "SELECT id FROM documents WHERE path = ?1",
+                        params![path],
+                        |row| row.get(0),
+                    )
+                    .optional()?;
+                let Some(id) = id else { continue };
+                tx.execute(
+                    "DELETE FROM vectors WHERE chunk_id IN \
+                     (SELECT id FROM chunks WHERE document_id = ?1)",
+                    params![id],
+                )?;
+                forget_chunks(&tx, &id)?;
+                tx.execute("DELETE FROM documents WHERE id = ?1", params![id])?;
+                gone += 1;
+            }
+            tx.commit()?;
+            Ok(gone)
+        })
+    }
+
+    /// Ghi nhận rằng người dùng đã bỏ tệp này khỏi thư viện dù nó còn trên đĩa.
+    pub fn exclude(&self, path: &str, at: i64) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO excluded (path, at) VALUES (?1, ?2) \
+                 ON CONFLICT(path) DO UPDATE SET at = ?2",
+                params![path, at],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Gỡ một đường dẫn khỏi danh sách loại trừ.
+    ///
+    /// Gọi khi người dùng **tự tay** nạp lại đúng tệp đó: một lời nói sau đè lên một lời
+    /// nói trước, chứ không phải một nút bấm im lặng không có tác dụng.
+    pub fn allow(&self, path: &str) -> Result<()> {
+        self.with(|conn| {
+            conn.execute("DELETE FROM excluded WHERE path = ?1", params![path])?;
+            Ok(())
+        })
+    }
+
+    pub fn excluded(&self) -> Result<HashSet<String>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare("SELECT path FROM excluded")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            Ok(rows.collect::<rusqlite::Result<HashSet<String>>>()?)
+        })
+    }
+
+    /// Dấu vân tay của những tệp đã thử đọc và không đọc được.
+    ///
+    /// Lần quét so bảng này y như so `documents`: khớp thì bỏ qua, không mở tệp ra nữa.
+    /// Sửa tệp — `mtime` đổi — là lời mời thử lại, và đó đúng là điều người dùng vừa làm.
+    pub fn failures(&self) -> Result<HashMap<String, FileState>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare("SELECT path, mtime, size FROM failures")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    FileState {
+                        mtime: row.get(1)?,
+                        size: row.get(2)?,
+                    },
+                ))
+            })?;
+            let mut out = HashMap::new();
+            for row in rows {
+                let (path, state) = row?;
+                out.insert(path, state);
+            }
+            Ok(out)
+        })
+    }
+
+    pub fn put_failure(&self, path: &str, mtime: i64, size: i64, reason: &str) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO failures (path, mtime, size, reason) VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(path) DO UPDATE SET mtime = ?2, size = ?3, reason = ?4",
+                params![path, mtime, size, reason],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn clear_failure(&self, path: &str) -> Result<()> {
+        self.with(|conn| {
+            conn.execute("DELETE FROM failures WHERE path = ?1", params![path])?;
+            Ok(())
+        })
+    }
+
+    pub fn forget_failures(&self, paths: &[String]) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        self.with(|conn| {
+            let tx = conn.transaction()?;
+            for path in paths {
+                tx.execute("DELETE FROM failures WHERE path = ?1", params![path])?;
+            }
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Bao nhiêu tệp trong thư mục dự án thư viện không đọc được, và bao nhiêu tệp người
+    /// dùng đã bỏ ra. Hai con số này đi thẳng lên [`crate::Stats`]: một thư viện có ít tài
+    /// liệu hơn số tệp trong thư mục phải nói được vì sao.
+    pub fn side_counts(&self) -> Result<(u32, u32)> {
+        self.with(|conn| {
+            let failures: i64 =
+                conn.query_row("SELECT count(*) FROM failures", [], |row| row.get(0))?;
+            let excluded: i64 =
+                conn.query_row("SELECT count(*) FROM excluded", [], |row| row.get(0))?;
+            Ok((failures.max(0) as u32, excluded.max(0) as u32))
+        })
+    }
+
     pub fn counts(&self) -> Result<Counts> {
         self.with(|conn| {
             Ok(Counts {
@@ -670,8 +882,8 @@ fn configure(conn: &Connection) -> Result<()> {
     if mode != "wal" {
         tracing::debug!(mode, "không bật được WAL cho kho tài liệu này");
     }
-    // Nội dung gốc là bản sao tệp nằm ngay bên cạnh, nên một giao dịch mất vì mất điện là
-    // một lần nạp lại chứ không phải mất dữ liệu. `NORMAL` là mức đúng cho thứ như thế.
+    // Nội dung gốc là tệp trong thư mục dự án, nên một giao dịch mất vì mất điện là một
+    // lần quét lại chứ không phải mất dữ liệu. `NORMAL` là mức đúng cho thứ như thế.
     conn.pragma_update(None, "synchronous", "NORMAL")
         .map_err(|err| RagError::Store(err.to_string()))?;
     Ok(())
@@ -679,16 +891,16 @@ fn configure(conn: &Connection) -> Result<()> {
 
 /// Bảo đảm schema, và quyết định phải làm gì khi nó đã cũ.
 ///
-/// `pai-index` dựng lại vô điều kiện, vì nguồn của nó là mã nguồn trong thư mục làm việc
-/// và nó luôn ở đó. Ở đây nguồn là **bản sao tệp trong kho của dự án**, và nếu thư mục đó
-/// đã bị xoá thì bảng `documents` là bản ghi duy nhất còn lại về việc người dùng từng nạp
-/// những gì. Xoá nó đi để "dựng lại" là xoá đúng cái không dựng lại được.
+/// Nguồn của kho này là **thư mục dự án**, y như nguồn của `pai-index` là thư mục làm
+/// việc. Khi thư mục ấy đọc được thì mọi hàng ở đây đều dựng lại được trong một lần quét,
+/// nên lệch schema là chuyện dựng lại chứ không phải chuyện mất mát.
 ///
-/// Nên: dựng lại khi thư viện đang rỗng, hoặc khi bản sao tệp vẫn còn trong kho. Ngoài
-/// hai trường hợp đó thì từ chối mở và nói ra lý do — người dùng còn đường chép tệp về
-/// trước khi mất chúng. Từ chối làm việc là câu trả lời tệ, nhưng xoá dữ liệu của người
-/// khác trong im lặng là câu trả lời tệ hơn.
-fn ensure_schema(conn: &mut Connection, files_dir: &Path) -> Result<Opened> {
+/// Trường hợp còn lại mới là chỗ phải cẩn thận: thư mục **không đọc được** — ổ ngoài chưa
+/// cắm, thư mục mạng chưa nối, thư mục vừa bị đổi tên. Lúc đó xoá bảng đi để "dựng lại" là
+/// dựng lại ra một thư viện rỗng, và người dùng mở dự án lên thấy 0 tài liệu mà không có
+/// lời giải thích nào — đúng cái lỗi mà cả đợt thay đổi này sinh ra để sửa. Nên: từ chối
+/// mở, và nói ra thư mục nào không đọc được.
+fn ensure_schema(conn: &mut Connection, root: &Path) -> Result<Opened> {
     let app_id: i32 = conn.query_row("PRAGMA application_id", [], |row| row.get(0))?;
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
     let populated: i64 = conn.query_row(
@@ -709,18 +921,19 @@ fn ensure_schema(conn: &mut Connection, files_dir: &Path) -> Result<Opened> {
         }
         let documents: i64 =
             conn.query_row("SELECT count(*) FROM documents", [], |row| row.get(0))?;
-        if documents > 0 && !has_files(files_dir) {
+        if documents > 0 && !readable(root) {
             return Err(RagError::Store(format!(
-                "schema thư viện đã cũ (bản {version}, cần {SCHEMA_VERSION}) nhưng kho tệp \
-                 {} trống nên không dựng lại được; hãy chép tệp về rồi nạp lại",
-                files_dir.display()
+                "schema thư viện đã cũ (bản {version}, cần {SCHEMA_VERSION}) nhưng thư mục dự \
+                 án {} không đọc được nên không dựng lại được; hãy nối lại thư mục rồi mở lại",
+                root.display()
             )));
         }
         tracing::info!(
             from = version,
             to = SCHEMA_VERSION,
             documents,
-            "schema thư viện đã cũ, dựng lại từ bản sao tệp trong kho"
+            root = %root.display(),
+            "schema thư viện đã cũ, dựng lại bằng một lần quét thư mục dự án"
         );
         let tx = conn.transaction()?;
         tx.execute_batch(
@@ -731,6 +944,8 @@ fn ensure_schema(conn: &mut Connection, files_dir: &Path) -> Result<Opened> {
              DROP TABLE IF EXISTS vectors; \
              DROP TABLE IF EXISTS chunks; \
              DROP TABLE IF EXISTS documents; \
+             DROP TABLE IF EXISTS excluded; \
+             DROP TABLE IF EXISTS failures; \
              DROP TABLE IF EXISTS meta;",
         )?;
         tx.commit()?;
@@ -747,8 +962,8 @@ fn ensure_schema(conn: &mut Connection, files_dir: &Path) -> Result<Opened> {
     Ok(opened)
 }
 
-fn has_files(dir: &Path) -> bool {
-    std::fs::read_dir(dir)
-        .map(|mut entries| entries.any(|entry| entry.is_ok()))
-        .unwrap_or(false)
+/// Thư mục có mở ra đọc được không. Một thư mục **rỗng** vẫn là đọc được: người dùng dọn
+/// hết tệp đi là một sự thật, còn ổ đĩa chưa cắm là một sự thật khác hẳn.
+fn readable(dir: &Path) -> bool {
+    std::fs::read_dir(dir).is_ok()
 }

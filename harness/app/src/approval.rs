@@ -73,10 +73,15 @@ impl Approvals {
     }
 
     /// Huỷ mọi câu hỏi đang treo. Thả đầu gửi làm bên chờ tỉnh dậy ngay với `Rejected`.
-    pub fn cancel_all(&self, channel: &Channel<AgentEvent>) {
+    /// Rút lại mọi câu hỏi đang treo.
+    ///
+    /// Nhận một hàm gửi chứ không nhận `Channel`: sự kiện của một lượt phải đi qua **đúng
+    /// một** đường ra, và đường đó là bộ gộp. Gửi thẳng vào `Channel` ở đây là chen ngang
+    /// trước những token còn trong bộ đệm, và thứ tự sai thì giao diện đóng nhầm khối.
+    pub fn cancel_all(&self, send: impl Fn(AgentEvent)) {
         for (request_id, tx) in self.pending.lock().drain() {
             drop(tx);
-            let _ = channel.send(AgentEvent::ApprovalCancel { request_id });
+            send(AgentEvent::ApprovalCancel { request_id });
         }
     }
 }

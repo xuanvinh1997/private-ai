@@ -266,6 +266,16 @@ pub struct ModelChoice {
     /// Gọi được tool không. Mô hình không gọi được tool thì coding agent vô dụng, nên
     /// giao diện phải nói ra trước khi người dùng chọn nhầm.
     pub tools: bool,
+    /// Trò chuyện được.
+    pub chat: bool,
+    /// Nhúng được.
+    ///
+    /// Hai cờ này không loại trừ nhau, và đó là lý do có hai cờ chứ không phải một enum:
+    /// `embedding == true && chat == false` là thứ **chỉ** nhúng được, và chỉ nhóm đó mới
+    /// bị giấu khỏi bộ chọn mô hình hội thoại. Lọc theo `chat == true` thì chặt hơn nhưng
+    /// sai hướng: một máy chủ Ollama đời cũ không có trường `capabilities` sẽ để lõi phải
+    /// đoán theo tên, và một lần đoán trượt khi ấy làm biến mất một mô hình dùng được.
+    pub embedding: bool,
     pub context_window: Option<u64>,
 }
 

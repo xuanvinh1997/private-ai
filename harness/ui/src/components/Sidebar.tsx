@@ -177,11 +177,20 @@ export default function Sidebar(props: SidebarProps) {
       {/* Không dự án thì `tabsFor` cắt sạch cả hai mục, và chỗ này thành một khoảng trắng
           giữa ô tìm và danh sách phiên — đọc ra là "cái gì đó chưa nạp xong". Một dòng
           chữ ngắn đắt hơn khoảng trắng đó: nó nói danh sách ngắn là do trạng thái, và nói
-          luôn cái gì làm nó dài trở lại. */}
+          luôn cái gì làm nó dài trở lại.
+
+          Nó ngồi **đúng chỗ khối điều hướng**: cùng lề `px-sm`, cùng bo góc và cùng đệm
+          với một hàng `NavRow`. Dán thẳng dưới ô tìm bằng lề khác thì mắt đọc nó ra là chữ
+          tràn khỏi ô tìm chứ không ra là một lời giải thích cho chỗ trống bên dưới. */}
       <Show when={nav().length === 0 && props.hasProject === false}>
-        <p class="shrink-0 px-md pb-sm text-2xs text-faint">
-          Chưa mở dự án. Thay đổi và Thư viện tài liệu xuất hiện khi mở một dự án.
-        </p>
+        <div class="shrink-0 px-sm pb-sm">
+          <p class="m-0 flex items-start gap-sm rounded-panel bg-[var(--overlay-faint)] px-sm py-xs text-2xs leading-[1.5] text-muted">
+            <span class="mt-3xs shrink-0 text-faint">
+              <Icon name="folder" size={14} />
+            </span>
+            <span>Chưa mở dự án. Thay đổi và Thư viện tài liệu xuất hiện khi mở một dự án.</span>
+          </p>
+        </div>
       </Show>
 
       <Show when={nav().length > 0}>

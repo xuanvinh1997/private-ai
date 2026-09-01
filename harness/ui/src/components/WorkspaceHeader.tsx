@@ -51,7 +51,10 @@ export default function WorkspaceHeader(props: {
       </Show>
 
       <div class="flex min-w-0 flex-1 items-center gap-sm">
-        <h1 class="m-0 min-w-0 truncate text-base font-semibold text-ink">{props.title}</h1>
+        {/* `text-lg` chứ không `text-base`: thanh này cao 56px và chỉ mang đúng một dòng
+            chữ, nên một tiêu đề cỡ chữ thân bài đứng trong đó đọc ra là một mẩu nhãn bị bỏ
+            quên chứ không ra là tên của thứ đang mở. */}
+        <h1 class="m-0 min-w-0 truncate text-lg font-semibold text-ink">{props.title}</h1>
         <Show when={props.busy}>
           <span class="shrink-0 text-2xs text-accent" role="status" aria-live="polite">
             {props.busyLabel ?? "đang chạy…"}

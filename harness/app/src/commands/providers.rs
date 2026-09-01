@@ -195,6 +195,11 @@ pub async fn probe_provider(
             .map(|model| ModelChoice {
                 id: model.id,
                 tools: model.tools,
+                // Một lần thử cố ý không trả tiền hỏi năng lực từng mô hình, nên ở đây
+                // chưa biết gì: `chat` để `true` để không giấu nhầm, `embedding` để
+                // `false`. Giá trị có thẩm quyền đến sau từ `list_models`.
+                chat: true,
+                embedding: false,
                 context_window: model.context_window,
             })
             .collect(),

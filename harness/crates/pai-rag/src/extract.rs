@@ -96,7 +96,13 @@ const CODE_EXTENSIONS: &[&str] = &[
     "cfg", "xml", "lua", "r", "m", "scala", "dart", "vue", "svelte",
 ];
 
-fn format_for(path: &Path) -> Option<Format> {
+/// Định dạng suy từ đuôi tệp, hoặc `None` khi thư viện không đọc được tệp này.
+///
+/// Công khai vì lần quét thư mục phải hỏi đúng câu hỏi này **trước** khi mở tệp: một thư
+/// mục ảnh mười nghìn tệp không được biến thành mười nghìn lần đọc rồi mười nghìn lần từ
+/// chối. Đây cũng là chỗ duy nhất định nghĩa "tệp thư viện nhận", nên phép lọc lúc quét và
+/// phép kiểm lúc nạp không bao giờ nói hai điều khác nhau về cùng một tệp.
+pub fn format_for(path: &Path) -> Option<Format> {
     let ext = path
         .extension()
         .and_then(|ext| ext.to_str())

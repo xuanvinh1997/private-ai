@@ -100,18 +100,26 @@ export function demoProviders(): Provider[] {
 }
 
 const OLLAMA_MODELS: ModelChoice[] = [
-  { id: "qwen2.5-coder:14b", tools: true, contextWindow: 32768 },
-  { id: "qwen2.5-coder:32b", tools: true, contextWindow: 32768 },
+  { id: "qwen2.5-coder:14b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
+  { id: "qwen2.5-coder:32b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
   // Mô hình không gọi được tool. Đây là trạng thái *duy nhất* mà bộ chọn mô hình phải
   // cảnh báo, nên nó phải có mặt ở đây, cạnh những mô hình bình thường.
-  { id: "gemma3:12b", tools: false, contextWindow: 8192 },
-  { id: "llama3.2:3b", tools: false, contextWindow: 131072 },
+  { id: "gemma3:12b", tools: false, chat: true, embedding: false, contextWindow: 8192 },
+  { id: "llama3.2:3b", tools: false, chat: true, embedding: false, contextWindow: 131072 },
+  // **Chỉ** nhúng được, nên bộ chọn mô hình hội thoại phải giấu nó đi. Nó nằm đây vì máy
+  // chủ Ollama thật trả về đúng như vậy: một danh sách trộn lẫn hai vai. Không có nó trong
+  // bộ mẫu thì đường lọc là đường chưa ai nhìn thấy bao giờ.
+  { id: "embeddinggemma:latest", tools: false, chat: false, embedding: true, contextWindow: 2048 },
+  // Vừa nhúng vừa trò chuyện được: nhóm **không** bị lọc, và là lý do luật lọc là
+  // `embedding && !chat` chứ không phải `chat`.
+  { id: "nomic-embed-text", tools: false, chat: true, embedding: true, contextWindow: 8192 },
 ];
 
 const OPENAI_MODELS: ModelChoice[] = [
-  { id: "gpt-4o-mini", tools: true, contextWindow: 128000 },
-  { id: "gpt-4o", tools: true, contextWindow: 128000 },
-  { id: "o3-mini", tools: true, contextWindow: 200000 },
+  { id: "gpt-4o-mini", tools: true, chat: true, embedding: false, contextWindow: 128000 },
+  { id: "gpt-4o", tools: true, chat: true, embedding: false, contextWindow: 128000 },
+  { id: "o3-mini", tools: true, chat: true, embedding: false, contextWindow: 200000 },
+  { id: "text-embedding-3-small", tools: false, chat: false, embedding: true, contextWindow: 8191 },
 ];
 
 /** Cùng một danh sách, nhưng qua con mắt của `probe_provider`: cờ `tools` bị gạt sạch. */

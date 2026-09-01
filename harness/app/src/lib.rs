@@ -7,7 +7,7 @@
 //! độ không giao diện.
 
 mod approval;
-mod coalesce;
+pub mod coalesce;
 mod commands;
 pub mod harness;
 mod llm;
@@ -138,22 +138,26 @@ async fn send_message(
     let result = run_turn(&harness, &input, cancel, &sink).await;
 
     state.running.lock().remove(&input.session_id);
-    state.approvals.cancel_all(&on_event);
+
+    // Mọi sự kiện của lượt đi qua **đúng một** đường ra — bộ gộp. Trước đây `Final`,
+    // `Error` và `ApprovalCancel` gửi thẳng vào `Channel` trong khi token đi qua bộ đệm
+    // 16 ms, nên chúng vượt lên trước những token cuối cùng: giao diện thấy `final`, đóng
+    // khối trả lời, rồi token muộn tới và đẻ ra một tin nhắn cụt mang con trỏ nhấp nháy
+    // không bao giờ tắt. Bộ gộp xả hết token trước khi cho bất kỳ sự kiện nào khác đi qua,
+    // nên chỉ cần đi chung đường là thứ tự đúng.
+    state.approvals.cancel_all(|event| sink.0.send(event));
 
     match result {
-        Ok(message_id) => {
-            let _ = on_event.send(AgentEvent::Final { message_id });
-            Ok(())
-        }
-        Err(err) => {
-            // Lỗi đi ra bằng đường sự kiện chứ không bằng `Err`: giao diện đã dựng một
-            // khối cho lượt này rồi, và một lời từ chối im lặng để nó treo ở đó mãi.
-            let _ = on_event.send(AgentEvent::Error {
-                message: err.clone(),
-            });
-            Ok(())
-        }
+        Ok(message_id) => sink.0.send(AgentEvent::Final { message_id }),
+        // Lỗi đi ra bằng đường sự kiện chứ không bằng `Err`: giao diện đã dựng một khối
+        // cho lượt này rồi, và một lời từ chối im lặng để nó treo ở đó mãi.
+        Err(message) => sink.0.send(AgentEvent::Error { message }),
     }
+
+    // Và trả về **sau khi** kênh đã nhận hết: `invoke` resolve là tín hiệu giao diện dùng
+    // để kết thúc lượt, nên nó không được sớm hơn sự kiện cuối cùng.
+    sink.0.finish().await;
+    Ok(())
 }
 
 async fn run_turn(

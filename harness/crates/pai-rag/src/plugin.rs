@@ -21,16 +21,24 @@ use crate::tools::read::DocsRead;
 use crate::tools::search::DocsSearch;
 
 pub struct RagPlugin {
-    /// Thư mục của dự án tài liệu: cơ sở dữ liệu và thư mục `files/` nằm trong đó.
+    /// Thư mục kho: cơ sở dữ liệu nằm trong đó, và không có gì khác.
     dir: PathBuf,
+    /// **Thư mục tài liệu của người dùng** — thư viện là chính nó. Hai đường dẫn chứ không
+    /// một, vì kho dựng lại được bất cứ lúc nào từ thư mục này, còn thư mục này là dữ liệu
+    /// của người dùng và không được sinh thêm gì trong đó ngoài tệp họ tự kéo vào.
+    root: PathBuf,
     /// `None` là hợp lệ và là trường hợp thường gặp lúc mới cài: thư viện chạy bằng FTS5
     /// cho tới khi người dùng chọn được một mô hình nhúng.
     embedder: Option<Arc<dyn Embedder>>,
 }
 
 impl RagPlugin {
-    pub fn new(dir: PathBuf, embedder: Option<Arc<dyn Embedder>>) -> RagPlugin {
-        RagPlugin { dir, embedder }
+    pub fn new(dir: PathBuf, root: PathBuf, embedder: Option<Arc<dyn Embedder>>) -> RagPlugin {
+        RagPlugin {
+            dir,
+            root,
+            embedder,
+        }
     }
 }
 
@@ -41,7 +49,7 @@ impl Plugin for RagPlugin {
     }
 
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
-        let library = Arc::new(Library::open(&self.dir, self.embedder.clone())?);
+        let library = Arc::new(Library::open(&self.dir, &self.root, self.embedder.clone())?);
 
         // Gộp WAL lúc tháo. Không có bước này thì thư mục dự án ở lại với một tệp `-wal`
         // mà lần mở sau phải phát lại — vô hại, nhưng nó cũng có nghĩa là sao lưu thư mục

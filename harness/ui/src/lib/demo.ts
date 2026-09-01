@@ -82,14 +82,17 @@ const MINUTE = 60_000;
 /**
  * Mô hình giả cho trang demo.
  *
- * Có một mô hình `tools: false` là cố ý: nó là trạng thái duy nhất mà giao diện phải
- * cảnh báo, nên nó phải nhìn thấy được mà không cần dựng máy chủ.
+ * Hai mục ở đây là **trạng thái cần nhìn thấy**, không phải để danh sách dài ra:
+ *   - `tools: false` — trạng thái duy nhất mà bộ chọn phải cảnh báo;
+ *   - `embedding && !chat` — trạng thái duy nhất mà bộ chọn phải **giấu**. Một dòng bị lọc
+ *     mà không có trong bộ mẫu thì không ai kiểm được là nó có bị lọc thật không.
  */
 export function demoModels(): ModelChoice[] {
   return [
-    { id: "qwen2.5-coder:14b", tools: true, contextWindow: 32768 },
-    { id: "qwen2.5-coder:32b", tools: true, contextWindow: 32768 },
-    { id: "gemma3:12b", tools: false, contextWindow: 8192 },
+    { id: "qwen2.5-coder:14b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
+    { id: "qwen2.5-coder:32b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
+    { id: "gemma3:12b", tools: false, chat: true, embedding: false, contextWindow: 8192 },
+    { id: "embeddinggemma:latest", tools: false, chat: false, embedding: true, contextWindow: 2048 },
   ];
 }
 
@@ -178,6 +181,8 @@ export function demoNodes(): ConversationNode[] {
     // Bốn đường đi của bộ dựng khối — mermaid đúng, mermaid sai cú pháp, khối mã ngôn ngữ
     // khác, và một khối chưa đóng rào. Cái nào không có ở đây là cái chưa ai nhìn thấy
     // bao giờ, và ba trong bốn đường đó chỉ hiện ra khi có gì đó không hoàn hảo.
+    { id: "d-md-u", kind: "user", text: "Tóm tắt giúp mình luật lọc tool trong pai-tools." },
+    { id: "d-md", kind: "assistant", text: demoMarkdownText(), streaming: false },
     { id: "d-u0", kind: "user", text: "Vẽ giúp mình kiến trúc của cây plugin." },
     { id: "d-diagram", kind: "assistant", text: demoDiagramText(), streaming: false },
     { id: "d-u1", kind: "user", text: "Bỏ hết unwrap trong bộ nạp cấu hình giúp mình." },
@@ -537,6 +542,49 @@ export function demoProjects(current = "p-harness", now = Date.now()): Project[]
     },
   ];
   return all.map((entry) => ({ ...entry, isCurrent: entry.id === current }));
+}
+
+/**
+ * Một tin nhắn trợ lý đi qua **mọi** loại token markdown mà `Markdown.tsx` dựng được.
+ *
+ * Danh sách này là danh sách kiểm, không phải một câu trả lời trông cho giống thật: đậm,
+ * nghiêng, mã inline, gạch ngang, tiêu đề, danh sách có số và không số **lồng nhau**, danh
+ * sách việc, bảng có căn cột, trích dẫn, đường kẻ ngang, liên kết. Cái gì không có ở đây là
+ * cái chưa ai nhìn thấy bao giờ — và với một bộ dựng token thì chỗ hỏng luôn là đúng một
+ * loại token không ai nghĩ tới.
+ *
+ * Cố ý **không có khối rào** trong này: đường rào đã có `demoDiagramText` lo, và tách hai
+ * bộ mẫu ra thì lúc một trong hai hỏng, nhìn là biết hỏng ở bên nào.
+ */
+function demoMarkdownText(): string {
+  return [
+    "## Lọc tool hai tầng",
+    "",
+    "Sổ đăng ký kiểm quyền ở **hai chỗ**, và bỏ một chỗ là mở một đường vòng:",
+    "",
+    "1. Lúc *liệt kê* — mô hình không thấy tên tool ngoài phạm vi.",
+    "2. Lúc *gọi*, sau khi đã gỡ tên wire:",
+    "   - tên lạ rơi vào `Deny`;",
+    "   - tham số `workspace` bị ghi đè, không nhận mặc định.",
+    "",
+    "| Tầng | Hàm | Bỏ qua được? |",
+    "| --- | :--- | ---: |",
+    "| Liệt kê | `Registry::visible` | không |",
+    "| Gọi | `Registry::invoke` | không |",
+    "| ~~Hook~~ | `on_pre_call` | có (fail-open) |",
+    "",
+    "### Việc còn lại",
+    "",
+    "- [x] Gỡ nhánh `Allow` khỏi guard",
+    "- [ ] Viết test cho tên gọi thẳng",
+    "",
+    "> Guard đơn điệu: chỉ `Deny` hoặc bỏ phiếu trắng. Có `Allow` thì thứ tự đăng ký biến",
+    "> một lần từ chối thành một lần cho phép.",
+    "",
+    "---",
+    "",
+    "Chi tiết ở [CONTRACT.md](https://example.invalid/CONTRACT.md), mục *Ranh giới tin cậy*.",
+  ].join("\n");
 }
 
 /**

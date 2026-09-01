@@ -103,6 +103,8 @@ impl Harness {
                 .map(|model| crate::protocol::ModelChoice {
                     id: model.name,
                     tools: model.capabilities.tools,
+                    chat: model.capabilities.chat,
+                    embedding: model.capabilities.embedding,
                     context_window: model.capabilities.context_window,
                 })
                 .collect(),
@@ -603,23 +605,18 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Kho tài liệu nằm trong **kho dữ liệu của ứng dụng**, không trong thư mục dự
-            // án, dù thư mục dự án thoạt nghe là chỗ tự nhiên hơn. Ba lý do, và cả ba đều
-            // là chuyện đã xảy ra với người dùng thật ở các sản phẩm khác:
-            //
-            //   - Thư viện giữ một **bản sao** của mọi tài liệu. Đổ nó vào thư mục dự án
-            //     là nhân đôi dung lượng ngay trước mắt người dùng, trong đúng thư mục họ
-            //     vừa thả hai mươi tệp PDF vào.
-            //   - Bản sao đó là nguồn dựng lại chỉ mục. Nằm trong thư mục người dùng thì
-            //     một lần dọn tay sẽ làm tài liệu biến mất khỏi thư viện mà không ai báo.
-            //   - `Library::remove` xoá bản sao. Xoá tệp trong thư mục của người dùng là
-            //     việc một thư viện không nên tự làm, kể cả khi tệp đó do nó tạo ra.
+            // Hai đường dẫn, hai vai. `root` là **thư mục người dùng chọn** — đó là thư
+            // viện, và tệp trong đó là nguồn sự thật, đúng như thư mục mã nguồn là nguồn
+            // sự thật của `pai-index`. Cơ sở dữ liệu thì nằm trong kho của ứng dụng: nó
+            // là chỉ mục soi vào thư mục ấy, dựng lại được bất cứ lúc nào, và đổ nó vào
+            // thư mục người dùng chỉ tổ thêm một thư mục ẩn họ không hỏi xin.
             let embedder: Option<Arc<dyn Embedder>> = Some(embedder.clone());
             Ok(Box::new(RagPlugin::new(
                 data_dir
                     .join("du-an")
                     .join(project_slug(&workspace))
                     .join("tai-lieu"),
+                workspace.clone(),
                 embedder,
             )) as Box<dyn Plugin>)
         });

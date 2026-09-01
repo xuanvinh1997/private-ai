@@ -1,10 +1,11 @@
 /**
  * Tách văn bản trợ lý thành đoạn chữ và khối mã có rào ba dấu huyền.
  *
- * Đây **không phải** một bộ dựng markdown. Repo không có thư viện markdown và không được
- * thêm, và một bộ dựng viết tay đủ dùng thì luôn dừng ở chỗ nó sai — đậm lồng trong
- * nghiêng, bảng, tham chiếu liên kết. Phạm vi là khối rào, đúng bằng thứ cần để vẽ được
- * sơ đồ và tô được mã. Ngoài rào ra, chữ vẫn là chữ.
+ * Đây **không phải** một bộ dựng markdown — phần đó là việc của `Markdown.tsx`, chạy trên
+ * cây token của `marked`. Bộ tách này đứng **trước** nó và cố ý giữ nguyên: khối rào phải
+ * ra khỏi chuỗi trước khi `marked` nhìn thấy, vì hai thứ ở đây không phải markdown thường —
+ * `mermaid` thành hình vẽ, và một khối **chưa đóng rào** phải hiện ra như mã đang chảy chứ
+ * không bị nuốt. `marked` gộp cả hai vào cùng một token `code` và làm mất phân biệt đó.
  */
 
 export type Segment =

@@ -24,7 +24,8 @@
 //! embed     seam `Embeddings` + hai bản cài đặt: Ollama và OpenAI-compatible
 //! store     SQLite: `documents`, `chunks`, FTS5 external content, và bảng `vectors`
 //! search    hợp nhất BM25 với cosine bằng Reciprocal Rank Fusion
-//! library   seam `Docs`: nạp có tiến trình, liệt kê, xoá, tìm
+//! library   seam `Docs`: quét thư mục dự án, nạp có tiến trình, liệt kê, bỏ khỏi chỉ
+//!           mục, tìm. Thư mục dự án **là** thư viện — xem tài liệu của module
 //! tools     `docs.search`, `docs.read`, `docs.list` — cả ba trả nội dung không đáng tin
 //! ```
 //!
@@ -48,8 +49,10 @@ pub mod tools;
 pub use chunk::{Chunk, ChunkOpts, chunk};
 pub use embed::{Embedder, Embeddings, MAX_BATCH, OllamaEmbedder, OpenAiEmbedder};
 pub use error::RagError;
-pub use extract::{Extracted, Format, MAX_FILE_BYTES, extract};
-pub use library::{DocLibrary, Docs, Document, Hit, IngestEvent, IngestStage, Library, Stats};
+pub use extract::{Extracted, Format, MAX_FILE_BYTES, extract, format_for};
+pub use library::{
+    DocLibrary, Docs, Document, Hit, IngestEvent, IngestStage, Library, MAX_FILES, Scanning, Stats,
+};
 pub use plugin::RagPlugin;
 pub use search::{MatchedBy, RRF_K, cosine, fuse, rank_by_cosine};
 pub use store::Store;

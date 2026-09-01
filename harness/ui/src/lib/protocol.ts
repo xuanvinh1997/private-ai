@@ -204,6 +204,17 @@ export interface ModelChoice {
    * trước khi người dùng chọn nhầm.
    */
   tools: boolean;
+  /** Trò chuyện được. */
+  chat: boolean;
+  /**
+   * Nhúng được.
+   *
+   * Hai cờ không loại trừ nhau. Chỉ nhóm `embedding && !chat` — thứ **chỉ** nhúng được —
+   * bị giấu khỏi bộ chọn mô hình hội thoại. Lọc theo `chat` thì chặt hơn nhưng sai hướng:
+   * một máy chủ Ollama đời cũ không có trường `capabilities` buộc lõi đoán theo tên, và
+   * một lần đoán trượt khi ấy làm biến mất một mô hình đang dùng được.
+   */
+  embedding: boolean;
   contextWindow: number | null;
 }
 

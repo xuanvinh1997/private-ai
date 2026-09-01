@@ -16,6 +16,25 @@ export function clockTime(at: number): string {
   return new Date(at).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 }
 
+/**
+ * Tiêu đề suy từ tin nhắn **đầu tiên** của người dùng.
+ *
+ * "Phiên 1/2/3" không nói được phiên nào là phiên nào, và với vài chục hàng trong cột trái
+ * thì một danh sách số thứ tự bắt người ta mở từng phiên ra để nhớ. Câu hỏi đầu tiên là thứ
+ * gần nhất với "phiên này về cái gì" mà ta có ngay lúc cần đặt tên.
+ *
+ * Cắt ở **ranh giới từ** rồi mới thêm dấu ba chấm: cắt giữa từ cho ra những cái tên như
+ * "Bỏ hết unwrap trong bộ nạ…", đọc vấp đúng một nhịp mỗi lần liếc qua cột.
+ */
+export function titleFromMessage(text: string, max = 48): string {
+  const line = text.trim().split("\n")[0]?.replace(/\s+/g, " ").trim() ?? "";
+  if (line === "") return "";
+  if (line.length <= max) return line;
+  const cut = line.slice(0, max);
+  const space = cut.lastIndexOf(" ");
+  return `${(space > max / 2 ? cut.slice(0, space) : cut).trimEnd()}…`;
+}
+
 export interface SessionGroup {
   id: "today" | "week" | "older";
   label: string;

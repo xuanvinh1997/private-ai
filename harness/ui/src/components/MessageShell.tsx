@@ -15,10 +15,22 @@ export interface MessageAction {
 /**
  * Khung chung của một tin nhắn: hàng avatar + tên + giờ, rồi nội dung, rồi thanh hành động.
  *
- * Hai chế độ, đúng như LobeChat:
- *   - **bong bóng**: người dùng dạt phải, trợ lý dạt trái, nội dung có nền và bo góc;
- *   - **tài liệu**: mọi thứ căn trái, toàn chiều rộng, không nền — đọc một lượt sửa mã
- *     dài bằng bong bóng là tự bóp cột chữ xuống còn một nửa.
+ * Hai chế độ:
+ *   - **bong bóng**: tin của người dùng là một bong bóng dạt phải, **không có avatar**;
+ *   - **tài liệu**: mọi thứ căn trái, toàn chiều rộng — đọc một lượt sửa mã dài bằng bong
+ *     bóng là tự bóp cột chữ xuống còn một nửa.
+ *
+ * Câu trả lời của trợ lý **không có thẻ**: không viền, không nền, chữ chảy thẳng trên nền
+ * trang với đúng một avatar bên trái. Đây là hình dạng của ChatGPT, và lý do không phải
+ * chuyện thẩm mỹ — bọc mỗi câu trả lời trong một khung làm hai câu liên tiếp đọc ra là hai
+ * mẩu rời rạc, trong khi thứ nằm trong đó thường là một mạch giải thích dài. Bong bóng chỉ
+ * còn ở phía người dùng, đúng chỗ ChatGPT vẫn giữ nó: một câu ngắn cần một hình dạng nói
+ * rằng nó do người gõ.
+ *
+ * Avatar phía người dùng bị bỏ trong chế độ bong bóng vì một vòng tròn màu nhấn cỡ lớn đứng
+ * trên một bong bóng vài chữ làm lệch hẳn tỉ lệ — bên phải đã đủ nói "của tôi". Chế độ tài
+ * liệu thì **giữ** nó: ở đó không có bên phải bên trái, và bỏ avatar đi thì chữ của người
+ * dùng bắt đầu ở một cột khác chữ của trợ lý.
  *
  * Thanh hành động chỉ hiện khi rê chuột **hoặc khi có tiêu điểm bàn phím ở bên trong**.
  * Vế thứ hai không phải là phần thêm cho đẹp: chỉ ẩn theo `:hover` thì với người dùng
@@ -44,16 +56,18 @@ export default function MessageShell(props: {
       aria-live={props.live ? "polite" : undefined}
       aria-busy={props.busy || undefined}
     >
-      <div
-        aria-hidden="true"
-        class="mt-3xs grid size-(--avatar) shrink-0 place-items-center rounded-pill"
-        classList={{
-          "bg-accent text-on-accent": mine(),
-          "bg-surface-hover text-accent-ink": !mine(),
-        }}
-      >
-        <Icon name={mine() ? "chat" : "sparkle"} size={15} />
-      </div>
+      <Show when={!flip()}>
+        <div
+          aria-hidden="true"
+          class="mt-3xs grid size-(--avatar) shrink-0 place-items-center rounded-pill"
+          classList={{
+            "bg-accent text-on-accent": mine(),
+            "bg-surface-hover text-accent-ink": !mine(),
+          }}
+        >
+          <Icon name={mine() ? "chat" : "sparkle"} size={15} />
+        </div>
+      </Show>
 
       <div class="flex min-w-0 flex-1 flex-col gap-2xs" classList={{ "items-end": flip() }}>
         <div class="flex items-baseline gap-sm text-2xs">
@@ -66,9 +80,8 @@ export default function MessageShell(props: {
           classList={{
             "rounded-bubble bg-accent px-(--card-pad-x) py-(--card-pad-y) text-on-accent":
               bubble() && mine(),
-            "rounded-bubble border border-line bg-surface px-(--card-pad-x) py-(--card-pad-y)":
-              bubble() && !mine(),
-            "w-full": !bubble(),
+            // Trợ lý: không viền, không nền, không đệm — chữ chảy thẳng trên nền trang.
+            "w-full": !bubble() || !mine(),
           }}
         >
           {props.children}

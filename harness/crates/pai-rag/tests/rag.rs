@@ -202,6 +202,29 @@ fn viet(dir: &Path, ten: &str, noi_dung: &str) -> std::path::PathBuf {
     path
 }
 
+/// Thư mục dự án **đã phân giải**.
+///
+/// `Library` phân giải gốc lúc mở — trên macOS `TempDir` nằm dưới `/var`, là một liên kết
+/// mềm tới `/private/var` — nên mọi phép so đường dẫn trong bài kiểm chứng phải đi qua đây.
+/// So thẳng với `TempDir::path()` sẽ trượt ở đúng chỗ không ai ngờ tới.
+fn that(dir: &TempDir) -> std::path::PathBuf {
+    dir.path().canonicalize().unwrap()
+}
+
+/// Quét thư mục dự án và trả về dòng sự kiện đã thu hết.
+async fn quet(library: &Library) -> Vec<pai_rag::IngestEvent> {
+    library.sync().collect::<Vec<_>>().await
+}
+
+/// Đếm tệp nằm thẳng trong một thư mục.
+fn dem_tep(dir: &Path) -> usize {
+    std::fs::read_dir(dir)
+        .unwrap()
+        .flatten()
+        .filter(|entry| entry.path().is_file())
+        .count()
+}
+
 // ---------------------------------------------------------------------------------
 // 1. Cắt đoạn trên chữ có dấu
 // ---------------------------------------------------------------------------------
@@ -452,15 +475,21 @@ fn tu_choi_tep_nhi_phan() {
 // 4. Nạp trùng
 // ---------------------------------------------------------------------------------
 
-/// Người dùng kéo cùng một tệp vào hai lần — lần thứ hai từ một thư mục khác. Hai hàng
-/// giống hệt nhau trong danh sách là lỗi họ nhìn thấy ngay.
+/// Nạp lại **cùng một tệp** không được sinh ra hàng thứ hai — người dùng bấm hai lần, hoặc
+/// một lần nạp tay chồng lên một lần quét, và hai hàng giống hệt nhau là lỗi họ thấy ngay.
+///
+/// Nhưng **hai tệp** cùng nội dung thì là hai hàng. Đây là chỗ bài này đổi khẳng định so
+/// với bản trước, và lý do là cả đợt thay đổi: hồi kho giữ bản sao, danh tính tài liệu là
+/// băm nội dung nên hai tệp giống nhau gộp thành một. Giờ thư viện *là* thư mục dự án —
+/// người dùng mở Finder ra thấy hai tệp, và một danh sách hiện một hàng là một danh sách
+/// nói dối về chính thư mục họ đang nhìn. Danh tính giờ là **đường dẫn**.
 #[tokio::test]
-async fn nap_cung_mot_tep_hai_lan_chi_ra_mot_tai_lieu() {
+async fn nap_lai_cung_duong_dan_khong_sinh_hang_thu_hai() {
     let kho = TempDir::new().unwrap();
     let nguon = TempDir::new().unwrap();
     let path = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
 
-    let library = Library::open(kho.path(), None).unwrap();
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
 
     let lan_dau = nap(&library, vec![path.clone()]).await;
     assert!(lan_dau.iter().any(|e| e.stage == IngestStage::Stored));
@@ -474,28 +503,33 @@ async fn nap_cung_mot_tep_hai_lan_chi_ra_mot_tai_lieu() {
         1,
         "nạp lại cùng đường dẫn"
     );
+    assert_eq!(
+        library.stats().unwrap().chunks,
+        doan_lan_dau,
+        "đoạn nhân đôi"
+    );
 
-    // Cùng nội dung, đường dẫn khác — đây mới là trường hợp mà so đường dẫn sẽ trượt.
+    // Và một lần quét sau đó cũng không thêm hàng nào: tệp ấy đã nằm trong thư mục dự án
+    // rồi, nên nạp tay và quét phải nói về đúng một tài liệu.
+    quet(&library).await;
+    assert_eq!(library.documents().unwrap().len(), 1);
+
+    // Tệp thứ hai, cùng nội dung: hai tệp thật thì hai hàng.
     let ban_sao = viet(nguon.path(), "so-tay-copy.md", VAN_BAN_TIENG_VIET);
     nap(&library, vec![ban_sao]).await;
-
     let tai_lieu = library.documents().unwrap();
-    assert_eq!(
-        tai_lieu.len(),
-        1,
-        "cùng nội dung phải là một tài liệu: {tai_lieu:?}"
-    );
-    // Và đoạn không được nhân đôi theo.
-    assert_eq!(library.stats().unwrap().chunks, doan_lan_dau);
+    assert_eq!(tai_lieu.len(), 2, "hai tệp trong thư mục phải là hai hàng");
 
-    // Bản sao nằm trong kho của dự án, không trỏ về chỗ người dùng lấy nó: thư mục nguồn
-    // có thể bị dọn bất cứ lúc nào.
-    assert!(
-        tai_lieu[0].path.starts_with(kho.path()),
-        "{:?}",
-        tai_lieu[0].path
-    );
-    assert!(tai_lieu[0].path.exists());
+    // Và đường dẫn là **tệp thật trong thư mục dự án**, không phải một bản sao trong kho.
+    for doc in &tai_lieu {
+        assert!(doc.path.starts_with(that(&nguon)), "{:?}", doc.path);
+        assert!(doc.path.exists());
+        assert!(
+            !doc.path.starts_with(kho.path()),
+            "tài liệu trỏ vào kho: {:?}",
+            doc.path
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------------
@@ -510,7 +544,7 @@ async fn khong_co_bo_nhung_van_tim_duoc_bang_tu_khoa() {
     let nguon = TempDir::new().unwrap();
     let path = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
 
-    let library = Library::open(kho.path(), None).unwrap();
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
     let su_kien = nap(&library, vec![path]).await;
 
     // Không có bộ nhúng **không** phải một lần nạp hỏng.
@@ -568,7 +602,7 @@ async fn hop_nhat_rrf_cho_thu_hang_va_nhan_dung() {
     let c = viet(nguon.path(), "c.txt", "Bầy chuột chạy quanh kho.");
 
     let embedder: Arc<dyn Embedder> = Arc::new(TuiTuGia::moi());
-    let library = Library::open(kho.path(), Some(embedder)).unwrap();
+    let library = Library::open(kho.path(), nguon.path(), Some(embedder)).unwrap();
     nap(&library, vec![a, b, c]).await;
 
     let stats = library.stats().unwrap();
@@ -640,7 +674,7 @@ async fn bo_nhung_chet_thi_lui_ve_tu_khoa_chu_khong_bao_loi() {
     let path = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
 
     let embedder: Arc<dyn Embedder> = Arc::new(LuonHong);
-    let library = Library::open(kho.path(), Some(embedder)).unwrap();
+    let library = Library::open(kho.path(), nguon.path(), Some(embedder)).unwrap();
     let su_kien = nap(&library, vec![path]).await;
 
     // Nạp vẫn thành công: tài liệu đã vào FTS5.
@@ -682,14 +716,10 @@ async fn xoa_tai_lieu_keo_theo_doan_hang_fts_va_vector() {
     );
 
     let embedder: Arc<dyn Embedder> = Arc::new(TuiTuGia::moi());
-    let library = Library::open(kho.path(), Some(embedder)).unwrap();
+    let library = Library::open(kho.path(), nguon.path(), Some(embedder)).unwrap();
     nap(&library, vec![mot, hai]).await;
 
-    let db = Store::open(
-        &kho.path().join("library.sqlite"),
-        &kho.path().join("files"),
-    )
-    .unwrap();
+    let db = Store::open(&kho.path().join("library.sqlite"), &that(&nguon)).unwrap();
 
     let truoc = db.counts().unwrap();
     assert_eq!(truoc.documents, 2);
@@ -704,8 +734,8 @@ async fn xoa_tai_lieu_keo_theo_doan_hang_fts_va_vector() {
         .find(|d| d.title == "Ghi chép khác")
         .expect("phải tìm được tài liệu thứ hai");
     let doan_cua_no = bi_xoa.chunks;
-    let ban_sao = bi_xoa.path.clone();
-    assert!(ban_sao.exists());
+    let tep = bi_xoa.path.clone();
+    assert!(tep.exists());
 
     library.remove(&bi_xoa.id).unwrap();
 
@@ -726,12 +756,11 @@ async fn xoa_tai_lieu_keo_theo_doan_hang_fts_va_vector() {
     db.fts_integrity()
         .expect("chỉ mục FTS lệch khỏi bảng chunks");
 
-    // Bản sao tệp cũng đi theo: để lại thì tài liệu vừa xoá sống lại ở lần dựng lại kế tiếp.
-    assert!(
-        !ban_sao.exists(),
-        "bản sao còn ở lại: {}",
-        ban_sao.display()
-    );
+    // Nhưng **tệp trên đĩa thì không đi theo**. Bản trước xoá nó, và bản trước đúng: lúc
+    // ấy đường dẫn trỏ vào một bản sao trong kho ẩn. Giờ nó trỏ vào tệp thật của người
+    // dùng, nên cùng một dòng lệnh sẽ là một hành động không lấy lại được — xem
+    // `Library::remove`. Bài `remove_khong_xoa_tep_tren_dia` bên dưới khoá riêng luật này.
+    assert!(tep.exists(), "tệp của người dùng bị xoá: {}", tep.display());
 
     // Tài liệu còn lại vẫn tìm được — xoá không được làm hỏng phần còn lại.
     assert!(!library.search("chứng chỉ", 5).await.unwrap().is_empty());
@@ -761,13 +790,13 @@ async fn plugin_cam_ba_tool_va_mot_seam() {
     // Nạp trước rồi thả thư viện: không tool nào ở đây nạp tài liệu, và đó là có chủ ý —
     // một tài liệu không đáng tin không được phép bảo mô hình nạp thêm tài liệu khác.
     {
-        let library = Library::open(kho.path(), None).unwrap();
+        let library = Library::open(kho.path(), nguon.path(), None).unwrap();
         nap(&library, vec![path]).await;
     }
 
     let ctx = Context::root();
     ToolsPlugin.apply(&ctx.plugin("tools")).await.unwrap();
-    RagPlugin::new(kho.path().to_path_buf(), None)
+    RagPlugin::new(kho.path().to_path_buf(), nguon.path().to_path_buf(), None)
         .apply(&ctx.plugin("rag"))
         .await
         .expect("cắm được thư viện tài liệu");
@@ -863,7 +892,8 @@ async fn seam_du_de_nap_va_xoa_qua_mot_handle() {
     let path = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
 
     let embedder: Arc<dyn Embedder> = Arc::new(TuiTuGia::moi());
-    let docs: Arc<dyn DocLibrary> = Arc::new(Library::open(kho.path(), Some(embedder)).unwrap());
+    let docs: Arc<dyn DocLibrary> =
+        Arc::new(Library::open(kho.path(), nguon.path(), Some(embedder)).unwrap());
 
     // Nạp qua trait object — đây là đường mà `app/` sẽ đi.
     let su_kien: Vec<_> = docs.ingest(vec![path]).collect().await;
@@ -934,7 +964,7 @@ async fn doi_mo_hinh_nhung_xoa_vector_nhung_giu_tai_lieu() {
     // --- Vòng một: bộ nhúng A ---
     let (tai_lieu_truoc, doan_truoc) = {
         let a: Arc<dyn Embedder> = Arc::new(TuiTuGia::moi());
-        let library = Library::open(kho.path(), Some(a)).unwrap();
+        let library = Library::open(kho.path(), nguon.path(), Some(a)).unwrap();
         nap(&library, vec![mot, hai]).await;
 
         let stats = library.stats().unwrap();
@@ -946,7 +976,7 @@ async fn doi_mo_hinh_nhung_xoa_vector_nhung_giu_tai_lieu() {
 
     // --- Vòng hai: mở lại cùng thư mục với bộ nhúng B ---
     let b: Arc<dyn Embedder> = Arc::new(KhongGianKhac);
-    let library = Library::open(kho.path(), Some(b)).unwrap();
+    let library = Library::open(kho.path(), nguon.path(), Some(b)).unwrap();
 
     let stats = library.stats().unwrap();
     // Vector cũ phải đi hết — không được còn một hàng nào của không gian cũ ở lại.
@@ -993,11 +1023,7 @@ async fn doi_mo_hinh_nhung_xoa_vector_nhung_giu_tai_lieu() {
     assert!(sau.reason.is_none(), "{:?}", sau.reason);
 
     // Mọi vector trong kho giờ thuộc đúng một không gian — của B, bốn chiều.
-    let db = Store::open(
-        &kho.path().join("library.sqlite"),
-        &kho.path().join("files"),
-    )
-    .unwrap();
+    let db = Store::open(&kho.path().join("library.sqlite"), &that(&nguon)).unwrap();
     let chieu: Vec<usize> = db
         .all_vectors()
         .unwrap()
@@ -1021,14 +1047,14 @@ async fn mo_lai_cung_bo_nhung_khong_xoa_vector() {
 
     let truoc = {
         let a: Arc<dyn Embedder> = Arc::new(TuiTuGia::moi());
-        let library = Library::open(kho.path(), Some(a)).unwrap();
+        let library = Library::open(kho.path(), nguon.path(), Some(a)).unwrap();
         nap(&library, vec![path]).await;
         library.stats().unwrap()
     };
     assert!(truoc.embedded_chunks > 0);
 
     let a: Arc<dyn Embedder> = Arc::new(TuiTuGia::moi());
-    let library = Library::open(kho.path(), Some(a)).unwrap();
+    let library = Library::open(kho.path(), nguon.path(), Some(a)).unwrap();
     let sau = library.stats().unwrap();
     assert_eq!(sau.embedded_chunks, truoc.embedded_chunks, "xoá vector oan");
     assert!(sau.semantic_ready);
@@ -1037,12 +1063,8 @@ async fn mo_lai_cung_bo_nhung_khong_xoa_vector() {
     // Và gỡ hẳn bộ nhúng ra cũng không được xoá: vector cũ không sai, chúng chỉ tạm thời
     // không dùng tới. Bắt nhúng lại cả thư viện vì người dùng tắt Ollama một lát là sai.
     drop(library);
-    let library = Library::open(kho.path(), None).unwrap();
-    let db = Store::open(
-        &kho.path().join("library.sqlite"),
-        &kho.path().join("files"),
-    )
-    .unwrap();
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    let db = Store::open(&kho.path().join("library.sqlite"), &that(&nguon)).unwrap();
     assert_eq!(db.counts().unwrap().embedded_chunks, truoc.embedded_chunks);
     // Không có bộ nhúng thì lý do nói về chuyện chưa cấu hình, không nói về chuyện đổi.
     let reason = library.stats().unwrap().reason.unwrap();
@@ -1059,29 +1081,27 @@ fn ha_ban_schema(db: &Path, ban: i32) {
     conn.pragma_update(None, "user_version", ban).unwrap();
 }
 
-/// Lệch schema thì dựng lại **từ bản sao tệp trong kho**, không phải từ chỗ người dùng
-/// lấy tệp — thư mục nguồn có thể đã bị dọn từ lâu.
+/// Lệch schema thì dựng lại **bằng một lần quét thư mục dự án**, không phải từ một bản
+/// sao trong kho — không còn bản sao nào nữa. Kho là chỉ mục; chỉ mục dựng lại được từ
+/// nguồn, và nguồn là thư mục của người dùng. Xem `docs/CONTRACT.md`, luật 12.
 #[tokio::test]
-async fn lech_schema_thi_dung_lai_tu_ban_sao_trong_kho() {
+async fn lech_schema_thi_dung_lai_bang_mot_lan_quet() {
     let kho = TempDir::new().unwrap();
     let nguon = TempDir::new().unwrap();
-    let path = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    viet(nguon.path(), "meo.txt", "Con mèo nằm trên chiếu.");
 
     let truoc = {
-        let library = Library::open(kho.path(), None).unwrap();
-        nap(&library, vec![path.clone()]).await;
+        let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+        quet(&library).await;
         library.stats().unwrap()
     };
+    assert_eq!(truoc.documents, 2);
     assert!(truoc.chunks > 1);
 
-    // Thư mục nguồn biến mất — đây chính là tình huống mà bản sao trong kho sinh ra để
-    // chịu được.
-    drop(nguon);
-    assert!(!path.exists());
+    ha_ban_schema(&kho.path().join("library.sqlite"), 2);
 
-    ha_ban_schema(&kho.path().join("library.sqlite"), 1);
-
-    let library = Library::open(kho.path(), None).unwrap();
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
     let sau = library.stats().unwrap();
     assert_eq!(
         sau.documents, truoc.documents,
@@ -1092,43 +1112,519 @@ async fn lech_schema_thi_dung_lai_tu_ban_sao_trong_kho() {
     assert!(!library.search("chứng chỉ", 5).await.unwrap().is_empty());
 }
 
-/// Nhưng khi bản sao **không** còn trong kho thì bảng `documents` là bản ghi duy nhất còn
-/// lại về việc người dùng từng nạp những gì. Xoá nó đi để "dựng lại" là xoá đúng cái
-/// không dựng lại được, nên ở đây phải từ chối mở và nói ra lý do.
+/// Nhưng khi **thư mục dự án không đọc được** — ổ ngoài chưa cắm, thư mục vừa bị đổi tên —
+/// thì không dựng lại được gì cả. Xoá bảng đi để "dựng lại" là dựng ra một thư viện rỗng,
+/// và người dùng mở dự án lên thấy 0 tài liệu mà không có lời giải thích nào: đúng cái lỗi
+/// mà cả đợt thay đổi này sinh ra để sửa. Nên: từ chối mở, và nói ra thư mục nào.
+///
+/// (Bản trước hỏi câu này về **kho bản sao trống**; kho ấy không còn tồn tại, nên bài giữ
+/// nguyên ý — "từ chối chứ không xoá" — trên đúng thứ giờ đóng vai nguồn.)
 #[tokio::test]
-async fn lech_schema_ma_kho_tep_trong_thi_tu_choi_chu_khong_xoa() {
+async fn lech_schema_ma_khong_doc_duoc_thu_muc_thi_tu_choi_chu_khong_xoa() {
     let kho = TempDir::new().unwrap();
     let nguon = TempDir::new().unwrap();
-    let path = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    let goc = that(&nguon);
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
 
     {
-        let library = Library::open(kho.path(), None).unwrap();
-        nap(&library, vec![path]).await;
+        let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+        quet(&library).await;
+        assert_eq!(library.documents().unwrap().len(), 1);
     }
 
-    // Ai đó dọn tay thư mục bản sao.
-    for entry in std::fs::read_dir(kho.path().join("files"))
-        .unwrap()
-        .flatten()
-    {
-        std::fs::remove_file(entry.path()).unwrap();
-    }
-    ha_ban_schema(&kho.path().join("library.sqlite"), 1);
+    // Thư mục dự án biến mất khỏi tầm với.
+    drop(nguon);
+    assert!(!goc.exists());
+    ha_ban_schema(&kho.path().join("library.sqlite"), 2);
 
-    let Err(err) = Library::open(kho.path(), None) else {
-        panic!("phải từ chối mở khi kho tệp trống");
+    let Err(err) = Library::open(kho.path(), &goc, None) else {
+        panic!("phải từ chối mở khi không đọc được thư mục dự án");
     };
     let noi_dung = err.to_string();
     assert!(noi_dung.contains("dựng lại được"), "{noi_dung}");
-    // Lời từ chối phải nói cả bản schema lẫn đường thoát, nếu không nó chỉ là một lời từ
-    // chối mà người dùng không làm gì được với nó.
-    assert!(noi_dung.contains("chép tệp về"), "{noi_dung}");
-
-    // Và dữ liệu vẫn còn nguyên trên đĩa — từ chối mở không được phép là xoá.
-    let db = Store::open(&kho.path().join("library.sqlite"), kho.path()).unwrap();
-    assert_eq!(
-        db.counts().unwrap().documents,
-        0,
-        "kho phải được dựng lại sạch"
+    // Lời từ chối phải nói cả bản schema, tên thư mục, lẫn đường thoát — nếu không nó chỉ
+    // là một lời từ chối mà người dùng không làm gì được với nó.
+    assert!(noi_dung.contains("nối lại thư mục"), "{noi_dung}");
+    assert!(
+        noi_dung.contains(&goc.display().to_string()),
+        "phải gọi tên thư mục: {noi_dung}"
     );
+
+    // Và hàng tài liệu vẫn còn nguyên trong tệp — từ chối mở không được phép là xoá. Hỏi
+    // thẳng SQLite chứ không qua `Store::open`: mở lại bằng kho là kích hoạt đúng đường
+    // dựng lại mà bài này đang nói là không được chạy.
+    let conn = rusqlite::Connection::open(kho.path().join("library.sqlite")).unwrap();
+    let con_lai: i64 = conn
+        .query_row("SELECT count(*) FROM documents", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(con_lai, 1, "từ chối mở mà vẫn xoá mất hàng tài liệu");
+}
+
+// ---------------------------------------------------------------------------------
+// 11. Thư mục dự án là thư viện
+// ---------------------------------------------------------------------------------
+
+/// Dựng một thư mục dự án như người dùng có sẵn, rồi mở thư viện lên: quét phải nạp đúng
+/// những tệp thư viện đọc được, kể cả tệp nằm trong thư mục con, và bỏ đúng tệp ảnh.
+///
+/// Đếm bằng con số. "Có tài liệu" là một khẳng định mà một lần quét sai vẫn thoả.
+#[tokio::test]
+async fn quet_thu_muc_du_an_nap_dung_nhung_tep_doc_duoc() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    viet(nguon.path(), "ghi-chu.txt", "Một ghi chú ngắn về hà mã.");
+    viet(nguon.path(), "ton-kho.csv", "tên,số lượng\nbàn phím,3\n");
+    std::fs::create_dir_all(nguon.path().join("phu-luc")).unwrap();
+    viet(
+        &nguon.path().join("phu-luc"),
+        "trong-thu-muc-con.md",
+        "# Phụ lục\n\nMột con hà mã đứng ngoài hiên.\n",
+    );
+    // Ảnh: đúng loại tệp mà một thư mục tài liệu thật luôn có lẫn vào.
+    std::fs::write(
+        nguon.path().join("anh.png"),
+        [0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0],
+    )
+    .unwrap();
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    // Mở kho lên chưa quét: thư viện rỗng, nhưng phải **nói ra vì sao** và gọi tên thư mục
+    // — đây đúng là màn hình mà người dùng đã hỏi "tại sao chọn folder mà không thấy file".
+    let truoc = library.stats().unwrap();
+    assert_eq!(truoc.documents, 0);
+    let ly_do = truoc.reason.expect("thư viện rỗng phải nói ra vì sao");
+    assert!(
+        ly_do.contains(&that(&nguon).display().to_string()),
+        "lời giải thích phải gọi tên thư mục: {ly_do}"
+    );
+
+    let su_kien = quet(&library).await;
+    assert!(su_kien.last().unwrap().finished);
+
+    let tai_lieu = library.documents().unwrap();
+    assert_eq!(tai_lieu.len(), 4, "{tai_lieu:#?}");
+    assert_eq!(library.extract_count(), 4, "số lần rút chữ");
+
+    let ten: Vec<String> = tai_lieu
+        .iter()
+        .map(|doc| doc.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    for mong_doi in [
+        "so-tay.md",
+        "ghi-chu.txt",
+        "ton-kho.csv",
+        "trong-thu-muc-con.md",
+    ] {
+        assert!(ten.iter().any(|item| item == mong_doi), "{ten:?}");
+    }
+    assert!(!ten.iter().any(|item| item == "anh.png"), "{ten:?}");
+
+    // Và nội dung thật sự vào được chỉ mục, không chỉ hàng tài liệu.
+    assert!(!library.search("hà mã", 5).await.unwrap().is_empty());
+    let stats = library.stats().unwrap();
+    assert_eq!(stats.files_seen, 4);
+    assert_eq!(stats.root, that(&nguon));
+    assert!(stats.scanned_at.is_some());
+    // Không có lượt quét nào đang chạy sau khi dòng đã cạn — cờ "đang quét" phải tắt.
+    assert!(stats.scanning.is_none());
+}
+
+/// Bất biến trung tâm, y như `pai-index`: **quét lại một thư mục không đổi không rút chữ
+/// lại tệp nào.** Đếm bằng con số, vì "nhanh" là thứ không khẳng định được bằng lời.
+#[tokio::test]
+async fn quet_lai_thu_muc_khong_doi_khong_rut_chu_lai_tep_nao() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    viet(nguon.path(), "meo.txt", "Con mèo nằm trên chiếu.");
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    quet(&library).await;
+    let lan_dau = library.extract_count();
+    assert_eq!(lan_dau, 2);
+    let doan = library.stats().unwrap().chunks;
+
+    let su_kien = quet(&library).await;
+    assert_eq!(
+        library.extract_count(),
+        lan_dau,
+        "quét lại một thư mục không đổi vẫn rút chữ"
+    );
+    // Và dòng sự kiện cũng phải rỗng việc, không chỉ rỗng công: mẫu số bằng 0 là cách giao
+    // diện biết không cần vẽ thanh tiến trình nào cả.
+    assert_eq!(su_kien.last().unwrap().total, 0);
+    assert!(!su_kien.iter().any(|e| e.stage == IngestStage::Reading));
+    assert_eq!(library.documents().unwrap().len(), 2);
+    assert_eq!(library.stats().unwrap().chunks, doan);
+}
+
+/// Sửa một tệp thì **chỉ** tệp đó được nạp lại; đoạn của tệp khác không đổi.
+#[tokio::test]
+async fn sua_mot_tep_chi_nap_lai_dung_tep_do() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    let khac = viet(
+        nguon.path(),
+        "ghi-chep.md",
+        "# Ghi chép\n\nMột con hà mã.\n",
+    );
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    quet(&library).await;
+    assert_eq!(library.extract_count(), 2);
+
+    let so_tay = library
+        .documents()
+        .unwrap()
+        .into_iter()
+        .find(|doc| doc.title == "Sổ tay bảo mật nội bộ")
+        .expect("phải có sổ tay");
+    let doan_so_tay: Vec<String> = library
+        .chunks(&so_tay.id, 0, 100)
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.text)
+        .collect();
+
+    std::fs::write(
+        &khac,
+        "# Ghi chép\n\nMột con hà mã đứng ngoài hiên và không nói gì cả. Thêm một câu nữa.\n",
+    )
+    .unwrap();
+
+    quet(&library).await;
+    assert_eq!(
+        library.extract_count(),
+        3,
+        "phải rút chữ đúng một tệp, không phải cả thư mục"
+    );
+
+    // Tệp không đụng tới thì đoạn của nó y nguyên, từng ký tự.
+    let sau: Vec<String> = library
+        .chunks(&so_tay.id, 0, 100)
+        .unwrap()
+        .into_iter()
+        .map(|hit| hit.text)
+        .collect();
+    assert_eq!(sau, doan_so_tay, "đoạn của tệp không đổi bị viết lại");
+
+    // Còn tệp vừa sửa thì tìm ra được câu mới.
+    let hits = library.search("ngoài hiên", 5).await.unwrap();
+    assert!(!hits.is_empty(), "chưa nạp lại tệp vừa sửa");
+}
+
+/// Tệp bị xoá khỏi thư mục thì **rời khỏi thư viện**: hàng, đoạn, hàng FTS và vector đều
+/// đi theo, còn của tệp khác thì không suy suyển.
+#[tokio::test]
+async fn tep_bien_mat_khoi_thu_muc_thi_roi_khoi_thu_vien() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    let bo_di = viet(
+        nguon.path(),
+        "ghi-chep.md",
+        "# Ghi chép khác\n\nMột con hà mã đứng ngoài hiên và không nói gì cả.\n",
+    );
+
+    let embedder: Arc<dyn Embedder> = Arc::new(TuiTuGia::moi());
+    let library = Library::open(kho.path(), nguon.path(), Some(embedder)).unwrap();
+    quet(&library).await;
+
+    let db = Store::open(&kho.path().join("library.sqlite"), &that(&nguon)).unwrap();
+    let truoc = db.counts().unwrap();
+    assert_eq!(truoc.documents, 2);
+    assert_eq!(truoc.embedded_chunks, truoc.chunks);
+    assert!(db.count_keyword_matches("hà mã").unwrap() > 0);
+    let doan_cua_no = library
+        .documents()
+        .unwrap()
+        .into_iter()
+        .find(|doc| doc.title == "Ghi chép khác")
+        .expect("phải có tài liệu thứ hai")
+        .chunks;
+
+    std::fs::remove_file(&bo_di).unwrap();
+    let su_kien = quet(&library).await;
+    assert!(
+        su_kien
+            .iter()
+            .any(|e| e.stage == IngestStage::Removed && e.path.contains("ghi-chep.md")),
+        "phải nói ra tệp nào vừa rời thư viện: {su_kien:#?}"
+    );
+
+    let sau = db.counts().unwrap();
+    assert_eq!(sau.documents, 1);
+    assert_eq!(sau.chunks, truoc.chunks - doan_cua_no, "đoạn phải đi theo");
+    assert_eq!(
+        sau.embedded_chunks,
+        truoc.embedded_chunks - doan_cua_no,
+        "vector phải đi theo"
+    );
+    assert_eq!(
+        db.count_keyword_matches("hà mã").unwrap(),
+        0,
+        "hàng FTS mồ côi vẫn trả về kết quả — đây là chỗ cascade lừa người viết"
+    );
+    db.fts_integrity()
+        .expect("chỉ mục FTS lệch khỏi bảng chunks");
+
+    // Tài liệu còn lại vẫn nguyên vẹn và vẫn tìm được.
+    assert!(!library.search("chứng chỉ", 5).await.unwrap().is_empty());
+}
+
+/// Tệp nằm **ngoài** thư mục dự án thì được chép **vào thư mục dự án** — không vào một kho
+/// ẩn — và không được đè lên tệp trùng tên đã có ở đó.
+#[tokio::test]
+async fn nap_tep_tu_ngoai_chep_vao_thu_muc_du_an_va_khong_de_len_tep_cu() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    let ngoai = TempDir::new().unwrap();
+    viet(nguon.path(), "bao-cao.md", "# Bản của tôi\n\nGiữ nguyên.\n");
+    let tu_ngoai = viet(
+        ngoai.path(),
+        "bao-cao.md",
+        "# Bản kéo vào\n\nMột con hà mã đứng ngoài hiên.\n",
+    );
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    quet(&library).await;
+    assert_eq!(dem_tep(&that(&nguon)), 1);
+
+    let su_kien = nap(&library, vec![tu_ngoai.clone()]).await;
+    assert!(su_kien.iter().any(|e| e.stage == IngestStage::Stored));
+
+    // Tệp cũ của người dùng còn nguyên từng ký tự.
+    assert_eq!(
+        std::fs::read_to_string(nguon.path().join("bao-cao.md")).unwrap(),
+        "# Bản của tôi\n\nGiữ nguyên.\n",
+        "tệp trùng tên của người dùng bị ghi đè"
+    );
+    // Và bản kéo vào nằm cạnh nó, trong đúng thư mục dự án, dưới một cái tên khác.
+    assert_eq!(dem_tep(&that(&nguon)), 2);
+    let them = nguon.path().join("bao-cao-1.md");
+    assert!(them.exists(), "bản kéo vào không nằm trong thư mục dự án");
+    assert!(
+        std::fs::read_to_string(&them).unwrap().contains("hà mã"),
+        "chép nhầm nội dung"
+    );
+
+    let tai_lieu = library.documents().unwrap();
+    assert_eq!(tai_lieu.len(), 2, "{tai_lieu:#?}");
+    let moi = tai_lieu
+        .iter()
+        .find(|doc| doc.title == "Bản kéo vào")
+        .expect("phải có tài liệu vừa nạp");
+    assert_eq!(moi.path, that(&nguon).join("bao-cao-1.md"));
+    // `origin` giữ chỗ tệp đến từ đâu — đó là câu trả lời cho "tệp này ở đâu ra".
+    assert!(moi.origin.contains("bao-cao.md"));
+    assert_ne!(moi.origin, moi.path.display().to_string());
+
+    // Và lần quét kế tiếp không nạp lại nó: nó đã là một tệp bình thường của thư mục.
+    let truoc = library.extract_count();
+    quet(&library).await;
+    assert_eq!(library.extract_count(), truoc);
+    assert_eq!(library.documents().unwrap().len(), 2);
+}
+
+/// Tệp **đã nằm trong** thư mục dự án thì nạp tại chỗ. Không có bản sao thứ hai nào được
+/// sinh ra — chép là nhân đôi dung lượng ngay trong thư mục người dùng đang nhìn.
+#[tokio::test]
+async fn nap_tep_da_trong_thu_muc_du_an_khong_sinh_ban_sao() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    std::fs::create_dir_all(nguon.path().join("phu-luc")).unwrap();
+    let trong = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    let trong_con = viet(
+        &nguon.path().join("phu-luc"),
+        "sau.md",
+        "# Phụ lục\n\nMột con hà mã.\n",
+    );
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    nap(&library, vec![trong.clone(), trong_con.clone()]).await;
+
+    assert_eq!(dem_tep(&that(&nguon)), 1, "sinh thêm bản sao trong thư mục");
+    assert_eq!(dem_tep(&that(&nguon).join("phu-luc")), 1);
+    // Kho chỉ được chứa cơ sở dữ liệu, không chứa bản sao tệp nào.
+    for entry in std::fs::read_dir(kho.path()).unwrap().flatten() {
+        let ten = entry.file_name().to_string_lossy().into_owned();
+        assert!(
+            ten.starts_with("library.sqlite"),
+            "kho có thứ không phải cơ sở dữ liệu: {ten}"
+        );
+    }
+
+    let tai_lieu = library.documents().unwrap();
+    assert_eq!(tai_lieu.len(), 2);
+    for doc in &tai_lieu {
+        assert!(doc.path.starts_with(that(&nguon)), "{:?}", doc.path);
+        // Tệp vốn ở trong thư mục thì `origin` chính là đường dẫn của nó — không có chỗ
+        // nào khác để nói nó "đến từ".
+        assert_eq!(doc.origin, doc.path.display().to_string());
+    }
+}
+
+/// **Bỏ một tài liệu khỏi thư viện không được xoá tệp trên đĩa.**
+///
+/// Đây là chỗ nguy hiểm nhất của cả đợt thay đổi: cùng một dòng lệnh, trước đây xoá một
+/// bản sao trong kho ẩn, giờ sẽ xoá tài liệu thật của người dùng.
+#[tokio::test]
+async fn remove_khong_xoa_tep_tren_dia() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    let path = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    viet(nguon.path(), "meo.txt", "Con mèo nằm trên chiếu.");
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    quet(&library).await;
+    let bi_bo = library
+        .documents()
+        .unwrap()
+        .into_iter()
+        .find(|doc| doc.title == "Sổ tay bảo mật nội bộ")
+        .expect("phải có sổ tay");
+
+    library.remove(&bi_bo.id).unwrap();
+
+    // Luật của bài: tệp còn nguyên.
+    assert!(path.exists(), "thư viện vừa xoá tệp của người dùng");
+    assert_eq!(
+        std::fs::read_to_string(&path).unwrap(),
+        VAN_BAN_TIENG_VIET,
+        "tệp còn đó nhưng nội dung đã bị đụng vào"
+    );
+    assert_eq!(library.documents().unwrap().len(), 1);
+
+    // Và lần quét ngay sau đó **không** nạp nó lại: một nút bấm không có tác dụng còn tệ
+    // hơn một nút bấm không tồn tại. Đây là chỗ danh sách loại trừ làm việc.
+    quet(&library).await;
+    let con_lai = library.documents().unwrap();
+    assert_eq!(
+        con_lai.len(),
+        1,
+        "tài liệu vừa bỏ đã sống lại: {con_lai:#?}"
+    );
+    assert_eq!(library.stats().unwrap().excluded, 1);
+
+    // Người dùng đổi ý thì tự tay nạp lại được — lời nói sau đè lên lời nói trước.
+    nap(&library, vec![path.clone()]).await;
+    assert_eq!(library.documents().unwrap().len(), 2);
+    assert_eq!(library.stats().unwrap().excluded, 0);
+}
+
+/// `.gitignore` được tôn trọng, và tệp ẩn thì không được quét.
+///
+/// `require_git(false)` là cả nội dung của bài: thư mục tài liệu của người dùng gần như
+/// không bao giờ là một repo git, nên một phép lọc chỉ chạy sau `git init` là một phép lọc
+/// không bao giờ chạy. `pai-index` đã cắn đúng lỗi này một lần.
+#[tokio::test]
+async fn ton_trong_gitignore_ke_ca_khi_chua_git_init() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    viet(nguon.path(), ".gitignore", "nhap/\n*.log\n");
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    viet(
+        nguon.path(),
+        "nhat-ky.log",
+        "một dòng nhật ký về hà mã zzriengtu",
+    );
+    std::fs::create_dir_all(nguon.path().join("nhap")).unwrap();
+    viet(
+        &nguon.path().join("nhap"),
+        "ban-nhap.md",
+        "# Bản nháp\n\nMột con hà mã zzriengtu.\n",
+    );
+    viet(
+        nguon.path(),
+        ".rieng-tu.md",
+        "# Riêng tư\n\nMột con hà mã zzriengtu.\n",
+    );
+    assert!(!nguon.path().join(".git").exists());
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    quet(&library).await;
+
+    let tai_lieu = library.documents().unwrap();
+    assert_eq!(tai_lieu.len(), 1, "{tai_lieu:#?}");
+    assert_eq!(tai_lieu[0].title, "Sổ tay bảo mật nội bộ");
+    // Và không có gì của chúng lọt vào chỉ mục — hỏi thẳng FTS chứ không đếm ở danh sách
+    // tài liệu. Từ khoá phải là một từ **chỉ** có trong ba tệp bị loại: `search_keyword`
+    // lùi về lượt OR khi lượt AND không khớp gì, nên một từ thường như `mã` vẫn khớp tài
+    // liệu còn lại và bài kiểm chứng sẽ đỏ vì một lý do không liên quan.
+    assert!(library.search("zzriengtu", 5).await.unwrap().is_empty());
+}
+
+/// Chạm trần số tệp thì **nói ra**, không lặng lẽ dừng. Một thư mục Downloads mười nghìn
+/// tệp là chuyện có thật, và một thư viện thiếu tệp mà không giải thích là đúng cái lỗi mà
+/// cả đợt thay đổi này sinh ra để sửa.
+#[tokio::test]
+async fn cham_tran_so_tep_thi_noi_ra() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    for so in 0..5 {
+        viet(
+            nguon.path(),
+            &format!("tep-{so}.md"),
+            &format!("# Tài liệu {so}\n\nMột con hà mã thứ {so}.\n"),
+        );
+    }
+
+    let library = Library::open(kho.path(), nguon.path(), None)
+        .unwrap()
+        .with_scan_limit(2);
+    let su_kien = quet(&library).await;
+
+    assert_eq!(library.documents().unwrap().len(), 2);
+    let loi_bo_qua = su_kien
+        .iter()
+        .find(|e| e.stage == IngestStage::Skipped)
+        .and_then(|e| e.error.clone())
+        .expect("chạm trần phải phát ra một sự kiện có lý do");
+    assert!(
+        loi_bo_qua.contains('2') && loi_bo_qua.contains('3'),
+        "{loi_bo_qua}"
+    );
+
+    let stats = library.stats().unwrap();
+    assert_eq!(stats.files_seen, 2);
+    assert_eq!(stats.files_skipped, 3, "số tệp bị bỏ qua phải nói ra");
+}
+
+/// Một tệp hỏng chỉ làm hỏng chính nó — và **không** bị rút chữ lại ở mọi lần quét sau.
+///
+/// Không có phần thứ hai thì bất biến "quét lại một thư mục không đổi không rút chữ lại
+/// tệp nào" chỉ còn đúng với thư mục toàn tệp lành, mà một PDF tải dở là thứ có trong mọi
+/// thư mục tài liệu thật.
+#[tokio::test]
+async fn tep_hong_chi_lam_hong_chinh_no_va_khong_thu_lai_moi_lan_quet() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    let mut hong = pdf_toi_gian("Bao cao ky thuat");
+    hong.truncate(hong.len() / 2);
+    std::fs::write(nguon.path().join("cut-giua-chung.pdf"), &hong).unwrap();
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    let su_kien = quet(&library).await;
+
+    // Tệp lành vẫn vào, tệp hỏng được gọi tên.
+    assert_eq!(library.documents().unwrap().len(), 1);
+    let that_bai = su_kien
+        .iter()
+        .find(|e| e.stage == IngestStage::Failed)
+        .expect("phải có sự kiện hỏng");
+    assert!(that_bai.path.contains("cut-giua-chung.pdf"), "{that_bai:?}");
+    let stats = library.stats().unwrap();
+    assert_eq!(stats.unreadable, 1, "tệp không đọc được phải được đếm");
+
+    let lan_dau = library.extract_count();
+    quet(&library).await;
+    assert_eq!(
+        library.extract_count(),
+        lan_dau,
+        "tệp hỏng bị thử lại ở lần quét sau"
+    );
+    assert_eq!(library.documents().unwrap().len(), 1);
 }

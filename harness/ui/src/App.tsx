@@ -25,7 +25,9 @@ import {
 } from "./lib/demo";
 import { changesPanelOpen, setChangesPanelOpen, setDisplayMode, setSidebarOpen, sidebarOpen } from "./lib/prefs";
 import { closeProject, folderName, listProjects, openProject, removeProject } from "./lib/projects";
+import { titleFromMessage } from "./lib/sessions";
 import type {
+  AgentEvent,
   ApprovalDecision,
   ConversationNode,
   ModelChoice,
@@ -38,6 +40,7 @@ import ApprovalDialog from "./components/ApprovalDialog";
 import ChangesPanel, { ChangesBoard } from "./components/ChangesPanel";
 import Composer, { type ToolScope } from "./components/Composer";
 import EmptyState from "./components/EmptyState";
+import { usableForChat } from "./components/ModelPicker";
 import ProjectSwitcher from "./components/ProjectSwitcher";
 import Sidebar, { tabsFor, type TabId } from "./components/Sidebar";
 import ProjectsView from "./components/projects/ProjectsView";
@@ -152,7 +155,7 @@ export default function App() {
       for (const [id, nodes] of Object.entries(demoParked())) parked.set(id, nodes);
       setSessions(seed);
       setModels(demoModels());
-      setModel(demoModels()[0]?.id ?? MODEL_CHUA_BIET);
+      setModel(demoModels().filter(usableForChat)[0]?.id ?? MODEL_CHUA_BIET);
       setCurrentId(seed[0]?.id ?? "phien-nhap");
       conversation.reset(knobs.state === "empty" ? [] : demoNodes());
       setLoading(false);
@@ -166,11 +169,14 @@ export default function App() {
       void switchTo(list[0]!.id);
     }
     setModels(available);
-    // Ưu tiên một mô hình gọi được tool: chọn mặc định một mô hình không gọi được tool
-    // là để người dùng gặp một trợ lý không bao giờ đọc được tệp nào mà không hiểu vì sao.
-    setModel(
-      available.find((choice) => choice.tools)?.id ?? available[0]?.id ?? MODEL_CHUA_BIET,
-    );
+    // Chỉ chọn trong nhóm trò chuyện được: mặc định rơi vào một mô hình **chỉ** nhúng được
+    // là mở ứng dụng lên với một hội thoại chết, và cái tên đó còn không có trong bộ chọn
+    // để người dùng thấy mà đổi đi.
+    const chat = available.filter(usableForChat);
+    // Trong nhóm đó thì ưu tiên mô hình gọi được tool: chọn mặc định một mô hình không gọi
+    // được tool là để người dùng gặp một trợ lý không bao giờ đọc được tệp nào mà không
+    // hiểu vì sao.
+    setModel(chat.find((choice) => choice.tools)?.id ?? chat[0]?.id ?? MODEL_CHUA_BIET);
     setLoading(false);
   });
 
@@ -185,6 +191,10 @@ export default function App() {
     // Không chốt riêng cho demo: trang demo tồn tại đúng để nhìn thấy những trạng thái
     // này mà không cần dựng máy chủ, nên tắt nó ở đó là bỏ mất một nửa công dụng.
     if (models().length === 0) return inTauri() ? "Không hỏi được máy chủ mô hình." : undefined;
+    // Máy chủ trả lời tử tế mà không có gì trò chuyện được là một tình huống thứ ba, khác
+    // hẳn hai cái kia: không có gì hỏng, chỉ là chưa nạp mô hình nào đúng việc. Im lặng ở
+    // đây để lại một cái pill ghi "(chưa hỏi được máy chủ)" — một câu sai.
+    if (!models().some(usableForChat)) return "Máy chủ chỉ có mô hình nhúng.";
     const picked = models().find((choice) => choice.id === model());
     if (picked && !picked.tools) return "Mô hình này không gọi được công cụ.";
     return undefined;
@@ -397,7 +407,10 @@ export default function App() {
   });
 
   async function newSession() {
-    const title = `Phiên ${sessions().length + 1}`;
+    // Tên tạm, không đánh số: số thứ tự ở đây tính theo *độ dài danh sách hiện tại*, nên
+    // xoá một phiên rồi tạo phiên mới là có hai "Phiên 3". Tên thật đến từ câu hỏi đầu
+    // tiên — xem `nameFromFirstMessage`.
+    const title = "Phiên mới";
     const created = (await createSession(title)) ?? {
       id: `local-${Date.now()}`,
       title,
@@ -466,20 +479,57 @@ export default function App() {
     if (pending) void answerApproval(pending.requestId, decision);
   }
 
+  /**
+   * Đặt tên phiên theo câu hỏi đầu tiên, đúng như ChatGPT.
+   *
+   * Điều kiện là **bản ghi chưa có tin nhắn nào của người dùng**, không phải "tên đang khớp
+   * một mẫu nào đó": so tên với `/^Phiên/` sẽ đổi tên cả một phiên mà người dùng cố ý đặt
+   * tên là "Phiên thử nghiệm". Còn "chưa ai hỏi gì" thì đúng một lần xảy ra trong đời một
+   * phiên, và đó là lần duy nhất được phép ghi đè.
+   *
+   * Gọi **trước** `addUser` vì sau đó bản ghi đã có tin nhắn ấy rồi.
+   */
+  function nameFromFirstMessage(text: string) {
+    if (conversation.nodes().some((node) => node.kind === "user")) return;
+    const title = titleFromMessage(text);
+    if (title === "") return;
+    const id = currentId();
+    if (!sessions().some((session) => session.id === id)) return;
+    // Đổi trên màn hình trước rồi báo cho lõi, đúng như `rename`: ghi hỏng thì chỉ mất
+    // cái tên, và một hộp thoại lỗi ngay lúc gửi câu hỏi đầu tiên là cắt ngang sai chỗ.
+    setSessions((all) => all.map((s) => (s.id === id ? { ...s, title } : s)));
+    void renameSession(id, title);
+  }
+
   async function send(text: string) {
     const trimmed = text.trim();
     if (conversation.busy() || trimmed === "") return;
 
+    nameFromFirstMessage(trimmed);
     conversation.addUser(trimmed);
     setDraft("");
     conversation.setBusy(true);
     setTab("chat");
 
+    // Chốt phiên **trước** khi gửi, và dùng nó cho cả `finally`: `currentId()` có thể đã
+    // đổi khi lượt kết thúc.
+    const cuaLuot = currentId();
+
     try {
+      // Sự kiện của lượt này chỉ được ghi vào **phiên đã gửi nó**. Người dùng đổi phiên
+      // giữa lượt là chuyện thường, và không có chốt này thì token cùng thẻ tool của lượt
+      // cũ rơi thẳng vào bản ghi của phiên vừa mở — một bản ghi bịa, và nó được lưu lại.
+      //
+      // Lượt cũ vẫn chạy tiếp tới cùng ở phía lõi và vẫn vào sổ; quay lại phiên đó sẽ thấy
+      // đủ. Bỏ sự kiện ở đây chỉ là bỏ phần vẽ trực tiếp, không bỏ câu trả lời.
+      const applyIfCurrent = (event: AgentEvent) => {
+        if (currentId() !== cuaLuot) return;
+        conversation.applyEvent(event);
+      };
       if (isDemo() || !inTauri()) {
-        await runDemoTurn(trimmed, conversation.applyEvent, waitForApproval);
+        await runDemoTurn(trimmed, applyIfCurrent, waitForApproval);
       } else {
-        await sendMessage(currentId(), trimmed, conversation.applyEvent);
+        await sendMessage(cuaLuot, trimmed, applyIfCurrent);
       }
     } catch (err) {
       conversation.applyEvent({ kind: "error", message: String(err) });
@@ -488,6 +538,17 @@ export default function App() {
       // như một lần từ chối, vì không còn ai bên kia để nhận câu trả lời nữa.
       if (conversation.approval()) decideApproval("rejected");
       conversation.finishTurn();
+      // Bản chụp đã park của phiên vừa gửi cũng phải hết "đang chảy", nếu không quay lại
+      // nó sẽ thấy một con trỏ nhấp nháy vĩnh viễn trên một lượt đã xong từ lâu.
+      const chup = parked.get(cuaLuot);
+      if (chup) {
+        parked.set(
+          cuaLuot,
+          chup.map((node) =>
+            node.kind === "assistant" && node.streaming ? { ...node, streaming: false } : node,
+          ),
+        );
+      }
     }
   }
 
@@ -496,13 +557,26 @@ export default function App() {
     setTab("chat");
     queueMicrotask(() => {
       const el = document.getElementById(`node-${nodeId}`);
-      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+      if (!el) return;
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
       // Nháy viền một nhịp: sau một cú cuộn mượt, người dùng cần biết *cái nào* vừa được
       // đưa tới, chứ không chỉ biết là màn hình đã dịch chuyển.
-      el?.animate?.(
+      //
+      // `outline-style` **không** animate được, nên phải đặt sẵn một đường viền trong suốt
+      // trước khi chạy: không đặt thì cả hiệu ứng này chạy trên `outline-style: none` và
+      // không nháy gì cả — hỏng trong im lặng, đúng kiểu không ai phát hiện ra.
+      el.style.outline = "2px solid transparent";
+      el.style.outlineOffset = "2px";
+      const clear = () => {
+        el.style.outline = "";
+        el.style.outlineOffset = "";
+      };
+      const flash = el.animate?.(
         [{ outlineColor: "var(--accent)" }, { outlineColor: "transparent" }],
         { duration: 900, easing: "ease-out" },
       );
+      if (flash) flash.onfinish = clear;
+      else clear();
     });
   }
 

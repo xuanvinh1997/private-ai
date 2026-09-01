@@ -21,12 +21,13 @@ const WINDOW: Duration = Duration::from_millis(16);
 /// khi đi** — nếu không, một thẻ tool sẽ nhảy lên trước đoạn văn sinh ra nó.
 pub struct Coalescer {
     tx: mpsc::UnboundedSender<AgentEvent>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 impl Coalescer {
     pub fn spawn(channel: Channel<AgentEvent>) -> Coalescer {
         let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             let mut buffer = String::new();
             let mut deadline: Option<tokio::time::Instant> = None;
 
@@ -63,12 +64,25 @@ impl Coalescer {
                 }
             }
         });
-        Coalescer { tx }
+        Coalescer { tx, task }
     }
 
     /// Gửi. Kênh đứt thì bỏ qua: lượt sẽ kết thúc theo đường huỷ, không phải ở đây.
     pub fn send(&self, event: AgentEvent) {
         let _ = self.tx.send(event);
+    }
+
+    /// Xả hết rồi mới trả về.
+    ///
+    /// Đây là thứ giữ cho một bất biến đơn giản đúng: **lệnh trả về nghĩa là mọi sự kiện
+    /// của lượt đã đi qua kênh**. Không có nó, giao diện nhận `Ok` từ `invoke` rồi đóng
+    /// khối trả lời, và những token còn nằm trong bộ đệm 16 ms tới sau — không còn khối
+    /// nào đang mở để nhận, nên chúng đẻ ra một tin nhắn cụt mang con trỏ nhấp nháy
+    /// vĩnh viễn. Đó là lỗi đã thấy trên màn hình, không phải một lo xa.
+    pub async fn finish(self) {
+        // Thả `tx` để vòng lặp thấy kênh đóng, xả nốt bộ đệm rồi thoát.
+        drop(self.tx);
+        let _ = self.task.await;
     }
 }
 

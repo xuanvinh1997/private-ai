@@ -146,28 +146,33 @@ export default function Composer(props: {
           </p>
         </Show>
 
-        {/* `role="status"` chứ không `alert`, và câu chốt lại bằng "vẫn gửi được": đây là
-            một giới hạn đang tồn tại, không phải một thứ vừa hỏng, và người đọc phải rời
-            câu này với niềm tin rằng ô soạn tin bên dưới còn dùng được. */}
-        <Show when={!props.hasProject}>
-          <p class="flex items-start gap-2xs px-md pb-2xs text-2xs text-muted" role="status">
-            <span class="mt-3xs shrink-0">
-              <Icon name="tools" size={12} />
-            </span>
-            Chưa mở dự án nên trợ lý không có tool nào để đọc, sửa hay chạy lệnh. Tin nhắn
-            vẫn gửi bình thường.
-          </p>
-        </Show>
+        {/* Hai câu trạng thái nằm **cùng một hàng biết xuống dòng** chứ không chồng lên nhau
+            thành hai dải: ô soạn tin chỉ cao vài chục pixel, và mỗi dòng chữ thêm vào đẩy
+            hàng nút xuống một nấc. Cửa sổ hẹp thì chúng tự rơi xuống dòng dưới.
 
-        <Show when={props.modelWarning}>
-          {(message) => (
-            // `role="status"` chứ không `alert`: đây là một điều kiện đang tồn tại, không
-            // phải một sự kiện vừa xảy ra — trình đọc màn hình nên đọc nó khi tới lượt.
-            <p class="flex items-center gap-2xs px-md pb-2xs text-2xs text-warn" role="status">
-              <Icon name="warn" size={12} />
-              {message()}
-            </p>
-          )}
+            `role="status"` chứ không `alert` ở cả hai: đây là những điều kiện đang tồn tại,
+            không phải sự kiện vừa xảy ra — trình đọc màn hình nên đọc chúng khi tới lượt. */}
+        <Show when={!props.hasProject || props.modelWarning}>
+          <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-2xs">
+            {/* Câu chốt lại bằng "vẫn gửi được": đây là một giới hạn đang tồn tại, không
+                phải một thứ vừa hỏng, và người đọc phải rời câu này với niềm tin rằng ô
+                soạn tin bên dưới còn dùng được. */}
+            <Show when={!props.hasProject}>
+              <p class="m-0 flex items-center gap-2xs text-muted" role="status">
+                <Icon name="tools" size={12} />
+                Chưa mở dự án — trợ lý chưa có tool nào. Tin nhắn vẫn gửi được.
+              </p>
+            </Show>
+
+            <Show when={props.modelWarning}>
+              {(message) => (
+                <p class="m-0 flex items-center gap-2xs text-warn" role="status">
+                  <Icon name="warn" size={12} />
+                  {message()}
+                </p>
+              )}
+            </Show>
+          </div>
         </Show>
 
         <div class="flex flex-wrap items-center gap-2xs px-2xs pb-2xs">
@@ -188,16 +193,21 @@ export default function Composer(props: {
           {/* Vô hiệu chứ không ẩn hẳn: chỗ ngồi của bộ chọn giữ nguyên qua hai trạng thái,
               nên người vừa đóng dự án nhìn thấy *cái gì đã đổi* thay vì thấy một nút biến
               mất. Nó ra khỏi vòng Tab luôn — không còn lựa chọn nào để đi tới, và lý do
-              nằm ở dòng chữ ngay trên, chỗ trình đọc màn hình cũng đọc được. */}
+              nằm ở dòng chữ ngay trên, chỗ trình đọc màn hình cũng đọc được.
+
+              Nói "chưa dùng được" bằng chữ chứ **không gạch ngang** cái nhãn: chữ bị gạch
+              đọc ra là một thứ vừa hỏng hoặc vừa bị bỏ đi, mà đây là một quyền đang tắt vì
+              chưa có gì để cấp. "Chưa xong" và "hỏng" là hai trạng thái. */}
           <Show
             when={props.hasProject}
             fallback={
               <span
                 aria-hidden="true"
-                class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-2xs text-faint line-through"
+                class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-2xs text-faint"
               >
                 <Icon name="tools" size={13} />
                 {SCOPE_LABEL[props.scope]}
+                <span class="opacity-70">· chưa dùng được</span>
               </span>
             }
           >
@@ -220,11 +230,8 @@ export default function Composer(props: {
 
           <span class="flex-1" />
 
-          <span class="hidden items-center gap-3xs pr-2xs text-2xs text-faint sm:flex" aria-hidden="true">
-            <Icon name="enter" size={12} />
-            gửi
-          </span>
-
+          {/* Không còn nhãn "↵ gửi" cạnh nút: placeholder của ô nhập đã nói "Enter để gửi",
+              và nhắc lại nó ngay cạnh nút Gửi chỉ thêm một mẩu chữ vào một hàng đã chật. */}
           <Show
             when={props.busy}
             fallback={

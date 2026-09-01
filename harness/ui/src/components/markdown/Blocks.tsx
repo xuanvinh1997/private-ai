@@ -3,9 +3,30 @@ import { createMemo, Match, Show, Switch } from "solid-js";
 import CodeFence from "./CodeFence";
 import Diagram from "./Diagram";
 import { splitFences, type Segment } from "./fences";
+import Markdown from "./Markdown";
 
 /**
- * Thân một tin nhắn trợ lý: chữ thường, khối mã, và sơ đồ mermaid.
+ * Thân một tin nhắn trợ lý: markdown, khối mã, và sơ đồ mermaid.
+ *
+ * ## Markdown và bẫy chảy chữ
+ *
+ * Một đoạn chữ chỉ được dựng thành markdown khi nó **đã chốt** — tức là khi lượt đã xong,
+ * hoặc khi phía sau nó còn đoạn khác (một khối rào đã mở sau nó thì nó không dài thêm được
+ * nữa). Đoạn cuối cùng của một lượt đang chảy hiện nguyên văn, `whitespace-pre-wrap`, đúng
+ * như trước.
+ *
+ * Hai lý do, và lý do thứ hai mới là lý do thật:
+ *
+ * 1. Markdown giữa chừng **luôn** dở dang. `**Đọc` chưa đóng là chữ thường; nửa giây sau
+ *    nó thành chữ đậm. Một hàng bảng mới có nửa là một đoạn văn; hàng sau nó biến cả cụm
+ *    thành bảng và mọi thứ bên dưới nhảy xuống. Người đọc đang đọc dở đúng chỗ đó.
+ * 2. Vẽ lại cả cây token ở mỗi token đến là chạy `lexer` trên toàn bộ tin nhắn, sáu chục
+ *    lần mỗi giây — công tỉ lệ với *độ dài tin nhắn nhân số token*. Câu trả lời càng dài
+ *    thì càng chậm, đúng lúc nó cần mượt nhất.
+ *
+ * Cái mất là một lần "chốt" ở cuối lượt, khi chữ thường biến thành markdown. Một lần nhảy
+ * ở cuối rẻ hơn một lần nhảy mỗi token, và trong lúc chảy thì chữ vẫn đọc được nguyên vẹn:
+ * đó đúng là những ký tự mô hình đã gửi, đúng thứ tự, giữ nguyên xuống dòng.
  *
  * ## Bẫy lớn nhất của tệp này: chữ đang chảy
  *
@@ -41,14 +62,18 @@ export default function Blocks(props: { text: string; streaming?: boolean }) {
         {(row) => (
           <Switch>
             <Match when={row().seg.kind === "text"}>
-              <div class="whitespace-pre-wrap">
-                {text(row().seg)}
-                {/* Con trỏ chỉ bám vào đoạn cuối cùng, và chỉ khi đoạn cuối là chữ —
-                    dán nó vào giữa bản ghi thì nó không còn nghĩa "đang gõ tiếp ở đây". */}
-                <Show when={props.streaming === true && row().last}>
+              {/* Đoạn đang chảy đi đường chữ thô; đoạn đã chốt đi đường markdown. Con trỏ
+                  chỉ bám vào đoạn cuối — dán nó vào giữa bản ghi thì nó không còn nghĩa
+                  "đang gõ tiếp ở đây" — nên nó nằm gọn trong nhánh chưa chốt. */}
+              <Show
+                when={props.streaming === true && row().last}
+                fallback={<Markdown text={text(row().seg)} />}
+              >
+                <div class="whitespace-pre-wrap">
+                  {text(row().seg)}
                   <Caret />
-                </Show>
-              </div>
+                </div>
+              </Show>
             </Match>
 
             <Match when={row().seg.kind === "fence" && isDiagram(row().seg)}>
