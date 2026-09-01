@@ -1,19 +1,19 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "./agent";
-import type { CloneProgress, FileView, Project, ProjectKind, TreeEntry } from "./protocol";
+import type { CloneProgress, Project, ProjectKind } from "./protocol";
 
 /**
- * Lệnh dự án, lệnh clone, và hai lệnh duyệt mã nguồn.
+ * Lệnh dự án và lệnh clone.
  *
  * Chia làm hai nhóm theo cách xử lý lỗi, và ranh giới là "người dùng có đang đứng chờ
  * một thứ hiện lên không":
  *
  *   - `listProjects` nuốt lỗi và trả danh sách rỗng — nó chạy lúc khởi động, và một hộp
  *     lỗi ở đó chặn mất đường vào ứng dụng.
- *   - mọi lệnh còn lại **ném ra ngoài**. Mở nhầm dự án, bỏ nhầm một dòng, mở một tệp
- *     không đọc được — cả ba đều là lúc người dùng vừa bấm một cú và đang chờ; im lặng
- *     ở đó không phân biệt được với "đang chậm".
+ *   - mọi lệnh còn lại **ném ra ngoài**. Mở nhầm dự án, bỏ nhầm một dòng — cả hai đều là
+ *     lúc người dùng vừa bấm một cú và đang chờ; im lặng ở đó không phân biệt được với
+ *     "đang chậm".
  */
 
 export async function listProjects(): Promise<Project[]> {
@@ -40,21 +40,6 @@ export function openProject(path: string): Promise<Project> {
  */
 export function removeProject(id: string): Promise<void> {
   return invoke("remove_project", { id });
-}
-
-/**
- * Một cấp của cây tệp. `path` vắng nghĩa là gốc dự án đang mở.
- *
- * `depth` mặc định là 1 và nên giữ nguyên như vậy cho mọi lần mở một thư mục: một repo
- * thật có hàng chục nghìn tệp, và nạp cả cây một lần là treo giao diện trước khi vẽ được
- * dòng đầu tiên. Chỗ duy nhất xin sâu hơn là bảng tìm tệp, nơi *phải* có toàn bộ tên.
- */
-export function listTree(path?: string, depth = 1): Promise<TreeEntry[]> {
-  return invoke<TreeEntry[]>("list_tree", { path, depth });
-}
-
-export function readFile(path: string): Promise<FileView> {
-  return invoke<FileView>("read_file", { path });
 }
 
 /** Tên hiển thị suy từ đường dẫn, dùng khi lõi chưa kịp trả `Project` thật. */

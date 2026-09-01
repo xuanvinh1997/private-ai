@@ -14,56 +14,35 @@ import {
 import { changedFiles } from "./lib/changes";
 import { createConversation, nodesFromHistory } from "./lib/conversation";
 import {
-  demoFile,
-  demoFilePaths,
   demoKnobs,
   demoModels,
   demoNodes,
   demoParked,
   demoProjects,
-  demoRoot,
   demoSessions,
-  demoTree,
   isDemo,
   runDemoTurn,
 } from "./lib/demo";
-import { changesPanelOpen, setChangesPanelOpen, setDisplayMode, setSessionPanelOpen, sessionPanelOpen } from "./lib/prefs";
-import {
-  absolutePath,
-  displayPath,
-  folderName,
-  listProjects,
-  listTree,
-  openProject,
-  readFile,
-  removeProject,
-} from "./lib/projects";
+import { changesPanelOpen, setChangesPanelOpen, setDisplayMode, setSidebarOpen, sidebarOpen } from "./lib/prefs";
+import { folderName, listProjects, openProject, removeProject } from "./lib/projects";
 import type {
   ApprovalDecision,
   ConversationNode,
   ModelChoice,
   Project,
   SessionSummary,
-  TreeEntry,
 } from "./lib/protocol";
 import { TranscriptActionsProvider } from "./lib/transcriptActions";
 import { useDragDrop } from "./hooks/useDragDrop";
 import ApprovalDialog from "./components/ApprovalDialog";
-import ChangesPanel from "./components/ChangesPanel";
-import CodeBrowser from "./components/CodeBrowser";
+import ChangesPanel, { ChangesBoard } from "./components/ChangesPanel";
 import Composer, { type ToolScope } from "./components/Composer";
 import EmptyState from "./components/EmptyState";
-import FilePalette from "./components/FilePalette";
-import Icon from "./components/Icon";
-import { IconButton } from "./components/primitives";
-import OpenProjectDialog from "./components/OpenProjectDialog";
 import ProjectSwitcher from "./components/ProjectSwitcher";
-import Rail, { tabsFor, type TabId } from "./components/Rail";
+import Sidebar, { tabsFor, type TabId } from "./components/Sidebar";
 import ProjectsView from "./components/projects/ProjectsView";
 import DocsView from "./components/docs/DocsView";
-import GraphExplorer from "./components/graph/GraphExplorer";
 import SessionPalette from "./components/SessionPalette";
-import SessionPanel from "./components/SessionPanel";
 import SettingsView from "./components/SettingsView";
 import Transcript from "./components/Transcript";
 import WorkspaceHeader from "./components/WorkspaceHeader";
@@ -76,12 +55,16 @@ import "./components/nodes";
 const MODEL_CHUA_BIET = "(chưa hỏi được máy chủ)";
 
 /**
- * Vỏ ứng dụng: rail biểu tượng, danh sách phiên, khu làm việc, và một bảng thay đổi
+ * Vỏ ứng dụng: một thanh bên trái, một cột hội thoại căn giữa, và một bảng thay đổi
  * mở/đóng được ở bên phải.
  *
- * Trạng thái hội thoại nằm trong một store riêng cho từng phiên và được nhớ lại khi
- * quay về — chuyển phiên rồi mất chỗ đang đọc là cách nhanh nhất làm người ta ngại
- * chuyển phiên.
+ * Hình dạng lấy từ ChatGPT và Codex, không từ LobeChat: **một** cột điều hướng thay vì
+ * rail cộng panel, bộ chọn mô hình nằm trong ô soạn tin thay vì trên thanh tiêu đề, và
+ * không có màn hình nào đọc mã nguồn — người dùng đã có editor của họ rồi. Thứ duy nhất
+ * ứng dụng này thêm vào so với hình mẫu là quản lý nhà cung cấp mô hình.
+ *
+ * Trạng thái hội thoại nằm trong một store riêng cho từng phiên và được nhớ lại khi quay
+ * về — chuyển phiên rồi mất chỗ đang đọc là cách nhanh nhất làm người ta ngại chuyển phiên.
  */
 export default function App() {
   const conversation = createConversation();
@@ -91,9 +74,9 @@ export default function App() {
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [tab, setTab] = createSignal<TabId>("chat");
 
-  // Đổi dự án có thể làm chính tab đang mở biến mất khỏi rail — mở một thư viện tài liệu
-  // trong lúc đang đứng ở tab Mã nguồn chẳng hạn. Không sửa thì rail không còn nút nào
-  // sáng và khung nội dung trống trơn, trông y hệt một lỗi vẽ.
+  // Đổi dự án có thể làm chính màn hình đang mở biến mất khỏi thanh bên — mở một thư viện
+  // tài liệu trong lúc đang đứng ở màn hình Thay đổi chẳng hạn. Không sửa thì thanh bên
+  // không còn hàng nào sáng và khung nội dung trống trơn, trông y hệt một lỗi vẽ.
   createEffect(() => {
     if (!tabsFor(project()?.kind).includes(tab())) setTab("chat");
   });
@@ -111,10 +94,6 @@ export default function App() {
   // hình còn nói về dự án cũ, nên cờ này khoá thao tác thay vì chỉ hiện một cái chấm quay.
   const [switching, setSwitching] = createSignal(false);
   const [projectMenuOpen, setProjectMenuOpen] = createSignal(false);
-  const [openDialog, setOpenDialog] = createSignal(false);
-  const [dialogError, setDialogError] = createSignal<string | null>(null);
-  const [openFile, setOpenFile] = createSignal<{ path: string; line?: number } | null>(null);
-  const [filePaletteOpen, setFilePaletteOpen] = createSignal(false);
 
   const project = () => projects().find((entry) => entry.isCurrent) ?? null;
   const projectKey = () => project()?.id ?? "khong-co-du-an";
@@ -148,13 +127,13 @@ export default function App() {
       const knobs = demoKnobs();
       if (knobs.mode) setDisplayMode(knobs.mode);
       if (knobs.changes !== undefined) setChangesPanelOpen(knobs.changes);
+      if (knobs.sidebar !== undefined) setSidebarOpen(knobs.sidebar);
       setProjects(demoProjects());
       // Núm vặn cho việc chụp ảnh: cả ba trạng thái dưới đây chỉ tồn tại trong một nhịp
       // bấm chuột, và không có chúng thì cách duy nhất chụp được là sửa mã.
-      if (knobs.tab === "code" || knobs.tab === "diff" || knobs.tab === "chat") setTab(knobs.tab);
+      if (knobs.tab !== undefined && isTab(knobs.tab)) setTab(knobs.tab);
       if (knobs.menu === "project") setProjectMenuOpen(true);
       if (knobs.switching) setSwitching(true);
-      if (knobs.file) setOpenFile({ path: `${demoRoot("p-harness")}/${knobs.file}` });
       if (knobs.state === "skeleton") return; // khung xương đứng yên để nhìn cho kỹ
       const seed = demoSessions("p-harness");
       for (const [id, nodes] of Object.entries(demoParked())) parked.set(id, nodes);
@@ -203,17 +182,9 @@ export default function App() {
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.metaKey && !event.ctrlKey) return;
-      const key = event.key.toLowerCase();
-      if (key === "k") {
-        event.preventDefault();
-        setPaletteOpen(true);
-      } else if (key === "p") {
-        // ⌘P mở tìm tệp và chuyển sang tab Mã nguồn luôn: chọn xong mà vẫn đứng ở tab cũ
-        // thì cú bấm không dẫn tới đâu, và người dùng phải tự đoán ra tệp đã mở ở chỗ nào.
-        event.preventDefault();
-        setTab("code");
-        setFilePaletteOpen(true);
-      }
+      if (event.key.toLowerCase() !== "k") return;
+      event.preventDefault();
+      setPaletteOpen(true);
     };
     window.addEventListener("keydown", onKeyDown);
     onCleanup(() => window.removeEventListener("keydown", onKeyDown));
@@ -251,15 +222,13 @@ export default function App() {
   /**
    * Dọn màn hình sau khi lõi đã chuyển xong dự án.
    *
-   * Chạy **sau** khi lõi trả lời chứ không trước: bản ghi, bộ đệm phiên và tệp đang mở
-   * đều thuộc về dự án cũ, và xoá chúng sớm để rồi việc chuyển thất bại là bỏ đi trạng
-   * thái của một dự án vẫn đang mở.
+   * Chạy **sau** khi lõi trả lời chứ không trước: bản ghi và bộ đệm phiên đều thuộc về dự
+   * án cũ, và xoá chúng sớm để rồi việc chuyển thất bại là bỏ đi trạng thái của một dự án
+   * vẫn đang mở.
    */
   async function adoptProject() {
     parked.clear();
-    setOpenFile(null);
     setLoadError(null);
-    fileIndex = null;
     conversation.reset([]);
 
     if (isDemo()) {
@@ -311,16 +280,18 @@ export default function App() {
   }
 
   /**
-   * Mở một thư mục làm dự án: từ hộp thoại, hoặc từ một thư mục kéo vào cửa sổ.
+   * Mở một thư mục được thả vào cửa sổ làm dự án.
    *
-   * Lỗi đi về hai chỗ khác nhau tuỳ lối vào. Hộp thoại còn đang mở thì lỗi nằm ngay dưới
-   * ô nhập, cạnh đường dẫn vừa gõ; còn với cú kéo thả thì không có ô nhập nào để đứng
-   * cạnh, nên nó lên chỗ báo lỗi chung.
+   * Lối vào duy nhất còn lại của `open_project`: mọi lối *có chủ đích* đều đi qua màn hình
+   * dự án, nơi có cả loại dự án, clone và hộp thoại chọn thư mục của hệ điều hành. Cú kéo
+   * thả sống sót vì nó rẻ hơn mọi lối kia khi cửa sổ Finder đang mở sẵn.
+   *
+   * Không đoán trước xem đường dẫn là thư mục hay tệp: chỉ lõi mới nhìn được đĩa, và một
+   * luật đoán ở đây sẽ từ chối nhầm những thư mục có dấu chấm trong tên.
    */
   async function openFolder(path: string) {
     if (switching()) return;
     setSwitching(true);
-    setDialogError(null);
     try {
       if (isDemo()) {
         await new Promise<void>((resolve) => setTimeout(resolve, 900));
@@ -342,10 +313,8 @@ export default function App() {
         setProjects(await listProjects());
       }
       await adoptProject();
-      setOpenDialog(false);
     } catch (err) {
-      if (openDialog()) setDialogError(String(err));
-      else setLoadError(`Không mở được thư mục "${path}": ${err}`);
+      setLoadError(`Không mở được thư mục "${path}": ${err}`);
     } finally {
       setSwitching(false);
     }
@@ -373,44 +342,10 @@ export default function App() {
     });
   }
 
-  /**
-   * Mở một tệp trong tab Mã nguồn, ở đúng dòng nếu chỗ gọi biết.
-   *
-   * Chuẩn hoá đường dẫn ở đây và chỉ ở đây. Cây tệp đưa vào đường dẫn tuyệt đối, còn thẻ
-   * tool và bảng thay đổi đưa vào đường dẫn tương đối với gốc dự án — cả hai đều đúng
-   * với nguồn của chúng, và `read_file` chỉ nhận một trong hai.
-   */
-  function showFile(rawPath: string, line?: number) {
-    const path = absolutePath(project()?.path ?? null, rawPath);
-    setOpenFile(line === undefined ? { path } : { path, line });
-    setTab("code");
-    setFilePaletteOpen(false);
-  }
-
-  const loadTree = (path?: string): Promise<TreeEntry[]> =>
-    isDemo() ? demoTree(projectKey(), path, 1) : listTree(path, 1);
-
-  const loadFile = (path: string) => (isDemo() ? demoFile(path) : readFile(path));
-
-  // Bảng ⌘P cần *mọi* tên tệp, thứ cây nạp lười cố ý không có. Xin một lần rồi giữ:
-  // trả giá đúng một lần cho mỗi dự án, ở lúc người dùng đã nói rằng họ cần nó.
-  let fileIndex: { key: string; paths: string[] } | null = null;
-
-  async function loadFilePaths(): Promise<string[]> {
-    const key = projectKey();
-    if (fileIndex?.key === key) return fileIndex.paths;
-    const paths = isDemo() ? await demoFilePaths(key) : flattenTree(await listTree(undefined, 8));
-    fileIndex = { key, paths };
-    return paths;
-  }
-
-  // Thả một thư mục vào cửa sổ là mở nó. Không đoán trước xem đường dẫn là thư mục hay
-  // tệp: chỉ lõi mới nhìn được đĩa, và một luật đoán ở đây sẽ từ chối nhầm những thư mục
-  // có dấu chấm trong tên.
-  // Thả một thư mục vào cửa sổ là mở nó thành dự án — nhưng **chỉ** khi không có màn
-  // hình nào khác đang nhận cú thả. Màn hình dự án và thư viện tài liệu đều gắn cùng cái
-  // hook này, và Tauri phát sự kiện cho mọi người nghe: không có chốt ở đây thì một tệp
-  // PDF thả vào thư viện cũng bị đem đi mở thành dự án.
+  // Thả một thư mục vào cửa sổ là mở nó thành dự án — nhưng **chỉ** khi không có màn hình
+  // nào khác đang nhận cú thả. Màn hình dự án và thư viện tài liệu đều gắn cùng cái hook
+  // này, và Tauri phát sự kiện cho mọi người nghe: không có chốt ở đây thì một tệp PDF thả
+  // vào thư viện cũng bị đem đi mở thành dự án.
   useDragDrop((paths) => {
     if (tab() === "projects" || tab() === "library") return;
     const first = paths[0];
@@ -528,24 +463,30 @@ export default function App() {
   }
 
   const title = () =>
-    sessions().find((session) => session.id === currentId())?.title ?? "Phiên làm việc";
+    tab() === "chat"
+      ? (sessions().find((session) => session.id === currentId())?.title ?? "Phiên làm việc")
+      : TAB_TITLE[tab()];
 
   return (
     <TranscriptActionsProvider
       value={{
         resend: conversation.busy() ? null : (text) => void send(text),
         remove: conversation.removeNode,
-        openFile: showFile,
+        // Không còn màn hình nào đọc tệp, nên đường dẫn trong bản ghi hiện dưới dạng chữ
+        // chứ không dưới dạng nút. Một đường dẫn trông như nút bấm mà bấm không ra gì tệ
+        // hơn hẳn một đường dẫn trông như chữ.
+        openFile: null,
       }}
     >
       <div class="flex h-full bg-bg">
-        <Rail active={tab()} onSelect={setTab} kind={project()?.kind} disabled={switching()} />
-
-        <Show when={tab() === "chat" && sessionPanelOpen()}>
-          <SessionPanel
+        <Show when={sidebarOpen()}>
+          <Sidebar
             sessions={sessions()}
             currentId={currentId()}
             loading={loading()}
+            view={tab()}
+            kind={project()?.kind}
+            changeCount={files().length}
             subtitle={preview}
             disabled={switching()}
             projectSlot={() => (
@@ -556,10 +497,7 @@ export default function App() {
                 open={projectMenuOpen()}
                 onOpenChange={setProjectMenuOpen}
                 onPick={(id) => void switchProject(id)}
-                onOpenFolder={() => {
-                  setDialogError(null);
-                  setOpenDialog(true);
-                }}
+                onSeeAll={() => setTab("projects")}
                 onForget={forgetProject}
               />
             )}
@@ -567,34 +505,23 @@ export default function App() {
             onCreate={() => void newSession()}
             onRename={rename}
             onDelete={remove}
-            onCollapse={() => setSessionPanelOpen(false)}
+            onGo={setTab}
+            onCollapse={() => setSidebarOpen(false)}
           />
         </Show>
 
         <main class="flex min-w-0 flex-1 flex-col">
           <WorkspaceHeader
-            title={tab() === "chat" ? title() : TAB_TITLE[tab()]}
-            model={tab() === "chat" ? model() : undefined}
-            scope={
-              tab() === "chat"
-                ? `${files().length} tệp đã đổi`
-                : tab() === "code"
-                  ? (openFile() === null
-                      ? project()?.path
-                      : displayPath(project()?.path ?? null, openFile()!.path))
-                  : undefined
-            }
+            title={title()}
             busy={conversation.busy() || switching()}
             busyLabel={switching() ? "đang chuyển dự án…" : undefined}
-            sessionPanelOpen={sessionPanelOpen()}
-            changesPanelOpen={changesPanelOpen()}
+            sidebarOpen={sidebarOpen()}
+            onOpenSidebar={() => setSidebarOpen(true)}
+            changesPanelOpen={tab() === "chat" ? changesPanelOpen() : undefined}
             changeCount={files().length}
-            onToggleSessionPanel={() => {
-              setTab("chat");
-              setSessionPanelOpen(!sessionPanelOpen());
-            }}
-            onToggleChangesPanel={() => setChangesPanelOpen(!changesPanelOpen())}
-            onSearch={() => setPaletteOpen(true)}
+            onToggleChangesPanel={
+              tab() === "chat" ? () => setChangesPanelOpen(!changesPanelOpen()) : undefined
+            }
           />
 
           <div class="flex min-h-0 flex-1">
@@ -642,8 +569,9 @@ export default function App() {
                     busy={conversation.busy()}
                     onStop={() => void cancelTurn(currentId())}
                     model={model()}
-                    models={models().map((choice) => choice.id)}
+                    models={models()}
                     onPickModel={setModel}
+                    onManageProviders={() => setTab("settings")}
                     modelWarning={modelWarning()}
                     scope={scope()}
                     onPickScope={setScope}
@@ -651,34 +579,14 @@ export default function App() {
                 </Match>
 
                 <Match when={tab() === "diff"}>
-                  <ChangesBoard files={files()} onReveal={reveal} onOpenFile={showFile} />
-                </Match>
-
-                <Match when={tab() === "code"}>
-                  <CodeBrowser
-                    projectId={projectKey()}
-                    projectName={project()?.name ?? "Chưa mở dự án"}
-                    root={project()?.path ?? null}
-                    loadTree={loadTree}
-                    loadFile={loadFile}
-                    open={openFile()}
-                    onOpen={showFile}
-                    onFind={() => setFilePaletteOpen(true)}
-                  />
-                </Match>
-
-                <Match when={tab() === "terminal"}>
-                  <NotBuilt
-                    what="Terminal"
-                    why="Lệnh chạy qua tool bash và hiện trong bản ghi hội thoại; một PTY đứng riêng còn nằm trong lộ trình."
-                  />
+                  <ChangesBoard files={files()} onReveal={reveal} />
                 </Match>
 
                 <Match when={tab() === "projects"}>
                   <ProjectsView
                     projects={projects()}
                     switching={switching()}
-                    error={dialogError()}
+                    error={loadError()}
                     onOpen={(picked) => void switchProject(picked.id)}
                     onForget={forgetProject}
                     onCreated={async () => {
@@ -695,13 +603,6 @@ export default function App() {
                   <DocsView resetKey={project()?.path ?? ""} name={project()?.name} />
                 </Match>
 
-                <Match when={tab() === "graph"}>
-                  <GraphExplorer
-                    projectName={project()?.name ?? "Chưa mở dự án"}
-                    onOpenFile={(path) => showFile(path)}
-                  />
-                </Match>
-
                 <Match when={tab() === "settings"}>
                   <SettingsView />
                 </Match>
@@ -712,7 +613,6 @@ export default function App() {
               <ChangesPanel
                 files={files()}
                 onReveal={reveal}
-                onOpenFile={showFile}
                 onClose={() => setChangesPanelOpen(false)}
               />
             </Show>
@@ -721,24 +621,6 @@ export default function App() {
 
         <Show when={conversation.approval()}>
           {(request) => <ApprovalDialog request={request()} onDecide={decideApproval} />}
-        </Show>
-
-        <Show when={openDialog()}>
-          <OpenProjectDialog
-            busy={switching()}
-            error={dialogError()}
-            onSubmit={(path) => void openFolder(path)}
-            onClose={() => setOpenDialog(false)}
-          />
-        </Show>
-
-        <Show when={filePaletteOpen()}>
-          <FilePalette
-            load={loadFilePaths}
-            root={project()?.path ?? null}
-            onPick={(path) => showFile(path)}
-            onClose={() => setFilePaletteOpen(false)}
-          />
         </Show>
 
         <Show when={paletteOpen()}>
@@ -759,83 +641,11 @@ export default function App() {
 
 const TAB_TITLE: Record<TabId, string> = {
   chat: "Hội thoại",
-  projects: "Dự án",
   diff: "Thay đổi trong phiên",
-  code: "Mã nguồn",
-  graph: "Đồ thị mã nguồn",
   library: "Thư viện tài liệu",
-  terminal: "Terminal",
+  projects: "Dự án",
   settings: "Cài đặt",
 };
 
-/** Mọi đường dẫn tệp trong một cây đã nạp — đầu vào của bảng tìm tệp. */
-function flattenTree(entries: TreeEntry[]): string[] {
-  const out: string[] = [];
-  const walk = (list: TreeEntry[]) => {
-    for (const entry of list) {
-      if (entry.isDir) walk(entry.children ?? []);
-      else out.push(entry.path);
-    }
-  };
-  walk(entries);
-  return out;
-}
-
-/** Bảng thay đổi ở dạng trang đầy — cùng dữ liệu với cột phải, chỉ khác chỗ ngồi. */
-function ChangesBoard(props: {
-  files: ReturnType<typeof changedFiles>;
-  onReveal: (nodeId: string) => void;
-  onOpenFile: (path: string) => void;
-}) {
-  return (
-    <div class="min-h-0 flex-1 overflow-y-auto px-(--page-pad-x) py-(--page-pad-y)">
-      <div class="mx-auto flex max-w-(--reading-measure) flex-col gap-sm">
-        <Show
-          when={props.files.length > 0}
-          fallback={<p class="text-sm text-faint">Phiên này chưa đụng vào tệp nào.</p>}
-        >
-          {props.files.map((file) => (
-            <div class="flex items-center gap-2xs rounded-card border border-line bg-surface px-(--card-pad-x) py-(--card-pad-y) transition-colors duration-[var(--dur-fast)] hover:border-accent">
-              <button
-                type="button"
-                onClick={() => props.onReveal(file.nodeId)}
-                class="flex min-w-0 flex-1 items-center gap-md text-left"
-              >
-                <span class="text-muted">
-                  <Icon name="diff" size={16} />
-                </span>
-                <span class="min-w-0 flex-1 truncate font-mono text-xs text-text" title={file.path}>
-                  {file.path}
-                </span>
-                <span class="shrink-0 text-2xs tabular-nums">
-                  <span class="text-success">+{file.added}</span>{" "}
-                  <span class="text-danger">−{file.removed}</span>
-                </span>
-              </button>
-              <IconButton
-                icon="code"
-                label={`Mở ${file.path} trong Mã nguồn`}
-                size="sm"
-                onClick={() => props.onOpenFile(file.path)}
-              />
-            </div>
-          ))}
-        </Show>
-      </div>
-    </div>
-  );
-}
-
-function NotBuilt(props: { what: string; why: string }) {
-  return (
-    <div class="grid min-h-0 flex-1 place-items-center px-(--page-pad-x)">
-      <div class="flex max-w-[44ch] flex-col items-center gap-sm text-center">
-        <span class="grid size-10 place-items-center rounded-panel bg-surface-hover text-muted">
-          <Icon name="terminal" size={20} />
-        </span>
-        <h2 class="m-0 text-md font-semibold text-ink">{props.what} chưa dựng</h2>
-        <p class="m-0 text-sm text-muted">{props.why}</p>
-      </div>
-    </div>
-  );
-}
+/** Núm `?tab=` của trang demo đến từ URL, nên nó là một chuỗi bất kỳ cho tới khi kiểm. */
+const isTab = (raw: string): raw is TabId => Object.hasOwn(TAB_TITLE, raw);

@@ -4,7 +4,7 @@ import { relativeTime } from "../lib/sessions";
 import Icon from "./Icon";
 
 /**
- * Nút chọn dự án, ngồi trên đầu thanh bên.
+ * Nút chọn dự án, ngồi ở **chân** thanh bên — chỗ Codex để bộ chọn kho/môi trường.
  *
  * Không dùng `Menu` chung được: menu ở đây có hai hành động trên **cùng một hàng** (mở
  * dự án, và bỏ nó khỏi danh sách), còn `Menu` chỉ nhận một danh sách phẳng mỗi hàng một
@@ -22,7 +22,8 @@ export default function ProjectSwitcher(props: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onPick: (id: string) => void;
-  onOpenFolder: () => void;
+  /** Mở màn hình dự án — chỗ tạo mới, clone, và lọc theo loại. */
+  onSeeAll: () => void;
   onForget: (project: Project) => void;
 }) {
   const id = createUniqueId();
@@ -115,7 +116,9 @@ export default function ProjectSwitcher(props: {
               move(-1);
             }
           }}
-          class="absolute top-full right-0 left-0 z-40 mt-3xs flex flex-col rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
+          // Bung **lên**: nút này ngồi ở chân cột, và một menu bung xuống từ đó rơi thẳng
+          // ra ngoài cửa sổ.
+          class="absolute right-0 bottom-full left-0 z-40 mb-3xs flex flex-col rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
         >
           <Show
             when={ordered().length > 0}
@@ -186,17 +189,20 @@ export default function ProjectSwitcher(props: {
           </Show>
 
           <div class="mt-3xs border-t border-line pt-3xs">
+            {/* Một lối ra duy nhất, và nó dẫn tới màn hình dự án chứ không tới một hộp
+                thoại thứ hai: tạo mới, clone và lọc theo loại đều đã sống ở đó, và một
+                hộp thoại "mở thư mục" riêng ở đây chỉ là lối thứ tư làm cùng một việc. */}
             <button
               type="button"
               role="menuitem"
               onClick={() => {
                 close(false);
-                props.onOpenFolder();
+                props.onSeeAll();
               }}
               class="flex w-full items-center gap-sm rounded-btn px-sm py-2xs text-left text-xs text-text transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
             >
-              <Icon name="plus" size={14} />
-              Mở thư mục…
+              <Icon name="folder-open" size={14} />
+              Tất cả dự án…
             </button>
             {/* Câu này ở lại trong menu chứ không chỉ nằm trong hộp xác nhận: người ta
                 quyết định có bấm hay không *trước* khi hộp xác nhận kịp hiện ra. */}

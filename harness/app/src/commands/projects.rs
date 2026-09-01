@@ -1,4 +1,4 @@
-//! Danh sách dự án, đổi dự án, và hai lệnh duyệt cây tệp.
+//! Danh sách dự án và đổi dự án.
 
 use pai_project::{CloneEvent, CloneRequest};
 use tauri::State;
@@ -38,28 +38,6 @@ pub async fn open_project(path: String, state: State<'_, AppState>) -> Result<Pr
 #[tauri::command]
 pub async fn remove_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
     state.harness().await?.forget_project(&id)
-}
-
-#[tauri::command]
-pub async fn list_tree(
-    path: Option<String>,
-    depth: Option<usize>,
-    state: State<'_, AppState>,
-) -> Result<Vec<pai_project::TreeEntry>, String> {
-    let harness = state.harness().await?;
-    let root = harness.workspace();
-    let at = path.map(std::path::PathBuf::from);
-    pai_project::list_tree(&root, at.as_deref(), depth.unwrap_or(1)).map_err(|err| err.to_string())
-}
-
-#[tauri::command]
-pub async fn read_file(
-    path: String,
-    state: State<'_, AppState>,
-) -> Result<pai_project::FileView, String> {
-    let harness = state.harness().await?;
-    pai_project::read_file(&harness.workspace(), std::path::Path::new(&path))
-        .map_err(|err| err.to_string())
 }
 
 /// Ghi nhận một thư mục có sẵn thành dự án, với loại do người dùng nói ra.

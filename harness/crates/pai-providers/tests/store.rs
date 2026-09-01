@@ -5,7 +5,7 @@
 //! con trỏ "đang hoạt động" trỏ vào hàng vừa bị xoá. Không bài nào chạm mạng.
 
 use pai_llm::ProviderKind;
-use pai_providers::{ProviderInput, ProviderStore, SqliteProviderStore, StoredProvider};
+use pai_providers::{ProviderInput, ProviderStore, Role, SqliteProviderStore, StoredProvider};
 
 fn store() -> SqliteProviderStore {
     SqliteProviderStore::open_in_memory().expect("mở kho")
@@ -94,13 +94,18 @@ fn xoa_cai_dang_hoat_dong_thi_cai_khac_len_thay() {
     let mot = them(&store, "Một", None);
     let hai = them(&store, "Hai", None);
 
-    let dang_chay = store.activate(mot.id(), Some("mo-hinh")).expect("ghim");
-    assert!(dang_chay.active);
+    let dang_chay = store
+        .activate(Role::Chat, mot.id(), Some("mo-hinh"))
+        .expect("ghim");
+    assert!(dang_chay.active_chat);
     assert_eq!(dang_chay.model.as_deref(), Some("mo-hinh"));
 
     store.remove(mot.id()).expect("xoá");
 
-    let con_lai = store.active().expect("đọc").expect("phải còn một cái");
+    let con_lai = store
+        .active(Role::Chat)
+        .expect("đọc")
+        .expect("phải còn một cái");
     assert_eq!(con_lai.id(), hai.id());
     assert!(
         store
@@ -113,7 +118,7 @@ fn xoa_cai_dang_hoat_dong_thi_cai_khac_len_thay() {
     // Xoá nốt cái cuối: không còn ai hoạt động, và đó là một câu trả lời hợp lệ chứ không
     // phải một id chết.
     store.remove(hai.id()).expect("xoá nốt");
-    assert!(store.active().expect("đọc").is_none());
+    assert!(store.active(Role::Chat).expect("đọc").is_none());
 }
 
 #[cfg(unix)]

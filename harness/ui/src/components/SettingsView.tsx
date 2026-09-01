@@ -3,13 +3,19 @@ import { displayMode, setDisplayMode, type DisplayMode } from "../lib/prefs";
 import { setTheme, theme, type ThemeChoice } from "../lib/theme";
 import Icon, { type IconName } from "./Icon";
 import ProvidersView from "./providers/ProvidersView";
+import EmbeddingView from "./providers/EmbeddingView";
 import McpView from "./mcp/McpView";
 
-type Page = "giao-dien" | "provider" | "mcp";
+type Page = "giao-dien" | "provider" | "nhung" | "mcp";
 
 const PAGES: { id: Page; label: string; icon: IconName }[] = [
   { id: "giao-dien", label: "Giao diện", icon: "monitor" },
-  { id: "provider", label: "Nhà cung cấp mô hình", icon: "server" },
+  { id: "provider", label: "Mô hình hội thoại", icon: "server" },
+  // Mô hình nhúng đứng riêng, không nằm trong trang provider. Gộp lại thì nó trông như
+  // một tuỳ chọn nâng cao của việc chọn mô hình hội thoại, trong khi nó là một lựa chọn
+  // độc lập và thường là một máy chủ khác hẳn — thường là máy chủ chạy tại chỗ, để tài
+  // liệu không rời khỏi máy.
+  { id: "nhung", label: "Mô hình nhúng", icon: "library" },
   { id: "mcp", label: "Server MCP", icon: "plug" },
 ];
 
@@ -47,6 +53,9 @@ export default function SettingsView() {
       <Switch>
         <Match when={page() === "provider"}>
           <ProvidersView />
+        </Match>
+        <Match when={page() === "nhung"}>
+          <EmbeddingView />
         </Match>
         <Match when={page() === "mcp"}>
           <McpView />

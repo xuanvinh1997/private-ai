@@ -1,5 +1,6 @@
-import { For, Show } from "solid-js";
+import { createSignal, For, Show } from "solid-js";
 import { baseName, dirName, type ChangedFile } from "../lib/changes";
+import DiffBlock from "./DiffBlock";
 import Icon from "./Icon";
 import { IconButton } from "./primitives";
 
@@ -14,19 +15,8 @@ import { IconButton } from "./primitives";
 export default function ChangesPanel(props: {
   files: ChangedFile[];
   onReveal: (nodeId: string) => void;
-  /**
-   * Mở tệp trong tab Mã nguồn.
-   *
-   * Đứng cạnh `onReveal` chứ không thay nó, vì hai cú bấm trả lời hai câu hỏi khác nhau:
-   * "trợ lý đã đổi cái gì ở đây" (bản ghi) và "tệp bây giờ đang ra sao" (đĩa). Gộp lại
-   * thì mất một câu, và câu mất đi phụ thuộc vào việc ai gộp.
-   */
-  onOpenFile: ((path: string) => void) | null;
   onClose: () => void;
 }) {
-  const added = () => props.files.reduce((sum, file) => sum + file.added, 0);
-  const removed = () => props.files.reduce((sum, file) => sum + file.removed, 0);
-
   return (
     <aside
       aria-label="Tệp đã thay đổi"
@@ -45,20 +35,16 @@ export default function ChangesPanel(props: {
           </p>
         }
       >
-        <div class="flex items-center gap-sm border-b border-line px-md py-xs text-2xs tabular-nums">
-          <span class="text-muted">{props.files.length} tệp</span>
-          <span class="text-success">+{added()}</span>
-          <span class="text-danger">−{removed()}</span>
-        </div>
+        <Totals files={props.files} class="border-b border-line px-md py-xs" />
 
         <ul class="m-0 min-h-0 flex-1 list-none overflow-y-auto p-sm">
           <For each={props.files}>
             {(file) => (
-              <li class="group relative">
+              <li>
                 <button
                   type="button"
                   onClick={() => props.onReveal(file.nodeId)}
-                  class="flex w-full items-center gap-sm rounded-panel px-sm py-xs pr-(--sp-3xl) text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
+                  class="flex w-full items-center gap-sm rounded-panel px-sm py-xs text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
                 >
                   <span
                     class="shrink-0"
@@ -86,29 +72,122 @@ export default function ChangesPanel(props: {
                       )}
                     </Show>
                   </span>
-                  <span class="shrink-0 text-2xs tabular-nums">
-                    <span class="text-success">+{file.added}</span>{" "}
-                    <span class="text-danger">−{file.removed}</span>
-                  </span>
+                  <Counts added={file.added} removed={file.removed} />
                 </button>
-
-                <Show when={props.onOpenFile}>
-                  {(open) => (
-                    <span class="absolute top-1/2 right-2xs -translate-y-1/2 opacity-0 transition-opacity duration-[var(--dur-fast)] group-focus-within:opacity-100 group-hover:opacity-100">
-                      <IconButton
-                        icon="code"
-                        label={`Mở ${baseName(file.path)} trong Mã nguồn`}
-                        size="sm"
-                        onClick={() => open()(file.path)}
-                      />
-                    </span>
-                  )}
-                </Show>
               </li>
             )}
           </For>
         </ul>
       </Show>
     </aside>
+  );
+}
+
+/**
+ * Màn hình thay đổi ở dạng trang đầy — bố cục review của Codex.
+ *
+ * Khác cột phải ở đúng một chỗ, và chỗ đó là toàn bộ lý do nó tồn tại: bấm vào một hàng
+ * **mở diff ngay tại đó** thay vì ném người đọc ngược về bản ghi. Cột phải là mục lục để
+ * liếc trong lúc đang chat; trang này là chỗ ngồi xuống đọc lại toàn bộ những gì trợ lý
+ * vừa làm, và một mục lục không mở ra được thì không đọc lại được cái gì.
+ *
+ * Mọi hàng mở sẵn ở lần đầu: sau một lượt sửa mã, câu hỏi đầu tiên luôn là "nó đã làm gì",
+ * và bắt người dùng bấm mở từng tệp để trả lời câu đó là bắt họ trả tiền cho một cú gập
+ * mà chưa ai xin.
+ */
+export function ChangesBoard(props: {
+  files: ChangedFile[];
+  onReveal: (nodeId: string) => void;
+}) {
+  return (
+    <div class="min-h-0 flex-1 overflow-y-auto px-(--page-pad-x) py-(--page-pad-y)">
+      <div class="mx-auto flex max-w-(--reading-measure) flex-col gap-md">
+        <Show
+          when={props.files.length > 0}
+          fallback={<p class="m-0 text-sm text-faint">Phiên này chưa đụng vào tệp nào.</p>}
+        >
+          <Totals files={props.files} class="px-3xs" />
+          <For each={props.files}>{(file) => <FileReview file={file} onReveal={props.onReveal} />}</For>
+        </Show>
+      </div>
+    </div>
+  );
+}
+
+function FileReview(props: { file: ChangedFile; onReveal: (nodeId: string) => void }) {
+  const [open, setOpen] = createSignal(true);
+  return (
+    <section class="overflow-hidden rounded-card border border-line bg-surface">
+      <div class="flex items-center gap-sm px-(--card-pad-x) py-(--card-pad-y)">
+        {/* Cả dải tên tệp là công tắc gập, đúng như review pane của Codex: đích bấm lớn
+            nhất trong hàng nên là việc làm nhiều nhất, chứ không phải một mũi tên 12px. */}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open()}
+          class="flex min-w-0 flex-1 items-center gap-sm text-left"
+        >
+          <span
+            class="shrink-0 text-muted transition-transform duration-[var(--dur-fast)]"
+            classList={{ "rotate-90": open() }}
+          >
+            <Icon name="chevron-right" size={14} />
+          </span>
+          <span
+            class="min-w-0 flex-1 truncate font-mono text-xs text-text"
+            dir="rtl"
+            title={props.file.path}
+          >
+            <bdi>{props.file.path}</bdi>
+          </span>
+          <Show when={props.file.created}>
+            <span class="shrink-0 text-2xs text-success">tệp mới</span>
+          </Show>
+          <Show when={props.file.pending}>
+            <span class="shrink-0 text-2xs text-warn">dự kiến</span>
+          </Show>
+          <Counts added={props.file.added} removed={props.file.removed} />
+        </button>
+
+        {/* Lối về bản ghi vẫn còn, chỉ là không còn là hành động chính nữa: nó trả lời một
+            câu khác — "trợ lý nói gì lúc nó sửa chỗ này". */}
+        <IconButton
+          icon="chat"
+          size="sm"
+          label={`Xem lúc trợ lý sửa ${baseName(props.file.path)} trong bản ghi`}
+          onClick={() => props.onReveal(props.file.nodeId)}
+        />
+      </div>
+
+      <Show when={open() && props.file.hunks.length > 0}>
+        <div class="border-t border-line p-(--card-pad-y)">
+          {/* Hạn dòng cao hơn hẳn trong chat: ở đây diff *là* nội dung, không phải một
+              trích đoạn chen giữa hai câu trả lời. */}
+          <DiffBlock diffs={props.file.hunks} maxLines={40} />
+        </div>
+      </Show>
+    </section>
+  );
+}
+
+/** Dòng tổng: bao nhiêu tệp, cộng bao nhiêu, trừ bao nhiêu. */
+function Totals(props: { files: ChangedFile[]; class?: string }) {
+  const added = () => props.files.reduce((sum, file) => sum + file.added, 0);
+  const removed = () => props.files.reduce((sum, file) => sum + file.removed, 0);
+  return (
+    <div class={`flex items-center gap-sm text-2xs tabular-nums ${props.class ?? ""}`}>
+      <span class="text-muted">{props.files.length} tệp</span>
+      <span class="text-success">+{added()}</span>
+      <span class="text-danger">−{removed()}</span>
+    </div>
+  );
+}
+
+function Counts(props: { added: number; removed: number }) {
+  return (
+    <span class="shrink-0 text-2xs tabular-nums">
+      <span class="text-success">+{props.added}</span>{" "}
+      <span class="text-danger">−{props.removed}</span>
+    </span>
   );
 }

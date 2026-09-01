@@ -10,7 +10,6 @@
 //! dụng tiếng Việt.
 
 pub mod docs;
-pub mod graph;
 pub mod mcp;
 pub mod projects;
 pub mod providers;

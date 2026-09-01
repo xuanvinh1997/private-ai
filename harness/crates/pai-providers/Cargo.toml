@@ -12,6 +12,9 @@ pai-llm = { workspace = true }
 # `Driver` là đầu kia của cú đổi provider: kho không có nghĩa gì nếu không có ai để đẩy
 # adapter mới vào.
 pai-agent = { workspace = true }
+# Bộ nhúng sống ở `pai-rag`, nhưng "provider nào đang giữ vai nhúng" là câu hỏi của kho
+# này. Một hàm nối hai đầu ở `embed.rs` rẻ hơn nhiều so với việc để `app/` tự đoán lấy.
+pai-rag = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 serde = { workspace = true }
@@ -25,6 +28,9 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Bài kiểm chứng migrate phải dựng được một tệp theo **lược đồ cũ**, nên nó cần nói SQL
+# trực tiếp — bài kiểm chứng là một crate riêng và không thấy `[dependencies]` ở trên.
+rusqlite = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 # Bài kiểm chứng "đổi mô hình giữa lượt" phải chạy một lượt thật, nên nó cần đủ giàn của
 # một lượt: sổ phiên, đường ống tool, và một adapter giả biết dừng lại giữa chừng.

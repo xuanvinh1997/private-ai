@@ -54,5 +54,10 @@ function flag(key: string, fallback: boolean): [Accessor<boolean>, (value: boole
   return [() => get() === "on", (value: boolean) => set(value ? "on" : "off")];
 }
 
-export const [sessionPanelOpen, setSessionPanelOpen] = flag("pai-session-panel", true);
+/**
+ * Thanh bên trái. Khoá lưu đổi tên theo cột nó mô tả: cột cũ chỉ chứa danh sách phiên,
+ * cột mới chứa mọi lối đi, nên một người từng thu gọn danh sách phiên năm ngoái không nên
+ * mở ứng dụng lên và thấy mất luôn cả đường vào cài đặt.
+ */
+export const [sidebarOpen, setSidebarOpen] = flag("pai-sidebar", true);
 export const [changesPanelOpen, setChangesPanelOpen] = flag("pai-changes-panel", false);

@@ -6,11 +6,12 @@ export interface TranscriptActions {
   /** Xoá một node khỏi bản ghi *đang xem*. Sổ tay phiên bên Rust không đổi. */
   remove: (id: string) => void;
   /**
-   * Mở một tệp trong tab Mã nguồn, ở đúng dòng nếu chỗ gọi biết.
+   * Mở một tệp trong một khung xem, ở đúng dòng nếu chỗ gọi biết.
    *
-   * `null` nghĩa là chưa có trình duyệt mã nguồn nào để mở vào — đường dẫn lúc đó vẫn
-   * hiện, chỉ là không bấm được. Một đường dẫn trông như nút bấm mà bấm không ra gì tệ
-   * hơn hẳn một đường dẫn trông như chữ.
+   * `null` nghĩa là không có khung nào để mở vào — đường dẫn lúc đó vẫn hiện, chỉ là không
+   * bấm được. Một đường dẫn trông như nút bấm mà bấm không ra gì tệ hơn hẳn một đường dẫn
+   * trông như chữ. Vỏ ứng dụng hiện truyền `null`: nó không còn màn hình đọc mã nguồn nào,
+   * vì người dùng đã có editor riêng của họ.
    */
   openFile: ((path: string, line?: number) => void) | null;
 }

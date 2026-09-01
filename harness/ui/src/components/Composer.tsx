@@ -1,8 +1,10 @@
 import { createSignal, Show } from "solid-js";
 import { useDragDrop } from "../hooks/useDragDrop";
 import { displayMode } from "../lib/prefs";
+import type { ModelChoice } from "../lib/protocol";
 import Icon from "./Icon";
 import Menu from "./Menu";
+import ModelPicker from "./ModelPicker";
 import { IconButton } from "./primitives";
 
 /** Phạm vi tool cho lượt kế. Chỉ là ý định của người dùng — lõi vẫn canh lại lúc gọi. */
@@ -15,14 +17,19 @@ const SCOPE_LABEL: Record<ToolScope, string> = {
 };
 
 /**
- * Ô soạn tin.
+ * Ô soạn tin: một khối bo tròn nằm giữa dưới, và **mọi** nút nằm trong viền của nó.
  *
  * Được điều khiển từ ngoài (`value`/`onChange`) vì kéo thả tệp phải chèn được đường dẫn
  * vào bản nháp, và bản nháp phải sống sót qua việc đổi phiên.
  *
  * Hàng công cụ nằm *trong* khung viền chứ không ở trên nó: mô hình và phạm vi tool là
  * thuộc tính của tin nhắn sắp gửi, không phải của cả màn hình, và đặt chúng ngoài khung
- * là mời người dùng quên mất chúng tồn tại.
+ * là mời người dùng quên mất chúng tồn tại. Cùng lý do khiến ChatGPT dời bộ chọn mô hình
+ * từ thanh trên xuống đây.
+ *
+ * Phạm vi tool thì **không** giấu sau menu "+" như ChatGPT giấu tool của nó: chọn "chạy
+ * lệnh" là cấp cho mô hình quyền chạy lệnh trên máy này, và một quyền đang mở phải đọc
+ * được mà không cần bấm vào đâu cả.
  */
 export default function Composer(props: {
   value: string;
@@ -32,8 +39,10 @@ export default function Composer(props: {
   busy: boolean;
   onStop: () => void;
   model: string;
-  models: string[];
+  models: ModelChoice[];
   onPickModel: (model: string) => void;
+  /** Mở cài đặt → nhà cung cấp mô hình, từ trong bộ chọn mô hình. */
+  onManageProviders: () => void;
   /** Câu cảnh báo dưới ô chọn mô hình. `undefined` khi không có gì phải nói. */
   modelWarning?: string;
   scope: ToolScope;
@@ -86,7 +95,7 @@ export default function Composer(props: {
       <div
         // Ô soạn tin rộng đúng bằng cột chữ phía trên nó: lệch một chút thôi là mắt đọc
         // ra hai khối không thuộc về nhau.
-        class="mx-auto flex w-full flex-col rounded-composer border bg-surface transition-colors duration-[var(--dur-base)]"
+        class="mx-auto flex w-full flex-col rounded-composer border bg-surface shadow-float transition-colors duration-[var(--dur-base)]"
         classList={{
           "border-accent": focused(),
           "border-line-strong": !focused(),
@@ -127,7 +136,18 @@ export default function Composer(props: {
           </p>
         </Show>
 
-        <div class="flex items-center gap-2xs px-2xs pb-2xs">
+        <Show when={props.modelWarning}>
+          {(message) => (
+            // `role="status"` chứ không `alert`: đây là một điều kiện đang tồn tại, không
+            // phải một sự kiện vừa xảy ra — trình đọc màn hình nên đọc nó khi tới lượt.
+            <p class="flex items-center gap-2xs px-md pb-2xs text-2xs text-warn" role="status">
+              <Icon name="warn" size={12} />
+              {message()}
+            </p>
+          )}
+        </Show>
+
+        <div class="flex flex-wrap items-center gap-2xs px-2xs pb-2xs">
           <IconButton
             icon="paperclip"
             label="Cách đính kèm tệp"
@@ -135,31 +155,12 @@ export default function Composer(props: {
             onClick={() => setHint((v) => !v)}
           />
 
-          <Menu
-            variant="pill"
-            placement="up"
-            align="left"
-            icon="model"
-            text={props.model}
-            label={`Mô hình: ${props.model}`}
-            items={props.models.map((model) => ({
-              id: model,
-              label: model,
-              icon: "model" as const,
-              onSelect: () => props.onPickModel(model),
-            }))}
+          <ModelPicker
+            value={props.model}
+            models={props.models}
+            onPick={props.onPickModel}
+            onManageProviders={props.onManageProviders}
           />
-
-          <Show when={props.modelWarning}>
-            {(message) => (
-              // `role="status"` chứ không `alert`: đây là một điều kiện đang tồn tại, không
-              // phải một sự kiện vừa xảy ra — trình đọc màn hình nên đọc nó khi tới lượt.
-              <span class="flex items-center gap-2xs text-xs text-warn" role="status">
-                <Icon name="warn" class="size-3.5" />
-                {message()}
-              </span>
-            )}
-          </Show>
 
           <Menu
             variant="pill"

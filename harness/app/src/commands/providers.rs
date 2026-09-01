@@ -6,7 +6,8 @@ use tauri::State;
 
 use crate::AppState;
 use crate::protocol::{
-    ModelChoice, ProviderInputWire, ProviderPreset, ProviderProbe, ProviderView,
+    EmbeddingProbe, EmbeddingSetting, ModelChoice, ProviderInputWire, ProviderPreset,
+    ProviderProbe, ProviderView,
 };
 
 /// Chuỗi trên dây thành loại provider.
@@ -27,8 +28,10 @@ fn view(stored: &StoredProvider) -> ProviderView {
         has_key: stored.has_key(),
         enabled: stored.config.enabled,
         on_device: stored.config.on_device(),
-        active: stored.active,
+        active_chat: stored.active_chat,
+        active_embedding: stored.active_embedding,
         model: stored.model.clone(),
+        embedding_model: stored.embedding_model.clone(),
     }
 }
 
@@ -38,6 +41,7 @@ fn input(wire: ProviderInputWire) -> Result<ProviderInput, String> {
     built.enabled = wire.enabled;
     built.model = wire.model;
     built.api_key = wire.api_key;
+    built.embedding_model = wire.embedding_model;
     Ok(built)
 }
 
@@ -194,5 +198,83 @@ pub async fn probe_provider(
                 context_window: model.context_window,
             })
             .collect(),
+    })
+}
+
+/// Cấu hình nhúng đang có hiệu lực.
+///
+/// Ghép ở đây thay vì để giao diện tự lọc danh sách provider: câu hỏi "tài liệu của tôi
+/// đang được nhúng bằng cái gì, và nó có chạy không" là **một** câu hỏi, và trả lời nó
+/// bằng cách bắt người đọc tự dò một danh sách là bắt họ làm việc của máy.
+#[tauri::command]
+pub async fn embedding_setting(state: State<'_, AppState>) -> Result<EmbeddingSetting, String> {
+    let harness = state.harness().await?;
+    let held = harness
+        .providers
+        .embedding()
+        .map_err(|err| err.to_string())?;
+    let reason = pai_providers::embedding_reason(held.as_ref());
+    Ok(match held {
+        Some(provider) => EmbeddingSetting {
+            provider_name: Some(provider.config.name.clone()),
+            on_device: provider.config.on_device(),
+            provider_id: Some(provider.id().to_string()),
+            model: provider.embedding_model.clone(),
+            reason,
+        },
+        None => EmbeddingSetting {
+            provider_id: None,
+            provider_name: None,
+            model: None,
+            on_device: false,
+            reason,
+        },
+    })
+}
+
+/// Giao vai nhúng cho một provider, với một mô hình tường minh.
+///
+/// Không có nhánh "để lõi tự chọn": mô hình nhúng sai thì mọi lần nạp tài liệu thất bại,
+/// và một lựa chọn ngầm là một lựa chọn không ai nhớ đã làm.
+#[tauri::command]
+pub async fn set_embedding(
+    provider_id: String,
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<EmbeddingSetting, String> {
+    let harness = state.harness().await?;
+    harness
+        .providers
+        .set_embedding(&provider_id, Some(&model))
+        .await
+        .map_err(|err| err.to_string())?;
+    harness.apply_provider().await?;
+    embedding_setting(state).await
+}
+
+/// Thử **nhúng thật một câu** bằng một cấu hình chưa lưu.
+#[tauri::command]
+pub async fn probe_embedding(
+    provider_id: String,
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<EmbeddingProbe, String> {
+    let harness = state.harness().await?;
+    let provider = harness
+        .providers
+        .list()
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .find(|item| item.id() == provider_id)
+        .ok_or_else(|| format!("không có nhà cung cấp `{provider_id}`"))?;
+
+    let result = harness
+        .providers
+        .probe_embedding(&provider.config, &model)
+        .await;
+    Ok(EmbeddingProbe {
+        ok: result.ok,
+        message: result.message,
+        dimensions: result.dimensions,
     })
 }

@@ -3247,6 +3247,7 @@ dependencies = [
  "pai-agent",
  "pai-core",
  "pai-llm",
+ "pai-rag",
  "pai-session",
  "pai-tools",
  "reqwest 0.12.28",

@@ -13,8 +13,8 @@ use pai_llm::{AdapterRegistry, ProviderConfig};
 
 use crate::error::{ProviderError, Result};
 use crate::presets;
-use crate::probe::{ProbeResult, probe};
-use crate::store::{ProviderInput, ProviderStore, StoredProvider};
+use crate::probe::{EmbeddingProbeResult, ProbeResult, probe, probe_embedding};
+use crate::store::{ProviderInput, ProviderStore, Role, StoredProvider};
 
 pub struct ProviderRuntime {
     store: Arc<dyn ProviderStore>,
@@ -50,8 +50,39 @@ impl ProviderRuntime {
         self.store.list()
     }
 
+    /// Provider đang giữ vai hội thoại.
     pub fn active(&self) -> Result<Option<StoredProvider>> {
-        self.store.active()
+        self.store.active(Role::Chat)
+    }
+
+    /// Provider đang giữ vai nhúng. `None` là trạng thái thường gặp và hợp lệ: chưa ai
+    /// được hỏi câu "tài liệu của tôi được nhúng ở đâu", nên chưa ai trả lời.
+    pub fn embedding(&self) -> Result<Option<StoredProvider>> {
+        self.store.active(Role::Embedding)
+    }
+
+    /// Bộ nhúng đang có hiệu lực, hoặc `None` kèm lý do đọc được ở
+    /// [`crate::embed::embedding_reason`].
+    ///
+    /// Một lời gọi thay vì hai, vì chỗ dùng nó — `app/` lúc áp lại provider — không có
+    /// việc gì khác để làm với hàng `StoredProvider` ở giữa.
+    pub fn embedder(&self) -> Result<Option<Arc<dyn pai_rag::Embedder>>> {
+        Ok(self
+            .embedding()?
+            .as_ref()
+            .and_then(crate::embed::embedder_for))
+    }
+
+    /// Trao vai nhúng, kèm mô hình nhúng nếu người dùng vừa chọn.
+    ///
+    /// Không đụng tới `Driver`: bộ nhúng không nằm trong đường chạy một lượt hội thoại.
+    /// Nhưng vẫn đi qua [`ProviderRuntime::resync`] như mọi lối sửa khác — một đường áp
+    /// lại duy nhất là cả lý do runtime này tồn tại, và một ngoại lệ "chỗ này thì không
+    /// cần" là chỗ để quên mất một bước khi luật đổi.
+    pub async fn set_embedding(&self, id: &str, model: Option<&str>) -> Result<StoredProvider> {
+        let active = self.store.activate(Role::Embedding, id, model)?;
+        self.resync().await;
+        Ok(active)
     }
 
     /// Lưu một biểu mẫu rồi đồng bộ lại đường chạy.
@@ -71,21 +102,25 @@ impl ProviderRuntime {
         Ok(())
     }
 
+    /// Trao vai hội thoại.
     pub async fn activate(&self, id: &str, model: Option<&str>) -> Result<StoredProvider> {
-        let active = self.store.activate(id, model)?;
+        let active = self.store.activate(Role::Chat, id, model)?;
         // Đây là lần đổi mà người dùng thực sự yêu cầu, nên lỗi phải nổi lên tới họ chứ
         // không chìm vào một dòng log như ở `resync`.
         self.apply_active().await?;
         Ok(active)
     }
 
-    /// Dựng adapter từ provider đang hoạt động và đẩy nó vào [`Driver`].
+    /// Dựng adapter từ provider đang giữ **vai hội thoại** và đẩy nó vào [`Driver`].
+    ///
+    /// Chỉ vai hội thoại: `Driver` chạy một lượt nói chuyện, và provider giữ vai nhúng có
+    /// thể là một máy chủ hoàn toàn khác — thường thì đúng là thế.
     ///
     /// `async` vì đây là điểm hẹn cho mọi việc cần mạng khi đổi provider — hâm nóng kết
     /// nối, hỏi năng lực mô hình — và đổi chữ ký một hàm đã có mười chỗ gọi thì đắt hơn
     /// nhiều so với giữ sẵn một `await` không tốn gì.
     pub async fn apply_active(&self) -> Result<()> {
-        let Some(active) = self.store.active()? else {
+        let Some(active) = self.store.active(Role::Chat)? else {
             return Err(ProviderError::Llm(pai_llm::registry::no_provider()));
         };
         let adapter = self.registry.adapter(&active.config)?;
@@ -105,6 +140,15 @@ impl ProviderRuntime {
     /// Thử một cấu hình chưa lưu.
     pub async fn probe(&self, config: &ProviderConfig) -> ProbeResult {
         probe(config, &self.http).await
+    }
+
+    /// Thử **nhúng thật một câu** bằng một mô hình, trên một cấu hình có thể chưa lưu.
+    pub async fn probe_embedding(
+        &self,
+        config: &ProviderConfig,
+        model: &str,
+    ) -> EmbeddingProbeResult {
+        probe_embedding(config, model).await
     }
 
     /// Đồng bộ sau một thay đổi mà bản thân nó đã thành công.

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use pai_agent::{Driver, SystemPrompt};
 use pai_core::Context;
 use pai_llm::{AdapterRegistry, ProviderKind};
-use pai_providers::{ProviderInput, ProviderRuntime, ProviderStore, SqliteProviderStore};
+use pai_providers::{ProviderInput, ProviderRuntime, ProviderStore, Role, SqliteProviderStore};
 use pai_tools::{ToolPipeline, ToolRegistry};
 
 fn runtime() -> (ProviderRuntime, Arc<Driver>, Arc<SqliteProviderStore>) {
@@ -113,7 +113,7 @@ async fn sua_dia_chi_thi_adapter_cu_bi_vut_di() {
     assert!(!Arc::ptr_eq(&dau_tien, &driver.llm()));
     assert_eq!(
         store
-            .active()
+            .active(Role::Chat)
             .expect("đọc")
             .expect("còn một cái")
             .config

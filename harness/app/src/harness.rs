@@ -23,9 +23,9 @@ use pai_lsp::LspPlugin;
 use pai_mcp::{ExposeOptions, McpPlugin, ServerConfig, token_path};
 use pai_project::{Project, ProjectKind, ProjectStore, SqliteProjectStore};
 use pai_providers::{
-    DB_FILE, ProviderInput, ProviderRuntime, ProviderStore, Providers, SqliteProviderStore,
+    DB_FILE, ProviderInput, ProviderRuntime, ProviderStore, Providers, Role, SqliteProviderStore,
 };
-use pai_rag::{Embedder, OllamaEmbedder, OpenAiEmbedder, RagPlugin};
+use pai_rag::{Embedder, RagPlugin};
 use pai_sandbox::SandboxPlugin;
 use pai_session::{SessionService, SessionStore, SqliteSessionStore};
 use pai_shell::ShellPlugin;
@@ -123,12 +123,7 @@ impl Harness {
             .apply_active()
             .await
             .map_err(|err| err.to_string())?;
-        apply_llm(
-            &self.providers,
-            &self.llm,
-            &self.embedder,
-            &self.rebuild.config,
-        );
+        apply_llm(&self.providers, &self.llm, &self.embedder);
         Ok(())
     }
 
@@ -236,8 +231,10 @@ pub struct Config {
     pub model: String,
     /// Cửa sổ ngữ cảnh, tính bằng token.
     pub context_window: usize,
-    /// Mô hình nhúng cho thư viện tài liệu. `None` = để `build_embedder` chọn theo loại
-    /// nhà cung cấp, vì tên mặc định của mỗi bên một khác.
+    /// Mô hình nhúng dùng để **gieo** hàng provider đầu tiên. Sau lần gieo đó, mô hình
+    /// nhúng là một trường trên từng hàng trong kho và người dùng đổi nó từ trong ứng
+    /// dụng — biến môi trường không còn quyền gì, vì hai nguồn cho cùng một giá trị thì
+    /// một nguồn sẽ luôn là nguồn người ta quên.
     pub embed_model: Option<String>,
 }
 
@@ -305,55 +302,26 @@ fn project_slug(workspace: &Path) -> String {
 /// provider nào, `driver.llm()` vẫn đang là chính [`ActiveLlm`] — và đặt nó làm cái mà
 /// `ActiveLlm` trỏ tới là dựng một vòng lặp vô hạn ngay trong đường gửi token. Kho thì
 /// không bao giờ trả về chính nó.
-fn apply_llm(
-    runtime: &ProviderRuntime,
-    llm: &ActiveLlm,
-    embedder: &ActiveEmbedder,
-    config: &Config,
-) {
-    let active = match runtime.store().active() {
-        Ok(Some(active)) => active,
-        Ok(None) => return,
-        Err(err) => {
-            tracing::warn!("không đọc được nhà cung cấp đang chọn: {err}");
-            return;
-        }
-    };
-    match runtime.registry().adapter(&active.config) {
-        Ok(adapter) => llm.set(adapter),
-        Err(err) => {
-            tracing::warn!("không dựng được adapter: {err}");
-            return;
-        }
+fn apply_llm(runtime: &ProviderRuntime, llm: &ActiveLlm, embedder: &ActiveEmbedder) {
+    // Hai vai, hai nhánh **độc lập**. Trước đây lỗi ở nhánh hội thoại `return` sớm và bộ
+    // nhúng không bao giờ được đặt — đúng ở thời điểm hai vai còn là một, và sai ngay khi
+    // chúng tách ra: một máy chủ hội thoại không nối được không nói gì về máy chủ nhúng.
+    match runtime.store().active(Role::Chat) {
+        Ok(Some(active)) => match runtime.registry().adapter(&active.config) {
+            Ok(adapter) => llm.set(adapter),
+            Err(err) => tracing::warn!("không dựng được adapter hội thoại: {err}"),
+        },
+        Ok(None) => tracing::warn!("chưa có nhà cung cấp nào giữ vai hội thoại"),
+        Err(err) => tracing::warn!("không đọc được nhà cung cấp hội thoại: {err}"),
     }
-    embedder.set(Some(build_embedder(&active.config, config)));
-}
 
-/// Bộ nhúng cho một provider.
-///
-/// Mô hình nhúng **khác** mô hình hội thoại, và tên mặc định của nó khác nhau theo từng
-/// nhà cung cấp — nên nó không dùng chung `config.model`. `PAI_EMBED_MODEL` đè lên cả hai
-/// nhánh, vì người đặt biến đó biết rõ họ đang muốn gì.
-fn build_embedder(provider: &pai_llm::ProviderConfig, config: &Config) -> Arc<dyn Embedder> {
-    match provider.kind {
-        ProviderKind::Ollama => {
-            let model = config
-                .embed_model
-                .clone()
-                .unwrap_or_else(|| "nomic-embed-text".to_string());
-            Arc::new(OllamaEmbedder::new(&provider.base_url, model))
-        }
-        ProviderKind::OpenAiCompatible => {
-            let model = config
-                .embed_model
-                .clone()
-                .unwrap_or_else(|| "text-embedding-3-small".to_string());
-            Arc::new(OpenAiEmbedder::new(
-                &provider.base_url,
-                model,
-                provider.api_key.clone(),
-            ))
-        }
+    match runtime.embedder() {
+        // `None` là hợp lệ và phải được **đặt thật**, không phải bỏ qua: gỡ vai nhúng mà
+        // không đặt lại nghĩa là bộ nhúng cũ còn nằm đó, và tài liệu tiếp tục được gửi tới
+        // đúng chỗ người dùng vừa gỡ. Thư viện lùi về FTS5 và `LibraryStats::reason` nói
+        // ra vì sao — đó là hành vi đúng, không phải một trạng thái hỏng.
+        Ok(next) => embedder.set(next),
+        Err(err) => tracing::warn!("không đọc được nhà cung cấp giữ vai nhúng: {err}"),
     }
 }
 
@@ -733,7 +701,17 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
             )
             .with_model(config.model.clone()),
         )?;
-        providers.activate(seeded.id(), Some(&config.model))?;
+        providers.activate(Role::Chat, seeded.id(), Some(&config.model))?;
+        // Hàng gieo là Ollama trên **chính máy này**, nên trao luôn vai nhúng cho nó không
+        // gửi gì ra ngoài — và đó là mặc định đúng: người dùng nạp tài liệu lên trước khi
+        // họ kịp mở trang cài đặt, và một thư viện chỉ có từ khoá ngay từ đầu là một thư
+        // viện họ sẽ kết luận là không hoạt động. Kho cố ý không tự làm việc này vì nó
+        // không biết hàng nào là hàng gieo.
+        let embed_model = config
+            .embed_model
+            .clone()
+            .unwrap_or_else(|| pai_providers::DEFAULT_EMBEDDING_MODEL_OLLAMA.to_string());
+        providers.activate(Role::Embedding, seeded.id(), Some(&embed_model))?;
     }
 
     // Con trỏ tới provider đang hoạt động. Dựng **trước** vòng lặp plugin vì `subagent`
@@ -825,7 +803,7 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     if let Err(err) = runtime.apply_active().await {
         tracing::warn!("chưa dùng được nhà cung cấp nào: {err}");
     }
-    apply_llm(&runtime, &llm, &embedder, &config);
+    apply_llm(&runtime, &llm, &embedder);
     Ok(Harness {
         ctx: ctx.clone(),
         sessions: sessions.clone(),

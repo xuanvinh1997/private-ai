@@ -443,9 +443,53 @@ pub struct ProviderView {
     pub enabled: bool,
     /// Endpoint không rời loopback: dữ liệu không đi đâu cả, và giao diện nói ra điều đó.
     pub on_device: bool,
-    pub active: bool,
-    /// Mô hình đang chọn cho provider này.
+    /// Đang dùng để **trò chuyện**.
+    pub active_chat: bool,
+    /// Đang dùng để **nhúng tài liệu**.
+    ///
+    /// Hai vai tách hẳn nhau, và đó không phải một tuỳ chọn cho người thích nghịch: mô
+    /// hình nhúng và mô hình hội thoại là hai loại mô hình khác nhau, chạy trên hai
+    /// endpoint khác nhau, và cách ghép hợp lý nhất trong thực tế lại chính là ghép chéo —
+    /// nhúng bằng một mô hình nhỏ chạy tại chỗ (miễn phí, không gửi tài liệu đi đâu) trong
+    /// khi trò chuyện bằng một mô hình lớn từ xa. Buộc chúng dùng chung một provider là
+    /// loại bỏ đúng cấu hình mà phần lớn người dùng muốn.
+    pub active_embedding: bool,
+    /// Mô hình hội thoại đang chọn cho provider này.
     pub model: Option<String>,
+    /// Mô hình nhúng đang chọn cho provider này.
+    pub embedding_model: Option<String>,
+}
+
+/// Cấu hình nhúng đang có hiệu lực, gộp từ provider và mô hình.
+///
+/// Một kiểu riêng thay vì bắt giao diện tự ghép từ danh sách provider: câu hỏi "tài liệu
+/// của tôi đang được nhúng bằng cái gì, và nó có chạy không" là một câu hỏi, và trả lời nó
+/// bằng cách bắt người đọc tự lọc một danh sách là bắt họ làm việc của máy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingSetting {
+    pub provider_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub model: Option<String>,
+    /// Tài liệu không rời khỏi máy này khi nhúng.
+    pub on_device: bool,
+    /// Câu tiếng Việt nói vì sao chưa dùng được, khi chưa dùng được.
+    pub reason: Option<String>,
+}
+
+/// Kết quả thử **nhúng thật một câu**, không phải liệt kê mô hình.
+///
+/// Liệt kê mô hình không trả lời được câu hỏi thật: `/api/tags` của Ollama trả về mọi mô
+/// hình, và không có gì trong đó nói mô hình nào nhúng được. Cách duy nhất biết chắc là
+/// gửi một câu đi và xem có vector trả về không — nên phép thử này làm đúng thế, và báo
+/// lại số chiều.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EmbeddingProbe {
+    pub ok: bool,
+    pub message: String,
+    /// Số chiều đo được từ vector thật trả về.
+    pub dimensions: Option<usize>,
 }
 
 /// Một mục dựng sẵn trong danh mục provider.
@@ -580,6 +624,7 @@ pub struct ProviderInputWire {
     pub api_key: Option<String>,
     pub enabled: bool,
     pub model: Option<String>,
+    pub embedding_model: Option<String>,
 }
 
 /// Một server MCP gửi lên từ giao diện.

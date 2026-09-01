@@ -225,33 +225,6 @@ export interface Project {
   origin: string | null;
 }
 
-/**
- * Một mục trong cây tệp.
- *
- * `children` **vắng mặt** nghĩa là chưa nạp, `[]` nghĩa là thư mục rỗng. Hai thứ đó khác
- * nhau: gộp lại thì một thư mục chưa mở và một thư mục không có gì trông giống hệt nhau,
- * và cây sẽ không bao giờ nạp cấp tiếp theo.
- */
-export interface TreeEntry {
-  path: string;
-  name: string;
-  isDir: boolean;
-  children?: TreeEntry[];
-}
-
-/**
- * Nội dung một tệp để xem.
- *
- * `truncated` là một phần của hợp đồng chứ không phải chi tiết cài đặt: một tệp bị cắt
- * mà không nói ra thì người đọc kết luận "hết rồi" ở đúng chỗ lõi ngừng đọc.
- */
-export interface FileView {
-  text: string;
-  lang: string | null;
-  totalLines: number;
-  truncated: boolean;
-}
-
 /* ─────────────────────────────────────────────────────────────────────────────
  * Dự án hai loại, thư viện tài liệu, provider, và MCP.
  *
@@ -343,8 +316,46 @@ export interface Provider {
   hasKey: boolean;
   enabled: boolean;
   onDevice: boolean;
-  active: boolean;
+  /** Đang dùng để **trò chuyện**. */
+  activeChat: boolean;
+  /**
+   * Đang dùng để **nhúng tài liệu**.
+   *
+   * Hai vai tách hẳn nhau, và không phải để cho có: mô hình nhúng và mô hình hội thoại là
+   * hai loại mô hình khác nhau trên hai endpoint khác nhau, và cách ghép hợp lý nhất
+   * trong thực tế lại là ghép chéo — nhúng bằng một mô hình nhỏ chạy tại chỗ, trò chuyện
+   * bằng một mô hình lớn từ xa. Buộc chúng dùng chung một provider là loại bỏ đúng cấu
+   * hình mà phần lớn người dùng muốn.
+   */
+  activeEmbedding: boolean;
+  /** Mô hình hội thoại. */
   model: string | null;
+  /** Mô hình nhúng. */
+  embeddingModel: string | null;
+}
+
+/** Cấu hình nhúng đang có hiệu lực. */
+export interface EmbeddingSetting {
+  providerId: string | null;
+  providerName: string | null;
+  model: string | null;
+  /** Tài liệu không rời khỏi máy này khi nhúng. */
+  onDevice: boolean;
+  reason: string | null;
+}
+
+/**
+ * Kết quả thử **nhúng thật một câu**.
+ *
+ * Không phải một phép liệt kê mô hình: `/api/tags` trả về mọi mô hình và không có gì
+ * trong đó nói cái nào nhúng được. Cách duy nhất biết chắc là gửi một câu đi và xem có
+ * vector trả về không.
+ */
+export interface EmbeddingProbe {
+  ok: boolean;
+  message: string;
+  /** Số chiều đo được từ vector thật. */
+  dimensions: number | null;
 }
 
 export interface ProviderPreset {
@@ -368,6 +379,7 @@ export interface ProviderInput {
   apiKey: string | null;
   enabled: boolean;
   model: string | null;
+  embeddingModel: string | null;
 }
 
 export interface ProviderProbe {

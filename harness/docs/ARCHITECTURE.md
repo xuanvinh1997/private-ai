@@ -103,6 +103,61 @@ Loại là thuộc tính của **hàng trong kho**, không phải của thư m�
 `touch` giữ nguyên loại; chỉ `create` mới đặt nó. Nếu mở lại mà loại đổi được thì tập tool
 sẽ đổi dưới chân người dùng vì một lý do họ không nhìn thấy.
 
+## Hai vai mô hình, không phải một
+
+Mô hình **hội thoại** và mô hình **nhúng** được chọn riêng, trên cùng một danh sách nhà
+cung cấp. Kho provider giữ hai con trỏ — `Role::Chat` và `Role::Embedding` — chứ không
+giữ một hàng "đang hoạt động".
+
+Lý do không phải là tính linh hoạt cho vui. Ghép chéo mới là cấu hình thường gặp nhất:
+nhúng bằng một mô hình nhỏ **chạy tại chỗ** — miễn phí, và tài liệu không rời khỏi máy —
+trong khi trò chuyện bằng một mô hình lớn từ xa. Buộc hai vai dùng chung một provider là
+loại bỏ đúng cấu hình mà phần lớn người dùng muốn, và làm nó theo cách im lặng: người
+dùng chọn OpenAI để trò chuyện, rồi hợp đồng và hồ sơ họ vừa nạp lên cũng đi theo sang đó
+để nhúng, mà không có gì trên màn hình nói ra.
+
+Hai hệ quả phải nhớ:
+
+- **Không mượn mô hình của vai kia.** Provider giữ vai nhúng mà chưa chọn mô hình nhúng
+  thì trả `None`, không lùi về `model` của vai hội thoại — `qwen3:8b` không có endpoint
+  embed, và nó sẽ trả 400 ở *mọi* lần nạp tài liệu.
+- **Thử nhúng là nhúng thật.** `/api/tags` của Ollama trả về mọi mô hình và không có gì
+  trong đó nói cái nào nhúng được. Phép thử gửi một câu đi và đo số chiều vector trả về;
+  một danh sách đẹp thì vẫn để người dùng chọn nhầm rồi ngồi nhìn mọi lần nạp thất bại.
+
+Đổi mô hình nhúng làm **bỏ toàn bộ vector cũ** — vector của hai mô hình nằm ở hai không
+gian, và cosine giữa chúng cho ra một con số vô nghĩa trông y hệt một con số có nghĩa.
+`pai-rag` lưu danh tính bộ nhúng trong bảng `meta` và tự dọn khi nó đổi; `LibraryStats`
+nói ra rằng thư viện đang nhúng lại, kèm tiến độ, và rằng tìm bằng từ khoá vẫn chạy.
+
+## Bố cục: ChatGPT và Codex, cộng đúng một thứ
+
+Vỏ giao diện lấy khung của **ChatGPT và Codex**. Bản gộp có thật và đã ship: Codex nhập
+vào ứng dụng ChatGPT trên máy tính ngày **09/07/2026** (tháng 3 chỉ là công bố), giữ một
+khu làm việc riêng bên cạnh Chat. Bộ chọn mô hình chuyển **xuống composer** từ 28/04/2026,
+mang theo cả mức "thinking effort".
+
+Ở đây: một sidebar trái thu gọn được thay cho icon rail; cột hội thoại căn giữa theo
+`--reading-measure`; bộ chọn mô hình nằm trong ô soạn tin.
+
+Hai chỗ **cố ý không** sao chép:
+
+- **Sidebar không tự bung và không tự mờ.** ChatGPT có, và đó cũng là thứ người dùng than
+  phiền nhiều nhất về nó suốt 07–08/2026 — thanh bên bung ra mỗi lần con trỏ chạm mép
+  trái. Ở đây nó thu gọn bằng tay và nhớ lựa chọn đó.
+- **Phạm vi tool không giấu sau nút `+`.** Chọn "chạy lệnh" là cấp quyền thi hành lệnh
+  trên máy này; một quyền đang mở phải đọc được mà không phải bấm vào đâu.
+
+Thứ duy nhất thêm vào so với khung ấy là **quản lý nhà cung cấp mô hình** — lý do tồn tại
+của bản này: chạy được nhiều loại mô hình, kể cả mô hình chạy tại chỗ.
+
+Và thứ bị bỏ đi, vì nó không thuộc khung ấy: **màn hình duyệt mã nguồn**. Người dùng đã có
+editor riêng, và một cây tệp cộng một trình xem tệp bên trong một ứng dụng trò chuyện là
+một editor tệ hơn editor họ đang mở ở cửa sổ bên cạnh. Đồ thị mã nguồn cũng rời khỏi thanh
+điều hướng nhưng **không** bị bỏ: nó vẫn là tool của mô hình, chỗ nó thật sự có ích, vì nó
+trả lời câu hỏi "ai gọi hàm này" trước một lần sửa — một câu hỏi mô hình hỏi, không phải
+câu hỏi người dùng ngồi nhìn.
+
 ## Cây crate
 
 ```

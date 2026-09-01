@@ -1,13 +1,26 @@
-import type { ModelChoice, Provider, ProviderInput, ProviderPreset, ProviderProbe } from "../protocol";
+import type {
+  EmbeddingProbe,
+  EmbeddingSetting,
+  ModelChoice,
+  Provider,
+  ProviderInput,
+  ProviderPreset,
+  ProviderProbe,
+} from "../protocol";
 
 /**
  * Provider giả cho `?demo=1`.
  *
- * Bộ mẫu được chọn theo *trạng thái khó*, không theo "trông giống thật": một provider
- * chạy tại chỗ đang hoạt động, một provider từ xa đã có khoá, một provider đang tắt, một
- * provider từ xa **chưa** có khoá, và một danh sách mô hình có mục `tools: false`. Trạng
- * thái không nằm trong bộ mẫu là trạng thái chưa ai nhìn thấy bao giờ — nó chỉ xuất hiện
- * lần đầu trên máy người dùng, và ở đó thì không ai đang nhìn.
+ * Bộ mẫu được chọn theo *trạng thái khó*, không theo "trông giống thật": một provider từ
+ * xa đã có khoá đang giữ vai hội thoại, một provider chạy tại chỗ đang giữ vai nhúng,
+ * một provider đang tắt, một provider từ xa **chưa** có khoá, và một danh sách mô hình có
+ * mục `tools: false`. Trạng thái không nằm trong bộ mẫu là trạng thái chưa ai nhìn thấy
+ * bao giờ — nó chỉ xuất hiện lần đầu trên máy người dùng, và ở đó thì không ai đang nhìn.
+ *
+ * **Cấu hình ghép chéo là mặc định của bộ mẫu**, không phải một nhánh phụ: nhúng bằng
+ * một mô hình nhỏ tại chỗ (tài liệu không rời khỏi máy) trong khi trò chuyện bằng một mô
+ * hình lớn từ xa là đúng cấu hình mà việc tách hai vai tồn tại để phục vụ. Bộ mẫu mở ra ở
+ * trạng thái nào thì đó là trạng thái người ta tin là bình thường.
  *
  * Kho là một mảng **có thể sửa**, không phải một hằng số trả về bản sao mới mỗi lần. Một
  * trang demo mà bấm bật/tắt xong không có gì đổi thì không dựng lại được cái vòng thật:
@@ -26,8 +39,10 @@ function seed(): Provider[] {
       hasKey: false,
       enabled: true,
       onDevice: true,
-      active: true,
+      activeChat: false,
+      activeEmbedding: true,
       model: "qwen2.5-coder:14b",
+      embeddingModel: "nomic-embed-text",
     },
     {
       id: "pv-openai",
@@ -37,8 +52,12 @@ function seed(): Provider[] {
       hasKey: true,
       enabled: true,
       onDevice: false,
-      active: false,
+      activeChat: true,
+      activeEmbedding: false,
       model: "gpt-4o-mini",
+      // Có mô hình nhúng đã lưu mà **không** giữ vai nhúng: đúng cái phân biệt mà biểu
+      // mẫu provider phải nói ra được — ô này chỉ là "dùng cái gì *nếu* được giao vai".
+      embeddingModel: "text-embedding-3-small",
     },
     {
       id: "pv-lmstudio",
@@ -48,8 +67,10 @@ function seed(): Provider[] {
       hasKey: false,
       enabled: false,
       onDevice: true,
-      active: false,
+      activeChat: false,
+      activeEmbedding: false,
       model: null,
+      embeddingModel: null,
     },
     // Từ xa mà chưa có khoá: hàng duy nhất mà biểu mẫu phải mở ra với ô khoá *trống*
     // thay vì mở ra với chữ "đã đặt". Không có nó thì nhánh đó không bao giờ được nhìn.
@@ -61,8 +82,10 @@ function seed(): Provider[] {
       hasKey: false,
       enabled: true,
       onDevice: false,
-      active: false,
+      activeChat: false,
+      activeEmbedding: false,
       model: null,
+      embeddingModel: null,
     },
   ];
 }
@@ -104,7 +127,7 @@ function probed(models: ModelChoice[]): ModelChoice[] {
  * false` phải có mặt ở đây chứ không phải ở kết quả thử.
  */
 export function demoActiveModels(): ModelChoice[] {
-  const entry = all().find((provider) => provider.active) ?? null;
+  const entry = all().find((provider) => provider.activeChat) ?? null;
   if (entry === null || !entry.enabled) return [];
   return entry.kind === "ollama" ? [...OLLAMA_MODELS] : [...OPENAI_MODELS];
 }
@@ -179,8 +202,12 @@ export function demoSaveProvider(input: ProviderInput): Provider {
     hasKey: input.apiKey === null ? (previous?.hasKey ?? false) : input.apiKey.trim() !== "",
     enabled: input.enabled,
     onDevice,
-    active: previous?.active ?? false,
+    // Hai vai do `set_active_provider` và `set_embedding` đặt, không do biểu mẫu. Lưu một
+    // provider mà vô tình đổi vai của nó là kiểu hỏng không ai đọc ra từ màn hình.
+    activeChat: previous?.activeChat ?? false,
+    activeEmbedding: previous?.activeEmbedding ?? false,
     model: input.model,
+    embeddingModel: input.embeddingModel,
   };
 
   if (at < 0) list.push(saved);
@@ -192,13 +219,108 @@ export function demoRemoveProvider(id: string): void {
   store = all().filter((entry) => entry.id !== id);
 }
 
+/** Chỉ đặt vai **hội thoại**. Vai nhúng đi qua `demoSetEmbedding`. */
 export function demoSetActiveProvider(id: string): void {
-  for (const entry of all()) entry.active = entry.id === id;
+  for (const entry of all()) entry.activeChat = entry.id === id;
 }
 
 export function demoSetProviderModel(id: string, model: string): void {
   const hit = all().find((entry) => entry.id === id);
   if (hit) hit.model = model;
+}
+
+/**
+ * Số chiều thật của vài mô hình nhúng hay gặp.
+ *
+ * Có mặt ở đây để bộ mẫu **không** trả về một con số tròn trịa bịa ra: màn hình khoe con
+ * số này như bằng chứng "đã nhúng thật một câu", và một bằng chứng giả trong demo dạy
+ * người đọc mã tin vào một thứ lõi không hứa.
+ */
+const EMBEDDING_DIMS: Record<string, number> = {
+  "nomic-embed-text": 768,
+  "mxbai-embed-large": 1024,
+  "bge-m3": 1024,
+  "all-minilm": 384,
+  "text-embedding-3-small": 1536,
+  "text-embedding-3-large": 3072,
+};
+
+export function demoEmbeddingSetting(): EmbeddingSetting {
+  const entry = all().find((provider) => provider.activeEmbedding) ?? null;
+  if (entry === null) {
+    return {
+      providerId: null,
+      providerName: null,
+      model: null,
+      onDevice: false,
+      reason: "Chưa giao vai nhúng cho provider nào.",
+    };
+  }
+  const base = {
+    providerId: entry.id,
+    providerName: entry.name,
+    model: entry.embeddingModel,
+    onDevice: entry.onDevice,
+  };
+  // `reason` là *lý do cấu hình chưa dùng được*, không phải một ghi chú chung. Cả ba
+  // nhánh dưới đây đều cho ra một cấu hình có tên nhưng không nhúng được câu nào.
+  if (!entry.enabled) return { ...base, reason: `${entry.name} đang bị tắt.` };
+  if (entry.embeddingModel === null) {
+    return { ...base, reason: `Chưa chọn mô hình nhúng cho ${entry.name}.` };
+  }
+  return { ...base, reason: null };
+}
+
+export function demoSetEmbedding(providerId: string, model: string): void {
+  for (const entry of all()) {
+    entry.activeEmbedding = entry.id === providerId;
+    if (entry.id === providerId) entry.embeddingModel = model;
+  }
+}
+
+/**
+ * Thử **nhúng thật một câu**.
+ *
+ * Trạng thái đáng giá nhất trong bộ mẫu là nhánh cuối: một mô hình hội thoại được gõ
+ * nhầm vào ô mô hình nhúng. `/api/tags` liệt kê nó y hệt mọi mô hình khác, nên chỉ có
+ * gửi một câu đi mới lộ ra, và đó chính là lý do nút thử này tồn tại.
+ */
+export function demoProbeEmbedding(providerId: string, model: string): EmbeddingProbe {
+  const entry = all().find((provider) => provider.id === providerId) ?? null;
+  if (entry === null) {
+    return { ok: false, message: "Không tìm thấy provider này nữa.", dimensions: null };
+  }
+  if (!entry.enabled) {
+    return {
+      ok: false,
+      message: `${entry.name} đang bị tắt, nên không gọi thử được.`,
+      dimensions: null,
+    };
+  }
+  const name = model.trim();
+  if (name === "") {
+    return { ok: false, message: "Chưa điền tên mô hình nhúng.", dimensions: null };
+  }
+  if (entry.baseUrl.includes(":8000")) {
+    return {
+      ok: false,
+      message: `Không nối được tới ${entry.baseUrl}: connection refused sau 5,0 giây.`,
+      dimensions: null,
+    };
+  }
+  const dims = EMBEDDING_DIMS[name];
+  if (dims === undefined) {
+    return {
+      ok: false,
+      message: `Máy chủ nhận ra "${name}" nhưng không trả về vector nào — đây không phải mô hình nhúng. Danh sách mô hình vẫn liệt kê nó, vì danh sách đó không nói mô hình nào nhúng được.`,
+      dimensions: null,
+    };
+  }
+  return {
+    ok: true,
+    message: `Đã nhúng thử một câu bằng "${name}" và nhận về một vector.`,
+    dimensions: dims,
+  };
 }
 
 export function demoProviderPresets(): ProviderPreset[] {

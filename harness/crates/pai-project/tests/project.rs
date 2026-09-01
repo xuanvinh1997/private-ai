@@ -1,8 +1,6 @@
 //! Danh tính dự án, và cây tệp.
 
-use std::path::Path;
-
-use pai_project::{ProjectKind, ProjectStore, SqliteProjectStore, list_tree, read_file};
+use pai_project::{ProjectKind, ProjectStore, SqliteProjectStore};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
@@ -62,71 +60,6 @@ fn duong_khong_phai_thu_muc_bi_tu_choi() {
     std::fs::write(&file, "x").expect("ghi tệp");
     assert!(store().touch(&file).is_err());
     assert!(store().touch(&dir.path().join("khong-co")).is_err());
-}
-
-#[test]
-fn cay_ton_trong_gitignore_va_sap_thu_muc_truoc() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let root = dir.path().canonicalize().expect("phân giải");
-    std::fs::write(root.join(".gitignore"), "target/\n").expect("ghi");
-    std::fs::create_dir_all(root.join("target")).expect("tạo");
-    std::fs::create_dir_all(root.join("src")).expect("tạo");
-    std::fs::write(root.join("a.rs"), "fn main() {}").expect("ghi");
-
-    let names: Vec<String> = list_tree(&root, None, 1)
-        .expect("đọc được")
-        .into_iter()
-        .map(|e| e.name)
-        .collect();
-
-    assert!(
-        !names.contains(&"target".to_string()),
-        "`target/` lọt qua .gitignore: {names:?}"
-    );
-    // Thư mục trước rồi tới tệp — thứ tự mọi trình duyệt tệp dùng.
-    assert_eq!(names.first().map(String::as_str), Some("src"));
-    assert!(names.contains(&"a.rs".to_string()));
-}
-
-#[test]
-fn cay_mac_dinh_chi_mot_cap() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let root = dir.path().canonicalize().expect("phân giải");
-    std::fs::create_dir_all(root.join("src/sau")).expect("tạo");
-
-    let one = list_tree(&root, None, 1).expect("đọc được");
-    // `None` nghĩa là "chưa nạp", khác hẳn `Some(vec![])` nghĩa là "thư mục trống".
-    assert!(one[0].children.is_none());
-    let two = list_tree(&root, None, 2).expect("đọc được");
-    assert!(two[0].children.is_some());
-}
-
-#[test]
-fn khong_doc_duoc_tep_ngoai_du_an() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let outside = TempDir::new().expect("thư mục tạm");
-    let secret = outside.path().join("bi-mat.txt");
-    std::fs::write(&secret, "không được").expect("ghi");
-
-    assert!(read_file(dir.path(), &secret).is_err());
-    assert!(read_file(dir.path(), Path::new("/etc/hosts")).is_err());
-}
-
-#[test]
-fn tep_qua_dai_bi_cat_va_noi_ra() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let root = dir.path().canonicalize().expect("phân giải");
-    let file = root.join("dai.txt");
-    let content: String = (0..25_000).map(|n| format!("dòng {n}\n")).collect();
-    std::fs::write(&file, &content).expect("ghi");
-
-    let view = read_file(&root, &file).expect("đọc được");
-    assert!(view.truncated);
-    // Số dòng thật vẫn báo đủ: cắt để không dựng một triệu phần tử DOM, không phải để
-    // nói dối về kích thước tệp.
-    assert_eq!(view.total_lines, 25_000);
-    assert!(view.text.lines().count() <= 20_000);
-    assert_eq!(view.lang.as_deref(), Some("txt"));
 }
 
 /// Cơ sở dữ liệu của người dùng đang chạy không có hai cột mới. Nó phải sống sót.

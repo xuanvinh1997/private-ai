@@ -120,7 +120,7 @@ impl ActiveEmbedder {
         self.inner.store(next.map(Arc::new));
     }
 
-    fn current(&self) -> Option<Arc<dyn pai_rag::Embedder>> {
+    pub fn current(&self) -> Option<Arc<dyn pai_rag::Embedder>> {
         self.inner.load_full().map(|item| Arc::clone(item.as_ref()))
     }
 }

@@ -3,26 +3,38 @@ import { inTauri, listModels } from "./agent";
 import { isDemo } from "./demo";
 import {
   demoActiveModels,
+  demoEmbeddingSetting,
+  demoProbeEmbedding,
   demoProbeProvider,
   demoProviderPresets,
   demoProviders,
   demoRemoveProvider,
   demoSaveProvider,
   demoSetActiveProvider,
+  demoSetEmbedding,
   demoSetProviderModel,
 } from "./fixtures/providers";
-import type { ModelChoice, Provider, ProviderInput, ProviderPreset, ProviderProbe } from "./protocol";
+import type {
+  EmbeddingProbe,
+  EmbeddingSetting,
+  ModelChoice,
+  Provider,
+  ProviderInput,
+  ProviderPreset,
+  ProviderProbe,
+} from "./protocol";
 
 /**
- * Bảy lệnh provider, chia hai nhóm theo cách xử lý lỗi — cùng ranh giới với `projects.ts`:
- * "người dùng có đang đứng chờ một thứ hiện lên không".
+ * Mười lệnh provider, chia hai nhóm theo cách xử lý lỗi — cùng ranh giới với
+ * `projects.ts`: "người dùng có đang đứng chờ một thứ hiện lên không".
  *
- *   - `listProviders`, `providerPresets`, `loadModels` chạy lúc mở màn hình. Chúng nuốt
- *     lỗi và trả rỗng: một hộp lỗi ở đó chặn mất lối vào trang cài đặt, mà trang cài đặt
- *     lại đúng là chỗ người dùng đi tới để *sửa* cái đang hỏng.
+ *   - `listProviders`, `providerPresets`, `loadModels`, `embeddingSetting` chạy lúc mở
+ *     màn hình. Chúng nuốt lỗi và trả mặc định: một hộp lỗi ở đó chặn mất lối vào trang
+ *     cài đặt, mà trang cài đặt lại đúng là chỗ người dùng đi tới để *sửa* cái đang hỏng.
  *   - `saveProvider`, `removeProvider`, `setActiveProvider`, `setProviderModel`,
- *     `probeProvider` **ném ra ngoài**. Cả năm đều đi sau một cú bấm, và im lặng ở đó
- *     không phân biệt được với "đang chậm" — người dùng sẽ bấm lần hai.
+ *     `setEmbedding`, `probeProvider`, `probeEmbedding` **ném ra ngoài**. Cả bảy đều đi
+ *     sau một cú bấm, và im lặng ở đó không phân biệt được với "đang chậm" — người dùng
+ *     sẽ bấm lần hai.
  *
  * Chế độ `?demo=1` rẽ nhánh ở đây chứ không ở component: màn hình không cần biết dữ liệu
  * của nó đến từ lõi hay từ một mảng trong bộ nhớ, và mỗi chỗ rẽ nhánh trong component là
@@ -69,7 +81,13 @@ export function removeProvider(id: string): Promise<void> {
   return invoke("remove_provider", { id });
 }
 
-/** Chọn provider sẽ chạy lượt tiếp theo. Chỉ một cái hoạt động tại một thời điểm. */
+/**
+ * Chọn provider sẽ chạy lượt **hội thoại** tiếp theo. Chỉ một cái giữ vai này.
+ *
+ * Không đụng tới vai nhúng: tài liệu vẫn đi tới provider đã chọn ở màn hình mô hình
+ * nhúng. Đổi mô hình trò chuyện mà kéo theo cả chỗ tài liệu được gửi tới là một thay đổi
+ * về quyền riêng tư xảy ra sau lưng người dùng.
+ */
 export function setActiveProvider(id: string): Promise<void> {
   if (isDemo()) return Promise.resolve(demoSetActiveProvider(id));
   return invoke("set_active_provider", { id });
@@ -113,6 +131,60 @@ export async function activeModels(): Promise<ModelChoice[]> {
   return await listModels();
 }
 
+/**
+ * Cấu hình nhúng **đang có hiệu lực**.
+ *
+ * Đọc riêng chứ không suy ra từ `listProviders()`: chỉ lõi mới biết một cấu hình có tên
+ * đầy đủ vẫn không dùng được (provider bị tắt, mô hình chưa chọn), và nó nói ra điều đó
+ * trong `reason`. Suy lại ở phía này là dựng một bản luật thứ hai sẽ lệch sau lần sửa lõi
+ * đầu tiên.
+ *
+ * Nuốt lỗi: chạy lúc mở màn hình, và "chưa cấu hình" là một trạng thái hợp lệ chứ không
+ * phải một hỏng hóc — thư viện tài liệu khi đó vẫn tìm được bằng từ khoá.
+ */
+export async function embeddingSetting(): Promise<EmbeddingSetting> {
+  const none: EmbeddingSetting = {
+    providerId: null,
+    providerName: null,
+    model: null,
+    onDevice: false,
+    reason: null,
+  };
+  if (isDemo()) return demoEmbeddingSetting();
+  if (!inTauri()) return none;
+  try {
+    return await invoke<EmbeddingSetting>("embedding_setting");
+  } catch (err) {
+    console.error("không đọc được cấu hình nhúng", err);
+    return none;
+  }
+}
+
+/**
+ * Giao vai nhúng cho một provider và chốt mô hình nhúng của nó.
+ *
+ * Lệnh này **làm lõi bỏ toàn bộ vector cũ và nhúng lại cả thư viện** khi mô hình đổi:
+ * vector của hai mô hình nằm ở hai không gian khác nhau, và so sánh chúng cho ra một con
+ * số vô nghĩa trông y hệt một con số có nghĩa. Nơi gọi phải hỏi xác nhận trước.
+ */
+export function setEmbedding(providerId: string, model: string): Promise<void> {
+  if (isDemo()) return Promise.resolve(demoSetEmbedding(providerId, model));
+  return invoke("set_embedding", { providerId, model });
+}
+
+/**
+ * Thử nhúng **thật một câu** và đo số chiều của vector trả về.
+ *
+ * Khác hẳn `probeProvider`, và khác ở đúng chỗ quan trọng: `/api/tags` của Ollama trả về
+ * mọi mô hình và không có gì trong đó nói cái nào nhúng được, nên một danh sách "nối
+ * được" không chứng minh gì cả. Chỉ khi một câu đi qua và một vector quay về thì mới biết
+ * chắc — và số chiều là bằng chứng của việc đó.
+ */
+export function probeEmbedding(providerId: string, model: string): Promise<EmbeddingProbe> {
+  if (isDemo()) return Promise.resolve(demoProbeEmbedding(providerId, model));
+  return invoke<EmbeddingProbe>("probe_embedding", { providerId, model });
+}
+
 /** `ProviderInput` để thử/đọc mô hình của một provider đã lưu, giữ nguyên khoá của nó. */
 export function inputOf(provider: Provider): ProviderInput {
   return {
@@ -123,5 +195,17 @@ export function inputOf(provider: Provider): ProviderInput {
     apiKey: null,
     enabled: provider.enabled,
     model: provider.model,
+    embeddingModel: provider.embeddingModel,
   };
+}
+
+/**
+ * Mô hình nhúng gợi ý theo loại provider.
+ *
+ * Là **giá trị điền sẵn sửa được**, không phải một lựa chọn đã chốt: người dùng có thể đã
+ * kéo về `mxbai-embed-large` hay `bge-m3`, và một ô chỉ cho chọn trong hai cái tên dưới
+ * đây là một ô nói rằng máy của họ chỉ có hai mô hình.
+ */
+export function suggestedEmbeddingModel(kind: Provider["kind"]): string {
+  return kind === "ollama" ? "nomic-embed-text" : "text-embedding-3-small";
 }

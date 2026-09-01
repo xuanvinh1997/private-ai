@@ -99,13 +99,20 @@ export function TextField(props: {
   disabled?: boolean;
   invalid?: boolean;
   autocomplete?: string;
+  /**
+   * Giấu nhãn **khỏi mắt**, không khỏi trình đọc màn hình.
+   *
+   * Dùng khi ô nằm trong một `<Row>` đã mang nhãn ở cột trái: vẽ nhãn lần thứ hai thì
+   * hàng cao gấp đôi, còn bỏ hẳn `<label>` thì ô mất tên với người dùng bàn phím.
+   */
+  hideLabel?: boolean;
   ref?: (el: HTMLInputElement) => void;
 }) {
   const id = createUniqueId();
   const hintId = createUniqueId();
   return (
     <div class="flex min-w-0 flex-col gap-2xs">
-      <label for={id} class="text-2xs text-faint">
+      <label for={id} class={props.hideLabel === true ? "sr-only" : "text-2xs text-faint"}>
         {props.label}
       </label>
       <input
@@ -242,6 +249,111 @@ export function PillChoice<T extends string>(props: {
         {(hint) => <p class="m-0 text-2xs text-faint">{hint()}</p>}
       </Show>
     </div>
+  );
+}
+
+/**
+ * Danh sách cài đặt **gọn** — hình dạng của hộp thoại Cài đặt trong ChatGPT.
+ *
+ * Ở đó mỗi mục là một hàng chứ không phải một thẻ: nhãn bên trái, điều khiển bên phải,
+ * một dòng mô tả nhỏ dưới nhãn khi cần, và các hàng chỉ ngăn nhau bằng một nét chỉ. Ta
+ * theo hình dạng đó vì cùng một lý do họ chọn nó: trang cài đặt là một danh sách *dài*
+ * gồm nhiều thứ không liên quan nhau, và đóng khung mỗi thứ vào một thẻ riêng làm mắt
+ * phải nhảy qua bốn cạnh viền trước mỗi lần đọc một nhãn.
+ *
+ * Không tự dựng khung cuộn ở đây: khung cuộn là của trang cha. Một vùng cuộn lồng trong
+ * một vùng cuộn là hai thanh cuộn, và người dùng luôn lăn nhầm cái ngoài.
+ */
+export function RowGroup(props: { children: JSX.Element }) {
+  return (
+    <div class="flex flex-col divide-y divide-line overflow-hidden rounded-card border border-line bg-surface">
+      {props.children}
+    </div>
+  );
+}
+
+/**
+ * Một hàng cài đặt.
+ *
+ * `control` và `below` khai là **hàm** vì chúng chứa JSX: Solid biên dịch prop thành
+ * getter, và một prop JSX bị đọc hai lần dựng ra hai bản DOM chồng lên nhau.
+ */
+export function Row(props: {
+  label: string;
+  desc?: string;
+  /** Tên server MCP là một định danh — nó xuất hiện nguyên văn trong tiền tố tên tool. */
+  labelMono?: boolean;
+  /** Chấm trạng thái hoặc biểu tượng đứng trước nhãn. */
+  lead?: () => JSX.Element;
+  /** Điều khiển ở cột phải — công tắc, nút, ô chọn. */
+  control?: () => JSX.Element;
+  /** Phần bung ra dưới hàng: cảnh báo, danh sách, chi tiết của chính hàng đó. */
+  below?: () => JSX.Element;
+  /** Hàng mờ đi khi mục của nó đang tắt, nhưng vẫn phải đọc được để bật lại. */
+  dim?: boolean;
+}) {
+  return (
+    <div
+      class="flex flex-col gap-2xs px-(--card-pad-x) py-sm transition-colors duration-[var(--dur-fast)]"
+      classList={{ "opacity-70": props.dim === true }}
+    >
+      <div class="flex flex-wrap items-center gap-md">
+        <Show when={props.lead}>{(render) => <>{render()()}</>}</Show>
+        <div class="flex min-w-0 flex-1 flex-col gap-3xs">
+          <span
+            class="min-w-0 text-xs font-medium text-ink"
+            classList={{ "font-mono": props.labelMono === true }}
+          >
+            {props.label}
+          </span>
+          <Show when={props.desc}>
+            {(desc) => <p class="m-0 text-2xs text-muted">{desc()}</p>}
+          </Show>
+        </div>
+        <Show when={props.control}>
+          {(render) => <div class="flex shrink-0 items-center gap-2xs">{render()()}</div>}
+        </Show>
+      </div>
+      <Show when={props.below}>{(render) => <>{render()()}</>}</Show>
+    </div>
+  );
+}
+
+/**
+ * Ô chọn một-trong-nhiều, cột phải của một hàng.
+ *
+ * `<select>` thật của trình duyệt chứ không phải một menu tự vẽ: danh sách mô hình dài
+ * tuỳ máy chủ, và một danh sách tự vẽ vừa phải tự lo cuộn, tự lo bàn phím, vừa phải tự
+ * lo cả việc đóng khi cuộn trang — ba thứ trình duyệt đã làm đúng sẵn.
+ */
+export function Select(props: {
+  label: string;
+  value: string;
+  options: { id: string; label: string }[];
+  onPick: (value: string) => void;
+  disabled?: boolean;
+  mono?: boolean;
+}) {
+  return (
+    <select
+      aria-label={props.label}
+      value={props.value}
+      disabled={props.disabled}
+      onChange={(event) => props.onPick(event.currentTarget.value)}
+      class="h-(--control-h) max-w-[280px] min-w-0 rounded-btn border border-line bg-bg px-sm text-xs text-text outline-none transition-colors duration-[var(--dur-fast)] focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+      classList={{ "font-mono": props.mono === true }}
+    >
+      {/* `selected` đặt trên từng `<option>` chứ không chỉ dựa vào `value` của `<select>`:
+          danh sách được dựng lại mỗi khi máy chủ trả về mô hình khác, và một `<select>`
+          được gán `value` trước lúc có `<option>` tương ứng sẽ tự rơi về mục đầu tiên. */}
+      <For each={props.options}>
+        {(option) => (
+          <option value={option.id} selected={option.id === props.value}>
+            {option.label}
+          </option>
+        )}
+      </For>
+    </select>
   );
 }
 

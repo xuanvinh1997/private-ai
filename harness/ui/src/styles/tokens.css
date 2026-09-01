@@ -50,24 +50,26 @@
   --dialog-pad-x: 24px; --dialog-pad-y: 20px; --dialog-gap: 12px;
   --toolbar-gap: 8px;
   --control-h: 32px; --badge-h: 26px; --cta-h: 38px;
-  --nav-h: 40px; --rail-h: 36px; --icon-btn: 30px;
+  --icon-btn: 30px;
 
-  --sidebar-w: 252px; --sidebar-w-collapsed: 64px;
-  --rail-w: 296px; --topbar-h: 80px;
-  --reading-measure: 720px; --rail-gutter: 30px;
-
-  /* Ba cột của vỏ mới. `--icon-rail-w` chỉ vừa đủ một nút 40px cộng lề: rail rộng hơn
-   * thì biểu tượng trôi ra khỏi trục dọc mà mắt đã quen. */
-  --icon-rail-w: 64px;
-  --session-col-w: 280px;
+  /* Một thanh bên duy nhất, đúng như ChatGPT/Codex: không còn icon rail nào đứng trước
+   * nó. 260px là bề rộng nhỏ nhất còn đọc trọn được một tiêu đề phiên hai chữ cộng dấu
+   * thời gian bên phải — hẹp hơn thì mọi hàng đều cắt, và một danh sách toàn dấu ba chấm
+   * không giúp chọn được gì. */
+  --sidebar-w: 260px;
   --changes-col-w: 300px;
-  /* Cây tệp rộng hơn cột phiên một chút: tên tệp thụt vào theo cấp, và ở cấp thứ tư một
-   * cột 280px chỉ còn chỗ cho vài ký tự đầu — tức là đúng phần không phân biệt được. */
+  /* Cây của màn hình đồ thị. Rộng hơn thanh bên vì tên ký hiệu thụt vào theo cấp. */
   --tree-col-w: 300px;
+  /* Cột đọc: ChatGPT giữ hội thoại ở khoảng 48rem và căn giữa. Trải hết bề rộng trên một
+   * màn hình 27" là ép mắt quét ngang 200 ký tự mỗi dòng. */
+  --reading-measure: 720px;
   --header-h: 56px;
   /* Chỗ cho ba nút giao thông của macOS: cửa sổ mở titleBarStyle "Overlay" nên chúng
    * nằm đè lên nội dung của ta, không phải trên một thanh tiêu đề riêng. */
   --titlebar-h: 34px;
+  /* Bề ngang ba nút đó. Thanh bên mở thì chúng nằm trên dải kéo của thanh bên; thanh bên
+   * thu lại thì thanh trên phải tự chừa chỗ, nếu không nút đóng cửa sổ đè lên tiêu đề. */
+  --traffic-lights-w: 78px;
   --avatar: 28px;
 
   /* Chuyển động: một thang ba bậc, không ai được tự đặt số ngoài thang này. */
@@ -83,20 +85,6 @@
   --overlay-faint: color-mix(in srgb, var(--ink) 3.5%, transparent);
   --glass: color-mix(in srgb, var(--surface) 82%, transparent);
   --scroll-thumb: var(--line-strong);
-
-  /* Bốn vai trò cú pháp, không phải một bảng màu thứ hai.
-   *
-   * Mỗi vai trò trỏ vào một token đã kiểm tương phản sẵn, nên bộ tô tự đúng ở cả hai
-   * theme mà không ai phải chọn thêm mã màu nào. Bốn là số vai trò tối đa còn phân biệt
-   * được bằng mắt ở cỡ chữ 12px; vai trò thứ năm chỉ làm mã nguồn trông ồn hơn. */
-  --code-comment: var(--faint);
-  --code-string: var(--warn);
-  --code-number: var(--danger);
-  --code-keyword: var(--accent);
-  /* Dòng đang được trỏ tới, ví dụ khi mở tệp từ một thẻ tool ở dòng cụ thể. Bản đục
-   * dành cho cột số dòng: cột đó `sticky` nên nền trong suốt sẽ để mã cuộn qua bên dưới. */
-  --code-line-hit: color-mix(in srgb, var(--accent) 12%, transparent);
-  --code-line-hit-solid: color-mix(in srgb, var(--accent) 12%, var(--surface));
 
   color-scheme: light;
 }
@@ -166,9 +154,10 @@
   }
 }
 
-/* Cửa sổ hẹp: hai cột bên phải nhường chỗ cho khu làm việc thay vì bóp nó xuống dưới
- * ngưỡng đọc được. Không giấu hẳn cột nào — giấu thì người dùng mất lối đi mà không
- * hiểu vì sao. */
+/* Cửa sổ hẹp: hai cột bên nhường chỗ cho cột hội thoại thay vì bóp nó xuống dưới ngưỡng
+ * đọc được. Không giấu hẳn cột nào — giấu thì người dùng mất lối đi mà không hiểu vì sao;
+ * thanh bên vẫn thu được bằng tay, và đó là quyết định của họ chứ không của một media
+ * query. */
 @media (max-width: 1180px) {
-  :root { --session-col-w: 232px; --changes-col-w: 252px; --tree-col-w: 248px; }
+  :root { --sidebar-w: 232px; --changes-col-w: 252px; --tree-col-w: 248px; }
 }

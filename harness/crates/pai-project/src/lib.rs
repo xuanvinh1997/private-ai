@@ -15,8 +15,6 @@
 
 mod clone;
 mod store;
-mod tree;
 
 pub use clone::{CloneError, CloneEvent, CloneRequest, clone};
 pub use store::{Project, ProjectError, ProjectKind, ProjectStore, SqliteProjectStore};
-pub use tree::{FileView, TreeEntry, list_tree, read_file};

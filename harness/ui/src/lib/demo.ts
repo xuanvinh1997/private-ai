@@ -1,13 +1,10 @@
-import { demoDiagramText } from "./fixtures/graph";
 import type { DisplayMode } from "./prefs";
 import type {
   AgentEvent,
   ConversationNode,
-  FileView,
   ModelChoice,
   Project,
   SessionSummary,
-  TreeEntry,
 } from "./protocol";
 
 /**
@@ -28,7 +25,7 @@ export function isDemo(): boolean {
 }
 
 /**
- * Núm vặn của trang demo: `?demo=1&state=empty&mode=document&changes=1`.
+ * Núm vặn của trang demo: `?demo=1&state=empty&mode=document&changes=1&sidebar=0`.
  *
  * Trang demo tồn tại để *nhìn thấy* từng trạng thái, mà phần lớn trạng thái thú vị lại
  * chỉ xuất hiện trong một khoảnh khắc (khung xương) hoặc chỉ khi dữ liệu vắng mặt (màn
@@ -38,31 +35,32 @@ export function demoKnobs(): {
   state?: "skeleton" | "empty" | "full";
   mode?: DisplayMode;
   changes?: boolean;
+  /** Thu thanh bên lại — trạng thái duy nhất mà thanh trên phải tự chừa chỗ cho ba nút
+   * giao thông của macOS, và cũng là trạng thái không ai nhớ đi chụp. */
+  sidebar?: boolean;
   tab?: string;
   /** Mở sẵn menu dự án — nó chỉ tồn tại trong lúc con trỏ đang giữ nó mở. */
   menu?: string;
   /** Đóng băng trạng thái "đang chuyển dự án", thứ thật ra chỉ kéo dài một nhịp. */
   switching?: boolean;
-  /** Mở sẵn một tệp trong tab Mã nguồn, để chụp khung xem mà không phải bấm. */
-  file?: string;
 } {
   try {
     const params = new URLSearchParams(window.location.search);
     const state = params.get("state");
     const mode = params.get("mode");
     const changes = params.get("changes");
+    const sidebar = params.get("sidebar");
     const tab = params.get("tab");
     const menu = params.get("menu");
     const switching = params.get("switching");
-    const file = params.get("file");
     return {
       ...(state === "skeleton" || state === "empty" || state === "full" ? { state } : {}),
       ...(mode === "bubble" || mode === "document" ? { mode } : {}),
       ...(changes === null ? {} : { changes: changes !== "0" }),
+      ...(sidebar === null ? {} : { sidebar: sidebar !== "0" }),
       ...(tab === null ? {} : { tab }),
       ...(menu === null ? {} : { menu }),
       ...(switching === null ? {} : { switching: switching !== "0" }),
-      ...(file === null ? {} : { file }),
     };
   } catch {
     return {};
@@ -512,218 +510,45 @@ export function demoProjects(now = Date.now()): Project[] {
   ];
 }
 
-interface Draft {
-  name: string;
-  children?: Draft[];
-}
-
-const dir = (name: string, ...children: Draft[]): Draft => ({ name, children });
-const file = (name: string): Draft => ({ name });
-
 /**
- * Cây tệp giả, dựng **đầy đủ một lần** rồi cắt theo `depth` lúc trả.
+ * Một tin nhắn trợ lý đi qua **cả bốn** đường của bộ dựng khối.
  *
- * Ngược đời so với phía thật, nơi dữ liệu đắt nên phải nạp lười. Ở đây dữ liệu là hằng
- * số, còn thứ cần dựng lại đúng là *hình dạng câu trả lời*: cắt theo `depth` để cây thật
- * và cây giả cùng thiếu `children` ở đúng những chỗ giống nhau. Không cắt thì cây trong
- * demo tự mở hết và bug nạp lười sẽ không bao giờ lộ ra ở đây.
+ * Khối mermaid chưa đóng rào nằm ở cuối, đúng chỗ nó xuất hiện lúc chữ đang chảy. Không
+ * có nó trong dữ liệu mẫu thì đường đi quan trọng nhất của `Blocks.tsx` — đường không
+ * được gọi `mermaid.render` — là đường chưa ai nhìn thấy bao giờ.
  */
-const TREES: Record<string, Draft[]> = {
-  "p-harness": [
-    dir(
-      "app",
-      dir("src", file("approval.rs"), file("coalesce.rs"), file("harness.rs"), file("lib.rs"), file("main.rs"), file("protocol.rs")),
-      file("Cargo.toml"),
-    ),
-    dir(
-      "crates",
-      dir("pai-core", dir("src", file("config.rs"), file("event.rs"), file("lib.rs"), file("service.rs"))),
-      dir("pai-agent", dir("src", file("lib.rs"), file("turn.rs"))),
-      dir("pai-tools", dir("src", file("lib.rs"), file("registry.rs"))),
-    ),
-    dir("docs", file("ARCHITECTURE.md"), file("PACKAGING.md"), file("ROADMAP.md")),
-    dir(
-      "ui",
-      dir(
-        "src",
-        dir("components", file("Rail.tsx"), file("SessionPanel.tsx"), file("Transcript.tsx")),
-        dir("lib", file("demo.ts"), file("protocol.ts"), file("registry.ts")),
-        dir("styles", file("app.css"), file("tokens.css")),
-        file("App.tsx"),
-        file("index.tsx"),
-      ),
-      file("package.json"),
-      file("vite.config.ts"),
-    ),
-    file("Cargo.lock"),
-    file("Cargo.toml"),
-    file("README.md"),
-  ],
-  "p-python": [
-    dir("src", dir("private_ai", dir("asr", file("download.py")), dir("ui", file("theme.py")))),
-    dir("tests", file("test_asr_packaging.py")),
-    file("pyproject.toml"),
-    file("README.md"),
-  ],
-  "p-notes": [dir("2026", file("thang-08.md"), file("thang-09.md")), file("index.md")],
-};
-
-function build(drafts: Draft[], prefix: string): TreeEntry[] {
-  return drafts.map((draft) => {
-    const path = prefix === "" ? draft.name : `${prefix}/${draft.name}`;
-    return draft.children === undefined
-      ? { path, name: draft.name, isDir: false }
-      : { path, name: draft.name, isDir: true, children: build(draft.children, path) };
-  });
-}
-
-function prune(entries: TreeEntry[], depth: number): TreeEntry[] {
-  return entries.map((entry) => {
-    if (!entry.isDir) return { path: entry.path, name: entry.name, isDir: false };
-    if (depth <= 1) return { path: entry.path, name: entry.name, isDir: true };
-    return {
-      path: entry.path,
-      name: entry.name,
-      isDir: true,
-      children: prune(entry.children ?? [], depth - 1),
-    };
-  });
-}
-
-function findIn(entries: TreeEntry[], path: string): TreeEntry | undefined {
-  for (const entry of entries) {
-    if (entry.path === path) return entry;
-    if (entry.isDir && path.startsWith(`${entry.path}/`)) {
-      const hit = findIn(entry.children ?? [], path);
-      if (hit) return hit;
-    }
-  }
-  return undefined;
-}
-
-/**
- * Gốc trên đĩa của một dự án giả.
- *
- * Cây giả mang đường dẫn **tuyệt đối**, đúng như `list_tree` thật: nó chuẩn hoá đường dẫn
- * để chứng minh tệp nằm trong dự án, nên thứ nó trả ra không bao giờ là đường dẫn tương
- * đối. Cho demo trả đường dẫn tương đối sẽ dựng ra một giao diện chạy đẹp ở đây và gãy
- * ở lần đầu chạy thật.
- */
-export function demoRoot(projectId: string): string {
-  return demoProjects().find((entry) => entry.id === projectId)?.path ?? "";
-}
-
-/** Một cấp của cây giả. Trễ nhân tạo để trạng thái "đang nạp" nhìn thấy được. */
-export async function demoTree(
-  projectId: string,
-  path?: string,
-  depth = 1,
-): Promise<TreeEntry[]> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 180));
-  const roots = build(TREES[projectId] ?? [], demoRoot(projectId));
-  const level = path === undefined ? roots : (findIn(roots, path)?.children ?? []);
-  return prune(level, depth);
-}
-
-const DEMO_FILES: Record<string, string> = {
-  "crates/pai-core/src/config.rs": `use std::fs;
-use std::path::Path;
-
-/// Lỗi có tên cho từng cách bộ nạp hỏng.
-///
-/// Gộp cả hai vào một \`String\` thì chỗ gọi không phân biệt được "không có tệp" với
-/// "tệp sai cú pháp", và hai thứ đó cần hai câu trả lời khác nhau.
-#[derive(Debug)]
-pub enum ConfigError {
-    Io(std::io::Error),
-    Parse(serde_norway::Error),
-}
-
-fn load(path: &Path) -> Result<Config, ConfigError> {
-    let raw = fs::read_to_string(path).map_err(ConfigError::Io)?;
-    serde_norway::from_str(&raw).map_err(ConfigError::Parse)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn rejects_missing_file() {
-        let err = load(Path::new("/khong/ton/tai.yaml")).unwrap_err();
-        assert!(matches!(err, ConfigError::Io(_)));
-    }
-}
-`,
-  "ui/src/lib/registry.ts": `import type { Component } from "solid-js";
-
-// Sổ đăng ký renderer. Không gian khoá là mở: tên lạ rơi vào fallback chứ không nổ.
-const nodeRenderers = new Map<string, Component<unknown>>();
-
-export function registerNode(kind: string, render: Component<unknown>): void {
-  if (nodeRenderers.has(kind)) throw new Error(\`đã có renderer cho node "\${kind}"\`);
-  nodeRenderers.set(kind, render);
-}
-
-export function nodeRenderer(kind: string): Component<unknown> | undefined {
-  return nodeRenderers.get(kind);
-}
-`,
-  "README.md": `# Harness
-
-Bản viết lại Private AI thành một **coding & working agent** chạy trên máy người dùng:
-lõi Rust, vỏ Tauri, giao diện SolidJS.
-
-## Chạy
-
-    cd harness/ui && npm install
-    npm run tauri dev --prefix ui
-`,
-};
-
-/**
- * Nội dung một tệp giả.
- *
- * `Cargo.lock` cố tình trả về `truncated: true`: cờ đó là một phần của hợp đồng, và một
- * cờ chỉ được bật ở phía Rust thì không ai nhìn thấy nó trông ra sao cho tới khi gặp một
- * tệp thật đủ lớn.
- */
-export async function demoFile(path: string): Promise<FileView> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 140));
-  // Gốc dài nhất trước: `/…/private-ai` là tiền tố của `/…/private-ai/harness`, nên cắt
-  // theo thứ tự tuỳ tiện sẽ để lại `harness/…` và không tra ra tệp nào.
-  const relative = [...demoProjects()]
-    .sort((a, b) => b.path.length - a.path.length)
-    .reduce((rest, entry) => (rest.startsWith(`${entry.path}/`) ? rest.slice(entry.path.length + 1) : rest), path);
-  if (path.endsWith("Cargo.lock")) {
-    const body = Array.from(
-      { length: 60 },
-      (_, index) => `[[package]]\nname = "crate-${index}"\nversion = "0.1.${index}"`,
-    ).join("\n\n");
-    return { text: body, lang: "toml", totalLines: 9421, truncated: true };
-  }
-  const known = DEMO_FILES[relative];
-  const text =
-    known ??
-    `// ${path}\n//\n// Trang demo không mang theo nội dung thật của tệp này — nó chỉ dựng\n// đủ hình dạng để nhìn khung xem, số dòng và cuộn ngang.\n\nexport const duongDan = "${path}";\nexport const dong = ${path.length};\n`;
-  return {
-    text,
-    lang: null,
-    totalLines: text.split("\n").length,
-    truncated: false,
-  };
-}
-
-/** Mọi đường dẫn tệp của một dự án — thứ bảng ⌘P cần và cây nạp lười không có. */
-export async function demoFilePaths(projectId: string): Promise<string[]> {
-  await new Promise<void>((resolve) => setTimeout(resolve, 200));
-  const out: string[] = [];
-  const walk = (entries: TreeEntry[]) => {
-    for (const entry of entries) {
-      if (entry.isDir) walk(entry.children ?? []);
-      else out.push(entry.path);
-    }
-  };
-  walk(build(TREES[projectId] ?? [], demoRoot(projectId)));
-  return out;
+export function demoDiagramText(): string {
+  return [
+    "Đường đi của một lượt gọi provider, từ lúc agent đẩy lượt vào hàng đợi:",
+    "",
+    "```mermaid",
+    "flowchart LR",
+    '  q(["Vec#60;PendingTurn#62;"]) --> d{{"Driver"}}',
+    '  d --> s(["OpenAiDriver::stream_turn"])',
+    '  s -->|gọi| r(["retry_with_backoff"])',
+    '  r -.->|tham chiếu| p["RetryPolicy#60;Backoff#62;"]',
+    "```",
+    "",
+    "Chính sách thử lại đọc từ tệp cấu hình:",
+    "",
+    "```rust",
+    "let policy = RetryPolicy::<Backoff>::from_env()",
+    '    .with_predicate(Box::new(|code: &StatusCode| code.as_u16() == 429));',
+    "```",
+    "",
+    "Còn đây là một sơ đồ tôi viết sai cú pháp — mermaid sẽ từ chối nó:",
+    "",
+    "```mermaid",
+    "flowchart LR",
+    "  a --> ",
+    "  --> b]]",
+    "```",
+    "",
+    "Và phần tôi đang vẽ dở:",
+    "",
+    "```mermaid",
+    "sequenceDiagram",
+    "  participant A as Agent",
+    "  A->>D: stream_turn",
+  ].join("\n");
 }

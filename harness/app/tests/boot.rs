@@ -589,3 +589,69 @@ async fn skill_dung_san_di_toi_duoc_prompt() {
     }
     harness.shutdown().await;
 }
+
+/// Đổi nhà cung cấp **hội thoại** không kéo bộ nhúng đi theo.
+///
+/// Đây là toàn bộ lý do hai vai được tách ra. Trước khi tách, chọn một provider từ xa để
+/// trò chuyện cũng lặng lẽ gửi mọi tài liệu người dùng vừa nạp sang đúng chỗ đó để nhúng —
+/// không có gì trên màn hình nói ra, và người dùng chỉ phát hiện khi đọc log mạng.
+///
+/// Bài này khẳng định bằng **bộ nhúng đang cắm thật**, không bằng hàng trong kho: kho đúng
+/// mà đường truyền tới `ActiveEmbedder` sai thì lỗi vẫn còn nguyên.
+#[tokio::test]
+async fn doi_nha_cung_cap_hoi_thoai_khong_keo_bo_nhung_di_theo() {
+    use pai_llm::ProviderKind;
+    use pai_providers::ProviderInput;
+
+    let dir = TempDir::new().expect("thư mục tạm");
+    let harness = boot(config(&dir)).await.expect("dựng được cây");
+
+    // Hàng gieo là Ollama trên máy này, giữ cả hai vai.
+    let truoc = harness
+        .embedder
+        .current()
+        .map(|item| item.id().to_string())
+        .expect("hàng gieo phải có bộ nhúng");
+    assert_eq!(truoc, "nomic-embed-text");
+
+    // Thêm một provider từ xa và giao cho nó **vai hội thoại**.
+    let xa = harness
+        .providers
+        .save(
+            ProviderInput::create(
+                "Một máy chủ từ xa",
+                ProviderKind::OpenAiCompatible,
+                "https://vi-du.test/v1",
+            )
+            .with_api_key("sk-thu")
+            .with_model("mo-hinh-xa"),
+        )
+        .await
+        .expect("lưu được");
+    harness
+        .providers
+        .activate(xa.id(), Some("mo-hinh-xa"))
+        .await
+        .expect("giao được vai hội thoại");
+    harness.apply_provider().await.expect("áp được");
+
+    // Vai hội thoại đã đổi…
+    assert_eq!(
+        harness
+            .providers
+            .active()
+            .expect("đọc được")
+            .map(|item| item.id().to_string()),
+        Some(xa.id().to_string())
+    );
+
+    // …còn bộ nhúng thì **không**. Tài liệu vẫn được nhúng tại chỗ.
+    let sau = harness
+        .embedder
+        .current()
+        .map(|item| item.id().to_string())
+        .expect("bộ nhúng không được biến mất");
+    assert_eq!(sau, truoc, "đổi provider hội thoại đã kéo bộ nhúng đi theo");
+
+    harness.shutdown().await;
+}

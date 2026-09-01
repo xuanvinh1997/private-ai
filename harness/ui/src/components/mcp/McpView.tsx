@@ -12,7 +12,7 @@ import type { McpCatalogEntry, McpServer, McpServerInput, McpState } from "../..
 import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
 import ConfirmDialog from "./../providers/ConfirmDialog";
-import { Banner, Button, SectionHead, Toggle } from "./../providers/FormKit";
+import { Banner, Button, Row, RowGroup, SectionHead, Toggle } from "./../providers/FormKit";
 import McpCatalog from "./McpCatalog";
 import McpForm from "./McpForm";
 
@@ -169,7 +169,7 @@ export default function McpView() {
             </div>
           }
         >
-          <ul class="m-0 flex list-none flex-col gap-sm p-0">
+          <RowGroup>
             {/* Keyed theo tên: danh sách được nạp lại sau mỗi thao tác, và `<For>` khớp
                 theo vị trí sẽ dựng lại mọi hàng — công tắc đang giữ tiêu điểm mất nó. */}
             <Key each={servers()} by="name">
@@ -190,7 +190,7 @@ export default function McpView() {
                 />
               )}
             </Key>
-          </ul>
+          </RowGroup>
         </Show>
       </Show>
 
@@ -280,142 +280,135 @@ function ServerRow(props: {
   const count = () => props.server.tools.length;
 
   return (
-    <li>
-      <div
-        class="flex flex-col gap-sm rounded-card border bg-surface px-(--card-pad-x) py-(--card-pad-y)"
-        classList={{
-          "border-danger": props.server.state === "failed",
-          "border-line": props.server.state !== "failed",
-          "opacity-70": !props.server.enabled,
-        }}
-      >
-        <div class="flex flex-wrap items-center gap-sm">
-          <StateDot state={props.server.state} />
-
-          <div class="flex min-w-0 flex-1 flex-col gap-3xs">
-            <div class="flex min-w-0 flex-wrap items-center gap-2xs">
-              <span class="min-w-0 truncate font-mono text-sm font-semibold text-ink">
-                {props.server.name}
+    <Row
+      label={props.server.name}
+      labelMono
+      dim={!props.server.enabled}
+      lead={() => <StateDot state={props.server.state} />}
+      control={() => (
+        <>
+          <Toggle
+            label={`${props.server.enabled ? "Tắt" : "Bật"} server ${props.server.name}`}
+            checked={props.server.enabled}
+            busy={props.busy}
+            onChange={props.onToggle}
+          />
+          <IconButton icon="pencil" label={`Sửa ${props.server.name}`} size="sm" onClick={props.onEdit} />
+          <IconButton
+            icon="trash"
+            label={`Xoá ${props.server.name}`}
+            size="sm"
+            danger
+            onClick={props.onDelete}
+          />
+        </>
+      )}
+      below={() => (
+        <>
+          <div class="flex min-w-0 flex-wrap items-center gap-2xs">
+            <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-muted">
+              <Icon name={props.server.transport === "http" ? "cloud" : "terminal"} size={10} />
+              {props.server.transport === "http" ? "HTTP" : "stdio"}
+            </span>
+            <span
+              class="inline-flex shrink-0 items-center rounded-pill px-2xs py-3xs text-2xs"
+              classList={{
+                "bg-accent-soft text-accent-ink": props.server.state === "connected",
+                "bg-danger-soft text-danger": props.server.state === "failed",
+                "bg-[var(--overlay-faint)] text-muted":
+                  props.server.state !== "connected" && props.server.state !== "failed",
+              }}
+            >
+              {STATE_LABEL[props.server.state]}
+            </span>
+            <Show when={props.server.state === "connected"}>
+              <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs tabular-nums text-muted">
+                <Icon name="tools" size={10} />
+                {count()} tool
               </span>
-              <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-muted">
-                <Icon name={props.server.transport === "http" ? "cloud" : "terminal"} size={10} />
-                {props.server.transport === "http" ? "HTTP" : "stdio"}
-              </span>
-              <span
-                class="inline-flex shrink-0 items-center rounded-pill px-2xs py-3xs text-2xs"
-                classList={{
-                  "bg-accent-soft text-accent-ink": props.server.state === "connected",
-                  "bg-[var(--overlay-faint)] text-muted": props.server.state !== "connected",
-                }}
-              >
-                {STATE_LABEL[props.server.state]}
-              </span>
-              <Show when={props.server.state === "connected"}>
-                <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs tabular-nums text-muted">
-                  <Icon name="tools" size={10} />
-                  {count()} tool
-                </span>
-              </Show>
-            </div>
-
+            </Show>
             <span class="min-w-0 truncate font-mono text-2xs text-faint" title={props.server.target}>
               {props.server.target}
             </span>
           </div>
 
-          <div class="flex shrink-0 items-center gap-2xs">
-            <Toggle
-              label={`${props.server.enabled ? "Tắt" : "Bật"} server ${props.server.name}`}
-              checked={props.server.enabled}
-              busy={props.busy}
-              onChange={props.onToggle}
-            />
-            <IconButton icon="pencil" label={`Sửa ${props.server.name}`} size="sm" onClick={props.onEdit} />
-            <IconButton
-              icon="trash"
-              label={`Xoá ${props.server.name}`}
-              size="sm"
-              danger
-              onClick={props.onDelete}
-            />
-          </div>
-        </div>
+          {/* Lỗi hiện ngay trong hàng, không nằm sau cú bấm mở rộng: thứ duy nhất người
+              dùng cần khi thấy một chấm đỏ là câu trả lời "vì sao". Trong bố cục hàng gọn
+              nó còn gánh thêm việc của cái viền đỏ cũ — nó là dấu hiệu duy nhất còn lại. */}
+          <Show when={props.server.state === "failed" && props.server.error}>
+            {(message) => (
+              <p
+                role="alert"
+                class="m-0 overflow-x-auto rounded-panel border border-danger bg-danger-soft px-sm py-2xs font-mono text-2xs whitespace-pre-wrap text-danger"
+              >
+                {message()}
+              </p>
+            )}
+          </Show>
 
-        {/* Lỗi hiện ngay trong hàng, không nằm sau cú bấm mở rộng: thứ duy nhất người
-            dùng cần khi thấy một chấm đỏ là câu trả lời "vì sao". */}
-        <Show when={props.server.state === "failed" && props.server.error}>
-          {(message) => (
-            <p
-              role="alert"
-              class="m-0 overflow-x-auto rounded-panel border border-danger bg-danger-soft px-sm py-2xs font-mono text-2xs whitespace-pre-wrap text-danger"
-            >
-              {message()}
+          {/* Nối được mà không có tool nào là một trạng thái im lặng: chấm xanh, không
+              lỗi, và tuyệt đối không thêm gì cho trợ lý. Nói ra, nếu không người dùng sẽ
+              đi tìm lý do ở phía mô hình. */}
+          <Show when={props.server.state === "connected" && count() === 0}>
+            <p class="m-0 text-2xs text-muted">
+              Server nối được nhưng không khai báo tool nào, nên nó chưa thêm gì cho trợ
+              lý. Kiểm tra lại tham số dòng lệnh hoặc quyền của token.
             </p>
-          )}
-        </Show>
+          </Show>
 
-        {/* Nối được mà không có tool nào là một trạng thái im lặng: chấm xanh, không lỗi,
-            và tuyệt đối không thêm gì cho trợ lý. Nói ra, nếu không người dùng sẽ đi tìm
-            lý do ở phía mô hình. */}
-        <Show when={props.server.state === "connected" && count() === 0}>
-          <p class="m-0 text-2xs text-muted">
-            Server nối được nhưng không khai báo tool nào, nên nó chưa thêm gì cho trợ lý.
-            Kiểm tra lại tham số dòng lệnh hoặc quyền của token.
-          </p>
-        </Show>
+          <Show when={count() > 0}>
+            <div class="flex flex-col gap-2xs">
+              <button
+                type="button"
+                onClick={props.onToggleOpen}
+                aria-expanded={props.open}
+                class="flex items-center gap-2xs self-start rounded-btn px-2xs py-3xs text-2xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
+              >
+                <Icon
+                  name="chevron-right"
+                  size={12}
+                  class={`transition-transform duration-[var(--dur-fast)] ${props.open ? "rotate-90" : ""}`}
+                />
+                {props.open ? "Ẩn danh sách tool" : `Xem ${count()} tool đã cắm`}
+              </button>
 
-        <Show when={count() > 0}>
-          <div class="flex flex-col gap-2xs">
-            <button
-              type="button"
-              onClick={props.onToggleOpen}
-              aria-expanded={props.open}
-              class="flex items-center gap-2xs self-start rounded-btn px-2xs py-3xs text-2xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
-            >
-              <Icon
-                name="chevron-right"
-                size={12}
-                class={`transition-transform duration-[var(--dur-fast)] ${props.open ? "rotate-90" : ""}`}
-              />
-              {props.open ? "Ẩn danh sách tool" : `Xem ${count()} tool đã cắm`}
-            </button>
-
-            <Show when={props.open}>
-              <div class="overflow-x-auto rounded-panel border border-line bg-surface-soft p-sm">
-                <p class="m-0 mb-2xs text-2xs text-faint">
-                  Đây là tên mô hình nhìn thấy, và cũng là tên xuất hiện trong bản ghi khi
-                  một lượt gọi tới chúng.
-                </p>
-                <ul class="m-0 flex list-none flex-col gap-3xs p-0">
-                  <For each={props.server.tools}>
-                    {(tool) => (
-                      <li class="font-mono text-2xs whitespace-nowrap text-text">{tool}</li>
-                    )}
-                  </For>
-                </ul>
-              </div>
-            </Show>
-          </div>
-        </Show>
-      </div>
-    </li>
+              <Show when={props.open}>
+                <div class="overflow-x-auto rounded-panel border border-line bg-surface-soft p-sm">
+                  <p class="m-0 mb-2xs text-2xs text-faint">
+                    Đây là tên mô hình nhìn thấy, và cũng là tên xuất hiện trong bản ghi
+                    khi một lượt gọi tới chúng.
+                  </p>
+                  <ul class="m-0 flex list-none flex-col gap-3xs p-0">
+                    <For each={props.server.tools}>
+                      {(tool) => (
+                        <li class="font-mono text-2xs whitespace-nowrap text-text">{tool}</li>
+                      )}
+                    </For>
+                  </ul>
+                </div>
+              </Show>
+            </div>
+          </Show>
+        </>
+      )}
+    />
   );
 }
 
 function Skeleton() {
   return (
-    <ul class="m-0 flex list-none flex-col gap-sm p-0" aria-hidden="true">
+    <div
+      class="flex flex-col divide-y divide-line rounded-card border border-line bg-surface"
+      aria-hidden="true"
+    >
       <For each={[0, 1, 2]}>
         {() => (
-          <li class="flex items-center gap-sm rounded-card border border-line bg-surface px-(--card-pad-x) py-(--card-pad-y)">
-            <span class="size-2 shrink-0 rounded-pill bg-[var(--overlay-hover)] motion-safe:animate-pulse" />
-            <span class="flex min-w-0 flex-1 flex-col gap-2xs">
-              <span class="h-3 w-1/4 rounded-pill bg-[var(--overlay-hover)] motion-safe:animate-pulse" />
-              <span class="h-2.5 w-2/3 rounded-pill bg-[var(--overlay-faint)] motion-safe:animate-pulse" />
-            </span>
-          </li>
+          <div class="flex flex-col gap-2xs px-(--card-pad-x) py-sm">
+            <span class="h-3 w-1/4 rounded-pill bg-[var(--overlay-hover)] motion-safe:animate-pulse" />
+            <span class="h-2.5 w-2/3 rounded-pill bg-[var(--overlay-faint)] motion-safe:animate-pulse" />
+          </div>
         )}
       </For>
-    </ul>
+    </div>
   );
 }

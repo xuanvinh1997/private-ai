@@ -11,6 +11,14 @@ export interface ChangedFile {
   created: boolean;
   /** Diff mới chỉ là *dự kiến*: tool chưa chạy xong, tệp trên đĩa chưa đổi. */
   pending: boolean;
+  /**
+   * Mọi hunk đã đụng vào tệp này, theo thứ tự thời gian.
+   *
+   * Có mặt để màn hình thay đổi mở được diff ngay tại chỗ thay vì chỉ đếm dòng rồi ném
+   * người dùng ngược về bản ghi. Cộng dồn chứ không thay thế: hai lần `edit` trên cùng
+   * một tệp là hai đoạn khác nhau, và giữ lại lần cuối là giấu mất lần đầu.
+   */
+  hunks: DiffHunk[];
 }
 
 /**
@@ -46,6 +54,7 @@ export function changedFiles(nodes: ConversationNode[]): ChangedFile[] {
         nodeId: node.id,
         created: (previous?.created ?? true) && forFile.every((hunk) => hunk.old_text === null),
         pending,
+        hunks: [...(previous?.hunks ?? []), ...forFile],
       });
     }
   }

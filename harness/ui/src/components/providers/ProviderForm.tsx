@@ -1,5 +1,5 @@
 import { createSignal, For, Show } from "solid-js";
-import { probeProvider } from "../../lib/providers";
+import { probeProvider, suggestedEmbeddingModel } from "../../lib/providers";
 import type { Provider, ProviderInput, ProviderKind, ProviderProbe } from "../../lib/protocol";
 import Icon from "./../Icon";
 import { Banner, Button, DialogShell, PillChoice, TextField } from "./FormKit";
@@ -47,6 +47,10 @@ export default function ProviderForm(props: {
   const [baseUrl, setBaseUrl] = createSignal(start?.baseUrl ?? "");
   const [model] = createSignal(start?.model ?? null);
   const [enabled, setEnabled] = createSignal(props.provider?.enabled ?? true);
+  // Đọc từ `props.provider` chứ không từ `start`: một mục dựng sẵn không mang mô hình
+  // nhúng, và ghép hai nguồn vào một biểu thức chỉ để tiết kiệm một dòng thì kiểu của
+  // trường này phụ thuộc vào nhánh nào đang chạy.
+  const [embeddingModel, setEmbeddingModel] = createSignal(props.provider?.embeddingModel ?? "");
 
   const hadKey = props.provider?.hasKey === true;
   const [keyMode, setKeyMode] = createSignal<KeyMode>(hadKey ? "keep" : "set");
@@ -74,6 +78,9 @@ export default function ProviderForm(props: {
     apiKey: apiKey(),
     enabled: enabled(),
     model: model(),
+    // Chuỗi rỗng là "chưa đặt", nên gửi `null` — để `""` đi qua thì lõi lưu một tên mô
+    // hình rỗng và nó sẽ trông y hệt một tên hợp lệ ở mọi chỗ đọc lại nó.
+    embeddingModel: embeddingModel().trim() === "" ? null : embeddingModel().trim(),
   });
 
   const complete = () => name().trim() !== "" && baseUrl().trim() !== "";
@@ -147,6 +154,19 @@ export default function ProviderForm(props: {
         onInput={setBaseUrl}
         mono
         placeholder={kind() === "ollama" ? "http://127.0.0.1:11434" : "https://api.openai.com/v1"}
+      />
+
+      {/* Ô này **không phải** nơi giao vai nhúng.
+          Vai đó được chọn ở màn hình mô hình nhúng, cạnh câu nói rõ tài liệu sẽ đi tới
+          đâu; đặt một cái công tắc vai ở đây thì một người đang sửa base URL có thể vô
+          tình chuyển chỗ nhận toàn văn tài liệu của mình mà không đọc câu nào cả. */}
+      <TextField
+        label="Mô hình nhúng của provider này"
+        value={embeddingModel()}
+        onInput={setEmbeddingModel}
+        mono
+        placeholder={suggestedEmbeddingModel(kind())}
+        hint="Chỉ có tác dụng nếu provider này được giao vai nhúng ở mục Mô hình nhúng. Để trống cũng được."
       />
 
       <KeySection
