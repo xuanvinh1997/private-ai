@@ -240,3 +240,162 @@ fn bien_khong_bat_buoc_bo_trong_thi_bo_ca_doi_so() {
         "giá trị đã lên dòng lệnh thì không nhân đôi vào môi trường"
     );
 }
+
+/// Cú bấm trong ứng dụng thắng hàng cấu hình, không phải ngược lại.
+///
+/// Hàng `mcp` trong tệp vá là thứ bản cài đặt mồi sẵn; kho là thứ người dùng vừa bấm ba
+/// giây trước. Cho hàng cấu hình thắng nghĩa là cú bấm "tắt" im lặng không có tác dụng —
+/// loại lỗi người dùng không báo cáo được, vì họ tưởng mình bấm hụt.
+#[test]
+fn kho_cua_nguoi_dung_thang_hang_cau_hinh() {
+    let mut tat = ServerConfig::stdio("github", "docker");
+    tat.enabled = false;
+
+    let gop = pai_mcp::merge(
+        vec![
+            ServerConfig::stdio("github", "docker"),
+            ServerConfig::stdio("chi-co-o-hang", "npx"),
+        ],
+        vec![tat, ServerConfig::stdio("chi-co-trong-kho", "npx")],
+    );
+
+    let ten: Vec<&str> = gop.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(ten, ["chi-co-o-hang", "chi-co-trong-kho", "github"]);
+    assert!(
+        !gop.iter().find(|c| c.name == "github").expect("có").enabled,
+        "kho tắt mà hàng cấu hình bật lại được thì cú bấm tắt vô nghĩa"
+    );
+}
+
+/// Một mục dán thiếu chỗ đi tới chỉ mất **một mục**, không kéo theo cả tệp.
+#[test]
+fn mot_muc_khong_noi_duoc_di_toi_dau_bi_bo_rieng_no() {
+    let dir = tempfile::tempdir().expect("thư mục tạm");
+    fs::write(
+        dir.path().join("mcp.json"),
+        r#"{"mcpServers": {
+             "cut": { "args": ["-y", "x"] },
+             "lanh": { "command": "npx" }
+           }}"#,
+    )
+    .expect("ghi tệp mẫu");
+
+    let configs = store(dir.path())
+        .list()
+        .expect("mục hỏng không làm hỏng cả tệp");
+    let ten: Vec<&str> = configs.iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(ten, ["lanh"]);
+}
+
+/// Có cả `url` lẫn `command` thì `url` thắng: một mục dán chồng lên nhau vẫn phải đi tới
+/// một chỗ xác định, và địa chỉ mạng cụ thể hơn một cái lệnh còn sót lại.
+#[test]
+fn co_ca_url_lan_command_thi_url_thang() {
+    let dir = tempfile::tempdir().expect("thư mục tạm");
+    fs::write(
+        dir.path().join("mcp.json"),
+        r#"{"mcpServers": { "hai-duong": {
+             "command": "npx", "url": "https://vi.du/mcp"
+           }}}"#,
+    )
+    .expect("ghi tệp mẫu");
+
+    let configs = store(dir.path()).list().expect("đọc được");
+    let McpTransport::Http { url, .. } = &configs[0].transport else {
+        panic!("phải chọn đường HTTP");
+    };
+    assert_eq!(url, "https://vi.du/mcp");
+}
+
+/// `enabled` tường minh thắng `disabled`, và thiếu cả hai thì mặc định là bật.
+#[test]
+fn hai_cach_noi_nguoc_nhau_ve_bat_tat_deu_doc_duoc() {
+    let dir = tempfile::tempdir().expect("thư mục tạm");
+    fs::write(
+        dir.path().join("mcp.json"),
+        r#"{"mcpServers": {
+             "a-tat-kieu-khac": { "command": "x", "disabled": true },
+             "b-bat-tuong-minh": { "command": "x", "enabled": true, "disabled": true },
+             "c-khong-noi-gi":   { "command": "x" }
+           }}"#,
+    )
+    .expect("ghi tệp mẫu");
+
+    let bat: Vec<bool> = store(dir.path())
+        .list()
+        .expect("đọc được")
+        .iter()
+        .map(|c| c.enabled)
+        .collect();
+    assert_eq!(bat, [false, true, true]);
+}
+
+/// Tệp hỏng thì nói ra, và **không** bị ghi đè mất.
+///
+/// Trả về danh sách rỗng ở đây là kiểu hỏng tệ nhất: giao diện vẽ ra "chưa có server nào",
+/// người dùng bấm thêm một cái, và lần lưu đó dựng lại tệp từ con số không — mọi server
+/// cùng token của họ biến mất vì một dấu phẩy thừa.
+#[test]
+fn json_hong_thi_bao_loi_chu_khong_am_tham_lam_moi_tep() {
+    let dir = tempfile::tempdir().expect("thư mục tạm");
+    let path = dir.path().join("mcp.json");
+    let hong = r#"{"mcpServers": {"a": {"command": "x",}}}"#;
+    fs::write(&path, hong).expect("ghi tệp hỏng");
+
+    let store = store(dir.path());
+    assert!(store.list().is_err(), "tệp hỏng phải nói ra");
+    assert!(
+        store.save(ServerConfig::stdio("moi", "npx")).is_err(),
+        "lưu đè lên một tệp không đọc được là xoá cấu hình của người dùng"
+    );
+    assert_eq!(
+        fs::read_to_string(&path).expect("đọc lại"),
+        hong,
+        "tệp phải nguyên vẹn để người dùng còn sửa tay được"
+    );
+}
+
+/// Bật/tắt một cái tên không có trong kho là lỗi, không phải một thao tác im lặng trôi qua.
+#[test]
+fn set_enabled_ten_khong_co_thi_noi_ra() {
+    let dir = tempfile::tempdir().expect("thư mục tạm");
+    let store = store(dir.path());
+    store
+        .save(ServerConfig::stdio("co-that", "npx"))
+        .expect("lưu được");
+
+    assert!(store.set_enabled("khong-co", false).is_err());
+    assert!(
+        store.list().expect("đọc lại")[0].enabled,
+        "một lời gọi hỏng không được đụng tới hàng khác"
+    );
+}
+
+/// Nhiều luồng cùng lưu thì không ai bị nuốt mất.
+///
+/// Mỗi lần lưu là một chu trình đọc → sửa → ghi. Không có khoá thì cái ghi sau dựng lại
+/// từ ảnh chụp cũ và xoá mất cái ghi trước: người dùng bấm thêm bốn server rồi thấy còn một.
+#[test]
+fn nhieu_luong_cung_luu_thi_khong_nuot_mat_ai() {
+    let dir = tempfile::tempdir().expect("thư mục tạm");
+    let store = std::sync::Arc::new(store(dir.path()));
+
+    std::thread::scope(|scope| {
+        for i in 0..8 {
+            let store = store.clone();
+            scope.spawn(move || {
+                store
+                    .save(ServerConfig::stdio(format!("s{i}"), "cmd"))
+                    .expect("lưu được");
+            });
+        }
+    });
+
+    let ten: Vec<String> = store
+        .list()
+        .expect("đọc lại")
+        .into_iter()
+        .map(|c| c.name)
+        .collect();
+    assert_eq!(ten.len(), 8, "mất server sau khi lưu song song: {ten:?}");
+}

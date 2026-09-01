@@ -153,3 +153,128 @@ fn create_va_list_tra_dung_loai_va_nguon() {
     );
     assert_eq!(danh_sach.len(), 2);
 }
+
+/// Thêm lại bằng tay một thư mục đã clone về không được xoá mất chỗ nó từ đâu tới.
+///
+/// Đường thêm bằng tay chỉ có đường dẫn trong tay, nó **không biết** URL. Ghi thẳng
+/// `origin = excluded.origin` ở đây là dùng cái nó không biết để đè lên cái đã biết.
+#[test]
+fn them_lai_bang_tay_khong_xoa_mat_cho_no_tu_dau_toi() {
+    let dir = TempDir::new().expect("thư mục tạm");
+    let store = store();
+    store
+        .create(dir.path(), ProjectKind::Code, Some("https://vi.du/x.git"))
+        .expect("clone về");
+
+    let lai = store
+        .create(dir.path(), ProjectKind::Code, None)
+        .expect("thêm lại bằng tay");
+
+    assert_eq!(lai.origin.as_deref(), Some("https://vi.du/x.git"));
+}
+
+/// Ngược với `touch`: ở `create` người dùng vừa nói ra loại, nên loại mới thắng.
+///
+/// Hai đường phải ngược nhau đúng ở điểm này. Cho `create` giữ nguyên loại cũ nghĩa là
+/// người dùng chọn "tài liệu" trong hộp thoại rồi nhận về một dự án mã nguồn, không có
+/// thông báo nào.
+#[test]
+fn create_noi_ro_loai_thi_loai_moi_thang() {
+    let dir = TempDir::new().expect("thư mục tạm");
+    let store = store();
+    let dau = store
+        .create(dir.path(), ProjectKind::Docs, None)
+        .expect("tạo");
+    let sau = store
+        .create(dir.path(), ProjectKind::Code, None)
+        .expect("khai lại loại");
+
+    assert_eq!(sau.id, dau.id, "vẫn phải là một dự án");
+    assert_eq!(sau.kind, ProjectKind::Code);
+}
+
+/// `set_kind` là đường ra duy nhất khỏi một dự án vào nhầm loại.
+///
+/// Loại đặt một lần lúc ghi nhận và `touch` cố ý giữ nguyên nó, nên thiếu đường này thì
+/// một repo mã nguồn lỡ ghi nhận thành thư viện tài liệu sẽ mãi mãi không có `read`,
+/// `grep` hay `bash` — và người dùng chỉ thấy trợ lý nói nó không có tool nào.
+#[test]
+fn set_kind_la_duong_ra_khoi_ngo_cut() {
+    let dir = TempDir::new().expect("thư mục tạm");
+    let store = store();
+    let nham = store
+        .create(dir.path(), ProjectKind::Docs, None)
+        .expect("tạo");
+
+    let sua = store
+        .set_kind(&nham.id, ProjectKind::Code)
+        .expect("đổi được loại");
+    assert_eq!(sua.kind, ProjectKind::Code);
+    assert_eq!(
+        store.get(&nham.id).expect("đọc lại").kind,
+        ProjectKind::Code
+    );
+
+    // Và mở lại sau đó vẫn giữ loại đã sửa.
+    assert_eq!(
+        store.touch(dir.path()).expect("mở lại").kind,
+        ProjectKind::Code
+    );
+}
+
+/// Một `id` không có thật thì mọi đường đều nói ra, và nói ra **cái id ấy**.
+///
+/// Một lỗi sqlite thô ("query returned no rows") đi ngược lên tới giao diện thì người
+/// dùng đọc được một câu không dính gì tới việc họ vừa làm. Gọi tên cái id là thứ duy
+/// nhất phân biệt "dự án này không còn nữa" với "kho hỏng".
+#[test]
+fn id_khong_co_that_thi_moi_duong_deu_goi_ten_no_ra() {
+    let store = store();
+    for loi in [
+        store.get("khong-co").expect_err("phải là lỗi").to_string(),
+        store
+            .forget("khong-co")
+            .expect_err("phải là lỗi")
+            .to_string(),
+        store
+            .set_kind("khong-co", ProjectKind::Docs)
+            .expect_err("phải là lỗi")
+            .to_string(),
+    ] {
+        assert!(loi.contains("khong-co"), "lỗi không gọi tên id: {loi}");
+    }
+}
+
+/// Một loại lạ trong cơ sở dữ liệu đọc chệch về `code`, chứ không làm mất cả hàng.
+///
+/// Xảy ra khi người dùng chạy một bản mới hơn — bản ấy ghi xuống một loại thứ ba — rồi mở
+/// lại bản cũ. Mất một cái nhãn thì sửa được bằng một cú bấm; từ chối cả hàng thì mất một
+/// dự án khỏi danh sách, mà danh sách này không dựng lại được từ đâu.
+#[test]
+fn loai_la_trong_co_so_du_lieu_doc_chech_ve_ma_nguon() {
+    let conn = Connection::open_in_memory().expect("mở kết nối");
+    conn.execute_batch(
+        "CREATE TABLE projects (
+           id             TEXT    PRIMARY KEY,
+           path           TEXT    NOT NULL UNIQUE,
+           name           TEXT    NOT NULL,
+           last_opened_at INTEGER NOT NULL,
+           kind           TEXT    NOT NULL DEFAULT 'code',
+           origin         TEXT
+         ) STRICT;
+         INSERT INTO projects VALUES ('la', '/nha/la', 'la', 10, 'ban-do', NULL);",
+    )
+    .expect("dựng hàng có loại lạ");
+
+    let store = SqliteProjectStore::from_connection(conn).expect("mở kho");
+    let danh_sach = store
+        .list()
+        .expect("một loại lạ không được làm hỏng cả lời gọi");
+
+    assert_eq!(
+        danh_sach.len(),
+        1,
+        "mất hàng vì một cái nhãn không đọc được"
+    );
+    assert_eq!(danh_sach[0].kind, ProjectKind::Code);
+}
