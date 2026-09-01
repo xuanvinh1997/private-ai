@@ -1,4 +1,4 @@
-import { createSignal, For, Match, Switch, type JSX } from "solid-js";
+import { For, Match, Switch, type JSX } from "solid-js";
 import { displayMode, setDisplayMode, type DisplayMode } from "../lib/prefs";
 import { setTheme, theme, type ThemeChoice } from "../lib/theme";
 import Icon, { type IconName } from "./Icon";
@@ -6,9 +6,9 @@ import ProvidersView from "./providers/ProvidersView";
 import EmbeddingView from "./providers/EmbeddingView";
 import McpView from "./mcp/McpView";
 
-type Page = "giao-dien" | "provider" | "nhung" | "mcp";
+export type SettingsPage = "giao-dien" | "provider" | "nhung" | "mcp";
 
-const PAGES: { id: Page; label: string; icon: IconName }[] = [
+const PAGES: { id: SettingsPage; label: string; icon: IconName }[] = [
   { id: "giao-dien", label: "Giao diện", icon: "monitor" },
   { id: "provider", label: "Mô hình hội thoại", icon: "server" },
   // Mô hình nhúng đứng riêng, không nằm trong trang provider. Gộp lại thì nó trông như
@@ -25,9 +25,16 @@ const PAGES: { id: Page; label: string; icon: IconName }[] = [
  * Ba mục nằm ở đây thay vì ba nút nữa trên rail vì rail là thứ người ta học vị trí — thêm
  * nút thứ chín vào một cột dọc là bắt họ học lại. Hai mục provider và MCP cũng thuộc cùng
  * một loại việc: cấu hình một lần rồi quên đi, không phải nơi ta quay lại mỗi lượt.
+ *
+ * Trang đang mở do `App` giữ chứ không do màn hình này giữ: thanh bên có một lối đi thẳng
+ * tới trang MCP, và một trạng thái nội bộ ở đây sẽ bỏ qua lối đó mỗi khi màn hình đã mở sẵn.
  */
-export default function SettingsView() {
-  const [page, setPage] = createSignal<Page>("giao-dien");
+export default function SettingsView(props: {
+  page: SettingsPage;
+  onPage: (page: SettingsPage) => void;
+}) {
+  const page = () => props.page;
+  const setPage = (next: SettingsPage) => props.onPage(next);
 
   return (
     <div class="min-h-0 flex-1 overflow-y-auto px-(--page-pad-x) py-(--page-pad-y)">

@@ -1,11 +1,11 @@
 import { createSignal, Show } from "solid-js";
 import { useDragDrop } from "../hooks/useDragDrop";
 import { displayMode } from "../lib/prefs";
-import type { ModelChoice, ToolScope } from "../lib/protocol";
+import type { ModelChoice, ProjectKind, ToolScope } from "../lib/protocol";
 import Icon from "./Icon";
 import Menu from "./Menu";
 import ModelPicker from "./ModelPicker";
-import { IconButton } from "./primitives";
+import { Chip, IconButton } from "./primitives";
 
 const SCOPE_LABEL: Record<ToolScope, string> = {
   read: "Chỉ đọc",
@@ -59,6 +59,13 @@ export default function Composer(props: {
    * quyền hạn làm được — người dùng dựa vào nó để quyết định có gửi câu tiếp theo không.
    */
   hasProject: boolean;
+  /** Tên dự án đang mở, cho dải ngữ cảnh dưới ô soạn tin. */
+  projectName?: string;
+  projectKind?: ProjectKind;
+  /** Số server MCP **đang nối** — không phải số server đã khai báo. */
+  mcpConnected: number;
+  /** Còn thứ khác nằm dưới ô soạn tin (mấy câu gợi ý), nên đáy thu lại một nấc. */
+  moreBelow?: boolean;
 }) {
   let composing = false;
   let field: HTMLTextAreaElement | undefined;
@@ -98,7 +105,11 @@ export default function Composer(props: {
 
   return (
     <form
-      class="shrink-0 bg-bg px-(--page-pad-x) pt-sm pb-(--page-pad-y)"
+      class="shrink-0 bg-bg px-(--page-pad-x) pt-sm"
+      classList={{
+        "pb-(--page-pad-y)": props.moreBelow !== true,
+        "pb-sm": props.moreBelow === true,
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         submit();
@@ -177,19 +188,16 @@ export default function Composer(props: {
           </div>
         </Show>
 
+        {/* Tầng dưới của ô soạn tin, xếp đúng theo hình mẫu: đính kèm ở mép trái, **quyền**
+            ngay cạnh nó, và mô hình dạt sang phải cạnh nút Gửi. Thứ tự này không tuỳ tiện —
+            trái sang phải là "đưa gì vào → được làm gì với nó → ai làm", và cái đắt nhất
+            trong ba cái đó là quyền, nên nó đứng ở chỗ mắt chạm tới trước. */}
         <div class="flex flex-wrap items-center gap-2xs px-2xs pb-2xs">
           <IconButton
             icon="paperclip"
             label="Cách đính kèm tệp"
             active={hint()}
             onClick={() => setHint((v) => !v)}
-          />
-
-          <ModelPicker
-            value={props.model}
-            models={props.models}
-            onPick={props.onPickModel}
-            onManageProviders={props.onManageProviders}
           />
 
           {/* Vô hiệu chứ không ẩn hẳn: chỗ ngồi của bộ chọn giữ nguyên qua hai trạng thái,
@@ -207,30 +215,40 @@ export default function Composer(props: {
                 aria-hidden="true"
                 class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-2xs text-faint"
               >
-                <Icon name="tools" size={13} />
+                <Icon name="hand" size={13} />
                 {SCOPE_LABEL[props.scope]}
                 <span class="opacity-70">· chưa dùng được</span>
               </span>
             }
           >
+            {/* Bàn tay thay cho cái cờ lê: cờ lê nói "có công cụ", còn hàng này nói **được
+                phép làm tới đâu** — cùng một hình cho hai ý khác nhau là chỗ người ta đọc
+                lướt qua rồi tưởng mình đã hiểu. */}
             <Menu
               variant="pill"
               placement="up"
               align="left"
-              icon="tools"
+              icon="hand"
               text={SCOPE_LABEL[props.scope]}
               tone={props.scope === "shell" ? "warn" : "neutral"}
               label={`Phạm vi tool: ${SCOPE_LABEL[props.scope]}`}
               items={(["read", "write", "shell"] as ToolScope[]).map((scope) => ({
                 id: scope,
                 label: SCOPE_LABEL[scope],
-                icon: "tools" as const,
+                icon: "hand" as const,
                 onSelect: () => props.onPickScope(scope),
               }))}
             />
           </Show>
 
           <span class="flex-1" />
+
+          <ModelPicker
+            value={props.model}
+            models={props.models}
+            onPick={props.onPickModel}
+            onManageProviders={props.onManageProviders}
+          />
 
           {/* Không còn nhãn "↵ gửi" cạnh nút: placeholder của ô nhập đã nói "Enter để gửi",
               và nhắc lại nó ngay cạnh nút Gửi chỉ thêm một mẩu chữ vào một hàng đã chật. */}
@@ -257,6 +275,47 @@ export default function Composer(props: {
             </button>
           </Show>
         </div>
+      </div>
+
+      {/* Dải ngữ cảnh: **lượt sắp gửi sẽ chạy với những gì**.
+
+          Nó ở ngoài viền ô soạn tin chứ không trong: mọi thứ trong viền đều bấm được và đổi
+          được, còn ba mảnh này chỉ báo cáo lại trạng thái đã chọn ở nơi khác. Trộn hai loại
+          vào một khung là mời người dùng bấm vào một cái nhãn.
+
+          Ba mảnh, ba câu hỏi mà người ta thật sự hỏi trước khi bấm Gửi: nó đọc thư mục nào,
+          nó có thêm tool nào ngoài tool dựng sẵn, và ai trả lời. */}
+      <div
+        role="group"
+        aria-label="Lượt kế sẽ chạy với"
+        class="mx-auto mt-2xs flex w-full flex-wrap items-center gap-2xs px-2xs"
+        classList={{
+          "max-w-(--reading-measure)": displayMode() === "bubble",
+          "max-w-[min(100%,980px)]": displayMode() === "document",
+        }}
+      >
+        <Chip tone={props.hasProject ? "accent" : "neutral"}>
+          <Icon name={props.hasProject ? "folder-open" : "folder"} size={11} />
+          <Show when={props.hasProject} fallback="Chưa có dự án">
+            {props.projectName ?? "Dự án"}
+            <span class="opacity-70">
+              · {props.projectKind === "docs" ? "tài liệu" : "mã nguồn"}
+            </span>
+          </Show>
+        </Chip>
+
+        {/* Số server, không phải tên: cột này chỉ cần trả lời "có thêm tool không". Ai muốn
+            biết những tool nào thì đã có trang Server MCP, và nhét bốn cái tên vào đây là
+            đẩy dòng ngữ cảnh dài hơn cả câu người dùng sắp gõ. */}
+        <Chip tone={props.mcpConnected > 0 ? "accent" : "neutral"}>
+          <Icon name="plug" size={11} />
+          {props.mcpConnected} server MCP
+        </Chip>
+
+        {/* Cố ý **không** có chip mô hình ở đây. Tên mô hình đã nằm trong bộ chọn ngay
+            phía trên, cách chưa tới ba mươi pixel; lặp lại nó chỉ làm dài thêm một dòng
+            vốn tồn tại để trả lời những câu bộ chọn *không* trả lời được — chạy trong thư
+            mục nào, và có tool nào từ ngoài cắm vào. */}
       </div>
     </form>
   );

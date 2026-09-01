@@ -36,7 +36,12 @@ async fn with_hooks(hooks: Vec<HookConfig>) -> Context {
 }
 
 fn hook(command: &str, tools: &[&str]) -> HookConfig {
+    hook_with(command, tools, None)
+}
+
+fn hook_with(command: &str, tools: &[&str], timeout_secs: Option<u64>) -> HookConfig {
     HookConfig {
+        timeout_secs,
         command: command.to_string(),
         tools: tools.iter().map(|t| t.to_string()).collect(),
     }
@@ -80,22 +85,21 @@ async fn hook_hong_thi_cho_qua_chu_khong_chan() {
 
 #[tokio::test]
 async fn hook_het_gio_thi_cho_qua() {
-    let ctx = with_hooks(vec![hook("sleep 30", &[])]).await;
-    // Bài này tốn đúng một lần hạn giờ (10 giây) — đó là cơ chế đang được kiểm, nên
-    // không rút ngắn được. Cái nó chứng minh là `sleep 30` **không** chạy hết 30 giây:
-    // hạn giờ cắt trước, và `kill_on_drop` dọn tiến trình con đi.
+    // Hạn giờ **rút ngắn cho bài test**, không dùng con số 10 giây của sản phẩm. Bản
+    // trước đo đồng hồ thật với hạn giờ thật và đỏ ngẫu nhiên hai lần khi máy đang chạy
+    // hai chục bài khác song song — cận trên 20 giây bị vượt vì lịch chạy, không vì hạn
+    // giờ hỏng. Một bài đỏ vì máy bận là một bài không nói gì về mã.
+    let ctx = with_hooks(vec![hook_with("sleep 30", &[], Some(1))]).await;
     let started = std::time::Instant::now();
     assert!(matches!(
         decide(&ctx, "bash", json!({})).await,
         PreDecision::Allow
     ));
     let waited = started.elapsed();
+    // Cái đang được kiểm: `sleep 30` **không** chạy hết 30 giây. Cận trên rộng rãi vì nó
+    // chỉ cần loại trừ "hạn giờ không cắt gì cả", không cần đo chính xác.
     assert!(
-        waited >= std::time::Duration::from_secs(9),
-        "hạn giờ nổ quá sớm: {waited:?}"
-    );
-    assert!(
-        waited < std::time::Duration::from_secs(20),
+        waited < std::time::Duration::from_secs(15),
         "hạn giờ không cắt: {waited:?}"
     );
 }

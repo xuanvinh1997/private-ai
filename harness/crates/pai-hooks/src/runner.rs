@@ -40,7 +40,7 @@ pub enum HookDecision {
 }
 
 /// Chạy một hook. `None` nghĩa là hook không trả lời được — xem luật fail-open ở đầu crate.
-pub async fn run(command: &str, input: &HookInput<'_>) -> Option<HookDecision> {
+pub async fn run(command: &str, input: &HookInput<'_>, deadline: Duration) -> Option<HookDecision> {
     let payload = serde_json::to_vec(input).ok()?;
 
     let mut child = Command::new("/bin/sh")
@@ -61,14 +61,14 @@ pub async fn run(command: &str, input: &HookInput<'_>) -> Option<HookDecision> {
         let _ = stdin.shutdown().await;
     }
 
-    let output = match tokio::time::timeout(HOOK_TIMEOUT, child.wait_with_output()).await {
+    let output = match tokio::time::timeout(deadline, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(err)) => {
             tracing::warn!(command, "hook hỏng: {err}");
             return None;
         }
         Err(_) => {
-            tracing::warn!(command, ?HOOK_TIMEOUT, "hook hết giờ");
+            tracing::warn!(command, ?deadline, "hook hết giờ");
             return None;
         }
     };

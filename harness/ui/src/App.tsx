@@ -23,6 +23,7 @@ import {
   isDemo,
   runDemoTurn,
 } from "./lib/demo";
+import { listMcpServers } from "./lib/mcp";
 import { changesPanelOpen, setChangesPanelOpen, setDisplayMode, setSidebarOpen, sidebarOpen } from "./lib/prefs";
 import {
   closeProject,
@@ -37,25 +38,27 @@ import type {
   AgentEvent,
   ApprovalDecision,
   ConversationNode,
+  McpServer,
   ModelChoice,
   Project,
   ProjectKind,
   SessionSummary,
   ToolScope,
 } from "./lib/protocol";
+import { setTheme } from "./lib/theme";
 import { TranscriptActionsProvider } from "./lib/transcriptActions";
 import { useDragDrop } from "./hooks/useDragDrop";
 import ApprovalDialog from "./components/ApprovalDialog";
 import ChangesPanel, { ChangesBoard } from "./components/ChangesPanel";
 import Composer from "./components/Composer";
-import EmptyState from "./components/EmptyState";
+import { EmptyLead, PromptChips } from "./components/EmptyState";
 import { usableForChat } from "./components/ModelPicker";
 import ProjectSwitcher from "./components/ProjectSwitcher";
-import Sidebar, { tabsFor, type TabId } from "./components/Sidebar";
+import Sidebar, { projectTabs, tabsFor, type TabId } from "./components/Sidebar";
 import ProjectsView from "./components/projects/ProjectsView";
 import DocsView from "./components/docs/DocsView";
 import SessionPalette from "./components/SessionPalette";
-import SettingsView from "./components/SettingsView";
+import SettingsView, { type SettingsPage } from "./components/SettingsView";
 import Transcript from "./components/Transcript";
 import WorkspaceHeader from "./components/WorkspaceHeader";
 
@@ -85,6 +88,10 @@ export default function App() {
   const [draft, setDraft] = createSignal("");
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [tab, setTab] = createSignal<TabId>("chat");
+  // Trang cài đặt do đây giữ, không do `SettingsView` giữ: thanh bên có một hàng đi thẳng
+  // tới trang MCP, và một trạng thái nằm trong màn hình con sẽ bỏ qua cú bấm ấy mỗi khi
+  // màn hình cài đặt đã mở sẵn.
+  const [settingsPage, setSettingsPage] = createSignal<SettingsPage>("giao-dien");
 
   // Đổi dự án có thể làm chính màn hình đang mở biến mất khỏi thanh bên — mở một thư viện
   // tài liệu trong lúc đang đứng ở màn hình Thay đổi chẳng hạn. Không sửa thì thanh bên
@@ -108,7 +115,24 @@ export default function App() {
   // Đổi dự án là lõi tháo và cắm lại cả một nhánh plugin. Trong lúc đó mọi thứ trên màn
   // hình còn nói về dự án cũ, nên cờ này khoá thao tác thay vì chỉ hiện một cái chấm quay.
   const [switching, setSwitching] = createSignal(false);
-  const [projectMenuOpen, setProjectMenuOpen] = createSignal(false);
+  // Hàng dự án nào đang mở menu ngữ cảnh. Giữ id chứ không giữ boolean: mỗi dự án có menu
+  // riêng, và một cờ chung sẽ mở cả mấy cái cùng lúc.
+  const [projectMenu, setProjectMenu] = createSignal<string | null>(null);
+
+  // Server MCP là "plugin" của ứng dụng này: mỗi cái cắm thêm một rổ tool vào lượt kế. Số
+  // **đang nối** đứng trên hàng điều hướng và trong dải ngữ cảnh, nên nó phải là số thật
+  // chứ không phải số server đã khai báo — một server `failed` không cho thêm tool nào.
+  const [mcpServers, setMcpServers] = createSignal<McpServer[]>([]);
+  const mcpConnected = () => mcpServers().filter((server) => server.state === "connected").length;
+  // Hỏi lại mỗi lần quay về hội thoại, không chỉ một lần lúc mở app: trang cài đặt ngay
+  // cạnh đây bật/tắt và cắm lại server được, và một con số đứng im sau đó là một lời nói
+  // sai về chỗ trợ lý sắp lấy tool ra dùng.
+  createEffect(() => {
+    if (tab() === "chat") void refreshMcp();
+  });
+  async function refreshMcp() {
+    setMcpServers(await listMcpServers());
+  }
 
   const project = () => projects().find((entry) => entry.isCurrent) ?? null;
   const projectKey = () => project()?.id ?? "khong-co-du-an";
@@ -150,6 +174,7 @@ export default function App() {
   onMount(async () => {
     if (isDemo()) {
       const knobs = demoKnobs();
+      if (knobs.theme) setTheme(knobs.theme);
       if (knobs.mode) setDisplayMode(knobs.mode);
       if (knobs.changes !== undefined) setChangesPanelOpen(knobs.changes);
       if (knobs.sidebar !== undefined) setSidebarOpen(knobs.sidebar);
@@ -160,7 +185,7 @@ export default function App() {
       // Núm vặn cho việc chụp ảnh: cả ba trạng thái dưới đây chỉ tồn tại trong một nhịp
       // bấm chuột, và không có chúng thì cách duy nhất chụp được là sửa mã.
       if (knobs.tab !== undefined && isTab(knobs.tab)) setTab(knobs.tab);
-      if (knobs.menu === "project") setProjectMenuOpen(true);
+      if (knobs.menu === "project") setProjectMenu(knobs.project ?? "p-harness");
       if (knobs.switching) setSwitching(true);
       if (knobs.state === "skeleton") return; // khung xương đứng yên để nhìn cho kỹ
       const seed = demoSessions(projectKey());
@@ -615,6 +640,17 @@ export default function App() {
     });
   }
 
+  /** Bản ghi chưa có gì — trạng thái quyết định ô soạn tin ngồi giữa hay ngồi đáy. */
+  const chatEmpty = () => conversation.nodes().length === 0;
+  /**
+   * Có hiện mấy câu gợi ý không.
+   *
+   * Chỉ khi bản ghi trống **và** không có gì khác đang chiếm chỗ đó: một danh sách câu hỏi
+   * mẫu nằm dưới dòng "Đang nạp bản ghi…" mời người dùng bắt đầu một việc mà nửa giây nữa
+   * sẽ bị một bản ghi cũ đè lên.
+   */
+  const showPrompts = () => chatEmpty() && loadingSession() === null && loadError() === null;
+
   const title = () =>
     tab() === "chat"
       ? (sessions().find((session) => session.id === currentId())?.title ?? "Phiên làm việc")
@@ -638,18 +674,26 @@ export default function App() {
             currentId={currentId()}
             loading={loading()}
             view={tab()}
-            kind={project()?.kind}
-            hasProject={hasProject()}
-            changeCount={files().length}
+            mcpCount={mcpConnected()}
             subtitle={preview}
             disabled={switching()}
-            projectSlot={() => (
+            projectsSlot={() => (
               <ProjectSwitcher
                 projects={projects()}
                 current={project()}
                 switching={switching()}
-                open={projectMenuOpen()}
-                onOpenChange={setProjectMenuOpen}
+                menuFor={projectMenu()}
+                onMenuChange={setProjectMenu}
+                // Mục con của dự án đang mở. Dựng ở đây chứ không trong thanh bên vì đây
+                // là chỗ duy nhất biết cả loại dự án lẫn màn hình đang mở.
+                subItems={projectTabs(project()?.kind).map((item) => ({
+                  id: item.id,
+                  label: item.label,
+                  icon: item.icon,
+                  badge: item.id === "diff" ? files().length : 0,
+                  active: tab() === item.id,
+                  onSelect: () => setTab(item.id),
+                }))}
                 onPick={(id) => void switchProject(id)}
                 onSeeAll={() => setTab("projects")}
                 onForget={forgetProject}
@@ -661,7 +705,14 @@ export default function App() {
             onCreate={() => void newSession()}
             onRename={rename}
             onDelete={remove}
-            onGo={setTab}
+            onGo={(view) => {
+              if (view === "settings") setSettingsPage("giao-dien");
+              setTab(view);
+            }}
+            onOpenMcp={() => {
+              setSettingsPage("mcp");
+              setTab("settings");
+            }}
             onCollapse={() => setSidebarOpen(false)}
           />
         </Show>
@@ -688,57 +739,93 @@ export default function App() {
             <div class="flex min-w-0 flex-1 flex-col">
               <Switch>
                 <Match when={tab() === "chat"}>
-                  <Transcript
-                    nodes={conversation.nodes()}
-                    empty={
-                      <Switch
-                        fallback={
-                          <EmptyState
-                            disabled={conversation.busy()}
-                            hasProject={hasProject()}
-                            onOpenProject={() => setTab("projects")}
-                            onPick={(text) => void send(text)}
-                          />
-                        }
-                      >
-                        <Match when={loadingSession()}>
-                          <p
-                            class="m-auto text-sm text-muted"
-                            role="status"
-                            aria-live="polite"
+                  {/* Bản ghi trống thì cả khối "câu hỏi + ô soạn tin" trôi vào **giữa màn
+                      hình theo chiều dọc**, đúng như ChatGPT: một trạng thái rỗng dán ở đầu
+                      trang với ô nhập ở tận đáy bắt mắt đi hết chiều cao cửa sổ để nối hai
+                      thứ vốn thuộc về nhau. Có hội thoại rồi thì ô soạn tin về đáy như thường.
+
+                      Ô soạn tin là **một** thể hiện duy nhất qua cả hai bố cục — chỉ lớp CSS
+                      của khung ngoài đổi. Dựng lại nó ngay lúc câu hỏi đầu tiên được gửi sẽ
+                      cướp tiêu điểm bàn phím đúng vào nhịp người dùng định gõ tiếp. */}
+                  <div
+                    class="flex min-h-0 flex-1 flex-col"
+                    classList={{ "justify-center": chatEmpty() }}
+                  >
+                    <Show
+                      when={!chatEmpty()}
+                      fallback={
+                        <div class="min-h-0 shrink overflow-y-auto py-lg">
+                          <Switch
+                            fallback={
+                              <EmptyLead
+                                hasProject={hasProject()}
+                                onOpenProject={() => setTab("projects")}
+                              />
+                            }
                           >
-                            Đang nạp bản ghi…
-                          </p>
-                        </Match>
-                        <Match when={loadError()}>
-                          {(message) => (
-                            <p
-                              class="m-auto max-w-(--reading-measure) rounded-panel bg-danger-soft px-md py-sm text-sm text-danger"
-                              role="alert"
-                            >
-                              {message()}
-                            </p>
-                          )}
-                        </Match>
-                      </Switch>
-                    }
-                  />
-                  <Composer
-                    value={draft()}
-                    onChange={setDraft}
-                    onSubmit={() => void send(draft())}
-                    disabled={conversation.busy() || switching()}
-                    busy={conversation.busy()}
-                    onStop={() => void cancelTurn(currentId())}
-                    model={model()}
-                    models={models()}
-                    onPickModel={setModel}
-                    onManageProviders={() => setTab("settings")}
-                    modelWarning={modelWarning()}
-                    scope={scope()}
-                    onPickScope={setScope}
-                    hasProject={hasProject()}
-                  />
+                            <Match when={loadingSession()}>
+                              <p
+                                class="m-0 text-center text-sm text-muted"
+                                role="status"
+                                aria-live="polite"
+                              >
+                                Đang nạp bản ghi…
+                              </p>
+                            </Match>
+                            <Match when={loadError()}>
+                              {(message) => (
+                                <p
+                                  class="mx-auto max-w-(--reading-measure) rounded-panel bg-danger-soft px-md py-sm text-sm text-danger"
+                                  role="alert"
+                                >
+                                  {message()}
+                                </p>
+                              )}
+                            </Match>
+                          </Switch>
+                        </div>
+                      }
+                    >
+                      <Transcript nodes={conversation.nodes()} />
+                    </Show>
+
+                    <Composer
+                      value={draft()}
+                      onChange={setDraft}
+                      onSubmit={() => void send(draft())}
+                      disabled={conversation.busy() || switching()}
+                      busy={conversation.busy()}
+                      onStop={() => void cancelTurn(currentId())}
+                      model={model()}
+                      models={models()}
+                      onPickModel={setModel}
+                      onManageProviders={() => {
+                        setSettingsPage("provider");
+                        setTab("settings");
+                      }}
+                      modelWarning={modelWarning()}
+                      scope={scope()}
+                      onPickScope={setScope}
+                      hasProject={hasProject()}
+                      projectName={project()?.name}
+                      projectKind={project()?.kind}
+                      mcpConnected={mcpConnected()}
+                      moreBelow={showPrompts()}
+                    />
+
+                    {/* Gợi ý nằm **dưới** ô soạn tin: câu hỏi lớn phải chạm thẳng vào chỗ
+                        trả lời nó, còn mấy câu bấm được là lối tắt, và một lối tắt chen vào
+                        giữa hai thứ ấy đẩy chúng ra xa nhau. */}
+                    <Show when={showPrompts()}>
+                      <div class="shrink-0 px-(--page-pad-x) pb-(--page-pad-y)">
+                        <PromptChips
+                          disabled={conversation.busy()}
+                          hasProject={hasProject()}
+                          onPick={(text) => void send(text)}
+                        />
+                      </div>
+                    </Show>
+                  </div>
                 </Match>
 
                 <Match when={tab() === "diff"}>
@@ -767,7 +854,7 @@ export default function App() {
                 </Match>
 
                 <Match when={tab() === "settings"}>
-                  <SettingsView />
+                  <SettingsView page={settingsPage()} onPage={setSettingsPage} />
                 </Match>
               </Switch>
             </div>

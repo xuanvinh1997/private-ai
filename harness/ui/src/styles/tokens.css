@@ -87,8 +87,11 @@
 :root[data-scale="large"] { font-size: 18px; }
 
 :root[data-theme="dark"] {
-  --bg: #0b1412;
-  --sidebar: #0f1b18;
+  --bg: #101c19;
+  /* Tối hơn `--bg`, không sáng hơn. Bản trước làm ngược, và cái ngược ấy đọc ra là thanh
+     bên nổi lên trước còn nội dung lùi ra sau — đúng thứ tự ngược với thứ người dùng đang
+     đọc. Mọi giao diện hội thoại tối đáng tin đều đặt cột điều hướng chìm xuống. */
+  --sidebar: #0a1310;
   --surface: #13221e;
   --surface-soft: #172923;
   --surface-hover: #1d332c;
@@ -118,8 +121,8 @@
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0b1412;
-    --sidebar: #0f1b18;
+    --bg: #101c19;
+    --sidebar: #0a1310;
     --surface: #13221e;
     --surface-soft: #172923;
     --surface-hover: #1d332c;

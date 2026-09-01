@@ -5,7 +5,22 @@ export interface MenuItem {
   id: string;
   label: string;
   icon: IconName;
+  /**
+   * Dòng phụ nói ra **hậu quả** của hàng này.
+   *
+   * Có mặt vì hai hàng dễ bấm nhầm nhất — "đóng dự án" và "bỏ khỏi danh sách" — chỉ phân
+   * biệt được bằng hậu quả, và hậu quả nằm trong hộp xác nhận thì đã muộn: người ta quyết
+   * định bấm hay không *trước* khi hộp đó kịp hiện ra.
+   */
+  hint?: string;
   danger?: boolean;
+  /**
+   * Khoá hàng lại thay vì cắt nó đi.
+   *
+   * Một hàng biến mất để lại câu hỏi "cái đó đâu rồi"; một hàng khoá cùng `hint` nói ra
+   * luôn vì sao chưa bấm được.
+   */
+  disabled?: boolean;
   onSelect: () => void;
 }
 
@@ -63,7 +78,10 @@ export function Menu(props: {
   onCleanup(() => document.removeEventListener("pointerdown", onDocPointerDown, true));
 
   const move = (delta: number) => {
-    const buttons = [...(popup?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+    // Bỏ qua hàng bị khoá: mũi tên dừng trên một hàng không bấm được là một ngõ cụt câm.
+    const buttons = [
+      ...(popup?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? []),
+    ];
     if (buttons.length === 0) return;
     const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
     const next = (at + delta + buttons.length) % buttons.length;
@@ -130,8 +148,12 @@ export function Menu(props: {
               move(-1);
             }
           }}
-          class="absolute z-40 flex min-w-40 flex-col gap-3xs rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
+          class="absolute z-40 flex flex-col gap-3xs rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
           classList={{
+            // Menu có dòng phụ phải rộng hơn: một câu giải thích bị bẻ thành bốn dòng hai
+            // chữ thì không ai đọc, và cả lý do để nó tồn tại mất theo.
+            "min-w-40": !props.items.some((item) => item.hint !== undefined),
+            "w-56": props.items.some((item) => item.hint !== undefined),
             "right-0": (props.align ?? "right") === "right",
             "left-0": props.align === "left",
             "top-full mt-3xs": (props.placement ?? "down") === "down",
@@ -143,19 +165,25 @@ export function Menu(props: {
               <button
                 type="button"
                 role="menuitem"
+                disabled={item.disabled}
                 onClick={(event) => {
                   event.stopPropagation();
                   close(false);
                   item.onSelect();
                 }}
-                class="flex items-center gap-sm rounded-btn px-sm py-2xs text-left text-xs transition-colors duration-[var(--dur-fast)]"
+                class="flex w-full flex-col gap-3xs rounded-btn px-sm py-2xs text-left text-xs transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-60"
                 classList={{
-                  "text-text hover:bg-[var(--overlay-hover)]": !item.danger,
-                  "text-danger hover:bg-danger-soft": item.danger === true,
+                  "text-text enabled:hover:bg-[var(--overlay-hover)]": !item.danger,
+                  "text-danger enabled:hover:bg-danger-soft": item.danger === true,
                 }}
               >
-                <Icon name={item.icon} size={14} />
-                {item.label}
+                <span class="flex items-center gap-sm">
+                  <Icon name={item.icon} size={14} />
+                  {item.label}
+                </span>
+                <Show when={item.hint}>
+                  {(hint) => <span class="text-2xs text-faint">{hint()}</span>}
+                </Show>
               </button>
             )}
           </For>

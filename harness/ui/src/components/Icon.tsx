@@ -58,6 +58,14 @@ const PATHS = {
     "M2.6 19.3 5 10.5h17.2l-2.4 8.8a1 1 0 0 1-1 .7H3.6a1 1 0 0 1-1-.7z",
   ],
   code: ["m9 7-5 5 5 5", "m15 7 5 5-5 5"],
+  // Bàn tay: hình của "xin phép trước khi chạm vào". Dùng cho bộ chọn phạm vi tool, chỗ
+  // duy nhất trong ô soạn tin quyết định trợ lý được đụng tới cái gì trên máy này.
+  hand: [
+    "M18 11V6a2 2 0 0 0-4 0",
+    "M14 10V4a2 2 0 0 0-4 0v2",
+    "M10 10.5V6a2 2 0 0 0-4 0v8",
+    "m7 15-1.8-1.8a2 2 0 0 0-2.8 2.8l3.6 3.6A8 8 0 0 0 11.7 22H14a8 8 0 0 0 8-8V7a2 2 0 0 0-4 0v5",
+  ],
   // ── Thêm cho dự án tài liệu, provider, MCP và đồ thị mã nguồn ──
   library: [
     "M4 4h4v16H4z",

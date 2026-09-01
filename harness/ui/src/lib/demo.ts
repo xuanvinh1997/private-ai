@@ -52,10 +52,19 @@ export function demoKnobs(): {
    * nhất trong ứng dụng chưa ai nhìn thấy bao giờ, vì bộ dữ liệu mẫu luôn mở sẵn một dự án.
    */
   project?: string;
+  /**
+   * Ép bảng màu, bỏ qua `localStorage` và cả `prefers-color-scheme`.
+   *
+   * Có mặt vì việc chụp ảnh kiểm chứng: một trình duyệt chạy ngầm không có lựa chọn theme
+   * nào được lưu, nên không có núm này thì mọi ảnh chụp đều ra chế độ sáng — và chế độ tối
+   * là chế độ phần lớn người dùng thật sự nhìn.
+   */
+  theme?: "light" | "dark";
 } {
   try {
     const params = new URLSearchParams(window.location.search);
     const state = params.get("state");
+    const theme = params.get("theme");
     const mode = params.get("mode");
     const changes = params.get("changes");
     const sidebar = params.get("sidebar");
@@ -65,6 +74,7 @@ export function demoKnobs(): {
     const project = params.get("project");
     return {
       ...(project === null ? {} : { project }),
+      ...(theme === "light" || theme === "dark" ? { theme } : {}),
       ...(state === "skeleton" || state === "empty" || state === "full" ? { state } : {}),
       ...(mode === "bubble" || mode === "document" ? { mode } : {}),
       ...(changes === null ? {} : { changes: changes !== "0" }),

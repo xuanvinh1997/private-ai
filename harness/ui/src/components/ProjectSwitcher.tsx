@@ -1,26 +1,45 @@
-import { createUniqueId, For, onCleanup, Show } from "solid-js";
+import { Key } from "@solid-primitives/keyed";
+import { createSignal, For, Show } from "solid-js";
 import type { Project, ProjectKind } from "../lib/protocol";
-import { relativeTime } from "../lib/sessions";
-import Icon from "./Icon";
+import Icon, { type IconName } from "./Icon";
+import Menu, { type MenuItem } from "./Menu";
+
+/** Mục con của dự án đang mở. `App` dựng chúng từ `projectTabs`, cột này không biết `TabId`. */
+export interface ProjectSubItem {
+  id: string;
+  label: string;
+  icon: IconName;
+  badge?: number;
+  active?: boolean;
+  onSelect: () => void;
+}
+
+/** Bao nhiêu dự án hiện ra trước khi phải bấm "Xem thêm". */
+const HIEN_TRUOC = 5;
 
 /**
- * Nút chọn dự án, ngồi ở **chân** thanh bên — chỗ Codex để bộ chọn kho/môi trường.
+ * Nhóm "Dự án" trong thanh bên.
  *
- * Không dùng `Menu` chung được: menu ở đây có hai hành động trên **cùng một hàng** (mở
- * dự án, và bỏ nó khỏi danh sách), còn `Menu` chỉ nhận một danh sách phẳng mỗi hàng một
- * việc. Nhét việc thứ hai vào đó thì mỗi dự án chiếm hai dòng, và danh sách dài gấp đôi
- * chỉ để nói lại cùng một cái tên.
+ * Trước đây đây là một cái nút ở **chân** cột mở ra một menu, và cái menu ấy là lối vào duy
+ * nhất tới danh sách dự án. Một danh sách chỉ tồn tại sau một cú bấm là một danh sách không
+ * ai nhớ mình có gì trong đó; ChatGPT để dự án thành một nhóm hạng nhất giữa cột, và cái
+ * được không phải là chỗ ngồi đẹp hơn mà là **thấy được mà không phải hỏi**.
  *
- * Hành vi bàn phím và cú bấm ra ngoài thì chép nguyên của `Menu` — người dùng không nên
- * đoán được hai menu này do hai đoạn mã khác nhau vẽ.
+ * Không hành động nào của cái menu cũ bị bỏ đi: mở dự án là cú bấm vào chính hàng đó, còn
+ * đổi loại / đóng / bỏ khỏi danh sách chuyển vào menu ngữ cảnh của từng hàng — cùng chỗ,
+ * cùng câu giải thích hậu quả, thêm được cả chuột phải. "Tất cả dự án…" ở lại làm hàng cuối
+ * của nhóm.
  */
 export default function ProjectSwitcher(props: {
   projects: Project[];
   current: Project | null;
   /** Lõi đang tháo và cắm lại nhánh plugin. Trong lúc đó mọi thứ ở đây đều khoá. */
   switching: boolean;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
+  /** Hàng nào đang mở menu ngữ cảnh, theo id dự án. */
+  menuFor: string | null;
+  onMenuChange: (id: string | null) => void;
+  /** Màn hình chỉ mở được bên trong dự án đang mở, thụt vào dưới nó. */
+  subItems: ProjectSubItem[];
   onPick: (id: string) => void;
   /** Mở màn hình dự án — chỗ tạo mới, clone, và lọc theo loại. */
   onSeeAll: () => void;
@@ -30,270 +49,235 @@ export default function ProjectSwitcher(props: {
   /** Đổi loại dự án đang mở. */
   onSwapKind: (kind: ProjectKind) => void;
 }) {
-  const id = createUniqueId();
-  let popup: HTMLDivElement | undefined;
-  let trigger: HTMLButtonElement | undefined;
-
-  const onDocPointerDown = (event: PointerEvent) => {
-    const target = event.target as Node | null;
-    if (popup?.contains(target ?? null) || trigger?.contains(target ?? null)) return;
-    props.onOpenChange(false);
-  };
-  document.addEventListener("pointerdown", onDocPointerDown, true);
-  onCleanup(() => document.removeEventListener("pointerdown", onDocPointerDown, true));
-
-  const move = (delta: number) => {
-    const buttons = [...(popup?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? [])];
-    if (buttons.length === 0) return;
-    const at = buttons.indexOf(document.activeElement as HTMLButtonElement);
-    buttons[(at + delta + buttons.length) % buttons.length]?.focus();
-  };
-
-  const close = (restore: boolean) => {
-    props.onOpenChange(false);
-    if (restore) trigger?.focus();
-  };
+  const [expanded, setExpanded] = createSignal(false);
 
   // Mới nhất trước. Dự án đang mở vẫn nằm đúng chỗ của nó theo thời gian chứ không bị
-  // ghim lên đầu: nó đã có tên trên nút rồi, ghim thêm chỉ làm thứ tự đổi mỗi lần mở.
+  // ghim lên đầu: nó đã được đánh dấu bằng màu và biểu tượng rồi, ghim thêm chỉ làm thứ
+  // tự đổi mỗi lần mở.
   const ordered = () => [...props.projects].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+  const visible = () => (expanded() ? ordered() : ordered().slice(0, HIEN_TRUOC));
+  const hidden = () => ordered().length - visible().length;
+
+  /**
+   * Menu ngữ cảnh của một hàng.
+   *
+   * Hàng của dự án **đang mở** mang ba việc, và đó là ba việc dễ bấm nhầm nhau nhất màn
+   * hình này có — nên mỗi cái tự nói ra hậu quả của mình ngay dưới nhãn, và cái phá huỷ
+   * nhất nằm cuối cùng, mang màu cảnh báo.
+   */
+  const itemsFor = (project: Project): MenuItem[] => {
+    const items: MenuItem[] = [];
+    if (project.isCurrent) {
+      // Loại được đặt một lần lúc ghi nhận và mở lại thì giữ nguyên. Không có hàng này thì
+      // một thư mục vào nhầm loại là ngõ cụt vĩnh viễn: một repo lỡ ghi nhận thành thư viện
+      // tài liệu sẽ không bao giờ có `read` hay `bash`, và người dùng chỉ thấy trợ lý nói
+      // nó không có tool nào.
+      items.push({
+        id: "kind",
+        label:
+          project.kind === "code" ? "Chuyển thành thư viện tài liệu" : "Chuyển thành dự án mã nguồn",
+        icon: project.kind === "code" ? "library" : "code",
+        hint:
+          project.kind === "code"
+            ? "Trợ lý thôi sửa tệp và chạy lệnh; nó tìm và đọc tài liệu trong thư mục."
+            : "Trợ lý đọc, sửa được tệp và chạy được lệnh trong thư mục này.",
+        onSelect: () => props.onSwapKind(project.kind === "code" ? "docs" : "code"),
+      });
+      items.push({
+        id: "close",
+        label: "Đóng dự án, chỉ trò chuyện",
+        icon: "folder",
+        hint: "Vẫn giữ trong danh sách. Trợ lý thôi đọc và sửa tệp cho tới khi mở lại.",
+        onSelect: props.onClose,
+      });
+    } else {
+      items.push({
+        id: "open",
+        label: "Mở dự án này",
+        icon: "folder-open",
+        onSelect: () => props.onPick(project.id),
+      });
+    }
+    // Bỏ dự án đang mở là bỏ chỗ đứng của chính mình: hàng vẫn ở đó cho menu khỏi đổi hình
+    // giữa hai trạng thái, nhưng khoá lại và nói ra lý do.
+    items.push({
+      id: "forget",
+      label: "Bỏ khỏi danh sách",
+      icon: "x",
+      danger: !project.isCurrent,
+      disabled: project.isCurrent,
+      hint: project.isCurrent
+        ? "Đang mở — đóng dự án trước đã."
+        : "Thư mục trên đĩa vẫn nguyên, không tệp nào bị xoá.",
+      onSelect: () => props.onForget(project),
+    });
+    return items;
+  };
 
   return (
-    <div class="relative">
-      <button
-        ref={trigger}
-        type="button"
-        disabled={props.switching}
-        aria-haspopup="menu"
-        aria-expanded={props.open}
-        aria-controls={id}
-        aria-label={
-          props.current
-            ? `Dự án: ${props.current.name}. Bấm để đổi.`
-            : "Chưa mở dự án nào. Trợ lý chỉ trò chuyện. Bấm để mở một dự án."
-        }
-        onClick={() => props.onOpenChange(!props.open)}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown") {
-            event.preventDefault();
-            props.onOpenChange(true);
-            queueMicrotask(() => move(1));
-          }
-        }}
-        class="flex w-full items-center gap-sm rounded-panel px-sm py-xs text-left transition-colors duration-[var(--dur-fast)] disabled:cursor-progress enabled:hover:bg-[var(--overlay-hover)]"
+    <div class="flex flex-col gap-3xs">
+      <Show
+        when={ordered().length > 0}
+        fallback={<p class="m-0 px-sm py-xs text-2xs text-faint">Danh sách chưa có dự án nào.</p>}
       >
-        {/* Không dự án thì cả ô này đổi màu chứ không chỉ đổi chữ: màu nhấn nói "đang có
-            một thứ đang mở", và giữ nó lại cho một chỗ trống là nói sai. */}
-        <span
-          class="grid size-7 shrink-0 place-items-center rounded-btn"
-          classList={{
-            "motion-safe:animate-pulse": props.switching,
-            "bg-accent-soft text-accent-ink": props.current !== null,
-            "bg-[var(--overlay-faint)] text-muted": props.current === null,
-          }}
+        <ul class="m-0 flex list-none flex-col gap-3xs p-0">
+          {/* Keyed theo `id`: mở một dự án khác làm cả danh sách xếp lại theo `lastOpenedAt`,
+              và keyed theo vị trí thì mọi hàng bị dựng lại giữa lúc tiêu điểm đang ở trên
+              một trong số chúng. */}
+          <Key each={visible()} by="id">
+            {(project) => (
+              <li>
+                <div
+                  class="group/row relative flex items-center"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    props.onMenuChange(project().id);
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled={props.switching}
+                    onClick={() => {
+                      if (!project().isCurrent) props.onPick(project().id);
+                    }}
+                    aria-current={project().isCurrent ? "true" : undefined}
+                    // Đường dẫn không còn một dòng riêng trên mỗi hàng — cột 260px không đủ
+                    // cho hai dòng nhân số dự án. Nó vào `title` và vào nhãn trợ năng, nên
+                    // hai dự án trùng tên vẫn phân biệt được, chỉ là phải rê chuột vào.
+                    title={project().path}
+                    aria-label={
+                      project().isCurrent
+                        ? `${project().name} — dự án đang mở. ${project().path}`
+                        : `Mở dự án ${project().name}. ${project().path}`
+                    }
+                    class="flex min-w-0 flex-1 items-center gap-sm rounded-panel py-2xs pr-(--sp-2xl) pl-sm text-left text-sm transition-colors duration-[var(--dur-fast)] disabled:cursor-progress enabled:hover:bg-[var(--overlay-hover)] aria-[current]:bg-accent-soft aria-[current]:font-medium"
+                  >
+                    <span
+                      class="shrink-0"
+                      classList={{
+                        "text-accent-ink": project().isCurrent,
+                        "text-muted": !project().isCurrent,
+                        "motion-safe:animate-pulse": props.switching && project().isCurrent,
+                      }}
+                    >
+                      <Icon name={project().isCurrent ? "folder-open" : "folder"} size={15} />
+                    </span>
+                    <span
+                      class="min-w-0 flex-1 truncate"
+                      classList={{
+                        "text-accent-ink": project().isCurrent,
+                        "text-text": !project().isCurrent,
+                      }}
+                    >
+                      {project().name}
+                    </span>
+                  </button>
+
+                  <div
+                    class="absolute right-3xs transition-opacity duration-[var(--dur-fast)] group-focus-within/row:opacity-100 group-hover/row:opacity-100"
+                    classList={{
+                      "opacity-0": props.menuFor !== project().id,
+                      "opacity-100": props.menuFor === project().id,
+                    }}
+                  >
+                    <Menu
+                      label={`Tuỳ chọn cho dự án ${project().name}`}
+                      open={props.menuFor === project().id}
+                      onOpenChange={(open) => props.onMenuChange(open ? project().id : null)}
+                      onRequestClose={() => props.onMenuChange(null)}
+                      items={itemsFor(project())}
+                    />
+                  </div>
+                </div>
+
+                {/* Mục con của dự án đang mở, thụt vào và có một đường kẻ dọc: thụt lề một
+                    mình đọc ra là "hàng bị lệch", còn đường kẻ nói rõ chúng treo vào hàng
+                    ngay trên. */}
+                <Show when={project().isCurrent && props.subItems.length > 0}>
+                  <ul class="m-0 mt-3xs ml-(--sp-lg) flex list-none flex-col gap-3xs border-l border-line py-3xs pl-2xs">
+                    <For each={props.subItems}>
+                      {(item) => (
+                        <li>
+                          <button
+                            type="button"
+                            onClick={item.onSelect}
+                            disabled={props.switching}
+                            aria-current={item.active ? "page" : undefined}
+                            class="flex w-full items-center gap-2xs rounded-panel px-2xs py-3xs text-left text-xs text-muted transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed enabled:hover:bg-[var(--overlay-hover)] enabled:hover:text-ink aria-[current=page]:bg-accent-soft aria-[current=page]:font-medium aria-[current=page]:text-accent-ink"
+                          >
+                            <span class="shrink-0">
+                              <Icon name={item.icon} size={14} />
+                            </span>
+                            <span class="min-w-0 flex-1 truncate">{item.label}</span>
+                            <Show when={(item.badge ?? 0) > 0}>
+                              <span class="shrink-0 rounded-pill bg-accent px-2xs text-[10px] leading-4 text-on-accent tabular-nums">
+                                {item.badge}
+                              </span>
+                            </Show>
+                          </button>
+                        </li>
+                      )}
+                    </For>
+                  </ul>
+                </Show>
+              </li>
+            )}
+          </Key>
+        </ul>
+      </Show>
+
+      {/* Danh sách dài thì cắt bớt chứ không cuộn: một danh sách dự án dài đẩy "Gần đây"
+          xuống dưới nếp gấp, mà "Gần đây" mới là thứ được bấm mỗi ngày. */}
+      <Show when={hidden() > 0 || expanded()}>
+        <button
+          type="button"
+          onClick={() => setExpanded((v) => !v)}
+          aria-expanded={expanded()}
+          class="flex w-full items-center gap-2xs rounded-panel px-sm py-3xs text-left text-2xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
         >
           <Icon
-            name={props.switching ? "clock" : props.current ? "folder-open" : "chat"}
-            size={15}
+            name="chevron-right"
+            size={12}
+            class={`transition-transform duration-[var(--dur-fast)] ${expanded() ? "rotate-90" : ""}`}
           />
+          {expanded() ? "Thu gọn" : `Xem thêm ${hidden()} dự án`}
+        </button>
+      </Show>
+
+      {/* Một lối ra duy nhất, và nó dẫn tới màn hình dự án chứ không tới một hộp thoại thứ
+          hai: tạo mới, clone và lọc theo loại đều đã sống ở đó. */}
+      <button
+        type="button"
+        onClick={props.onSeeAll}
+        disabled={props.switching}
+        class="flex w-full items-center gap-sm rounded-panel px-sm py-2xs text-left text-xs text-muted transition-colors duration-[var(--dur-fast)] disabled:cursor-progress enabled:hover:bg-[var(--overlay-hover)] enabled:hover:text-ink"
+      >
+        <span class="shrink-0">
+          <Icon name="more" size={15} />
         </span>
-        <span class="flex min-w-0 flex-1 flex-col">
-          <span
-            class="min-w-0 truncate text-sm font-medium"
-            classList={{ "text-ink": props.current !== null, "text-muted": props.current === null }}
-          >
-            {props.current?.name ?? "Chưa mở dự án"}
-          </span>
-          {/* Dòng dưới **luôn** nói một điều gì đó. Một gạch ngang ở đây đọc ra là "chưa
-              nạp xong", và người dùng sẽ ngồi đợi một thứ không bao giờ tới. Đường dẫn thì
-              cắt ở *đầu*: hai dự án cùng tên chỉ khác nhau ở phần đuôi. */}
-          <Show
-            when={props.current}
-            fallback={
-              <span class="min-w-0 truncate text-2xs text-faint">
-                {props.switching ? "đang chuyển dự án…" : "Chỉ trò chuyện, không đọc tệp"}
-              </span>
-            }
-          >
-            {(current) => (
-              <span class="min-w-0 truncate text-2xs text-faint" dir="rtl" title={current().path}>
-                <bdi>{props.switching ? "đang chuyển dự án…" : current().path}</bdi>
-              </span>
-            )}
-          </Show>
-        </span>
-        <span class="shrink-0 text-faint">
-          <Icon name="chevron-down" size={13} />
-        </span>
+        Tất cả dự án…
       </button>
 
-      <Show when={props.open && !props.switching}>
-        <div
-          ref={popup}
-          id={id}
-          role="menu"
-          aria-label="Dự án"
-          onKeyDown={(event) => {
-            if (event.key === "Escape") {
-              event.preventDefault();
-              close(true);
-            } else if (event.key === "ArrowDown") {
-              event.preventDefault();
-              move(1);
-            } else if (event.key === "ArrowUp") {
-              event.preventDefault();
-              move(-1);
-            }
-          }}
-          // Bung **lên**: nút này ngồi ở chân cột, và một menu bung xuống từ đó rơi thẳng
-          // ra ngoài cửa sổ.
-          class="absolute right-0 bottom-full left-0 z-40 mb-3xs flex flex-col rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
-        >
-          <Show
-            when={ordered().length > 0}
-            fallback={<p class="px-sm py-xs text-2xs text-faint">Danh sách chưa có dự án nào.</p>}
-          >
-            <ul class="m-0 flex max-h-64 list-none flex-col gap-3xs overflow-y-auto p-0">
-              <For each={ordered()}>
-                {(project) => (
-                  <li class="group/row relative flex items-center">
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={() => {
-                        close(false);
-                        if (!project.isCurrent) props.onPick(project.id);
-                      }}
-                      aria-current={project.isCurrent ? "true" : undefined}
-                      class="flex min-w-0 flex-1 items-center gap-sm rounded-btn py-2xs pr-(--sp-3xl) pl-sm text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] aria-[current]:bg-accent-soft"
-                    >
-                      <span
-                        class="shrink-0"
-                        classList={{
-                          "text-accent-ink": project.isCurrent,
-                          "text-faint": !project.isCurrent,
-                        }}
-                      >
-                        <Icon name={project.isCurrent ? "folder-open" : "folder"} size={14} />
-                      </span>
-                      <span class="flex min-w-0 flex-1 flex-col">
-                        <span class="min-w-0 truncate text-xs text-text">{project.name}</span>
-                        <span class="min-w-0 truncate text-2xs text-faint" dir="rtl" title={project.path}>
-                          <bdi>{project.path}</bdi>
-                        </span>
-                      </span>
-                      <span class="shrink-0 text-2xs whitespace-nowrap text-faint tabular-nums">
-                        {relativeTime(project.lastOpenedAt)}
-                      </span>
-                    </button>
+      {/* Không dự án là một **trạng thái hợp lệ**, không phải một lần nạp chưa xong — nên
+          nó phải tự nói ra, kể cả khi danh sách bên trên đã đủ ba dòng. Câu này gộp hai
+          điều người dùng cần biết ngay: trợ lý vẫn trả lời được, và hai màn hình vắng mặt
+          sẽ quay lại khi nào. */}
+      <Show when={props.current === null && !props.switching}>
+        <p class="m-0 flex items-start gap-2xs rounded-panel bg-[var(--overlay-faint)] px-sm py-xs text-2xs leading-[1.5] text-muted">
+          <span class="mt-3xs shrink-0 text-faint">
+            <Icon name="chat" size={13} />
+          </span>
+          <span>
+            Chưa mở dự án — trợ lý chỉ trò chuyện, không đọc tệp. Mở một dự án để có Thay đổi
+            và Thư viện tài liệu.
+          </span>
+        </p>
+      </Show>
 
-                    {/* Bỏ dự án đang mở là bỏ chỗ đứng của chính mình: nút vẫn ở đó cho
-                        hàng khỏi lệch, nhưng khoá và nói ra lý do. */}
-                    <button
-                      type="button"
-                      disabled={project.isCurrent}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        close(false);
-                        props.onForget(project);
-                      }}
-                      aria-label={
-                        project.isCurrent
-                          ? `Không bỏ được "${project.name}" vì đang mở`
-                          : `Bỏ "${project.name}" khỏi danh sách. Thư mục trên đĩa không bị xoá.`
-                      }
-                      title={
-                        project.isCurrent
-                          ? "Đang mở — không bỏ khỏi danh sách được"
-                          : "Bỏ khỏi danh sách (không xoá thư mục)"
-                      }
-                      class="absolute right-2xs grid size-6 place-items-center rounded-icon text-faint opacity-0 transition-colors duration-[var(--dur-fast)] group-focus-within/row:opacity-100 group-hover/row:opacity-100 enabled:hover:bg-danger-soft enabled:hover:text-danger disabled:opacity-0"
-                    >
-                      <Icon name="x" size={13} />
-                    </button>
-                  </li>
-                )}
-              </For>
-            </ul>
-          </Show>
-
-          <div class="mt-3xs border-t border-line pt-3xs">
-            {/* Một lối ra duy nhất, và nó dẫn tới màn hình dự án chứ không tới một hộp
-                thoại thứ hai: tạo mới, clone và lọc theo loại đều đã sống ở đó, và một
-                hộp thoại "mở thư mục" riêng ở đây chỉ là lối thứ tư làm cùng một việc. */}
-            <button
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                close(false);
-                props.onSeeAll();
-              }}
-              class="flex w-full items-center gap-sm rounded-btn px-sm py-2xs text-left text-xs text-text transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
-            >
-              <Icon name="folder-open" size={14} />
-              Tất cả dự án…
-            </button>
-            {/* Câu này ở lại trong menu chứ không chỉ nằm trong hộp xác nhận: người ta
-                quyết định có bấm hay không *trước* khi hộp xác nhận kịp hiện ra. */}
-            <p class="m-0 px-sm py-3xs text-2xs text-faint">
-              Bỏ một dự án khỏi danh sách không xoá bất cứ thứ gì trên đĩa.
-            </p>
-          </div>
-
-          {/* "Đóng" và "bỏ khỏi danh sách" là hai việc khác nhau nằm trong cùng một menu,
-              và đó là chỗ dễ bấm nhầm nhất màn hình này có. Ba thứ tách chúng ra: nút bỏ
-              là dấu × nằm *trên hàng của dự án*, nút đóng nằm dưới cùng sau một đường kẻ
-              riêng, và mỗi cái tự nói ra hậu quả của mình ngay dưới nhãn. */}
-          <Show when={props.current}>
-            {(current) => (
-              <div class="mt-3xs border-t border-line pt-3xs">
-                {/* Loại được đặt một lần lúc ghi nhận và mở lại thì giữ nguyên. Không có
-                    nút này thì một thư mục vào nhầm loại là ngõ cụt vĩnh viễn: một repo
-                    lỡ ghi nhận thành thư viện tài liệu sẽ không bao giờ có `read` hay
-                    `bash`, và người dùng chỉ thấy trợ lý nói nó không có tool nào. */}
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    close(false);
-                    props.onSwapKind(current().kind === "code" ? "docs" : "code");
-                  }}
-                  class="flex w-full flex-col gap-3xs rounded-btn px-sm py-2xs text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
-                >
-                  <span class="flex items-center gap-sm text-xs text-text">
-                    <Icon name={current().kind === "code" ? "library" : "code"} size={14} />
-                    {current().kind === "code"
-                      ? "Chuyển thành thư viện tài liệu"
-                      : "Chuyển thành dự án mã nguồn"}
-                  </span>
-                  <span class="text-2xs text-faint">
-                    {current().kind === "code"
-                      ? "Trợ lý thôi sửa tệp và chạy lệnh; nó tìm và đọc tài liệu trong thư mục."
-                      : "Trợ lý đọc, sửa được tệp và chạy được lệnh trong thư mục này."}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    close(false);
-                    props.onClose();
-                  }}
-                  aria-label={`Đóng dự án "${current().name}". Vẫn giữ trong danh sách.`}
-                  class="flex w-full flex-col gap-3xs rounded-btn px-sm py-2xs text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
-                >
-                  <span class="flex items-center gap-sm text-xs text-text">
-                    <Icon name="folder" size={14} />
-                    Đóng dự án, chỉ trò chuyện
-                  </span>
-                  <span class="text-2xs text-faint">
-                    Vẫn giữ trong danh sách. Trợ lý thôi đọc và sửa tệp cho tới khi mở lại.
-                  </span>
-                </button>
-              </div>
-            )}
-          </Show>
-        </div>
+      <Show when={props.switching}>
+        <p class="m-0 px-sm py-3xs text-2xs text-faint" role="status" aria-live="polite">
+          đang chuyển dự án…
+        </p>
       </Show>
     </div>
   );

@@ -24,6 +24,15 @@ pub struct HookConfig {
     /// đúng những lời gọi rẻ nhất.
     #[serde(default)]
     pub tools: Vec<String>,
+    /// Hạn giờ riêng cho hook này, tính bằng giây. Vắng thì dùng [`HOOK_TIMEOUT`].
+    ///
+    /// Có mặt vì hai lý do khác nhau và cả hai đều thật. Thứ nhất, một hook gọi ra mạng
+    /// cần dài hơn một hook chạy `grep`, và một con số chung cho cả hai thì sai với ít
+    /// nhất một bên. Thứ hai, **bộ test cần rút ngắn nó**: bài kiểm hạn giờ mà đo đồng hồ
+    /// thật sẽ đỏ ngẫu nhiên khi máy đang chạy hai chục bài khác song song — đó là chuyện
+    /// đã xảy ra hai lần ở kho này.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 impl HookConfig {
@@ -54,7 +63,14 @@ impl Middleware<PreExecute> for PreHooks {
                 };
                 // Một hook nói "không" thì dừng ngay, không hỏi những hook còn lại: câu
                 // trả lời đã có, và chạy tiếp chỉ tốn thêm tiến trình.
-                if let Some(HookDecision::Deny { reason }) = run(&hook.command, &input).await {
+                // Hạn giờ của chính hook này, hoặc mặc định. Xem `HookConfig::timeout_secs`.
+                let deadline = hook
+                    .timeout_secs
+                    .map(std::time::Duration::from_secs)
+                    .unwrap_or(crate::runner::HOOK_TIMEOUT);
+                if let Some(HookDecision::Deny { reason }) =
+                    run(&hook.command, &input, deadline).await
+                {
                     return PreDecision::Deny(reason);
                 }
             }
