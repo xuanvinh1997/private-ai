@@ -1,8 +1,8 @@
-//! Cắm hệ tệp vào cây.
+//! Mount the filesystem into the tree.
 //!
-//! Một plugin, sáu tool, một provider và một chính sách. Gỡ nó ra là mất cả sáu tool
-//! *và* mất luôn luật đọc-trước-khi-sửa — đúng như mong đợi, vì một luật canh giữ những
-//! tool không còn ở đó chỉ là chi phí.
+//! One plugin, six tools, one provider and one policy. Disposing it loses all six tools
+//! *and* the read-before-edit rule — which is right, because a rule guarding tools that are
+//! no longer there is pure cost.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,8 +45,9 @@ impl Plugin for FsPlugin {
 
         let ledger = Arc::new(ReadLedger::default());
         let tools = ctx.require::<Tools>()?;
-        // Ngân sách token dựng từ chính `ctx`, nên kho tràn được hỏi lúc gọi chứ không
-        // lúc dựng: gỡ `ToolsPlugin` ra là mọi lần cắt sau đó biết mình không còn chỗ cất.
+        // The token budget is built from `ctx` itself, so the spill store is looked up at
+        // call time rather than construction time: disposing `ToolsPlugin` means every
+        // later fold knows it has nowhere to store the overflow.
         let overflow = Overflow::new(ctx);
 
         ctx.keep(tools.register(Arc::new(Read::new(

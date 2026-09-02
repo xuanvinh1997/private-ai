@@ -1,4 +1,4 @@
-//! Chặn URL độc, và một bản clone thật.
+//! Blocking hostile URLs, and one real clone.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,7 +7,7 @@ use futures::StreamExt;
 use pai_project::{CloneEvent, CloneRequest, clone};
 use tempfile::TempDir;
 
-fn yeu_cau(url: &str, parent: &Path) -> CloneRequest {
+fn request(url: &str, parent: &Path) -> CloneRequest {
     CloneRequest {
         url: url.to_string(),
         parent: parent.to_path_buf(),
@@ -16,45 +16,46 @@ fn yeu_cau(url: &str, parent: &Path) -> CloneRequest {
     }
 }
 
-/// `git clone "ext::sh -c '...'"` không tải gì cả — nó chạy lệnh đó trên máy người dùng.
+/// `git clone "ext::sh -c '...'"` downloads nothing — it runs that command on the user's
+/// machine.
 ///
-/// Đây là lý do tồn tại của `validate()`. Một URL dán vào ô "clone" là một dòng lệnh nếu
-/// không có câu chặn này.
+/// This is why `validate()` exists. Without this check, a URL pasted into a "clone" box is
+/// a command line.
 #[test]
-fn transport_helper_bi_chan_vi_no_la_thi_hanh_lenh() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let loi = yeu_cau("ext::sh -c id", dir.path())
+fn a_transport_helper_is_blocked_because_it_is_command_execution() {
+    let dir = TempDir::new().expect("temp dir");
+    let err = request("ext::sh -c id", dir.path())
         .validate()
-        .expect_err("phải bị chặn");
-    assert!(loi.to_string().contains("ext"), "lỗi phải nói rõ: {loi}");
+        .expect_err("must be blocked");
+    assert!(err.to_string().contains("ext"), "the error must say why: {err}");
 
-    // Không chỉ `ext::` — mọi helper, vì danh sách helper mở rộng được.
-    assert!(yeu_cau("khac::gi-do", dir.path()).validate().is_err());
-    // Nhưng `::` trong đường dẫn của một URL bình thường thì không phải helper.
+    // Not just `ext::` — every helper, because the helper list is extensible.
+    assert!(request("other::something", dir.path()).validate().is_err());
+    // But `::` inside an ordinary URL's path is not a helper.
     assert!(
-        yeu_cau("https://vi.du/a::b.git", dir.path())
+        request("https://vi.du/a::b.git", dir.path())
             .validate()
             .is_ok(),
-        "chặn nhầm một URL hợp lệ"
+        "blocked a legitimate URL by mistake"
     );
 }
 
 #[test]
-fn url_bat_dau_bang_gach_ngang_bi_chan() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let loi = yeu_cau("--upload-pack=id", dir.path())
+fn a_url_starting_with_a_dash_is_blocked() {
+    let dir = TempDir::new().expect("temp dir");
+    let err = request("--upload-pack=id", dir.path())
         .validate()
-        .expect_err("phải bị chặn");
-    assert!(loi.to_string().contains('-'), "lỗi phải nói rõ: {loi}");
+        .expect_err("must be blocked");
+    assert!(err.to_string().contains('-'), "the error must say why: {err}");
 }
 
 #[test]
-fn scheme_la_bi_chan() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    for url in ["ftp://vi.du/x.git", "javascript://x", "/nha/repo", ""] {
+fn unexpected_schemes_are_blocked() {
+    let dir = TempDir::new().expect("temp dir");
+    for url in ["ftp://vi.du/x.git", "javascript://x", "/home/repo", ""] {
         assert!(
-            yeu_cau(url, dir.path()).validate().is_err(),
-            "`{url}` lọt qua"
+            request(url, dir.path()).validate().is_err(),
+            "`{url}` slipped through"
         );
     }
     for url in [
@@ -62,60 +63,60 @@ fn scheme_la_bi_chan() {
         "http://vi.du/x.git",
         "ssh://git@vi.du/x.git",
         "git://vi.du/x.git",
-        "file:///nha/repo",
-        "git@vi.du:nhom/x.git",
+        "file:///home/repo",
+        "git@vi.du:group/x.git",
     ] {
         assert!(
-            yeu_cau(url, dir.path()).validate().is_ok(),
-            "`{url}` bị chặn oan"
+            request(url, dir.path()).validate().is_ok(),
+            "`{url}` was blocked wrongly"
         );
     }
 }
 
 #[test]
-fn ten_thoat_khoi_thu_muc_cha_bi_chan() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    for ten in ["..", "../ngoai", "a/b", "a\\b", ""] {
-        let mut req = yeu_cau("https://vi.du/x.git", dir.path());
-        req.name = Some(ten.to_string());
-        assert!(req.validate().is_err(), "tên `{ten}` lọt qua");
-        assert!(req.destination().is_err(), "tên `{ten}` vẫn dựng ra đích");
+fn a_name_escaping_the_parent_directory_is_blocked() {
+    let dir = TempDir::new().expect("temp dir");
+    for name in ["..", "../outside", "a/b", "a\\b", ""] {
+        let mut req = request("https://vi.du/x.git", dir.path());
+        req.name = Some(name.to_string());
+        assert!(req.validate().is_err(), "name `{name}` slipped through");
+        assert!(
+            req.destination().is_err(),
+            "name `{name}` still produced a destination"
+        );
     }
 
-    let mut req = yeu_cau("https://vi.du/x.git", dir.path());
-    req.name = Some("noi-khac".to_string());
+    let mut req = request("https://vi.du/x.git", dir.path());
+    req.name = Some("elsewhere".to_string());
     assert_eq!(
-        req.destination().expect("tên hợp lệ"),
-        dir.path().join("noi-khac")
+        req.destination().expect("a valid name"),
+        dir.path().join("elsewhere")
     );
-    // Không đặt tên thì suy từ URL, và `.git` ở cuối bị bỏ.
+    // With no name given it is derived from the URL, and a trailing `.git` is dropped.
     assert_eq!(
-        yeu_cau("https://vi.du/nhom/x.git", dir.path())
+        request("https://vi.du/group/x.git", dir.path())
             .destination()
-            .expect("suy được tên"),
+            .expect("the name is derivable"),
         dir.path().join("x")
     );
 }
 
 #[test]
-fn thu_muc_dich_co_du_lieu_thi_khong_clone_de_len() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let dich = dir.path().join("x");
-    std::fs::create_dir(&dich).expect("tạo");
-    std::fs::write(dich.join("cua-toi.txt"), "còn").expect("ghi");
+fn a_destination_holding_data_is_never_cloned_over() {
+    let dir = TempDir::new().expect("temp dir");
+    let destination = dir.path().join("x");
+    std::fs::create_dir(&destination).expect("create");
+    std::fs::write(destination.join("cua-toi.txt"), "còn").expect("write");
 
-    let loi = yeu_cau("https://vi.du/x.git", dir.path())
+    let err = request("https://vi.du/x.git", dir.path())
         .validate()
-        .expect_err("phải bị chặn");
-    assert!(
-        loi.to_string().contains("mất dữ liệu"),
-        "lỗi mờ nhạt: {loi}"
-    );
+        .expect_err("must be blocked");
+    assert!(err.to_string().contains("mất dữ liệu"), "vague error: {err}");
 
-    // Thư mục rỗng thì được: đó là chỗ người dùng vừa tạo để clone vào.
-    std::fs::remove_file(dich.join("cua-toi.txt")).expect("xoá");
+    // An empty directory is fine: that is the folder the user just made to clone into.
+    std::fs::remove_file(destination.join("cua-toi.txt")).expect("remove");
     assert!(
-        yeu_cau("https://vi.du/x.git", dir.path())
+        request("https://vi.du/x.git", dir.path())
             .validate()
             .is_ok()
     );
@@ -127,32 +128,33 @@ fn git(cwd: &Path, args: &[&str]) -> bool {
         .current_dir(cwd)
         .env("GIT_TERMINAL_PROMPT", "0")
         .status()
-        .map(|trang_thai| trang_thai.success())
+        .map(|status| status.success())
         .unwrap_or(false)
 }
 
-fn co_git() -> bool {
+fn has_git() -> bool {
     Command::new("git")
         .arg("--version")
         .status()
-        .map(|trang_thai| trang_thai.success())
+        .map(|status| status.success())
         .unwrap_or(false)
 }
 
-/// Dựng một repo nguồn có đúng một commit, trả về URL `file://` của nó.
-fn repo_nguon(goc: &Path) -> Option<String> {
-    let nguon = goc.join("nguon");
-    std::fs::create_dir(&nguon).ok()?;
-    if !git(&nguon, &["init", "-q"]) {
+/// Build a source repo with exactly one commit and return its `file://` URL.
+fn source_repo(root: &Path) -> Option<String> {
+    let source = root.join("source");
+    std::fs::create_dir(&source).ok()?;
+    if !git(&source, &["init", "-q"]) {
         return None;
     }
-    std::fs::write(nguon.join("xin-chao.txt"), "xin chào").ok()?;
-    if !git(&nguon, &["add", "."]) {
+    std::fs::write(source.join("xin-chao.txt"), "xin chào").ok()?;
+    if !git(&source, &["add", "."]) {
         return None;
     }
-    // Máy chạy CI có thể chưa cấu hình danh tính; đặt tại chỗ để commit không hỏi gì.
-    let commit = git(
-        &nguon,
+    // A CI machine may have no identity configured; set it inline so the commit asks
+    // nothing.
+    let committed = git(
+        &source,
         &[
             "-c",
             "user.email=test@vi.du",
@@ -163,69 +165,69 @@ fn repo_nguon(goc: &Path) -> Option<String> {
             "commit",
             "-q",
             "-m",
-            "dau tien",
+            "first",
         ],
     );
-    if !commit {
+    if !committed {
         return None;
     }
-    let that = nguon.canonicalize().ok()?;
-    Some(format!("file://{}", that.display()))
+    let real = source.canonicalize().ok()?;
+    Some(format!("file://{}", real.display()))
 }
 
 #[tokio::test]
-async fn clone_that_phat_tien_do_roi_ket_thuc_bang_done() {
-    if !co_git() {
-        eprintln!("bỏ qua: máy này không có `git` trong PATH");
+async fn a_real_clone_emits_progress_and_ends_with_done() {
+    if !has_git() {
+        eprintln!("skipped: no `git` on PATH");
         return;
     }
-    let dir = TempDir::new().expect("thư mục tạm");
-    let Some(url) = repo_nguon(dir.path()) else {
-        eprintln!("bỏ qua: không dựng được repo nguồn bằng `git`");
+    let dir = TempDir::new().expect("temp dir");
+    let Some(url) = source_repo(dir.path()) else {
+        eprintln!("skipped: could not build a source repo with `git`");
         return;
     };
-    let cha = dir.path().join("dich");
-    std::fs::create_dir(&cha).expect("tạo thư mục chứa");
+    let parent = dir.path().join("dest");
+    std::fs::create_dir(&parent).expect("create the containing directory");
 
-    let mut luong = clone(CloneRequest {
+    let mut stream = clone(CloneRequest {
         url,
-        parent: cha.clone(),
-        name: Some("ban-sao".to_string()),
+        parent: parent.clone(),
+        name: Some("copy".to_string()),
         depth: None,
     });
 
-    let mut co_nhip = false;
-    let mut xong: Option<PathBuf> = None;
-    while let Some(su_kien) = luong.next().await {
-        match su_kien {
-            CloneEvent::Phase { .. } | CloneEvent::Progress { .. } => co_nhip = true,
+    let mut saw_tick = false;
+    let mut finished: Option<PathBuf> = None;
+    while let Some(event) = stream.next().await {
+        match event {
+            CloneEvent::Phase { .. } | CloneEvent::Progress { .. } => saw_tick = true,
             CloneEvent::Line { .. } => {}
-            CloneEvent::Done { path } => xong = Some(path),
-            CloneEvent::Failed { message } => panic!("clone hỏng: {message}"),
+            CloneEvent::Done { path } => finished = Some(path),
+            CloneEvent::Failed { message } => panic!("clone failed: {message}"),
         }
     }
 
-    assert!(co_nhip, "luồng không phát nhịp nào — giao diện sẽ đứng im");
-    let path = xong.expect("phải kết thúc bằng Done");
-    assert_eq!(path, cha.join("ban-sao"));
+    assert!(saw_tick, "the stream emitted no ticks — the UI would sit still");
+    let path = finished.expect("must end with Done");
+    assert_eq!(path, parent.join("copy"));
     assert!(
         path.join("xin-chao.txt").exists(),
-        "clone xong mà tệp không có mặt"
+        "the clone finished but the file is not there"
     );
 }
 
-/// URL bị chặn phải kết thúc luồng bằng `Failed`, không phải bằng im lặng.
+/// A blocked URL has to end the stream with `Failed`, not with silence.
 ///
-/// Một luồng không bao giờ phát gì trông y hệt một bản clone đang chạy chậm, và giao diện
-/// sẽ quay vòng mãi mãi.
+/// A stream that never emits anything looks exactly like a slow clone, and the UI spins
+/// forever.
 #[tokio::test]
-async fn url_hong_thi_luong_ket_thuc_bang_failed_chu_khong_treo() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let mut luong = clone(yeu_cau("ext::sh -c id", dir.path()));
-    let dau_tien = luong.next().await.expect("phải có sự kiện");
+async fn a_bad_url_ends_the_stream_with_failed_rather_than_hanging() {
+    let dir = TempDir::new().expect("temp dir");
+    let mut stream = clone(request("ext::sh -c id", dir.path()));
+    let first = stream.next().await.expect("there must be an event");
+    assert!(matches!(first, CloneEvent::Failed { .. }), "{first:?}");
     assert!(
-        matches!(dau_tien, CloneEvent::Failed { .. }),
-        "{dau_tien:?}"
+        stream.next().await.is_none(),
+        "once failed, the stream must close"
     );
-    assert!(luong.next().await.is_none(), "hỏng rồi thì phải đóng luồng");
 }

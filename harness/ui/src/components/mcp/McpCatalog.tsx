@@ -140,6 +140,15 @@ export default function McpCatalog(props: {
                           </span>
                         </span>
                         <span class="text-2xs text-muted">{entry.summary}</span>
+                        {/* Mục chạy từ xa: nói ra rằng **không phải cài gì**. Đây là câu
+                            trả lời cho đúng nỗi ngần ngại giữ người dùng lại ở màn hình
+                            này — cắm một server nghĩa là cài thêm bao nhiêu thứ nữa. */}
+                        <Show when={entry.url !== null}>
+                          <span class="inline-flex items-center gap-3xs rounded-pill bg-accent-soft px-2xs py-3xs text-2xs text-accent-ink">
+                            <Icon name="cloud" size={10} />
+                            Chạy từ xa — không cần cài gì
+                          </span>
+                        </Show>
                         <Show when={entry.requires.length > 0}>
                           <span class="flex flex-wrap gap-3xs">
                             <For each={entry.requires}>

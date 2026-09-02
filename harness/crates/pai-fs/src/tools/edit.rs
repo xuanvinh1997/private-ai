@@ -1,10 +1,10 @@
-//! `edit` — thay một đoạn văn bản nguyên văn.
+//! `edit` — replace one literal stretch of text.
 //!
-//! Khớp nguyên văn chứ không phải biểu thức chính quy, và mặc định phải khớp **đúng một
-//! lần**. Cả hai đều là ràng buộc có chủ ý: một mẫu khớp nhiều chỗ mà chỉ định sửa một
-//! chỗ là cách một lần sửa lan ra khắp tệp. Khi khớp nhiều lần, lỗi trả về phải nói rõ
-//! *bao nhiêu* lần — đó là con số mô hình cần để quyết định nới đoạn trích hay bật
-//! `replace_all`.
+//! Literal matching rather than a regular expression, and by default it must match
+//! **exactly once**. Both are deliberate constraints: a pattern matching several places when
+//! only one was meant is how a single edit spreads across a file. On multiple matches, the
+//! error has to say *how many* — that is the number the model needs to decide whether to
+//! widen the excerpt or set `replace_all`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -20,13 +20,13 @@ use crate::tools::diff;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EditArgs {
-    /// Đường dẫn tuyệt đối tới tệp cần sửa.
+    /// Absolute path of the file to edit.
     pub file_path: String,
-    /// Đoạn cần thay, nguyên văn kể cả thụt lề. Phải đủ dài để chỉ khớp một chỗ.
+    /// The text to replace, literally, indentation included. Long enough to match one place.
     pub old_string: String,
-    /// Đoạn thay thế.
+    /// The replacement text.
     pub new_string: String,
-    /// Thay mọi chỗ khớp. Mặc định `false`.
+    /// Replace every match. Defaults to `false`.
     #[serde(default)]
     pub replace_all: bool,
 }
@@ -84,7 +84,8 @@ impl Tool for Edit {
 
         let hits = before.matches(&args.old_string).count();
         match hits {
-            // Không sửa gì cả trước khi báo lỗi: một lần `edit` hỏng phải để tệp y nguyên.
+            // Change nothing before reporting: a failed `edit` has to leave the file as it
+            // was.
             0 => {
                 return Err(ToolError::Invalid(format!(
                     "không tìm thấy đoạn cần thay trong {shown}. Hãy `read` lại tệp: nội \

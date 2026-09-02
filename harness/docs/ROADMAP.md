@@ -118,11 +118,16 @@ Ba chỗ đã biết là chưa xong, viết ra để không ai phải phát hi�
 
 | Chỗ | Trạng thái |
 |---|---|
-| `OllamaEmbedder` / `OpenAiEmbedder` chưa gọi mạng thật lần nào | Phần phân tích JSON mới chỉ đúng theo tài liệu API. Đây là chỗ đầu tiên nên chạy tay. |
-| PDF có dấu tiếng Việt | Test dựng được PDF hợp lệ nhưng chữ ASCII; PDF thật do Word/LaTeX sinh dùng font nhúng có `ToUnicode`, đường đó chưa ai đi qua. |
-| Cosine quét tuyến tính toàn bảng `vectors` | Ước lượng bắt đầu chậm quanh 100.000 đoạn. Chưa benchmark ở quy mô đó. |
-| `mcp-server-sqlite` trong danh mục | Bản tham chiếu đã bị gỡ khỏi repo `modelcontextprotocol/servers`; gói còn trên PyPI nhưng không còn được bảo trì. |
-| Danh mục MCP chỉ dựng được server `stdio` | `McpCatalogEntry` trên dây không có trường `url`, nên GitHub đi đường Docker thay vì endpoint remote. |
+| ~~`OllamaEmbedder` chưa gọi mạng thật lần nào~~ | **Xong.** `tests/embed_live.rs` chạy với Ollama thật: đúng số vector, đúng thứ tự qua ranh giới lô, và hai câu cùng nghĩa gần nhau hơn câu khác nghĩa. Đo trên `embeddinggemma`, 768 chiều. Bài tự bỏ qua khi không có máy chủ. `OpenAiEmbedder` vẫn chưa có đường tương đương — cần một khoá API. |
+| ~~PDF có dấu tiếng Việt~~ | **Xong.** Bài mới in một PDF có font nhúng kèm `ToUnicode` bằng Chrome headless — cùng đường mà Word đi — rồi so từng cụm có dấu. Rút đúng cả `Đ` hoa lẫn năm dấu thanh. |
+| ~~Cosine quét tuyến tính toàn bảng `vectors`~~ | **Đã đo, và ước lượng cũ sai theo hướng bi quan.** 100.000 đoạn × 768 chiều mất **53ms** ở bản release — không ai cảm thấy. `tests/cosine_scale.rs` khoá lại ngưỡng 500ms để bắt hồi quy về bậc độ lớn. Chỉ mục ANN chưa cần tới. |
+| ~~`mcp-server-sqlite` trong danh mục~~ | **Xong.** Mục đã gỡ khỏi bảng: bản tham chiếu không còn trong `modelcontextprotocol/servers`, và một hàng danh mục cài phần mềm đã bỏ hoang còn tệ hơn không có hàng nào. |
+| ~~Danh mục MCP chỉ dựng được server `stdio`~~ | **Xong.** `CatalogEntry::url` cộng `McpCatalogEntry.url` trên dây; GitHub quay số thẳng tới endpoint remote, không cần Docker. Bí mật của mục từ xa đi vào **header**, không vào biến môi trường. |
+
+Về giam mạng: từ nay có `Policy::deny_network`, **tắt theo mặc định** — mặc định ấy không
+đổi, vì cấm mạng luôn luôn thì `cargo` và `npm` hỏng. Chỉ macOS giam thật; Linux và Windows
+khai `network_confinable() == false` thay vì nhận cờ rồi không dựng gì. Windows vẫn chưa
+giam được gì cả, và đó là món nợ lớn nhất còn lại của crate này.
 
 Và một giới hạn **cố ý**, không phải nợ: đồ thị mã nguồn phân giải lời gọi theo tên, không
 phân tích kiểu. Gọi qua biến, qua trait object hay qua con trỏ hàm không sinh cạnh nào. Cả

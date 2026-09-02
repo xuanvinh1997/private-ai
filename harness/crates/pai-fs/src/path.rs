@@ -1,14 +1,15 @@
-//! Đường dẫn: chuẩn hoá, rồi mới kiểm tra.
+//! Paths: canonicalise, and only then check.
 //!
-//! Thứ tự đó là toàn bộ nội dung của tệp này. Kiểm tra trước khi chuẩn hoá nghĩa là
-//! `gốc/../../etc/passwd` đi qua được, vì lúc so khớp nó vẫn còn bắt đầu bằng `gốc/`.
+//! That order is the entire content of this file. Checking before canonicalising lets
+//! `root/../../etc/passwd` through, because at comparison time it still starts with `root/`.
 //!
-//! Có hai cách chuẩn hoá, và cần cả hai. Đường **đọc** dùng `canonicalize` của hệ điều
-//! hành — nó theo symlink, đúng thứ ta muốn: một symlink trỏ ra ngoài gốc phải bị coi là
-//! nằm ngoài gốc. Đường **ghi** không dùng được nó, vì tệp chưa tồn tại; nên ta giải
-//! `..` trên chuỗi rồi `canonicalize` tổ tiên gần nhất đang tồn tại, và ghép phần đuôi
-//! vào. Phần đã tồn tại vẫn được kiểm qua symlink, phần chưa tồn tại thì không có
-//! symlink nào để mà theo.
+//! There are two ways to canonicalise and both are needed. The **read** path uses the
+//! operating system's `canonicalize` — it follows symlinks, which is exactly what we want: a
+//! symlink pointing outside the root has to count as outside the root. The **write** path
+//! cannot use it, because the file does not exist yet; so we resolve `..` lexically, then
+//! `canonicalize` the nearest existing ancestor and rejoin the tail. The existing part is
+//! still checked through symlinks, and the part that does not exist has no symlink to
+//! follow.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -22,19 +23,19 @@ pub enum PathError {
     Unresolvable(PathBuf, String),
 }
 
-/// Giải `.` và `..` trên chuỗi, không chạm đĩa.
+/// Resolve `.` and `..` lexically, without touching the disk.
 ///
-/// Không dùng được `canonicalize` cho việc này vì nó đòi tệp phải tồn tại. Cũng không
-/// bỏ qua được: `..` chưa giải là cách một đường dẫn thoát ra khỏi gốc mà vẫn trông như
-/// đang ở trong.
+/// `canonicalize` cannot do this because it requires the file to exist. Skipping it is not
+/// an option either: an unresolved `..` is how a path escapes the root while still looking
+/// like it is inside.
 fn lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
             Component::CurDir => {}
             Component::ParentDir => {
-                // `..` ở đầu một đường dẫn tương đối không có gì để bỏ; giữ nguyên rồi
-                // để tầng gốc từ chối, thay vì lặng lẽ nuốt mất nó.
+                // A leading `..` on a relative path has nothing to pop; keep it and let
+                // the roots layer refuse, rather than silently swallowing it.
                 if !out.pop() {
                     out.push(Component::ParentDir);
                 }
@@ -45,7 +46,7 @@ fn lexical(path: &Path) -> PathBuf {
     out
 }
 
-/// Những thư mục ứng dụng được phép chạm, và những tệp không bao giờ được chạm.
+/// The directories the application may touch, and the files it must never touch.
 #[derive(Debug, Default, Clone)]
 pub struct FileRoots {
     roots: Vec<PathBuf>,
@@ -67,19 +68,19 @@ impl FileRoots {
         &self.roots
     }
 
-    /// Khớp tuyệt đối, không theo tiền tố: cái được bảo vệ là *tệp đó*, không phải cả
-    /// cây dưới nó.
+    /// Exact match, not prefix match: what is protected is *that file*, not the whole tree
+    /// beneath it.
     pub fn is_protected(&self, resolved: &Path) -> bool {
         self.protected.iter().any(|p| p == resolved)
     }
 
     fn within_roots(&self, resolved: &Path) -> bool {
-        // Không có gốc nào nghĩa là chưa ai cấp quyền gì — từ chối tất, chứ không phải
-        // cho phép tất. Cấu hình trống là cấu hình chặt nhất.
+        // No roots means nobody granted anything — refuse everything, not allow
+        // everything. An empty config is the tightest config.
         self.roots.iter().any(|root| resolved.starts_with(root))
     }
 
-    /// Phân giải một đường dẫn để **đọc**. Theo symlink.
+    /// Resolve a path for **reading**. Follows symlinks.
     pub fn resolve_read(&self, path: &Path) -> Result<PathBuf, PathError> {
         let resolved = path
             .canonicalize()
@@ -87,13 +88,13 @@ impl FileRoots {
         self.authorize(resolved)
     }
 
-    /// Phân giải một đường dẫn để **ghi**. Tệp chưa cần tồn tại; thư mục cha thì cần.
+    /// Resolve a path for **writing**. The file need not exist; the parent directory must.
     pub fn resolve_write(&self, path: &Path) -> Result<PathBuf, PathError> {
         let lexical = lexical(path);
         if let Ok(resolved) = lexical.canonicalize() {
             return self.authorize(resolved);
         }
-        // Leo lên tới tổ tiên gần nhất đang tồn tại, phân giải nó, rồi ghép đuôi lại.
+        // Climb to the nearest existing ancestor, resolve that, then rejoin the tail.
         let mut ancestors = lexical.ancestors().skip(1);
         let existing = ancestors
             .find(|a| a.exists())
@@ -108,8 +109,8 @@ impl FileRoots {
     }
 
     fn authorize(&self, resolved: PathBuf) -> Result<PathBuf, PathError> {
-        // Được bảo vệ được hỏi **trước**: một tệp vừa nằm trong gốc vừa được bảo vệ thì
-        // câu trả lời là không, và lý do phải là lý do đúng.
+        // Protected is asked **first**: for a file that is both inside a root and
+        // protected the answer is no, and the reason has to be the right one.
         if self.is_protected(&resolved) {
             return Err(PathError::Protected(resolved));
         }
@@ -120,10 +121,11 @@ impl FileRoots {
     }
 }
 
-/// Bốn nghìn byte đầu có byte không thì coi là nhị phân.
+/// A NUL byte in the first four thousand bytes means binary.
 ///
-/// Từ chối hẳn thay vì trả về một chuỗi đầy ký tự thay thế: một tệp nhị phân đọc hỏng
-/// trông y hệt một tệp văn bản mã hoá sai, và mô hình sẽ suy diễn trên rác.
+/// Refuse outright rather than returning a string full of replacement characters: a binary
+/// file read badly looks exactly like a text file with the wrong encoding, and the model
+/// will reason over garbage.
 pub fn looks_binary(head: &[u8]) -> bool {
     head.iter().take(4096).any(|byte| *byte == 0)
 }

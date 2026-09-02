@@ -1,8 +1,9 @@
-//! Bất biến của việc chạy lệnh.
+//! Invariants of running a command.
 //!
-//! Bài quan trọng nhất ở đây là bài về cháu. Giết một shell mà không giết con cháu nó là
-//! loại lỗi không bao giờ tự lộ ra — mọi thứ trông vẫn chạy, chỉ có cổng bị giữ, khoá tệp
-//! bị giữ, và lượt sau chạy trong một cái máy đã bị nhiễm.
+//! The most important test here is the one about grandchildren. Killing a shell without
+//! killing its descendants is the kind of bug that never announces itself — everything
+//! still looks like it works, except a port is held, a file lock is held, and the next turn
+//! runs on a contaminated machine.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -12,8 +13,9 @@ use pai_sandbox::Policy;
 use pai_shell::provider::{LocalShell, Request, ShellExecutor};
 use tokio_util::sync::CancellationToken;
 
-/// Shell không có vòng giam. Những bài dưới đây kiểm cây tiến trình, không kiểm sandbox;
-/// bọc thêm một lớp `sandbox-exec` chỉ làm chúng đo nhầm thứ khác.
+/// A shell with no confinement. The tests below check the process tree, not the sandbox;
+/// wrapping another `sandbox-exec` layer around them only makes them measure something
+/// else.
 fn shell() -> LocalShell {
     LocalShell::new(Context::root(), Policy::danger_full_access("/tmp"))
 }
@@ -28,25 +30,25 @@ fn request(command: &str, timeout: Option<Duration>, cancel: CancellationToken) 
 }
 
 #[tokio::test]
-async fn ma_thoat_di_qua_nguyen_ven() {
+async fn the_exit_code_survives_the_round_trip() {
     let shell = shell();
     let ok = shell
         .run(request("echo xin-chao", None, CancellationToken::new()))
         .await
-        .expect("chạy được");
+        .expect("runs");
     assert_eq!(ok.exit_code, Some(0));
     assert!(ok.output.contains("xin-chao"));
 
     let failed = shell
         .run(request("exit 101", None, CancellationToken::new()))
         .await
-        .expect("chạy được");
-    // Mã thoát khác 0 vẫn là một lần chạy thành công: lệnh đã làm đúng thứ được bảo.
+        .expect("runs");
+    // A non-zero exit is still a successful run: the command did exactly what it was told.
     assert_eq!(failed.exit_code, Some(101));
 }
 
 #[tokio::test]
-async fn stdout_va_stderr_gop_theo_thu_tu_toi() {
+async fn stdout_and_stderr_interleave_in_arrival_order() {
     let run = shell()
         .run(request(
             "echo mot; echo hai >&2; echo ba",
@@ -54,11 +56,11 @@ async fn stdout_va_stderr_gop_theo_thu_tu_toi() {
             CancellationToken::new(),
         ))
         .await
-        .expect("chạy được");
+        .expect("runs");
     for line in ["mot", "hai", "ba"] {
         assert!(
             run.output.contains(line),
-            "thiếu `{line}` trong:\n{}",
+            "missing `{line}` in:\n{}",
             run.output
         );
     }
@@ -66,14 +68,14 @@ async fn stdout_va_stderr_gop_theo_thu_tu_toi() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn giet_mot_lenh_giet_ca_chau_cua_no() {
+async fn killing_a_command_kills_its_grandchildren() {
     use std::path::Path;
 
-    let marker = std::env::temp_dir().join(format!("pai-chau-{}", uuid_like()));
+    let marker = std::env::temp_dir().join(format!("pai-grandchild-{}", uuid_like()));
     let _ = std::fs::remove_file(&marker);
 
-    // Cháu sống 30 giây rồi mới chạm tệp đánh dấu. Nếu nó sống sót qua lần giết, tệp sẽ
-    // xuất hiện; nếu nó chết cùng cha, tệp không bao giờ có.
+    // The grandchild sleeps 30 seconds and only then touches the marker file. If it
+    // survives the kill the file appears; if it dies with its parent, it never does.
     let command = format!("(sleep 30; touch {}) & sleep 30", marker.display());
     let cancel = CancellationToken::new();
     let token = cancel.clone();
@@ -85,20 +87,20 @@ async fn giet_mot_lenh_giet_ca_chau_cua_no() {
     let run = shell()
         .run(request(&command, None, cancel))
         .await
-        .expect("chạy được");
+        .expect("runs");
     assert_eq!(run.interrupted.as_deref(), Some("lượt đã bị huỷ"));
 
-    // Đợi qua mốc cháu định chạm tệp. Nó không được chạm.
+    // Wait past the point where the grandchild meant to touch the file. It must not.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(
         !Path::new(&marker).exists(),
-        "cháu sống sót qua lần giết: {}",
+        "the grandchild survived the kill: {}",
         marker.display()
     );
 }
 
 #[tokio::test]
-async fn het_gio_thi_dung_va_van_tra_ve_phan_da_co() {
+async fn a_timeout_stops_the_command_and_still_returns_what_it_printed() {
     let run = shell()
         .run(request(
             "echo bat-dau; sleep 30",
@@ -106,16 +108,16 @@ async fn het_gio_thi_dung_va_van_tra_ve_phan_da_co() {
             CancellationToken::new(),
         ))
         .await
-        .expect("chạy được");
+        .expect("runs");
 
     assert!(
         run.interrupted.is_some(),
-        "hết giờ phải nói ra, không im lặng"
+        "a timeout has to be reported, not swallowed"
     );
-    // Phần đã in ra trước khi bị dừng vẫn có ích và không được vứt đi.
+    // What was printed before the stop is still useful and must not be thrown away.
     assert!(
         run.output.contains("bat-dau"),
-        "mất output đã có:\n{}",
+        "lost output that had already arrived:\n{}",
         run.output
     );
     assert_eq!(run.exit_code, None);

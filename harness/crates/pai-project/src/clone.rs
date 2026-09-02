@@ -1,21 +1,22 @@
-//! Lấy một repo về bằng `git clone`.
+//! Fetch a repo with `git clone`.
 //!
-//! **Dùng `git` làm tiến trình con, không dùng libgit2/gix.** Một thư viện Rust clone
-//! được, nhưng nó clone được đúng những repo công khai. Repo riêng tư thì cần credential
-//! helper của người dùng — Keychain trên macOS, `git-credential-manager` trên Windows —
-//! hoặc ssh-agent với khoá đã nạp sẵn, và toàn bộ bộ máy đó là của `git`, cấu hình trong
-//! `~/.gitconfig` của người ta, không phải thứ tái tạo lại được trong tiến trình này. Nối
-//! lại nó nghĩa là hỏi mật khẩu một lần nữa cho một thứ máy người ta đã đăng nhập rồi.
+//! **Use `git` as a child process, not libgit2/gix.** A Rust library can clone, but it can
+//! clone exactly the public repos. A private repo needs the user's credential helper —
+//! Keychain on macOS, `git-credential-manager` on Windows — or an ssh-agent with a loaded
+//! key, and that whole machine belongs to `git`, configured in their own `~/.gitconfig`,
+//! not something reproducible inside this process. Reimplementing it means asking for a
+//! password again for something the machine is already signed in to.
 //!
-//! Cái giá phải trả là hai cái bẫy, và cả hai đều nằm ở đây:
+//! The price is two traps, and both of them live here:
 //!
-//! 1. `git` **hỏi mật khẩu**. Trong một tiến trình con không có terminal, câu hỏi đó
-//!    không hiện ra ở đâu cả và tiến trình treo vô hạn trong khi giao diện chỉ thấy im
-//!    lặng. Nên `GIT_TERMINAL_PROMPT=0` cùng hai biến `*_ASKPASS` rỗng: thà thất bại
-//!    ngay với "cần xác thực" còn hơn treo mãi mãi.
-//! 2. `git` ghi tiến trình ra **stderr**, và ghi đè một dòng bằng `\r` chứ không xuống
-//!    dòng. Tách theo `\n` thì cả bản clone là **một** dòng khổng lồ, tới đúng lúc mọi
-//!    thứ đã xong — tức là thanh tiến trình đứng im rồi nhảy thẳng lên 100%.
+//! 1. `git` **asks for passwords**. In a child process with no terminal that prompt appears
+//!    nowhere at all and the process hangs forever while the UI sees only silence. Hence
+//!    `GIT_TERMINAL_PROMPT=0` plus two empty `*_ASKPASS` variables: better to fail
+//!    immediately with "authentication required" than to hang forever.
+//! 2. `git` writes progress to **stderr**, and overwrites a line with `\r` rather than
+//!    starting a new one. Splitting on `\n` makes the entire clone **one** enormous line,
+//!    arriving exactly when everything is already done — a progress bar that sits still and
+//!    then jumps straight to 100%.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -30,7 +31,7 @@ use tokio::sync::mpsc;
 pub enum CloneError {
     #[error("chưa có URL để clone")]
     Empty,
-    /// Xem [`kiem_url`] — đây là lỗ thi hành lệnh, không phải chuyện định dạng.
+    /// See [`check_url`] — this is a command-execution hole, not a formatting matter.
     #[error(
         "từ chối `{0}::` — dạng URL này bảo `git` chạy một chương trình phụ trợ, tức là \
          chạy lệnh tuỳ ý trên máy bạn"
@@ -59,24 +60,25 @@ pub enum CloneError {
     Spawn(String),
 }
 
-/// Một yêu cầu clone, đã đủ để dựng dòng lệnh nhưng **chưa được kiểm**.
+/// A clone request: enough to build the command line, but **not yet validated**.
 #[derive(Debug, Clone)]
 pub struct CloneRequest {
     pub url: String,
-    /// Thư mục chứa, không phải thư mục đích: đích là `parent/<tên>`.
+    /// The containing directory, not the destination: the destination is `parent/<name>`.
     pub parent: PathBuf,
-    /// Bỏ trống thì suy từ URL.
+    /// Left empty, it is derived from the URL.
     pub name: Option<String>,
-    /// `Some(n)` là clone nông. Đủ để đọc mã, không đủ để xem lịch sử.
+    /// `Some(n)` is a shallow clone. Enough to read the code, not enough to read history.
     pub depth: Option<u32>,
 }
 
-/// Những gì giao diện thấy trong lúc clone chạy.
+/// What the UI sees while a clone runs.
 ///
-/// `Phase` chỉ phát khi pha **đổi**, còn `Progress` phát theo từng nhịp git báo. `Line`
-/// dành cho những dòng không phải tiến trình — cảnh báo, lỗi xác thực, `Cloning into` —
-/// tức đúng những dòng cần đọc khi có sự cố. Phát cả dòng thô cho mỗi nhịp tiến trình
-/// nữa thì khung chi tiết có vài trăm dòng giống hệt nhau và không còn đọc được.
+/// `Phase` is emitted only when the phase **changes**; `Progress` is emitted on every tick
+/// git reports. `Line` is for lines that are not progress — warnings, authentication
+/// errors, `Cloning into` — which are exactly the lines to read when something goes wrong.
+/// Emitting the raw line for every progress tick as well would fill the detail pane with a
+/// few hundred identical lines and make it unreadable.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloneEvent {
     Phase { label: String },
@@ -87,38 +89,39 @@ pub enum CloneEvent {
 }
 
 impl CloneRequest {
-    /// `parent` ghép với tên đã đặt, hoặc tên suy từ URL.
+    /// `parent` joined with the given name, or the name derived from the URL.
     pub fn destination(&self) -> Result<PathBuf, CloneError> {
         let ten = match self.name.as_deref() {
             Some(ten) => ten.to_string(),
-            None => ten_tu_url(&self.url)?,
+            None => name_from_url(&self.url)?,
         };
-        // Kiểm cả tên suy ra chứ không chỉ tên người dùng gõ: một URL kết thúc bằng
-        // `/../` cũng đẩy thư mục đích ra ngoài `parent` y như một cái tên gõ tay.
-        kiem_ten(&ten)?;
+        // Validate the derived name too, not just the one the user typed: a URL ending in
+        // `/../` pushes the destination outside `parent` exactly as a hand-typed name would.
+        check_name(&ten)?;
         Ok(self.parent.join(ten))
     }
 
-    /// Mọi thứ phải đúng **trước** khi có tiến trình con nào được sinh ra.
+    /// Everything has to be right **before** any child process is spawned.
     pub fn validate(&self) -> Result<(), CloneError> {
-        kiem_url(&self.url)?;
+        check_url(&self.url)?;
         let dich = self.destination()?;
-        kiem_dich(&dich)
+        check_destination(&dich)
     }
 }
 
-/// Ba câu chặn, và câu đầu là câu quan trọng nhất trong tệp này.
+/// Three checks, and the first is the most important thing in this file.
 ///
-/// **`ext::` là một lỗ thi hành lệnh.** `git clone "ext::sh -c 'lệnh bất kỳ'"` không tải
-/// gì cả: nó bảo `git` chạy `sh -c 'lệnh bất kỳ'` làm chương trình vận chuyển. Một URL
-/// dán từ chỗ khác vào ô "clone" vì thế là một dòng lệnh, và nó chạy với đúng quyền của
-/// người dùng. Chặn **mọi** `<gì đó>::` chứ không chỉ `ext::` — danh sách helper mở rộng
-/// được, và một danh sách cấm luôn đi sau.
+/// **`ext::` is a command-execution hole.** `git clone "ext::sh -c 'anything'"` downloads
+/// nothing: it tells `git` to run `sh -c 'anything'` as the transport program. A URL pasted
+/// from somewhere else into a "clone" box is therefore a command line, and it runs with the
+/// user's full privileges. Block **every** `<something>::`, not only `ext::` — the helper
+/// list is extensible, and a blocklist is always a step behind.
 ///
-/// Câu thứ hai: URL bắt đầu bằng `-` bị `git` nuốt làm cờ (`--upload-pack=...` chẳng hạn,
-/// lại là thi hành lệnh). Dòng lệnh dưới kia luôn có `--` trước URL, nên đây là lớp thứ
-/// hai — hai lớp vì lớp thứ nhất là thứ dễ bị xoá đi trong một lần sửa vội.
-fn kiem_url(url: &str) -> Result<(), CloneError> {
+/// The second check: a URL starting with `-` gets swallowed by `git` as a flag
+/// (`--upload-pack=...`, for instance, which is command execution again). The command line
+/// below always puts `--` before the URL, so this is the second layer — two layers because
+/// the first is the kind of thing a hurried edit deletes.
+fn check_url(url: &str) -> Result<(), CloneError> {
     let url = url.trim();
     if url.is_empty() {
         return Err(CloneError::Empty);
@@ -128,8 +131,8 @@ fn kiem_url(url: &str) -> Result<(), CloneError> {
     }
     if let Some(vi_tri) = url.find("::") {
         let dau = &url[..vi_tri];
-        // `https://máy/a::b` không phải helper — dấu `::` nằm trong đường dẫn. Helper là
-        // dạng có `::` **trước** dấu gạch chéo đầu tiên, đúng như `git` phân tích.
+        // `https://host/a::b` is not a helper — the `::` sits inside the path. A helper is
+        // the form with `::` **before** the first slash, exactly as `git` parses it.
         if !dau.contains('/') {
             return Err(CloneError::TransportHelper(dau.to_string()));
         }
@@ -145,21 +148,21 @@ fn kiem_url(url: &str) -> Result<(), CloneError> {
         return Ok(());
     }
 
-    // Dạng scp: `[người-dùng@]máy-chủ:đường-dẫn`. Không có scheme, phân biệt với đường
-    // dẫn thường ở chỗ có dấu hai chấm mà trước nó không có gạch chéo.
+    // The scp form: `[user@]host:path`. No scheme; distinguished from an ordinary path by
+    // having a colon with no slash before it.
     match url.split_once(':') {
         Some((truoc, sau)) if !truoc.is_empty() && !truoc.contains('/') && !sau.is_empty() => {
             Ok(())
         }
-        // Đường dẫn cục bộ trần (`/nha/repo`) rơi vào đây. Từ chối có chủ ý: `file:///nha/repo`
-        // nói ra ý định, còn một chuỗi không có scheme thì không phân biệt được với một
-        // cái tên gõ nhầm.
+        // A bare local path (`/home/repo`) lands here. Refused deliberately:
+        // `file:///home/repo` states the intent, whereas a string with no scheme is
+        // indistinguishable from a typo.
         _ => Err(CloneError::Scheme(url.to_string())),
     }
 }
 
-/// Tên thư mục, không phải đường dẫn. Đây là chỗ giữ thư mục đích nằm trong `parent`.
-fn kiem_ten(ten: &str) -> Result<(), CloneError> {
+/// A directory name, not a path. This is what keeps the destination inside `parent`.
+fn check_name(ten: &str) -> Result<(), CloneError> {
     let hong = ten.is_empty()
         || ten == "."
         || ten.contains('/')
@@ -171,7 +174,7 @@ fn kiem_ten(ten: &str) -> Result<(), CloneError> {
     Ok(())
 }
 
-fn ten_tu_url(url: &str) -> Result<String, CloneError> {
+fn name_from_url(url: &str) -> Result<String, CloneError> {
     let goc = url.trim().trim_end_matches('/');
     let cuoi = goc.rsplit(['/', ':']).next().unwrap_or("");
     let ten = cuoi.strip_suffix(".git").unwrap_or(cuoi);
@@ -181,8 +184,8 @@ fn ten_tu_url(url: &str) -> Result<String, CloneError> {
     Ok(ten.to_string())
 }
 
-/// Chưa tồn tại, hoặc là một thư mục rỗng. Không có lựa chọn thứ ba.
-fn kiem_dich(dich: &Path) -> Result<(), CloneError> {
+/// Either does not exist, or is an empty directory. There is no third option.
+fn check_destination(dich: &Path) -> Result<(), CloneError> {
     if dich.is_file() {
         return Err(CloneError::DestinationIsFile(dich.to_path_buf()));
     }
@@ -202,18 +205,18 @@ fn kiem_dich(dich: &Path) -> Result<(), CloneError> {
     }
 }
 
-/// Luồng tiến trình của một bản clone. **Thả luồng đi là huỷ bản clone.**
+/// The progress stream of one clone. **Dropping the stream cancels the clone.**
 ///
-/// Huỷ ở đây không phải chuyện lịch sự: một `git clone` bỏ dở giữ nguyên một cây tiến
-/// trình (`git` sinh `git-remote-https`, sinh `ssh`) vẫn đang tải, vẫn đang ghi vào thư
-/// mục đích. Nên tiến trình con nằm trong nhóm tiến trình riêng và tín hiệu gửi cho cả
-/// nhóm — cùng lý do và cùng cách làm với `pai-shell`.
+/// Cancellation here is not a courtesy: an abandoned `git clone` leaves a whole process
+/// tree (`git` spawns `git-remote-https`, which spawns `ssh`) still downloading, still
+/// writing into the destination directory. So the child sits in its own process group and
+/// signals go to the whole group — same reason and same method as `pai-shell`.
 ///
-/// Phải gọi trong một runtime Tokio: công việc thật chạy trên một task nền, và task đó
-/// biết luồng đã bị thả nhờ đầu gửi của kênh đóng lại.
+/// Must be called inside a Tokio runtime: the real work runs on a background task, and that
+/// task learns the stream was dropped when the channel's sending end closes.
 pub fn clone(req: CloneRequest) -> BoxStream<'static, CloneEvent> {
     let (tx, rx) = mpsc::channel(64);
-    tokio::spawn(chay(req, tx));
+    tokio::spawn(run_clone(req, tx));
     Box::pin(tokio_stream::wrappers::ReceiverStream::new(rx))
 }
 
@@ -223,7 +226,7 @@ enum Ket {
     Loi(String),
 }
 
-async fn chay(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
+async fn run_clone(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
     let dich = match req.validate().and_then(|()| req.destination()) {
         Ok(dich) => dich,
         Err(err) => {
@@ -235,8 +238,9 @@ async fn chay(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
             return;
         }
     };
-    // Nhớ lại trạng thái trước khi chạy để lúc huỷ biết được cái gì là của git. `validate`
-    // vừa khẳng định chỗ này rỗng hoặc chưa có, nên mọi thứ xuất hiện sau đây là do git.
+    // Remember the state before running so that on cancellation we know what git created.
+    // `validate` just asserted this place is empty or absent, so anything appearing after
+    // this point came from git.
     let da_co_san = dich.is_dir();
 
     let mut lenh = Command::new("git");
@@ -244,16 +248,16 @@ async fn chay(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
     if let Some(depth) = req.depth {
         lenh.arg("--depth").arg(depth.to_string());
     }
-    // `--` trước URL: lớp thứ hai sau `kiem_url`, cho trường hợp một lần sửa sau này nới
-    // lỏng câu chặn kia mà quên chỗ này.
+    // `--` before the URL: the second layer after `check_url`, for the case where a later
+    // edit loosens that check and forgets this one.
     lenh.arg("--").arg(req.url.trim()).arg(&dich);
     lenh.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        // Không có ba biến này thì một repo riêng tư làm tiến trình con treo vô hạn: git
-        // mở hộp thoại hỏi mật khẩu vào một terminal không tồn tại, và giao diện chỉ thấy
-        // một luồng im lặng không bao giờ kết thúc.
+        // Without these three variables a private repo hangs the child forever: git opens
+        // a password prompt onto a terminal that does not exist, and the UI sees only a
+        // silent stream that never ends.
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "");
@@ -281,8 +285,8 @@ async fn chay(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
         return;
     };
 
-    // Một nhịp ngay lập tức: phân giải DNS và xác thực có thể mất vài giây trước dòng đầu
-    // tiên của git, và một hộp thoại không nhúc nhích trông y hệt một hộp thoại treo.
+    // One tick immediately: DNS resolution and authentication can take seconds before
+    // git's first line, and a dialog that does not move looks exactly like a hung one.
     if tx
         .send(CloneEvent::Phase {
             label: "Đang tạo bản sao".to_string(),
@@ -290,30 +294,32 @@ async fn chay(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
         .await
         .is_err()
     {
-        giet_nhom(&mut con).await;
+        kill_group(&mut con).await;
         return;
     }
 
     let mut cuoi = VecDeque::new();
     let ket = tokio::select! {
-        // `closed()` là chỗ phát hiện luồng bị thả trong lúc git đang im lặng chờ mạng.
-        // Chỉ trông vào `send` báo lỗi thì một bản clone treo sẽ không bao giờ bị huỷ.
+        // `closed()` is what notices the stream being dropped while git waits silently on
+        // the network. Relying only on `send` failing means a stalled clone is never
+        // cancelled.
         _ = tx.closed() => Ket::Huy,
-        ket = bom(&mut con, stderr, &tx, &mut cuoi) => ket,
+        ket = pump(&mut con, stderr, &tx, &mut cuoi) => ket,
     };
 
     match ket {
         Ket::Huy => {
-            giet_nhom(&mut con).await;
-            // Dọn phần đã tải dở: để lại một thư mục nửa vời thì lần thử lại tiếp theo
-            // đâm vào chính câu "thư mục đích không rỗng" ở trên và người dùng bế tắc.
+            kill_group(&mut con).await;
+            // Clean up the partial download: leaving a half-finished directory makes the
+            // next attempt hit the "destination not empty" check above, and the user is
+            // stuck.
             let _ = std::fs::remove_dir_all(&dich);
             if da_co_san {
                 let _ = std::fs::create_dir_all(&dich);
             }
         }
         Ket::Loi(message) => {
-            giet_nhom(&mut con).await;
+            kill_group(&mut con).await;
             let _ = tx.send(CloneEvent::Failed { message }).await;
         }
         Ket::Xong(trang_thai) if trang_thai.success() => {
@@ -324,8 +330,8 @@ async fn chay(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
                 .code()
                 .map(|ma| ma.to_string())
                 .unwrap_or_else(|| "bị tín hiệu dừng".to_string());
-            // Kèm mấy dòng cuối của git: "mã 128" một mình không nói được người dùng gõ
-            // sai URL hay chưa có quyền đọc repo.
+            // Include git's last few lines: "exit 128" on its own cannot distinguish a
+            // mistyped URL from missing read access to the repo.
             let chi_tiet: Vec<String> = cuoi.into_iter().collect();
             let message = if chi_tiet.is_empty() {
                 format!("`git clone` thất bại ({ma})")
@@ -337,13 +343,13 @@ async fn chay(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
     }
 }
 
-/// Đọc stderr theo từng mảnh và dịch thành sự kiện.
+/// Read stderr in chunks and translate it into events.
 ///
-/// Đọc byte chứ không đọc dòng: `AsyncBufReadExt::lines` tách theo `\n`, mà git ghi đè
-/// một dòng tiến trình bằng `\r`. Gộp mảnh vào một bộ đệm byte rồi mới cắt cũng là cố ý —
-/// một ký tự tiếng Việt có thể nằm vắt qua hai lần đọc, và cắt giữa nó là một dấu hỏi
-/// trong khung chi tiết.
-async fn bom(
+/// Reads bytes, not lines: `AsyncBufReadExt::lines` splits on `\n`, and git overwrites a
+/// progress line with `\r`. Accumulating chunks into a byte buffer before splitting is also
+/// deliberate — a Vietnamese character can straddle two reads, and cutting through one
+/// produces a replacement character in the detail pane.
+async fn pump(
     con: &mut Child,
     mut stderr: ChildStderr,
     tx: &mpsc::Sender<CloneEvent>,
@@ -367,8 +373,8 @@ async fn bom(
             if text.is_empty() {
                 continue;
             }
-            ghi_nho(cuoi, &text);
-            for su_kien in dich_dong(&text, &mut pha) {
+            remember(cuoi, &text);
+            for su_kien in translate_line(&text, &mut pha) {
                 if tx.send(su_kien).await.is_err() {
                     return Ket::Huy;
                 }
@@ -382,21 +388,21 @@ async fn bom(
     }
 }
 
-/// Chỉ giữ mấy dòng gần nhất: thông báo lỗi cần ngữ cảnh, không cần cả bản ghi.
-fn ghi_nho(cuoi: &mut VecDeque<String>, text: &str) {
+/// Keep only the last few lines: an error message needs context, not the whole log.
+fn remember(cuoi: &mut VecDeque<String>, text: &str) {
     cuoi.push_back(text.to_string());
     if cuoi.len() > 5 {
         cuoi.pop_front();
     }
 }
 
-fn dich_dong(text: &str, pha: &mut String) -> Vec<CloneEvent> {
-    // `remote: ` đứng trước những dòng do máy chủ đếm; bỏ đi để phần còn lại phân tích
-    // được như dòng của máy mình.
+fn translate_line(text: &str, pha: &mut String) -> Vec<CloneEvent> {
+    // `remote: ` prefixes lines counted by the server; strip it so the rest parses like a
+    // local line.
     let sach = text.strip_prefix("remote: ").unwrap_or(text).trim();
-    match doc_tien_do(sach) {
+    match parse_progress(sach) {
         Some((goc, percent)) => {
-            let label = nhan_pha(&goc);
+            let label = phase_label(&goc);
             let mut ra = Vec::new();
             if *pha != label {
                 pha.clear();
@@ -415,7 +421,7 @@ fn dich_dong(text: &str, pha: &mut String) -> Vec<CloneEvent> {
 }
 
 /// `Receiving objects:  42% (100/240)` → `("Receiving objects", 42)`.
-fn doc_tien_do(dong: &str) -> Option<(String, u8)> {
+fn parse_progress(dong: &str) -> Option<(String, u8)> {
     let (dau, sau) = dong.split_once(':')?;
     let vi_tri = sau.find('%')?;
     let mut so: Vec<char> = sau[..vi_tri]
@@ -431,11 +437,11 @@ fn doc_tien_do(dong: &str) -> Option<(String, u8)> {
     Some((dau.trim().to_string(), phan_tram.min(100) as u8))
 }
 
-/// Tên pha của git, bằng tiếng Việt.
+/// Git's phase names, rendered in Vietnamese for the UI.
 ///
-/// Không dịch được thì trả nguyên văn: một bản git khác đặt tên pha khác, và nuốt mất
-/// dòng đó nghĩa là thanh tiến trình đứng im ở một pha có thật.
-fn nhan_pha(goc: &str) -> String {
+/// Anything untranslatable is returned verbatim: a different git build names phases
+/// differently, and swallowing that line leaves the progress bar frozen on a real phase.
+fn phase_label(goc: &str) -> String {
     match goc {
         "Counting objects" => "Đang đếm đối tượng",
         "Enumerating objects" => "Đang liệt kê đối tượng",
@@ -449,12 +455,12 @@ fn nhan_pha(goc: &str) -> String {
     .to_string()
 }
 
-/// SIGTERM cho cả nhóm, chờ một nhịp, rồi SIGKILL.
+/// SIGTERM to the whole group, wait a beat, then SIGKILL.
 ///
-/// Giết mỗi `git` thì `git-remote-https` và `ssh` con của nó sống tiếp, vẫn tải, vẫn ghi
-/// vào thư mục ta sắp xoá. Số pid âm nghĩa là "cả nhóm" — đó là toàn bộ lý do đặt
-/// `process_group(0)` lúc spawn.
-async fn giet_nhom(con: &mut Child) {
+/// Killing only `git` leaves its `git-remote-https` and `ssh` children alive, still
+/// downloading, still writing into the directory we are about to delete. A negative pid
+/// means "the whole group" — which is the entire reason for `process_group(0)` at spawn.
+async fn kill_group(con: &mut Child) {
     #[cfg(unix)]
     if let Some(pid) = con.id() {
         unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };

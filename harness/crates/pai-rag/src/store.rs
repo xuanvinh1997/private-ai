@@ -1,49 +1,40 @@
 //! Kho: SQLite, FTS5, và một bảng vector.
 //!
-//! Một tệp cơ sở dữ liệu cho **mỗi dự án tài liệu**. Không dùng chung một kho cho mọi dự
-//! án, vì triệu chứng của việc dùng chung là `docs.search` trả về một đoạn từ thư viện của
-//! dự án khác — một câu trả lời trông y hệt một câu trả lời sai bình thường, nên không ai
-//! lần ra nguyên nhân.
+//! Một tệp cơ sở dữ liệu cho **mỗi dự án tài liệu**. Dùng chung một kho thì triệu chứng là
+//! `docs.search` trả về một đoạn từ thư viện của dự án khác — trông y hệt một câu trả lời
+//! sai bình thường, nên không ai lần ra nguyên nhân.
 //!
-//! Kho này là **chỉ mục soi vào thư mục dự án**, không phải bản gốc của gì cả. Chữ nằm
-//! trong tệp của người dùng; ở đây chỉ có thứ suy ra được từ chúng. Đó là lý do mọi quyết
-//! định bên dưới nghiêng về "dựng lại được" thay vì "giữ bằng mọi giá" — xem
-//! `docs/CONTRACT.md`, luật 12.
+//! Kho là **chỉ mục soi vào thư mục dự án**, không phải bản gốc của gì cả: chữ nằm trong
+//! tệp của người dùng, ở đây chỉ có thứ suy ra được. Nên mọi quyết định bên dưới nghiêng về
+//! "dựng lại được" thay vì "giữ bằng mọi giá" — xem `docs/CONTRACT.md`, luật 12.
 //!
 //! # Bốn quyết định
 //!
-//! **1. FTS5 external content.** Bảng `chunks_fts` không tự giữ nội dung; nó trỏ về
-//! `chunks` bằng `content='chunks'` và được đồng bộ bằng ba trigger. Đây là chỗ **khác**
-//! `pai-index`, và khác có lý do: ở đó mỗi hàng FTS là một cái tên vài chục byte nên lặp
-//! lại không đáng kể, còn ở đây mỗi hàng là một đoạn ~1000 ký tự, và một thư viện mười
-//! nghìn đoạn thì bản sao tốn thêm mười megabyte cho đúng cái dữ liệu đã nằm ngay bên
-//! cạnh.
+//! **1. FTS5 external content.** `chunks_fts` trỏ về `chunks` bằng `content='chunks'` và
+//! đồng bộ bằng ba trigger. Khác `pai-index` có lý do: ở đó mỗi hàng FTS là một cái tên vài
+//! chục byte, còn ở đây là một đoạn ~1000 ký tự — mười nghìn đoạn thì bản sao tốn thêm mười
+//! megabyte cho đúng dữ liệu đã nằm ngay bên cạnh.
 //!
-//! Cái giá phải trả là `trusted_schema` **không** tắt được: trigger ghi vào một virtual
-//! table là đúng thứ `trusted_schema = OFF` chặn, và tắt nó thì mọi lần chèn đoạn đều
-//! hỏng. Đổi lại, ta kiểm `application_id` trước khi ghi và tệp này nằm trong thư mục dữ
-//! liệu do chính ứng dụng tạo — nó không phải một tệp người dùng mở từ ngoài vào.
+//! Cái giá là `trusted_schema` **không** tắt được: trigger ghi vào virtual table là đúng
+//! thứ `trusted_schema = OFF` chặn. Đổi lại, ta kiểm `application_id` trước khi ghi, và tệp
+//! nằm trong thư mục dữ liệu do chính ứng dụng tạo.
 //!
-//! **2. Đường dẫn là danh tính, `mtime` + kích thước là dấu vân tay.** Thư viện là thư
-//! mục dự án, nên một hàng `documents` ứng với **một tệp đang nằm ở đó**, và hai tệp là
-//! hai hàng kể cả khi nội dung giống hệt nhau — người dùng nhìn thấy hai tệp trong thư
-//! mục của họ, và một danh sách hiện một hàng là danh sách nói dối. Bản trước băm nội dung
-//! làm danh tính vì lúc ấy kho giữ **bản sao**; giờ không còn bản sao nào để gộp.
+//! **2. Đường dẫn là danh tính, `mtime` + kích thước là dấu vân tay.** Một hàng `documents`
+//! ứng với **một tệp đang nằm đó**, và hai tệp là hai hàng kể cả khi nội dung giống hệt —
+//! người dùng nhìn thấy hai tệp, và một danh sách hiện một hàng là danh sách nói dối. Bản
+//! trước băm nội dung làm danh tính vì lúc ấy kho giữ **bản sao**; giờ không còn bản sao.
 //!
-//! Dấu vân tay thì đi theo `pai-index`: `mtime` + kích thước, không băm. Băm nội dung mọi
-//! tệp ở mọi lần quét là đọc lại cả thư mục mỗi lần — đúng cái giá mà chỉ mục tăng dần
-//! sinh ra để khỏi phải trả. Nó bỏ sót đúng một trường hợp: sửa tệp mà giữ nguyên cả độ
-//! dài lẫn `mtime`, và cách duy nhất tạo ra nó là đặt lại `mtime` bằng tay.
+//! Dấu vân tay đi theo `pai-index`: `mtime` + kích thước, không băm. Băm mọi tệp ở mọi lần
+//! quét là đọc lại cả thư mục mỗi lần — đúng cái giá mà chỉ mục tăng dần sinh ra để khỏi
+//! phải trả. Nó bỏ sót đúng một trường hợp: sửa tệp mà giữ nguyên cả độ dài lẫn `mtime`.
 //!
-//! **3. Xoá bằng lệnh tường minh, không dựa vào `ON DELETE CASCADE`.** SQLite chỉ kích
-//! hoạt trigger cho những hàng bị xoá theo dây chuyền khi `recursive_triggers` bật. Xoá
-//! một tài liệu mà chỉ trông vào cascade thì hàng `chunks` biến mất còn chỉ mục FTS ở
-//! lại, và một hàng FTS mồ côi **vẫn trả về kết quả** — tìm ra một đoạn của tài liệu đã
-//! xoá rồi không đọc nổi nó. Vì thế [`Store::remove_document`] xoá vector, rồi đoạn, rồi
-//! tài liệu, từng lệnh một.
+//! **3. Xoá bằng lệnh tường minh, không dựa `ON DELETE CASCADE`.** SQLite chỉ kích hoạt
+//! trigger cho hàng xoá theo dây chuyền khi `recursive_triggers` bật. Trông vào cascade thì
+//! hàng `chunks` biến mất còn chỉ mục FTS ở lại, và một hàng FTS mồ côi **vẫn trả kết quả**
+//! — tìm ra đoạn của tài liệu đã xoá rồi không đọc nổi nó. Vì thế
+//! [`Store::remove_document`] xoá vector, rồi đoạn, rồi tài liệu, từng lệnh một.
 //!
-//! **4. Lệch schema thì dựng lại — nhưng chỉ khi còn dựng lại được.** Xem
-//! [`ensure_schema`].
+//! **4. Lệch schema thì dựng lại — nhưng chỉ khi còn dựng lại được.** Xem [`ensure_schema`].
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -157,6 +148,9 @@ pub const META_EMBEDDER_DIM: &str = "embedder.dim";
 /// Bộ nhúng **trước đó**, ghi lúc xoá vector và xoá đi khi nhúng lại xong. Đây là thứ
 /// khiến `stats()` nói được "đang nhúng lại vì đổi mô hình" thay vì "đang xếp hàng".
 pub const META_EMBEDDER_PREVIOUS: &str = "embedder.previous";
+/// Bộ rút chữ nào đã sinh ra những đoạn đang nằm trong kho — xem
+/// [`crate::extract::EXTRACT_VERSION`].
+pub const META_EXTRACT_VERSION: &str = "extract.version";
 /// Số tệp lần quét gần nhất nhìn thấy trong thư mục dự án.
 pub const META_SCAN_FILES: &str = "scan.files";
 /// Số tệp lần quét gần nhất bỏ qua vì chạm trần.
@@ -761,6 +755,29 @@ impl Store {
     /// lúc FTS5 là thứ duy nhất còn trả lời được.
     pub fn forget_vectors(&self) -> Result<usize> {
         self.with(|conn| Ok(conn.execute("DELETE FROM vectors", [])?))
+    }
+
+    /// Vô hiệu hoá dấu vân tay của **mọi** tệp, để lần quét sau đọc lại cả thư mục.
+    ///
+    /// Giữ nguyên `documents` và `chunks`, đúng cùng lý do với [`Store::forget_vectors`]:
+    /// tìm bằng từ khoá phải chạy suốt thời gian đọc lại, và một thư viện tự làm rỗng
+    /// mình trong lúc "đang cập nhật" là thứ người dùng đọc thành mất dữ liệu. Chúng bị
+    /// **đè lên** khi từng tệp được nạp lại, chứ không bị xoá trước.
+    ///
+    /// `mtime = -1` là dấu không tệp nào mang được: `mtime_of` trả về nanosecond kể từ
+    /// epoch, tức là `0` với tệp cổ nhất và không bao giờ âm. Bảng `failures` thì xoá
+    /// sạch — một tệp hỏng vì bộ rút chữ cũ đáng được thử lại bằng bộ mới, và đó chính là
+    /// lý do hàm này được gọi.
+    ///
+    /// Trả về số tài liệu sẽ phải đọc lại, để log nói được ra một con số.
+    pub fn forget_fingerprints(&self) -> Result<usize> {
+        self.with(|conn| {
+            let tx = conn.transaction()?;
+            let touched = tx.execute("UPDATE documents SET mtime = -1", [])?;
+            tx.execute("DELETE FROM failures", [])?;
+            tx.commit()?;
+            Ok(touched)
+        })
     }
 
     /// Xoá lý do hỏng trên mọi tài liệu.

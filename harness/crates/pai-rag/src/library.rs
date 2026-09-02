@@ -1,30 +1,18 @@
 //! Thư viện tài liệu: quét thư mục dự án, nạp, liệt kê, bỏ khỏi thư viện, tìm.
 //!
-//! # Ba quyết định sản phẩm, không phải ba tuỳ chọn kỹ thuật
+//! # Ba quyết định sản phẩm
 //!
-//! **1. Thư mục dự án *là* thư viện.** Người dùng mở `~/Tài liệu/NCS` thành một dự án tài
-//! liệu; tệp trong đó là nguồn sự thật, còn kho chỉ là chỉ mục soi vào nó. Bản trước bắt
-//! họ thêm từng tệp một qua nút "Chọn tệp…" rồi chép bản sao vào một thư mục ẩn, nên màn
-//! hình thư viện hiện **0 tài liệu** ngay sau khi họ vừa chỉ đúng chỗ tài liệu của mình
-//! nằm. Đó là câu trả lời tệ nhất mà phần mềm này có thể đưa ra, và nó xuất hiện ở đúng
-//! bước đầu tiên.
+//! **1. Thư mục dự án *là* thư viện.** Tệp trong đó là nguồn sự thật, kho chỉ là chỉ mục
+//! soi vào nó — không chép bản sao vào một thư mục ẩn. [`Library::sync`] bắt kịp đĩa theo
+//! `mtime` + kích thước như `pai-index`, và tôn trọng `.gitignore` qua crate `ignore` với
+//! `require_git(false)`.
 //!
-//! Dự án mã nguồn đã làm đúng từ đầu — `pai-index` quét thư mục và bắt kịp đĩa theo
-//! `mtime` + kích thước — nên [`Library::sync`] chép lại đúng hình dạng ấy, kể cả việc
-//! dùng crate `ignore` để tôn trọng `.gitignore` với `require_git(false)`.
+//! **2. [`Library::remove`] *không* xoá tệp của người dùng.** Đường dẫn trỏ vào tệp thật,
+//! nên xoá tệp sẽ là một hành động không lấy lại được.
 //!
-//! **2. Bỏ một tài liệu khỏi thư viện *không* xoá tệp của người dùng.** Xem
-//! [`Library::remove`]. Trước đây `remove` xoá một bản sao trong kho ẩn nên nó vô hại;
-//! giờ đường dẫn trỏ vào tệp thật, và cùng một dòng lệnh sẽ là một hành động không lấy
-//! lại được.
-//!
-//! **3. Nhúng vector là bước được phép hỏng.** Khi không có bộ nhúng, hoặc khi Ollama chưa
-//! bật, tài liệu **vẫn** được rút chữ, cắt đoạn và đưa vào FTS5 — tìm bằng từ khoá chạy
-//! ngay. Lý do nằm ở phía người dùng chứ không ở phía kiến trúc: họ vừa chỉ vào một thư
-//! mục hai trăm tệp, và "không có gì xảy ra" là câu trả lời tệ nhất có thể đưa cho họ. Cái
-//! chưa xong được nói ra ở [`Stats::reason`], và [`Library::embed_pending`] dọn nốt khi bộ
-//! nhúng quay lại.
-
+//! **3. Nhúng vector là bước được phép hỏng.** Thiếu bộ nhúng thì tài liệu **vẫn** được rút
+//! chữ, cắt đoạn và đưa vào FTS5 — tìm bằng từ khoá chạy ngay. [`Stats::reason`] nói ra phần
+//! chưa xong; [`Library::embed_pending`] dọn nốt khi bộ nhúng quay lại.
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -161,6 +149,14 @@ pub enum IngestStage {
     Skipped,
     /// Tệp đã biến mất khỏi thư mục nên hàng của nó vừa rời thư viện.
     Removed,
+    /// Đợt nhúng bù ở cuối mỗi lượt: những đoạn đã nằm trong FTS5 mà còn thiếu vector
+    /// vừa được nhúng, hoặc vừa thử nhúng mà không được — `error` nói vế nào.
+    ///
+    /// Không thuộc về tệp nào; nó là việc dọn nốt của **cả thư viện**, và `path` là thư
+    /// mục dự án. Tách khỏi `Failed` để giao diện không đếm nó vào danh sách *tệp* hỏng:
+    /// "1 tệp không nạp được" là một câu sai khi mọi tệp đều đã vào và chỉ có máy chủ
+    /// nhúng là chưa trả lời.
+    Embedding,
     /// Cả mẻ đã xong. Luôn là sự kiện cuối cùng của dòng.
     Finished,
 }
@@ -173,6 +169,7 @@ impl IngestStage {
             IngestStage::Failed => "failed",
             IngestStage::Skipped => "skipped",
             IngestStage::Removed => "removed",
+            IngestStage::Embedding => "embedding",
             IngestStage::Finished => "finished",
         }
     }
@@ -221,6 +218,8 @@ pub trait DocLibrary: Send + Sync + 'static {
     /// lâu hơn thư viện — một dòng còn chạy sau khi kho đã đóng là một dòng ghi vào chỗ
     /// trống.
     fn ingest(&self, paths: Vec<PathBuf>) -> BoxStream<'_, IngestEvent>;
+    /// Làm lại từ đầu theo yêu cầu của người dùng — xem [`Library::reprocess`].
+    fn reprocess(&self) -> BoxStream<'_, IngestEvent>;
     /// Bỏ một tài liệu khỏi thư viện. **Không** xoá tệp trên đĩa — xem [`Library::remove`].
     fn remove(&self, id: &str) -> Result<(), RagError>;
 }
@@ -287,8 +286,36 @@ impl Library {
         if rebuilt {
             library.rebuild_from_root()?;
         }
+        library.sync_extract_identity()?;
         library.sync_embedder_identity()?;
         Ok(library)
+    }
+
+    /// So bộ rút chữ đang chạy với bộ rút chữ đã sinh ra những đoạn trong kho, và vô hiệu
+    /// hoá dấu vân tay khi chúng khác nhau.
+    ///
+    /// Cùng vai với [`Library::sync_embedder_identity`], nhưng nhẹ hơn một bậc: ở đây
+    /// không có gì bị xoá, chỉ có một lời hẹn rằng lần quét kế tiếp sẽ đọc lại. Việc đọc
+    /// lại thật sự xảy ra trong [`Library::sync`], tức là **không đồng bộ và có thanh
+    /// tiến trình** — khác với [`Library::rebuild_from_root`], vốn chấp nhận đóng băng
+    /// cửa sổ vì lúc đó kho vừa bị dựng lại và không còn gì để trả lời.
+    ///
+    /// Kho chưa từng ghi số này cũng được coi là *khác*: nó đến từ một bản trước khi có
+    /// khoá `meta` ấy, nên nó đúng là kho cần đọc lại nhất. Với một kho mới tinh thì đây
+    /// là một câu lệnh `UPDATE` trên bảng rỗng.
+    fn sync_extract_identity(&self) -> Result<bool, RagError> {
+        let now = crate::extract::EXTRACT_VERSION.to_string();
+        if self.store.meta(store::META_EXTRACT_VERSION)?.as_deref() == Some(now.as_str()) {
+            return Ok(false);
+        }
+        let stale = self.store.forget_fingerprints()?;
+        self.store.set_meta(store::META_EXTRACT_VERSION, &now)?;
+        tracing::info!(
+            version = crate::extract::EXTRACT_VERSION,
+            stale,
+            "bộ rút chữ đã đổi: lần quét tới sẽ đọc lại cả thư mục dự án"
+        );
+        Ok(true)
     }
 
     pub fn root(&self) -> &Path {
@@ -439,6 +466,28 @@ impl Library {
         self.run(Source::Paths(paths))
     }
 
+    /// Làm lại từ đầu: quên mọi dấu vân tay, quên bảng tệp hỏng, xoá lý do hỏng cũ, rồi
+    /// quét thư mục như thường.
+    ///
+    /// # Vì sao một lượt quét thường không đủ
+    ///
+    /// [`Library::sync`] tăng dần: tệp có `mtime` + kích thước không đổi thì không đi qua
+    /// bộ rút chữ, và tệp đã ghi vào bảng `failures` cũng vậy. Đó là điều đúng cho lần mở
+    /// màn hình thứ hai, và là điều **sai** cho một tệp hỏng vì một lý do đã qua: PDF đọc
+    /// hỏng lúc đĩa mạng rớt, tệp bị khoá bởi một ứng dụng khác lúc quét. Tệp nằm nguyên
+    /// đó, không đổi một byte, nên không lần quét nào chạm lại vào nó nữa — và người dùng
+    /// không có cách nào nói "thử lại đi" ngoài việc sửa tệp cho `mtime` đổi.
+    ///
+    /// Đây là cách nói đó. Đắt hơn hẳn một lượt quét thường — cả thư mục được rút chữ lại
+    /// — nên nó đứng sau một cú bấm, không tự chạy.
+    ///
+    /// Tài liệu và đoạn **không** bị xoá trước: chúng bị đè lên khi từng tệp được nạp
+    /// lại. Tìm bằng từ khoá vì thế chạy suốt cả lượt, đúng cùng lý do với
+    /// [`Store::forget_vectors`].
+    pub fn reprocess(&self) -> BoxStream<'_, IngestEvent> {
+        self.run(Source::Rescan)
+    }
+
     /// Máy trạng thái chung của cả hai đường vào.
     ///
     /// Tường minh thay vì một kênh và một task nền: dòng này mượn `&self`, nên nó không
@@ -453,6 +502,7 @@ impl Library {
             total: 0,
             at: 0,
             announced: false,
+            caught_up: false,
             closed: false,
         };
         futures::stream::unfold(state, |mut state| async move {
@@ -518,6 +568,12 @@ impl Library {
                 };
                 return Some((event, state));
             }
+            if !state.caught_up {
+                state.caught_up = true;
+                if let Some(event) = state.library.catch_up(state.total).await {
+                    return Some((event, state));
+                }
+            }
             if state.closed {
                 return None;
             }
@@ -547,6 +603,15 @@ impl Library {
         let done = blocking(move || match source {
             Source::Paths(paths) => Ok(plan_paths(&store, &root, paths)),
             Source::Scan => plan_scan(&store, &root, limit),
+            Source::Rescan => {
+                // Lý do hỏng cũ đi **trước** lượt quét: "máy chủ nhúng không trả lời" của
+                // hôm qua mà còn ở lại thì `stats()` vẫn đổ lỗi cho nó sau khi mọi thứ đã
+                // chạy lại được, và người dùng bấm nút xong vẫn đọc đúng câu cũ.
+                store.clear_errors()?;
+                let doc_lai = store.forget_fingerprints()?;
+                tracing::info!(doc_lai, "xử lý lại thư viện theo yêu cầu của người dùng");
+                plan_scan(&store, &root, limit)
+            }
         })
         .await;
         match done {
@@ -587,6 +652,70 @@ impl Library {
         };
         self.store.set_error(&id, note.as_deref())?;
         self.document(&id)
+    }
+
+    /// Nhúng nốt phần còn xếp hàng, ở cuối **mọi** lượt nạp.
+    ///
+    /// # Vì sao bước này tồn tại
+    ///
+    /// [`Library::embed_pending`] xưa nay chỉ chạy sau mỗi tệp *vừa nạp*. Một thư viện
+    /// nạp xong trong lúc Ollama tắt vì thế đứng nguyên ở "đang xếp hàng" **mãi mãi**:
+    /// lần quét sau không thấy tệp nào đổi nên không nạp tệp nào, và không nạp tệp nào
+    /// thì không ai gọi tới bộ nhúng. Người dùng bật Ollama lên, mở lại màn hình thư
+    /// viện, và không có gì xảy ra — đúng cái "không có gì xảy ra" mà cả crate này tồn
+    /// tại để tránh.
+    ///
+    /// Đặt ở cuối dòng chứ không thành một lệnh riêng: mở màn hình thư viện đã là một
+    /// lượt [`Library::sync`], nên đường tự động không cần thêm nút nào mới.
+    ///
+    /// Trả `None` khi không có gì để làm — một dòng "đang nhúng" ở mọi lần mở màn hình
+    /// là một thanh tiến trình nhấp nháy vì không có việc.
+    async fn catch_up(&self, total: u32) -> Option<IngestEvent> {
+        self.embedder.as_ref()?;
+        let store = self.store.clone();
+        let counts = blocking(move || store.counts()).await.ok()?;
+        if counts.embedded_chunks >= counts.chunks {
+            return None;
+        }
+        let path = self.root.display().to_string();
+        match self.embed_pending().await {
+            Ok(xong) => {
+                // Nhúng xong thì lý do hỏng cũ phải đi theo. `stats()` đọc lý do gần nhất
+                // **trước** khi đọc số đoạn còn thiếu, nên một câu "máy chủ không trả
+                // lời" ở lại sau khi máy chủ đã trả lời sẽ báo thư viện chưa sẵn sàng
+                // trong khi mọi đoạn đã có vector — và đó lại đúng là cái kẹt vĩnh viễn
+                // mà bước này sinh ra để gỡ.
+                let store = self.store.clone();
+                if let Err(err) = blocking(move || store.clear_errors()).await {
+                    tracing::warn!(%err, "không xoá được lý do hỏng cũ sau khi nhúng bù");
+                }
+                if xong == 0 {
+                    return None;
+                }
+                tracing::info!(doan = xong, "đã nhúng bù phần còn xếp hàng");
+                Some(IngestEvent {
+                    path,
+                    stage: IngestStage::Embedding,
+                    done: total,
+                    total,
+                    finished: false,
+                    error: None,
+                    document: None,
+                })
+            }
+            // Bộ nhúng vẫn chưa trả lời. Nói ra ở đây chứ không nuốt: người dùng vừa bấm
+            // "Xử lý lại" và câu trả lời "vẫn chưa được, vì máy chủ không trả lời" là
+            // thứ duy nhất phân biệt được nút hỏng với máy chủ hỏng.
+            Err(err) => Some(IngestEvent {
+                path,
+                stage: IngestStage::Embedding,
+                done: total,
+                total,
+                finished: false,
+                error: Some(err.to_string()),
+                document: None,
+            }),
+        }
     }
 
     /// Nhúng mọi đoạn còn thiếu vector. Không có bộ nhúng thì không có gì để làm.
@@ -911,6 +1040,10 @@ impl DocLibrary for Library {
         Library::ingest(self, paths)
     }
 
+    fn reprocess(&self) -> BoxStream<'_, IngestEvent> {
+        Library::reprocess(self)
+    }
+
     fn remove(&self, id: &str) -> Result<(), RagError> {
         Library::remove(self, id)
     }
@@ -922,6 +1055,9 @@ enum Source {
     Paths(Vec<PathBuf>),
     /// Đi hết thư mục dự án và bắt kịp đĩa.
     Scan,
+    /// Như [`Source::Scan`], nhưng quên sạch dấu vân tay trước: mọi tệp được đọc lại,
+    /// kể cả tệp không đổi và tệp lần trước đọc hỏng.
+    Rescan,
 }
 
 /// Việc của một lượt nạp, dựng xong ở bước chặn đầu tiên.
@@ -943,6 +1079,9 @@ struct Cursor<'a> {
     total: u32,
     at: usize,
     announced: bool,
+    /// Đợt nhúng bù cuối lượt đã chạy chưa. Một lần cho cả dòng, không phải một lần
+    /// mỗi tệp — xem [`Library::catch_up`].
+    caught_up: bool,
     closed: bool,
 }
 
@@ -1309,6 +1448,15 @@ fn absorb_into(
     store.clear_failure(&shown)?;
 
     let chunks = chunk(&extracted.text, opts);
+    // Bất biến của bảng `documents`: **một tài liệu trong kho luôn có ít nhất một đoạn.**
+    // `extract` đã chặn tệp không có ký tự nào, nên tới đây mà rỗng là phần cắt đoạn nuốt
+    // mất chữ — một lỗi của ta, không phải của tệp. Vẫn phải chặn: hàng 0 đoạn không lỗi
+    // là thứ giao diện đọc thành "đang xếp hàng", và nó sẽ xếp hàng cho tới hết đời máy.
+    if chunks.is_empty() {
+        let err = RagError::empty(&shown, "cắt đoạn không ra đoạn nào");
+        store.put_failure(&shown, mtime, meta.len() as i64, &err.to_string())?;
+        return Err(err);
+    }
     let id = store
         .by_path(&shown)?
         .unwrap_or_else(|| uuid::Uuid::now_v7().to_string());

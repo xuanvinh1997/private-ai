@@ -144,18 +144,19 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
       id: "github",
       name: "GitHub",
       summary: "Đọc issue, pull request và nội dung tệp của kho trên GitHub.",
-      command: "npx",
-      args: ["-y", "@modelcontextprotocol/server-github"],
+      command: "",
+      args: [],
       env: [
         {
-          key: "GITHUB_PERSONAL_ACCESS_TOKEN",
-          label: "Personal access token",
+          key: "Authorization",
+          label: "Personal access token của GitHub",
           required: true,
           secret: true,
         },
       ],
-      homepage: "https://github.com/modelcontextprotocol/servers",
-      requires: ["node"],
+      homepage: "https://github.com/github/github-mcp-server",
+      requires: [],
+      url: "https://api.githubcopilot.com/mcp/",
     },
     {
       id: "filesystem",
@@ -166,6 +167,7 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
       env: [],
       homepage: "https://github.com/modelcontextprotocol/servers",
       requires: ["node"],
+      url: null,
     },
     {
       id: "postgres",
@@ -178,6 +180,7 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
       ],
       homepage: "https://github.com/modelcontextprotocol/servers",
       requires: ["docker"],
+      url: null,
     },
     {
       id: "sentry",
@@ -194,6 +197,7 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
       ],
       homepage: "https://github.com/modelcontextprotocol/servers",
       requires: ["python"],
+      url: null,
     },
   ];
 }

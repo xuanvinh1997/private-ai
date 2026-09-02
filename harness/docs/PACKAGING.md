@@ -70,11 +70,16 @@ tách rời cho AppImage) là việc của quy trình phát hành, không phải
 | Linux (arm64) | ✅ trong Docker | ✗ | ✗ | ✅ vòng giam đã đo |
 | Windows | ✗ | ✗ | ✗ | ✗ |
 
-Hàng Linux: `pai-sandbox` biên dịch và **5/5 bài kiểm chứng vòng giam chạy thật** trong
+Hàng Linux: `pai-sandbox` biên dịch và **7/7 bài kiểm chứng vòng giam chạy thật** trong
 `rust:1-slim` trên kernel 6.x/7.x (cần `--security-opt seccomp=unconfined`, vì hồ sơ
 seccomp mặc định của Docker chặn syscall của Landlock). Phần đóng gói `deb`/AppImage thì
 chưa chạy. Hàng Windows là **cấu hình chưa từng chạy**. Chúng theo tài liệu Tauri và sẽ cần sửa khi
 lần đầu build thật — viết ra đây để không ai đọc bảng này rồi tưởng chúng đã xong.
+
+Hai bài mới trong số đó là phần **giam mạng**: một bài nối TCP tới cổng do chính nó mở rồi
+kiểm rằng `deny_network` chặn được, một bài kiểm rằng bật giam mạng không nới lỏng phần giam
+tệp. Cả hai chạy trên kernel 7.x, tức Landlock ABI ≥ 4. Giam mạng ở Linux là **TCP thôi** —
+Landlock không có động từ cho UDP — và `network_confinable()` trả `false` dưới ABI 4.
 
 `pai-sandbox` trên Windows báo `Enforcement::None` kèm lý do chứ không giả vờ đang giam:
 xem [`crates/pai-sandbox/src/lib.rs`](../crates/pai-sandbox/src/lib.rs).

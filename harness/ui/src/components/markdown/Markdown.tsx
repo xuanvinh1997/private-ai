@@ -1,7 +1,9 @@
-import { lexer, type Token, type Tokens } from "marked";
+import { Marked, type Token, type Tokens } from "marked";
 import { createMemo, For, Show } from "solid-js";
 import { Dynamic } from "solid-js/web";
 import CodeFence from "./CodeFence";
+import MathSpan from "./MathSpan";
+import { MATH_EXTENSIONS } from "./math";
 
 /**
  * Markdown dựng thành component Solid, **không** đi qua HTML.
@@ -27,9 +29,18 @@ import CodeFence from "./CodeFence";
  * với **cùng một chuỗi**. `createMemo` so sánh bằng `===`, nên `source()` nuốt những lần
  * đọc lại đó và `lexer` chỉ chạy khi chữ thật sự đổi.
  */
+/**
+ * Một thể hiện riêng, **không** phải `marked.use()` lên cái toàn cục.
+ *
+ * `marked` xuất ra một thể hiện dùng chung, và cắm extension vào đó là sửa hành vi của
+ * mọi chỗ trong ứng dụng có gọi `marked` — kể cả những chỗ chưa tồn tại. Một thể hiện
+ * riêng làm luật công thức toán chỉ áp đúng ở nơi nó được yêu cầu.
+ */
+const md = new Marked({ extensions: MATH_EXTENSIONS });
+
 export default function Markdown(props: { text: string }) {
   const source = createMemo(() => props.text);
-  const tokens = createMemo<Token[]>(() => lexer(source()));
+  const tokens = createMemo<Token[]>(() => md.lexer(source()));
 
   return <BlockSeq tokens={tokens()} gap="space-y-sm" />;
 }
@@ -201,6 +212,9 @@ function BlockToken(props: { token: Token }) {
       );
     }
 
+    case "mathBlock":
+      return <MathSpan tex={token.text} display />;
+
     case "checkbox": {
       const box = props.token as Tokens.Checkbox;
       return (
@@ -274,6 +288,9 @@ function InlineToken(props: { token: Token }) {
         </code>
       );
     }
+
+    case "mathInline":
+      return <MathSpan tex={token.text} display={false} />;
 
     case "br":
       return <br />;

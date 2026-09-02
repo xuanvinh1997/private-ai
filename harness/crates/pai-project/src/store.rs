@@ -1,4 +1,4 @@
-//! Danh sách dự án đã mở.
+//! The list of opened projects.
 
 use std::path::{Path, PathBuf};
 
@@ -20,17 +20,17 @@ pub enum ProjectError {
 
 type Result<T> = std::result::Result<T, ProjectError>;
 
-/// Mã nguồn, hay một chồng tài liệu.
+/// Source code, or a stack of documents.
 ///
-/// Không phải một nhãn để lọc danh sách: loại quyết định **tầng plugin nào được cắm**.
-/// Vì thế loại luôn là thứ người dùng nói ra lúc thêm dự án, không phải thứ suy ra từ
-/// nội dung thư mục — đoán nhầm một thư mục tài liệu thành mã nguồn là cấp quyền chạy
-/// lệnh cho một chỗ toàn tệp người ngoài gửi tới.
+/// Not a label for filtering a list: the kind decides **which plugin tier gets mounted**.
+/// Which is why the kind is always something the user states when adding the project,
+/// never something inferred from the directory's contents — guessing a document folder to
+/// be source code hands command execution to a place full of files strangers sent in.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectKind {
-    /// Mặc định, và cũng là giá trị mọi hàng cũ nhận khi migrate: trước đợt này mọi dự
-    /// án đều là mã nguồn.
+    /// The default, and also what every old row gets on migration: before this change
+    /// every project was source code.
     #[default]
     Code,
     Docs,
@@ -55,10 +55,10 @@ impl FromSql for ProjectKind {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<ProjectKind> {
         match value.as_str()? {
             "docs" => Ok(ProjectKind::Docs),
-            // Một giá trị lạ — bản sau ghi xuống một loại thứ ba rồi người dùng mở lại
-            // bản cũ — đọc chệch về `Code` chứ không làm hỏng cả lời gọi. Mất một cái
-            // nhãn thì sửa được bằng một cú bấm; từ chối cả hàng thì mất một dự án khỏi
-            // danh sách, mà danh sách này không dựng lại được từ đâu.
+            // An unknown value — a later build wrote a third kind and the user reopened
+            // an older one — reads back as `Code` rather than failing the whole call.
+            // Losing a label is one click to fix; rejecting the row loses a project from
+            // the list, and this list cannot be rebuilt from anywhere.
             _ => Ok(ProjectKind::Code),
         }
     }
@@ -68,15 +68,16 @@ impl FromSql for ProjectKind {
 #[serde(rename_all = "camelCase")]
 pub struct Project {
     pub id: String,
-    /// Tên thư mục. Đổi được, và không phải danh tính.
+    /// The directory name. Changeable, and not the identity.
     pub name: String,
-    /// Đường dẫn tuyệt đối đã chuẩn hoá. **Đây mới là danh tính.**
+    /// The canonical absolute path. **This is the identity.**
     pub path: String,
     pub last_opened_at: i64,
     pub kind: ProjectKind,
-    /// URL đã clone về; `None` là thư mục vốn có sẵn trên máy. Lưu lại chứ không hỏi
-    /// `git remote` mỗi lần vẽ danh sách: một dự án bị đổi tên remote, hay bị xoá `.git`,
-    /// vẫn phải nhớ được nó từ đâu tới.
+    /// The URL it was cloned from; `None` means a directory that was already on the
+    /// machine. Stored rather than asking `git remote` on every render: a project whose
+    /// remote was renamed, or whose `.git` was deleted, still has to remember where it
+    /// came from.
     pub origin: Option<String>,
 }
 
@@ -84,11 +85,12 @@ pub struct SqliteProjectStore {
     conn: std::sync::Mutex<Connection>,
 }
 
-/// Bảng riêng, tệp riêng, không đụng vào sổ tay phiên.
+/// Its own table, its own file, nowhere near the session journal.
 ///
-/// Hai thứ có vòng đời khác nhau: một dự án sống lâu hơn mọi phiên của nó, và sổ tay phiên
-/// cố ý từ chối mở khi lệch schema. Nhét bảng này vào đó nghĩa là mỗi lần thêm một trường
-/// cho dự án là một lần mọi bản ghi hội thoại cũ phải migrate theo.
+/// The two have different lifetimes: a project outlives every session of it, and the
+/// session journal deliberately refuses to open on a schema mismatch. Putting this table
+/// in there would mean every new project field forces every old conversation record to
+/// migrate along with it.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS projects (
   id             TEXT    PRIMARY KEY,
@@ -102,7 +104,8 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS projects_recent ON projects (last_opened_at DESC);
 ";
 
-/// Một chỗ duy nhất liệt kê cột, vì bốn câu truy vấn phải trả về cùng hình dạng cho [`row`].
+/// One place lists the columns, because four queries have to return the same shape for
+/// [`row`].
 const COLUMNS: &str = "id, path, name, last_opened_at, kind, origin";
 
 impl SqliteProjectStore {
@@ -114,10 +117,10 @@ impl SqliteProjectStore {
         SqliteProjectStore::from_connection(Connection::open_in_memory()?)
     }
 
-    /// Dựng kho trên một `Connection` đã mở sẵn.
+    /// Build the store on an already-open `Connection`.
     ///
-    /// Công khai vì đây là cách duy nhất viết được test cho migration: phải dựng được một
-    /// cơ sở dữ liệu theo schema **cũ** rồi mở kho lên trên chính nó.
+    /// Public because it is the only way to write a migration test: you have to be able to
+    /// build a database on the **old** schema and then open the store on top of it.
     pub fn from_connection(conn: Connection) -> Result<SqliteProjectStore> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
@@ -137,17 +140,19 @@ impl SqliteProjectStore {
     }
 }
 
-/// Thêm cột còn thiếu vào một bảng đã có, **tại chỗ**.
+/// Add missing columns to an existing table, **in place**.
 ///
-/// Ba kho SQLite trong cây này xử lý schema lệch theo ba cách khác nhau, và khác nhau có
-/// chủ ý. `pai-index` **dựng lại từ đầu**, vì chỉ mục sinh ra được từ mã nguồn. `pai-session`
-/// **từ chối mở**, vì một lần migrate ngầm làm hỏng sổ là hỏng vĩnh viễn và không có bản
-/// nào để đối chiếu. Danh sách dự án không thuộc nhóm nào: nó là thứ người dùng tự gõ vào
-/// từng dòng một, không có nguồn nào dựng lại được, và mất nó nghĩa là mở ứng dụng lên
-/// thấy một danh sách trống. Nên chỗ này — và chỉ chỗ này — migrate.
+/// The three SQLite stores in this tree handle schema drift three different ways, and the
+/// differences are deliberate. `pai-index` **rebuilds from scratch**, because the index can
+/// be regenerated from source. `pai-session` **refuses to open**, because one silent
+/// migration corrupting the journal is permanent and there is no other copy to compare
+/// against. The project list is in neither group: it is something the user typed in one
+/// line at a time, no source can rebuild it, and losing it means opening the application to
+/// an empty list. So here — and only here — we migrate.
 ///
-/// `CREATE TABLE IF NOT EXISTS` ở trên lặng lẽ bỏ qua một bảng đã tồn tại, kể cả khi bảng
-/// đó thiếu cột; nên phải hỏi `PRAGMA table_info` chứ không suy từ việc câu lệnh chạy trót lọt.
+/// The `CREATE TABLE IF NOT EXISTS` above silently skips an existing table, even one that
+/// is missing columns; so we have to ask `PRAGMA table_info` rather than infer anything
+/// from the statement having run cleanly.
 fn migrate(conn: &Connection) -> Result<()> {
     let existing: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(projects)")?;
@@ -156,9 +161,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     };
     let has = |name: &str| existing.iter().any(|column| column == name);
 
-    // Hàng cũ mặc định `kind='code'`, `origin=NULL`: trước đợt này mọi dự án đều là mã
-    // nguồn và đều là thư mục vốn có trên máy, nên đó không phải một giá trị đặt cho có,
-    // nó đúng với những gì người dùng thật sự đang có.
+    // Old rows default to `kind='code'`, `origin=NULL`: before this change every project
+    // was source code and every one was a directory already on the machine, so these are
+    // not placeholder values — they are true of what the user actually has.
     if !has("kind") {
         conn.execute(
             "ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'",
@@ -171,10 +176,11 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// Đường dẫn đã chuẩn hoá, và nó phải là một thư mục đang tồn tại.
+/// The canonical path, which must be an existing directory.
 ///
-/// Chuẩn hoá ở **cửa vào** chứ không lúc so sánh: hai lối vào cùng một thư mục phải va
-/// vào ràng buộc `UNIQUE` của cột `path`, chứ không tạo ra hai hàng rồi mới phát hiện.
+/// Canonicalised at the **entrance**, not at comparison time: two ways into the same
+/// directory have to collide with the `UNIQUE` constraint on `path`, rather than creating
+/// two rows and being noticed afterwards.
 pub fn canonical(path: &Path) -> Result<PathBuf> {
     let resolved = path
         .canonicalize()
@@ -192,37 +198,39 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-/// Khoá hàng và tên hiện, suy từ đường dẫn đã chuẩn hoá.
+/// The row key and the displayed name, derived from the canonical path.
 fn identity(resolved: &Path) -> (String, String) {
     let key = resolved.display().to_string();
     let name = resolved
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        // Thư mục gốc không có `file_name`. Hiếm, nhưng một dòng trống trong danh sách
-        // thì không bấm được.
+        // The root directory has no `file_name`. Rare, but a blank row in the list is not
+        // clickable.
         .unwrap_or_else(|| key.clone());
     (key, name)
 }
 
 pub trait ProjectStore: Send + Sync + 'static {
-    /// Mới nhất trước — thứ tự người ta nghĩ tới khi mở lại một dự án.
+    /// Most recent first — the order people think in when reopening a project.
     fn list(&self) -> Result<Vec<Project>>;
-    /// Ghi nhận một dự án và đánh dấu vừa mở. Đã có thì cập nhật thời gian, không thêm hàng.
+    /// Record a project and mark it just-opened. If it exists, update the timestamp
+    /// rather than adding a row.
     ///
-    /// **Không đổi loại.** Đường này chỉ có đường dẫn trong tay, nó không biết người dùng
-    /// muốn dự án này là loại gì — xem cài đặt để biết vì sao đó là chuyện sống còn.
+    /// **Does not change the kind.** This path holds only a directory path; it does not
+    /// know what kind the user wants — see the setter below for why that matters.
     fn touch(&self, path: &Path) -> Result<Project>;
-    /// Ghi nhận một dự án mới với loại **tường minh**, và chỗ nó được clone về từ đâu.
+    /// Record a new project with an **explicit** kind, and where it was cloned from.
     fn create(&self, path: &Path, kind: ProjectKind, origin: Option<&str>) -> Result<Project>;
-    /// Đổi loại của một dự án đã có.
+    /// Change an existing project's kind.
     ///
-    /// Cần thiết vì loại được đặt **một lần** lúc ghi nhận, và `touch` cố ý giữ nguyên nó
-    /// — nên một thư mục vào nhầm loại thì không có đường ra nào khác. Đó là ngõ cụt thật:
-    /// một repo mã nguồn lỡ ghi nhận thành thư viện tài liệu sẽ mãi mãi không có `read`,
-    /// `grep` hay `bash`, và người dùng chỉ thấy trợ lý nói nó không có tool nào.
+    /// Necessary because the kind is set **once** at record time and `touch` deliberately
+    /// preserves it — so a directory recorded as the wrong kind has no other way out. That
+    /// is a real dead end: a source repo accidentally recorded as a document library would
+    /// never have `read`, `grep` or `bash` again, and all the user would see is the
+    /// assistant saying it has no tools.
     fn set_kind(&self, id: &str, kind: ProjectKind) -> Result<Project>;
     fn get(&self, id: &str) -> Result<Project>;
-    /// Bỏ khỏi danh sách. **Không đụng tới đĩa** — đó là thư mục của người dùng.
+    /// Drop from the list. **Does not touch the disk** — that is the user's directory.
     fn forget(&self, id: &str) -> Result<()>;
 }
 
@@ -261,12 +269,12 @@ impl ProjectStore for SqliteProjectStore {
         let (key, name) = identity(&resolved);
 
         self.with_conn(|conn| {
-            // `DO UPDATE` cố tình **không** nhắc tới `kind` lẫn `origin`. Một hàng mới do
-            // đường này tạo ra là mã nguồn (mặc định của cột), nhưng một hàng đã có thì
-            // giữ nguyên loại của nó. Viết thêm `kind = excluded.kind` vào đây là biến
-            // mọi dự án tài liệu thành dự án mã nguồn ở lần mở lại tiếp theo — im lặng,
-            // không thông báo, và chỉ lộ ra khi tool chạy lệnh bỗng xuất hiện trong một
-            // thư mục toàn PDF người ngoài gửi tới.
+            // The `DO UPDATE` deliberately mentions neither `kind` nor `origin`. A new
+            // row created by this path is source code (the column default), but an existing
+            // row keeps whatever kind it had. Adding `kind = excluded.kind` here would turn
+            // every document project into a source project on its next reopen — silently,
+            // with no notice, only surfacing when command-running tools suddenly appear in
+            // a folder full of PDFs that strangers sent in.
             conn.execute(
                 "INSERT INTO projects (id, path, name, last_opened_at, kind, origin)
                  VALUES (?1, ?2, ?3, ?4, ?5, NULL)
@@ -289,9 +297,10 @@ impl ProjectStore for SqliteProjectStore {
         let (key, name) = identity(&resolved);
 
         self.with_conn(|conn| {
-            // Ngược với `touch`: ở đây người dùng vừa nói ra loại, nên loại mới thắng.
-            // `origin` thì `COALESCE` — thêm lại bằng tay một thư mục đã clone về không
-            // được xoá mất chỗ nó từ đâu tới, vì đường thêm bằng tay không biết URL.
+            // The opposite of `touch`: here the user just stated the kind, so the new
+            // kind wins. `origin` gets `COALESCE` — manually re-adding a directory that was
+            // cloned must not erase where it came from, because the manual path does not
+            // know the URL.
             conn.execute(
                 "INSERT INTO projects (id, path, name, last_opened_at, kind, origin)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)

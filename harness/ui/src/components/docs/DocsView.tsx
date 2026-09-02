@@ -4,6 +4,7 @@ import {
   addDocuments,
   libraryStats,
   listDocuments,
+  reprocessLibrary,
   syncLibrary,
   pickDocuments,
   removeDocument,
@@ -12,6 +13,7 @@ import { demoDocuments, demoIngestFrames, demoLibraryStats } from "../../lib/fix
 import type { DocumentView, IngestProgress, LibraryStats } from "../../lib/protocol";
 import Icon from "../Icon";
 import ConfirmDialog from "../projects/ConfirmDialog";
+import { Button } from "../projects/DialogShell";
 import DocumentTable from "./DocumentTable";
 import DropZone from "./DropZone";
 import SearchProbe from "./SearchProbe";
@@ -37,6 +39,11 @@ interface Failure {
  * vẫn dùng được — vì nói mỗi vế đầu là đuổi người dùng đi chờ một thứ họ không cần chờ.
  *
  * **Trích đoạn là chữ của người ngoài.** Xem `SearchProbe`.
+ *
+ * **Và có một nút cho việc mà máy đáng ra tự làm.** Lượt quét lúc mở màn hình là lượt
+ * tăng dần — tệp không đổi thì không đọc lại, tệp từng đọc hỏng cũng không. Một tệp hỏng
+ * vì lý do đã qua vì thế nằm mãi ở đó: nó không đổi một byte nên không lượt quét nào chạm
+ * lại vào nó, và người dùng không có câu nào để nói "thử lại đi". `Xử lý lại` là câu đó.
  */
 export default function DocsView(props: {
   /** Đổi giá trị là đổi dự án: vứt sạch trạng thái cũ rồi nạp lại từ đầu. */
@@ -105,9 +112,15 @@ export default function DocsView(props: {
   const note = (frame: IngestProgress) => {
     setIngest(frame);
     const reason = frame.error;
-    if (reason !== null) {
-      setFailures((all) => [...all, { path: frame.path, error: reason }]);
+    if (reason === null) return;
+    // Đợt nhúng bù hỏng **không** phải một tệp hỏng: mọi tệp đã vào thư viện, chỉ có máy
+    // chủ nhúng là chưa trả lời. Đếm nó vào danh sách tệp hỏng là bảo người dùng đi sửa
+    // tệp của họ trong khi thứ cần bật lại nằm ở chỗ khác.
+    if (frame.stage === "embedding") {
+      setError(reason);
+      return;
     }
+    setFailures((all) => [...all, { path: frame.path, error: reason }]);
   };
 
   async function runDemoIngest(paths: string[]): Promise<DocumentView[]> {
@@ -135,6 +148,36 @@ export default function DocsView(props: {
       // Chỉ tới đây khi **cả lô** không chạy được. Tệp hỏng lẻ đi qua `note`, không qua
       // đường này — gộp hai thứ lại là báo động nhầm cho mười chín tệp đã vào.
       setError(String(err));
+    } finally {
+      setIngest(null);
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Xử lý lại cả thư viện.
+   *
+   * Dùng chung đường tiến trình với lúc nạp: cùng thanh chạy, cùng danh sách tệp hỏng.
+   * Người dùng bấm nút này vì có gì đó kẹt, nên thứ họ cần thấy là **từng tệp một đang
+   * chạy** — không phải một con quay không nói gì rồi biến mất.
+   */
+  const reprocess = async () => {
+    if (busy()) return;
+    setBusy(true);
+    setError(null);
+    setFailures([]);
+    setAdded(0);
+    setIngest({ path: stats()?.root ?? "", stage: "Đang chuẩn bị", done: 0, total: 0, finished: false, error: null });
+    try {
+      if (isDemo()) {
+        await runDemoIngest(demoDocuments().map((doc) => doc.path));
+        setDocs(demoDocuments());
+      } else {
+        setDocs(await reprocessLibrary(note));
+        setStats(await libraryStats());
+      }
+    } catch (err) {
+      setError(`Không xử lý lại được thư viện: ${err}`);
     } finally {
       setIngest(null);
       setBusy(false);
@@ -179,7 +222,12 @@ export default function DocsView(props: {
             </p>
           </div>
 
-          <StatsStrip stats={stats()} loading={loading()} />
+          <StatsStrip
+            stats={stats()}
+            loading={loading()}
+            busy={busy()}
+            onReprocess={() => void reprocess()}
+          />
         </section>
 
         <section class="flex flex-col gap-md">
@@ -316,7 +364,12 @@ export default function DocsView(props: {
  * **tìm bằng từ khoá vẫn đang chạy**. Một người đọc "chưa sẵn sàng" mà không đọc được vế
  * đó sẽ ngồi đợi, hoặc tệ hơn là bỏ cuộc — trong khi thư viện đã trả lời được rồi.
  */
-function StatsStrip(props: { stats: LibraryStats | null; loading: boolean }) {
+function StatsStrip(props: {
+  stats: LibraryStats | null;
+  loading: boolean;
+  busy: boolean;
+  onReprocess: () => void;
+}) {
   return (
     <Show
       when={props.stats}
@@ -361,6 +414,34 @@ function StatsStrip(props: { stats: LibraryStats | null; loading: boolean }) {
               </p>
             </div>
           </Show>
+
+          {/* Nút này luôn có mặt, kể cả khi mọi thứ đang xanh. Một nút chỉ hiện ra lúc
+              hỏng là một nút người dùng phải học thuộc chỗ nó *sẽ* xuất hiện, và họ tới
+              đây vì đang không hiểu chuyện gì xảy ra — đó là lúc tệ nhất để đi tìm. */}
+          <div class="flex flex-wrap items-center justify-between gap-sm border-t border-line pt-sm">
+            <p class="m-0 max-w-[52ch] text-2xs text-muted">
+              <Show
+                when={stats().chunks > stats().embeddedChunks}
+                fallback={
+                  <>
+                    Đọc lại mọi tệp trong thư mục, kể cả tệp lần trước đọc hỏng và tệp
+                    không đổi từ lần quét trước.
+                  </>
+                }
+              >
+                Còn {stats().chunks - stats().embeddedChunks} đoạn chờ nhúng. Nếu chờ mãi
+                không xong, bấm để đọc lại cả thư mục và nhúng nốt phần còn thiếu.
+              </Show>
+            </p>
+            <Button
+              variant="outline"
+              icon="retry"
+              disabled={props.busy}
+              onClick={props.onReprocess}
+            >
+              {props.busy ? "Đang xử lý…" : "Xử lý lại"}
+            </Button>
+          </div>
         </div>
       )}
     </Show>

@@ -10,7 +10,7 @@ import type {
 } from "./protocol";
 
 /**
- * Năm lệnh của thư viện tài liệu.
+ * Sáu lệnh của thư viện tài liệu.
  *
  * Chia lỗi theo đúng ranh giới của `projects.ts`, và ranh giới đó là "người dùng có vừa
  * bấm một cú và đang đứng chờ không":
@@ -97,6 +97,20 @@ export function syncLibrary(onProgress: (p: IngestProgress) => void): Promise<Do
   const channel = new Channel<IngestProgress>();
   channel.onmessage = onProgress;
   return invoke<DocumentView[]>("sync_library", { onProgress: channel });
+}
+
+/**
+ * Xử lý lại cả thư viện, sau một cú bấm.
+ *
+ * Ném ra ngoài chứ không nuốt như `syncLibrary`: người dùng vừa bấm một nút và đang đứng
+ * chờ, nên im lặng ở đây không phân biệt được với "đang chậm".
+ */
+export function reprocessLibrary(
+  onProgress: (p: IngestProgress) => void,
+): Promise<DocumentView[]> {
+  const channel = new Channel<IngestProgress>();
+  channel.onmessage = onProgress;
+  return invoke<DocumentView[]>("reprocess_library", { onProgress: channel });
 }
 
 export function removeDocument(id: string): Promise<void> {

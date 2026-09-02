@@ -555,14 +555,14 @@ async fn du_an_tai_lieu_khong_co_tool_sua_tep_hay_chay_lenh() {
     );
 }
 
-/// Bộ skill đi kèm bản cài đặt thật sự tới được prompt.
+/// Every bundled skill actually reaches the prompt.
 ///
-/// `builtin_skills()` dò bốn chỗ theo đường dẫn, và cả bốn đều là loại thứ chỉ sai khi
-/// đóng gói hoặc khi đổi bố cục thư mục — nghĩa là không bao giờ sai lúc viết mã, và luôn
-/// sai lúc phát hành. Bài này neo nó lại: chín skill trong `harness/skills/` phải xuất
-/// hiện trong prompt mà mô hình đọc, chứ không chỉ nằm trên đĩa.
+/// `builtin_skills()` probes four paths, and all four are the kind of thing that only
+/// breaks when packaging changes or the directory layout moves — meaning never while
+/// writing code, and always at release. This test anchors it: every skill in
+/// `harness/skills/` must show up in the prompt the model reads, not merely sit on disk.
 #[tokio::test]
-async fn skill_dung_san_di_toi_duoc_prompt() {
+async fn bundled_skills_reach_the_prompt() {
     use pai_agent::Prompt;
 
     let dir = TempDir::new().expect("thư mục tạm");
@@ -588,10 +588,42 @@ async fn skill_dung_san_di_toi_duoc_prompt() {
         "so-do-tu-duy",
         "duong-thoi-gian",
         "so-do-hanh-trinh",
+        "summarize-document",
+        "synthesize-sources",
     ] {
         assert!(text.contains(ten), "prompt thiếu skill `{ten}`");
     }
     harness.shutdown().await;
+}
+
+/// A Vietnamese question still selects the two English-bodied skills.
+///
+/// This is the one thing writing a skill in English can quietly break. Selection scores
+/// `name`, `title`, `keywords` and `description` against the user's text, and three of
+/// those four are English on these two skills — so an English question would match and a
+/// Vietnamese one would not, which is backwards for an app whose users write Vietnamese.
+/// The bilingual `keywords` list is what carries them, and nothing else does.
+#[test]
+fn vietnamese_questions_still_select_the_english_skills() {
+    use pai_agent::SkillRegistry;
+
+    let registry = SkillRegistry::new();
+    registry.scan(&std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../skills"));
+
+    for (question, expected) in [
+        ("tóm tắt tài liệu này giúp tôi", "summarize-document"),
+        ("tom tat ho toi cai bao cao", "summarize-document"),
+        ("tài liệu này nói gì", "summarize-document"),
+        ("tổng hợp nhiều nguồn giúp tôi", "synthesize-sources"),
+        ("so sánh tài liệu v1 với v3", "synthesize-sources"),
+        ("hai bản này khác nhau chỗ nào", "synthesize-sources"),
+    ] {
+        let chosen = registry.select(question);
+        assert!(
+            chosen.iter().any(|name| name == expected),
+            "`{question}` phải chọn được `{expected}`, chọn ra: {chosen:?}"
+        );
+    }
 }
 
 /// Đổi nhà cung cấp **hội thoại** không kéo bộ nhúng đi theo.

@@ -1,19 +1,44 @@
 import { For, Show } from "solid-js";
+import { displayMode } from "../lib/prefs";
+import type { ProjectKind } from "../lib/protocol";
 import Icon from "./Icon";
 
 /**
- * Gợi ý cho màn hình trống.
+ * Gợi ý cho dự án **mã nguồn**.
  *
  * Chọn theo việc *một coding agent làm được*, không theo việc nghe hay: mỗi câu ở đây
  * chạm vào một tool khác nhau — đọc, tìm, sửa, chạy lệnh — nên bấm thử một câu là thấy
  * ngay agent này khác một hộp chat ở chỗ nào.
+ *
+ * Và không câu nào gọi tên một thứ **của repo này**. `pai-core` với `derive_messages` chỉ
+ * tồn tại ở đây; người dùng mở dự án của họ ra và đọc được một cái tên không có trong mã
+ * của mình thì gợi ý đó vừa nói rằng nó được viết cho máy của người khác.
  */
 const SUGGESTIONS = [
-  "Giải thích kiến trúc của repo này",
-  "Tìm mọi chỗ dùng hàm `derive_messages`",
-  "Bỏ hết `unwrap` trong crate pai-core",
+  "Giải thích kiến trúc của dự án này",
   "Chạy bộ test và tóm tắt chỗ hỏng",
-  "Viết test cho đường ống thi hành tool",
+  "Có gì thay đổi so với commit gần nhất?",
+  "Viết test cho phần chưa được kiểm",
+  "Tìm chỗ xử lý lỗi cẩu thả",
+];
+
+/**
+ * Gợi ý cho dự án **tài liệu**, và chúng phải khác hẳn bộ trên.
+ *
+ * Thư viện tài liệu chỉ được cắm `rag` — `docs.search`, `docs.read`, `docs.list`. Không
+ * `fs`, không `shell`, không `index`; xem `DOCS_PLUGINS` phía lõi. Nên "chạy bộ test" ở
+ * đây là một nút bấm vào sẽ thất bại, và một nút dựng sẵn mà thất bại dạy người dùng rằng
+ * cả ứng dụng chưa dùng được.
+ *
+ * Cả bốn câu đều **không** giả định thư viện chứa gì: người dùng vừa chỉ vào một thư mục
+ * mà ứng dụng chưa từng đọc, nên một gợi ý nhắc tên một chủ đề cụ thể là một lời đoán, và
+ * đoán trượt thì câu trả lời rỗng.
+ */
+const SUGGESTIONS_TAI_LIEU = [
+  "Thư viện này có những tài liệu gì?",
+  "Tóm tắt mỗi tài liệu trong một câu",
+  "Những chủ đề chính ở đây là gì?",
+  "Trích đoạn nói về chủ đề chính, kèm tên tệp",
 ];
 
 /**
@@ -43,15 +68,18 @@ const SUGGESTIONS_KHONG_DU_AN = [
  * và đổi cỡ.
  */
 export function EmptyLead(props: {
-  /** Có dự án đang mở hay không. Sai đi một chỗ này là hứa nhầm cả bộ quyền. */
-  hasProject: boolean;
+  /**
+   * Loại dự án đang mở, `null` là chưa mở dự án nào. Sai đi một chỗ này là hứa nhầm cả
+   * bộ quyền — và lời hứa ấy nằm ngay trên ô soạn tin, trước khi người dùng gõ chữ đầu.
+   */
+  kind: ProjectKind | null;
   /** Mở màn hình dự án. Lối duy nhất từ đây ra khỏi trạng thái "chưa có dự án". */
   onOpenProject: () => void;
 }) {
   return (
     <div class="mx-auto flex max-w-(--reading-measure) flex-col items-center gap-md px-(--page-pad-x) text-center">
       <Show
-        when={props.hasProject}
+        when={props.kind !== null}
         fallback={
           <>
             {/* Câu đầu tiên nói rằng **trò chuyện chạy được**, và nó phải đứng trước mọi
@@ -90,24 +118,57 @@ export function EmptyLead(props: {
         {/* Một câu hỏi, không một lời chào: câu hỏi để lại chỗ trống mà ô nhập ngay dưới
             lấp vào, còn một lời chào thì tự đóng lại và không dẫn đi đâu. */}
         <h2 class="m-0 text-2xl font-semibold text-ink">Ta làm gì hôm nay?</h2>
+        {/* Câu này là lời hứa về quyền, nên nó phải kể đúng bộ tool của **loại dự án đang
+            mở**. Hứa "sửa được tệp, chạy được lệnh" trong một thư viện tài liệu — nơi lõi
+            chỉ cắm `rag` — là hứa hai thứ không tồn tại, và người dùng chỉ phát hiện ra
+            sau khi đã nhờ một việc không ai làm được. */}
         <p class="m-0 max-w-[46ch] text-sm text-muted">
-          Trợ lý đọc và sửa được tệp trong thư mục làm việc, chạy được lệnh, và hỏi lại
-          trước mỗi thao tác ghi.
+          <Show
+            when={props.kind === "docs"}
+            fallback={
+              <>
+                Trợ lý đọc và sửa được tệp trong thư mục làm việc, chạy được lệnh, và hỏi
+                lại trước mỗi thao tác ghi.
+              </>
+            }
+          >
+            Trợ lý tìm và đọc tài liệu trong thư viện này để trả lời, kèm chỗ nó lấy ra.
+            Nó không sửa tệp và không chạy lệnh trong dự án loại này.
+          </Show>
         </p>
       </Show>
     </div>
   );
 }
 
-/** Nửa dưới: mấy câu bấm được, ngồi **dưới** ô soạn tin. */
+/**
+ * Nửa dưới: mấy câu bấm được, ngồi **dưới** ô soạn tin.
+ *
+ * Rộng đúng bằng ô soạn tin và ăn cùng mép trái với hàng chip trạng thái ngay trên nó —
+ * cùng `displayMode`, cùng `px-2xs`. Một cụm hẹp hơn, căn giữa, dưới một hàng căn trái sẽ
+ * đọc ra thành hai khối rời nhau thay vì phần đuôi của cùng một ô nhập.
+ */
 export function PromptChips(props: {
   onPick: (text: string) => void;
   disabled?: boolean;
-  hasProject: boolean;
+  kind: ProjectKind | null;
 }) {
+  const goi_y = () =>
+    props.kind === null
+      ? SUGGESTIONS_KHONG_DU_AN
+      : props.kind === "docs"
+        ? SUGGESTIONS_TAI_LIEU
+        : SUGGESTIONS;
+
   return (
-    <ul class="mx-auto m-0 flex max-w-[52ch] list-none flex-wrap justify-center gap-2xs p-0">
-      <For each={props.hasProject ? SUGGESTIONS : SUGGESTIONS_KHONG_DU_AN}>
+    <ul
+      class="mx-auto my-0 flex w-full list-none flex-wrap gap-2xs px-2xs py-0"
+      classList={{
+        "max-w-(--reading-measure)": displayMode() === "bubble",
+        "max-w-[min(100%,980px)]": displayMode() === "document",
+      }}
+    >
+      <For each={goi_y()}>
         {(text) => (
           <li>
             <button

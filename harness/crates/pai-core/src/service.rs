@@ -1,47 +1,48 @@
-//! Seam: danh tính của một khả năng, tách khỏi bản cài đặt của nó.
+//! Seams: the identity of a capability, separated from its implementation.
 //!
-//! Cordis đánh địa chỉ service bằng chuỗi (`ctx.tools`). Ở Rust làm vậy là đổi lỗi
-//! biên dịch lấy lỗi lúc chạy mà chẳng được gì, nên khoá là một **marker type** không
-//! khởi tạo được, còn giá trị là một **trait object**. Consumer vẫn chỉ biết giao diện —
-//! đổi provider không đụng call site — mà gõ sai tên thì không biên dịch được.
+//! Cordis addresses services by string (`ctx.tools`). Doing that in Rust trades compile
+//! errors for runtime errors and buys nothing, so the key is an uninstantiable **marker
+//! type** and the value is a **trait object**. Consumers still see only the interface —
+//! swapping a provider does not touch call sites — and a misspelled name does not compile.
 //!
-//! Chuỗi `NAME` vẫn tồn tại, nhưng chỉ để nói với con người và với tệp cấu hình:
-//! `--dump-config`, `isolate:`, thông báo lỗi.
+//! The `NAME` string still exists, but only to talk to humans and to the config file:
+//! `--dump-config`, `isolate:`, error messages.
 
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Một khả năng thay thế được.
+/// A replaceable capability.
 ///
-/// `Self` là nhãn thuần tuý. Khai báo nó bằng `enum` rỗng để không ai lỡ tay dựng một
-/// giá trị của nó.
+/// `Self` is a pure label. Declare it as an empty `enum` so nobody can accidentally
+/// construct a value of it.
 pub trait ServiceKey: 'static {
-    /// Giao diện mà consumer nhìn thấy. Phải object-safe.
+    /// The interface consumers see. Must be object-safe.
     type Api: ?Sized + Send + Sync + 'static;
-    /// Tên cho cấu hình, log và thông báo lỗi.
+    /// The name used in config, logs and error messages.
     const NAME: &'static str;
 }
 
-/// Một cõi. Hai provider của cùng một seam sống cạnh nhau được khi ở hai cõi khác nhau.
+/// A realm. Two providers of the same seam can coexist when they sit in different realms.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Realm(pub(crate) u64);
 
 impl Realm {
     pub const ROOT: Realm = Realm(0);
 
-    /// Một cõi mới, không tên — tương đương `ctx.isolate('shell')`.
+    /// A fresh, unnamed realm — the equivalent of `ctx.isolate('shell')`.
     pub fn anonymous() -> Realm {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Realm(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 }
 
-/// Bản đồ seam → cõi, dạng danh sách liên kết.
+/// A seam → realm map, shaped as a linked list.
 ///
-/// Kế thừa là O(1) và `Clone` chỉ là một lần tăng `Arc`; tra cứu O(độ sâu), mà độ sâu
-/// thực tế dưới năm. Đây là bản Rust của prototype chain mà Cordis dùng.
+/// Inheritance is O(1) and `Clone` is a single `Arc` bump; lookup is O(depth), and depth
+/// in practice stays under five. This is the Rust version of the prototype chain Cordis
+/// uses.
 #[derive(Clone, Default)]
 pub struct RealmChain(Option<Arc<RealmNode>>);
 
@@ -72,17 +73,17 @@ impl RealmChain {
     }
 }
 
-/// Ô chứa một provider.
+/// The cell holding one provider.
 ///
-/// `value` thực chất giữ `Arc<K::Api>`. Một `Arc<dyn Trait>` là con trỏ béo nhưng vẫn
-/// `Sized + 'static`, nên nó nhét vừa `Box<dyn Any>` và lấy lại nguyên vẹn được — đó là
-/// mấu chốt khiến cách này chạy được.
+/// `value` really holds an `Arc<K::Api>`. An `Arc<dyn Trait>` is a fat pointer but still
+/// `Sized + 'static`, so it fits inside a `Box<dyn Any>` and comes back out intact — that
+/// is the trick that makes this work.
 pub(crate) struct ServiceCell {
     pub(crate) value: Box<dyn std::any::Any + Send + Sync>,
     pub(crate) name: &'static str,
 }
 
-/// Bảng tra tên → seam, để cấu hình và `--dump-config` nói được bằng chuỗi.
+/// A name → seam lookup, so config and `--dump-config` can speak in strings.
 #[derive(Default)]
 pub struct ServiceCatalog {
     by_name: HashMap<&'static str, TypeId>,

@@ -156,23 +156,40 @@ fn instantiate_noi_ro_bien_nao_con_thieu() {
 
     assert!(matches!(err, ConfigError::MissingValue(_, _)));
     assert!(
-        err.to_string().contains("GITHUB_PERSONAL_ACCESS_TOKEN"),
+        err.to_string().contains("Authorization"),
         "lỗi phải nêu tên biến còn trống: {err}"
     );
 
     // Điền vào thì qua, và giá trị đi đúng chỗ.
-    let values = BTreeMap::from([(
-        "GITHUB_PERSONAL_ACCESS_TOKEN".to_string(),
-        "ghp_gia".to_string(),
-    )]);
+    let values = BTreeMap::from([("Authorization".to_string(), "ghp_gia".to_string())]);
     let config = catalog::instantiate(entry, &values).expect("điền đủ thì dựng được");
-    let McpTransport::Stdio { env, .. } = &config.transport else {
-        panic!("mục danh mục phải ra một server stdio");
+    // GitHub là mục **chạy từ xa**: token đi vào header của lời gọi, không vào môi trường
+    // của một tiến trình con — ở đây không có tiến trình con nào.
+    let McpTransport::Http { url, headers } = &config.transport else {
+        panic!("mục github phải ra một server http");
     };
-    assert_eq!(
-        env.get("GITHUB_PERSONAL_ACCESS_TOKEN").map(String::as_str),
-        Some("ghp_gia")
-    );
+    assert!(url.starts_with("https://"), "endpoint phải là https: {url}");
+    assert_eq!(headers.get("Authorization").map(String::as_str), Some("ghp_gia"));
+}
+
+/// Mục chạy từ xa không được đòi hỏi gì trên máy này.
+///
+/// Đây chính là lý do người ta chọn nó thay cho bản chạy tại chỗ của cùng một dịch vụ, nên
+/// một mục từ xa lỡ khai `requires` là một mục đang bắt người dùng cài thứ nó không dùng.
+#[test]
+fn muc_tu_xa_khong_can_gi_tren_may() {
+    for entry in CATALOG.iter().filter(|entry| entry.url.is_some()) {
+        assert!(
+            entry.requires.is_empty(),
+            "mục từ xa `{}` không được đòi hỏi gì trên máy",
+            entry.id
+        );
+        assert!(
+            entry.command.is_empty() && entry.args.is_empty(),
+            "mục từ xa `{}` không dựng tiến trình con nào",
+            entry.id
+        );
+    }
 }
 
 /// Mọi mục trong danh mục đều dựng ra được một cấu hình hợp lệ.
@@ -196,16 +213,29 @@ fn moi_muc_danh_muc_dung_duoc() {
             .unwrap_or_else(|err| panic!("mục `{}` dựng ra cấu hình sai: {err}", entry.id));
         assert_eq!(config.name, entry.id);
 
-        let McpTransport::Stdio { command, args, .. } = &config.transport else {
-            panic!("mục `{}` phải ra một server stdio", entry.id);
-        };
-        assert!(!command.trim().is_empty());
-        for arg in args {
-            assert!(
-                !arg.contains("${"),
-                "mục `{}` còn chỗ trống chưa điền trong đối số `{arg}`",
-                entry.id
-            );
+        match &config.transport {
+            McpTransport::Stdio { command, args, .. } => {
+                assert!(!command.trim().is_empty());
+                for arg in args {
+                    assert!(
+                        !arg.contains("${"),
+                        "mục `{}` còn chỗ trống chưa điền trong đối số `{arg}`",
+                        entry.id
+                    );
+                }
+            }
+            McpTransport::Http { url, .. } => {
+                assert!(
+                    !url.contains("${"),
+                    "mục `{}` còn chỗ trống chưa điền trong endpoint `{url}`",
+                    entry.id
+                );
+                assert!(
+                    url.starts_with("https://"),
+                    "mục `{}` phải quay số qua https, không phải `{url}`",
+                    entry.id
+                );
+            }
         }
         assert!(
             !entry.summary.is_empty() && !entry.homepage.is_empty(),

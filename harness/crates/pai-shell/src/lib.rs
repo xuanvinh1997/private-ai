@@ -1,14 +1,16 @@
-//! Thi hành lệnh: một seam, bốn tool, một canh gác.
+//! Command execution: one seam, four tools, one guard.
 //!
-//! Hai ý đáng nhớ:
+//! Two things worth remembering:
 //!
-//! **Cái ta chạy là một cây tiến trình.** `sh -c "npm test"` sinh ra `npm`, sinh ra
-//! `node`. Giết cái shell để lại cả hai đứa kia giữ cổng và giữ khoá tệp. Nên mọi lệnh
-//! chạy trong nhóm tiến trình riêng và mọi tín hiệu gửi cho cả nhóm. Xem [`provider`].
+//! **What we run is a process tree.** `sh -c "npm test"` spawns `npm`, which spawns
+//! `node`. Killing the shell leaves both of those holding ports and file locks. So every
+//! command runs in its own process group and every signal goes to the whole group. See
+//! [`provider`].
 //!
-//! **Không có danh sách đen.** Lọc lệnh nguy hiểm bằng cách so chuỗi luôn thủng, và cái
-//! nó tạo ra không phải an toàn mà là cảm giác an toàn — thứ khiến người ta bấm "cho
-//! phép" mà không đọc. Phòng thủ thật là duyệt (ở đây) và giam tiến trình (`pai-sandbox`).
+//! **There is no blocklist.** Filtering dangerous commands by string matching always leaks,
+//! and what it produces is not safety but the feeling of safety — the thing that gets
+//! people to click "allow" without reading. The real defences are approval (here) and
+//! confining the process (`pai-sandbox`).
 
 pub mod jobs;
 pub mod plugin;

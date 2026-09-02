@@ -97,11 +97,23 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
 }
 
 /* Vòng tiêu điểm dùng chung. Trình duyệt vẽ vòng mặc định bằng màu hệ thống, thứ có thể
- * biến mất hoàn toàn trên nền tối của ta — nên vẽ lại bằng màu nhấn của chính bảng màu. */
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: var(--radius-btn);
+ * biến mất hoàn toàn trên nền tối của ta — nên vẽ lại bằng màu nhấn của chính bảng màu.
+ *
+ * **Phải nằm trong `@layer base`.** CSS không xếp lớp luôn thắng mọi `@layer`, kể cả
+ * `utilities` của Tailwind — nên ở ngoài lớp, luật này đè cả `outline-none` mà từng ô
+ * nhập viết ra một cách cố ý. Ô soạn tin vì thế mọc hai vòng xanh lồng nhau: một vòng của
+ * khung ngoài (`border-accent` lúc focus) và một vòng nữa quanh riêng `textarea`. Nằm
+ * trong `base` thì `outline-none` thắng, đúng như chỗ gọi mong đợi, và những chỗ **không**
+ * tự lo tiêu điểm vẫn giữ nguyên vòng này.
+ *
+ * `border-radius` cũng vậy: nó có để vòng ôm tròn quanh phần tử vốn không bo góc, nhưng ở
+ * ngoài lớp thì nó bẻ vuông cả nút `rounded-pill` mỗi lần nút được focus. */
+@layer base {
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-btn);
+  }
 }
 
 /* Người dùng chọn giảm chuyển động thì tôn trọng, không có ngoại lệ. */

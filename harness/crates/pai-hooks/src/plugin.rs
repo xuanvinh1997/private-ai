@@ -1,4 +1,4 @@
-//! Cắm hook vào đường ống tool.
+//! Mount hooks into the tool pipeline.
 
 use std::sync::Arc;
 
@@ -11,26 +11,26 @@ use serde::Deserialize;
 
 use crate::runner::{HookDecision, HookInput, run};
 
-/// Một hook trong tệp cấu hình.
+/// One hook, as written in the config file.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookConfig {
-    /// Lệnh chạy qua `/bin/sh -c`.
+    /// The command, run through `/bin/sh -c`.
     pub command: String,
-    /// Chỉ chạy cho những tool này. Rỗng = mọi tool.
+    /// Only run for these tools. Empty = every tool.
     ///
-    /// Lọc ở đây chứ không để hook tự lọc, vì mỗi lần gọi hook là một lần spawn tiến
-    /// trình — một hook chỉ quan tâm `bash` mà bị gọi cho từng lần `read` sẽ làm chậm
-    /// đúng những lời gọi rẻ nhất.
+    /// Filtered here rather than inside the hook, because every hook call is a process
+    /// spawn — a hook that only cares about `bash` but gets invoked on every `read` slows
+    /// down precisely the cheapest calls.
     #[serde(default)]
     pub tools: Vec<String>,
-    /// Hạn giờ riêng cho hook này, tính bằng giây. Vắng thì dùng [`HOOK_TIMEOUT`].
+    /// This hook's own timeout, in seconds. Absent means [`HOOK_TIMEOUT`].
     ///
-    /// Có mặt vì hai lý do khác nhau và cả hai đều thật. Thứ nhất, một hook gọi ra mạng
-    /// cần dài hơn một hook chạy `grep`, và một con số chung cho cả hai thì sai với ít
-    /// nhất một bên. Thứ hai, **bộ test cần rút ngắn nó**: bài kiểm hạn giờ mà đo đồng hồ
-    /// thật sẽ đỏ ngẫu nhiên khi máy đang chạy hai chục bài khác song song — đó là chuyện
-    /// đã xảy ra hai lần ở kho này.
+    /// Here for two separate reasons, both real. First, a hook that calls out to the
+    /// network needs longer than one running `grep`, and a single number for both is wrong
+    /// for at least one of them. Second, **the test suite needs to shorten it**: a timeout
+    /// test that measures the wall clock goes red at random when the machine is running
+    /// twenty other tests in parallel — which has happened twice in this repo.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 }
@@ -61,9 +61,9 @@ impl Middleware<PreExecute> for PreHooks {
                     arguments: &req.arguments,
                     output: None,
                 };
-                // Một hook nói "không" thì dừng ngay, không hỏi những hook còn lại: câu
-                // trả lời đã có, và chạy tiếp chỉ tốn thêm tiến trình.
-                // Hạn giờ của chính hook này, hoặc mặc định. Xem `HookConfig::timeout_secs`.
+                // One hook saying no stops the loop; the remaining hooks are not asked.
+                // The answer is already known, and going on only costs more processes.
+                // This hook's own deadline, or the default. See `HookConfig::timeout_secs`.
                 let deadline = hook
                     .timeout_secs
                     .map(std::time::Duration::from_secs)
@@ -100,9 +100,9 @@ impl Plugin for HooksPlugin {
         if self.hooks.is_empty() {
             return Ok(());
         }
-        // Chạy **trước** mọi tầng khác, kể cả trước phê duyệt: chính sách của người vận
-        // hành không nên phải chờ người dùng trả lời một câu hỏi về việc mà chính sách đã
-        // quyết định là không được làm.
+        // Runs **before** every other layer, approval included: operator policy should
+        // not have to wait on the user answering a question about something the policy has
+        // already decided is not allowed.
         ctx.keep(ctx.on_waterfall_first(Arc::new(PreHooks {
             hooks: self.hooks.clone(),
         })));

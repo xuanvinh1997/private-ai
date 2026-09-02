@@ -100,6 +100,13 @@ pub trait SymbolIndex: Send + Sync + 'static {
     async fn overview(&self) -> Result<Overview, IndexError>;
 
     async fn stats(&self) -> Result<Stats, IndexError>;
+
+    /// Đường dẫn khớp một truy vấn hoàn thành `@`, đã xếp hạng.
+    ///
+    /// Tách khỏi [`SymbolIndex::search`] vì hai câu hỏi khác nhau: `search` tìm **ký hiệu**
+    /// và xếp theo BM25, còn đây tìm **tệp** và xếp theo chỗ khớp rơi vào tên hay vào thư
+    /// mục. Xem [`crate::complete`].
+    async fn paths(&self, query: &str, limit: usize) -> Result<Vec<String>, IndexError>;
 }
 
 pub enum Index {}
@@ -190,6 +197,15 @@ impl SymbolIndex for CodeIndex {
         let store = self.store.clone();
         let query = query.to_string();
         blocking(move || store.search(&query, kind, limit)).await
+    }
+
+    async fn paths(&self, query: &str, limit: usize) -> Result<Vec<String>, IndexError> {
+        let store = self.store.clone();
+        let query = query.to_string();
+        // Đọc cả bảng `files` rồi chấm trong bộ nhớ. Rẻ vì bảng chỉ có đường dẫn, và nó
+        // tránh phải diễn đạt luật "tên tệp thắng thư mục" bằng SQL — thứ SQL nói được
+        // nhưng nói dài, và nói sai thì không ai thấy.
+        blocking(move || Ok(crate::complete::rank(&store.paths()?, &query, limit))).await
     }
 
     async fn outline(&self, path: &Path) -> Result<Option<Vec<Symbol>>, IndexError> {

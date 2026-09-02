@@ -1,12 +1,12 @@
-//! Lệnh chạy nền.
+//! Background commands.
 //!
-//! Một `bash` chạy nền trả `job_id` ngay rồi tiếp tục chạy sau khi lượt đã kết thúc. Đó
-//! là thứ khiến nó hữu ích (chạy `npm run dev` rồi làm việc khác) và cũng là thứ khiến nó
-//! nguy hiểm: một tiến trình sống lâu hơn thứ sinh ra nó là một tiến trình không ai còn
-//! nhớ để dọn.
+//! A backgrounded `bash` returns a `job_id` immediately and keeps running after the turn
+//! has ended. That is what makes it useful (start `npm run dev`, then do something else)
+//! and also what makes it dangerous: a process that outlives the thing that spawned it is
+//! a process nobody remembers to clean up.
 //!
-//! Nên vòng đời của sổ job gắn với plugin: gỡ plugin là giết sạch. Không có đường nào để
-//! một job sống sót qua lần gỡ tải, kể cả khi ai đó quên.
+//! So the job table's lifetime is tied to the plugin: disposing the plugin kills them all.
+//! There is no path by which a job survives unloading, not even if someone forgets.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -58,7 +58,7 @@ impl Jobs {
         all
     }
 
-    /// Giết một job. Trả `false` nếu không có job nào mang id đó.
+    /// Kill one job. Returns `false` when no job carries that id.
     pub fn kill(&self, id: &str) -> bool {
         match self.entries.lock().get(id) {
             Some(job) => {
@@ -69,7 +69,7 @@ impl Jobs {
         }
     }
 
-    /// Giết tất. Gọi khi plugin bị gỡ.
+    /// Kill everything. Called when the plugin is disposed.
     pub fn kill_all(&self) {
         for job in self.entries.lock().values() {
             job.cancel.cancel();

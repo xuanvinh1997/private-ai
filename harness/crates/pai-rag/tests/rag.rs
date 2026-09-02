@@ -191,6 +191,83 @@ fn pdf_toi_gian(noi_dung: &str) -> Vec<u8> {
     out
 }
 
+/// Một PDF dùng font CID `Identity-H` — đúng hình dạng mà Calibre, LibreOffice và Word
+/// sinh ra, và **không** phải hình dạng mà [`pdf_toi_gian`] sinh ra.
+///
+/// Khác biệt nằm ở chỗ chữ trong luồng nội dung không còn là chữ: nó là một dãy mã glyph
+/// hai byte, và cách duy nhất đọc lại được là bảng `ToUnicode` đi kèm. Mã glyph ở đây cố
+/// tình **lệch** khỏi mã Unicode (`cid = ký_tự + 0x30`), nên một bộ rút chữ bỏ qua bảng
+/// đó không thể tình cờ đúng.
+///
+/// `ten_cmap` là tham số vì nó là toàn bộ lý do hàm này tồn tại — xem
+/// `vendor/adobe-cmap-parser/README.md`. `to_unicode = false` dựng một tệp **không** có
+/// bảng nào, tức là một PDF không có lớp chữ đọc được.
+fn pdf_cid(noi_dung: &str, ten_cmap: &str, to_unicode: bool) -> Vec<u8> {
+    let cids: Vec<u32> = noi_dung.chars().map(|c| c as u32 + 0x30).collect();
+    let hex: String = cids.iter().map(|cid| format!("{cid:04X}")).collect();
+    let stream = format!("BT /F1 24 Tf 72 700 Td <{hex}> Tj ET\n");
+
+    let mut bfchar = String::new();
+    for (cid, ky_tu) in cids.iter().zip(noi_dung.chars()) {
+        bfchar.push_str(&format!("<{cid:04X}> <{:04X}>\n", ky_tu as u32));
+    }
+    let cmap = format!(
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+         /CMapName {ten_cmap} def\n/CMapType 2 def\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n\
+         {} beginbfchar\n{bfchar}endbfchar\nendcmap\n\
+         CMapName currentdict /CMap defineresource pop\nend\nend\n",
+        cids.len()
+    );
+
+    let to_unicode_ref = match to_unicode {
+        true => " /ToUnicode 7 0 R",
+        false => "",
+    };
+    let objects = [
+        "<< /Type /Catalog /Pages 2 0 R >>".to_string(),
+        "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_string(),
+        "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] \
+         /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>"
+            .to_string(),
+        format!(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /AAAAAA+Kiem \
+             /Encoding /Identity-H /DescendantFonts [6 0 R]{to_unicode_ref} >>"
+        ),
+        format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
+        "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /AAAAAA+Kiem \
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+         /FontDescriptor 8 0 R /DW 500 >>"
+            .to_string(),
+        format!("<< /Length {} >>\nstream\n{cmap}endstream", cmap.len()),
+        "<< /Type /FontDescriptor /FontName /AAAAAA+Kiem /Flags 4 /ItalicAngle 0 \
+         /Ascent 800 /Descent -200 /CapHeight 700 /StemV 80 /FontBBox [0 -200 1000 800] >>"
+            .to_string(),
+    ];
+
+    let mut out: Vec<u8> = b"%PDF-1.4\n".to_vec();
+    let mut offsets = Vec::new();
+    for (index, body) in objects.iter().enumerate() {
+        offsets.push(out.len());
+        out.extend_from_slice(format!("{} 0 obj\n{body}\nendobj\n", index + 1).as_bytes());
+    }
+    let xref_at = out.len();
+    out.extend_from_slice(format!("xref\n0 {}\n", objects.len() + 1).as_bytes());
+    out.extend_from_slice(b"0000000000 65535 f \n");
+    for offset in &offsets {
+        out.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+    }
+    out.extend_from_slice(
+        format!(
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_at}\n%%EOF\n",
+            objects.len() + 1
+        )
+        .as_bytes(),
+    );
+    out
+}
+
 /// Nạp một loạt tệp và trả về dòng sự kiện đã thu hết.
 async fn nap(library: &Library, paths: Vec<std::path::PathBuf>) -> Vec<pai_rag::IngestEvent> {
     library.ingest(paths).collect::<Vec<_>>().await
@@ -422,6 +499,77 @@ fn rut_chu_tu_pdf() {
         "không rút được chữ từ PDF: {:?}",
         ra.text
     );
+}
+
+/// Một PDF Calibre điển hình: font CID `Identity-H`, và tên bảng mã có **dấu gạch
+/// ngang**.
+///
+/// Bộ lexer của `adobe-cmap-parser` bản gốc dừng ở đúng dấu gạch ngang đó, nên bảng
+/// `beginbfchar` nằm ngay sau không bao giờ được đọc; `pdf-extract` decode mọi glyph
+/// thành chuỗi rỗng và trả về `Ok` kèm một tài liệu toàn khoảng trắng. Không lỗi, không
+/// hoảng loạn, không một dấu hiệu nào — chỉ là một quyển sách ba nghìn trang vào thư viện
+/// với 0 đoạn. Bài này khoá bản vá ở `vendor/adobe-cmap-parser`.
+#[test]
+fn rut_chu_tu_pdf_co_ten_cmap_gach_ngang() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("sach.pdf");
+    let noi_dung = "Chuong mot: cai tu lanh";
+    std::fs::write(
+        &path,
+        pdf_cid(noi_dung, "LiberationSerif-cmap", true),
+    )
+    .unwrap();
+
+    let ra = extract(&path).unwrap();
+    assert!(
+        ra.text.contains(noi_dung),
+        "bảng ToUnicode bị bỏ qua, chỉ còn khoảng trắng: {:?}",
+        ra.text
+    );
+}
+
+/// Và cùng một tệp với tên bảng mã không có dấu gạch ngang phải cho **đúng cùng** chữ.
+///
+/// Cặp với bài trên: nó khoá rằng bản vá sửa đúng chỗ nó nói là sửa, chứ không phải nới
+/// bộ lexer ra tới mức mọi tệp đều đi qua một đường khác.
+#[test]
+fn ten_cmap_khong_gach_ngang_van_doc_nhu_cu() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("sach.pdf");
+    let noi_dung = "Chuong hai: buc thu";
+    std::fs::write(&path, pdf_cid(noi_dung, "LiberationSerif", true)).unwrap();
+
+    assert!(extract(&path).unwrap().text.contains(noi_dung));
+}
+
+/// PDF không có lớp chữ nào — bản quét ảnh — phải là một **lỗi có lý do**, không phải một
+/// tài liệu rỗng.
+///
+/// Đây là nhánh mà mọi bước đều báo thành công: tệp mở được, `pdf-extract` trả `Ok`, và
+/// cái nó trả về là bốn trăm nghìn dấu cách. Đi tiếp thì tài liệu vào kho với 0 đoạn và
+/// `error` rỗng — mà "chưa có vector, chưa có lỗi" là đúng định nghĩa *đang xếp hàng* ở
+/// giao diện, nên người dùng ngồi đợi một hàng đợi không tồn tại.
+#[test]
+fn pdf_khong_co_lop_chu_thanh_loi_co_ly_do() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("ban-quet.pdf");
+    std::fs::write(&path, pdf_cid("Chuong mot", "Kiem-cmap", false)).unwrap();
+
+    let err = extract(&path).expect_err("PDF không có chữ phải là lỗi");
+    assert!(matches!(err, RagError::Empty { .. }), "lỗi sai loại: {err}");
+    // Lý do phải nói ra bước tiếp theo, không chỉ nói rằng có chuyện.
+    assert!(err.to_string().contains("ban-quet.pdf"), "{err}");
+    assert!(err.to_string().contains("OCR"), "{err}");
+}
+
+/// Tệp chỉ có khoảng trắng cũng vậy, và với câu giải thích của định dạng nó.
+#[test]
+fn tep_toan_khoang_trang_thanh_loi_chu_khong_thanh_tai_lieu_rong() {
+    let dir = TempDir::new().unwrap();
+    let path = viet(dir.path(), "trong.md", "   \n\n\t\n");
+
+    let err = extract(&path).expect_err("tệp rỗng phải là lỗi");
+    assert!(matches!(err, RagError::Empty { .. }), "lỗi sai loại: {err}");
 }
 
 /// `pdf-extract` **panic** trên cấu trúc dị dạng thay vì trả lỗi. Bài này khoá cái lưới
@@ -1259,6 +1407,89 @@ async fn quet_lai_thu_muc_khong_doi_khong_rut_chu_lai_tep_nao() {
     assert_eq!(library.stats().unwrap().chunks, doan);
 }
 
+/// PDF quét ảnh nằm trong thư mục dự án phải rời khỏi thư viện như một **tệp không đọc
+/// được**, chứ không nằm lại như một tài liệu 0 đoạn.
+///
+/// Đây là bài kiểm cho đúng cái người dùng nhìn thấy. Một hàng `documents` có 0 đoạn và
+/// `error` rỗng được giao diện đọc thành *đang xếp hàng chờ nhúng* — và nó xếp hàng vĩnh
+/// viễn, vì không có đoạn nào để nhúng và sẽ không bao giờ có. Thà nói "hỏng, đây là lý
+/// do" còn hơn để một cái đồng hồ quay mãi.
+#[tokio::test]
+async fn pdf_khong_co_chu_khong_bao_gio_thanh_mot_hang_dang_xep_hang() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    std::fs::write(
+        nguon.path().join("ban-quet.pdf"),
+        pdf_cid("Chuong mot", "Kiem-cmap", false),
+    )
+    .unwrap();
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    let su_kien = quet(&library).await;
+
+    let tai_lieu = library.documents().unwrap();
+    assert_eq!(tai_lieu.len(), 1, "PDF không chữ vẫn lọt vào bảng tài liệu");
+    assert!(
+        tai_lieu.iter().all(|doc| doc.chunks > 0),
+        "một tài liệu trong kho mà không có đoạn nào: {tai_lieu:?}"
+    );
+    let that_bai = su_kien
+        .iter()
+        .find(|e| e.stage == IngestStage::Failed)
+        .expect("phải có sự kiện hỏng");
+    assert!(that_bai.path.contains("ban-quet.pdf"), "{that_bai:?}");
+    assert_eq!(library.stats().unwrap().unreadable, 1);
+}
+
+/// Đổi bộ rút chữ thì lần quét kế tiếp **đọc lại cả thư mục**, dù không tệp nào bị sửa.
+///
+/// Không có đường này, một bản vá ở tầng rút chữ chỉ tới được với thư viện mới: quét tăng
+/// dần so `mtime` với kích thước, người dùng thì không sửa tệp của họ, nên tệp từng đọc
+/// ra rác ở lại dạng rác cho tới khi họ tự tay bỏ ra rồi nạp lại — mà họ không có lý do
+/// gì để nghĩ tới việc đó.
+#[tokio::test]
+async fn doi_bo_rut_chu_thi_lan_quet_toi_doc_lai_ca_thu_muc() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+    viet(nguon.path(), "meo.txt", "Con mèo nằm trên chiếu.");
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    quet(&library).await;
+    assert_eq!(library.extract_count(), 2);
+    let doan = library.stats().unwrap().chunks;
+    drop(library);
+
+    // Đúng hình dạng của một kho do bản trước ghi ra.
+    let db = kho.path().join("library.sqlite");
+    {
+        let store = Store::open(&db, &that(&nguon)).unwrap();
+        store
+            .set_meta(pai_rag::store::META_EXTRACT_VERSION, "0")
+            .unwrap();
+    }
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    // Tài liệu và đoạn còn nguyên **trước** lần quét: tìm bằng từ khoá không được tắt đi
+    // trong lúc chờ đọc lại.
+    assert_eq!(library.documents().unwrap().len(), 2);
+    assert_eq!(library.stats().unwrap().chunks, doan);
+
+    quet(&library).await;
+    assert_eq!(
+        library.extract_count(),
+        2,
+        "đổi bộ rút chữ mà lần quét vẫn bỏ qua tệp cũ"
+    );
+    assert_eq!(library.documents().unwrap().len(), 2);
+    assert_eq!(library.stats().unwrap().chunks, doan);
+
+    // Và chỉ một lần: lần quét sau đó lại yên như cũ.
+    quet(&library).await;
+    assert_eq!(library.extract_count(), 2);
+}
+
 /// Sửa một tệp thì **chỉ** tệp đó được nạp lại; đoạn của tệp khác không đổi.
 #[tokio::test]
 async fn sua_mot_tep_chi_nap_lai_dung_tep_do() {
@@ -1627,4 +1858,146 @@ async fn tep_hong_chi_lam_hong_chinh_no_va_khong_thu_lai_moi_lan_quet() {
         "tệp hỏng bị thử lại ở lần quét sau"
     );
     assert_eq!(library.documents().unwrap().len(), 1);
+}
+
+// ---------------------------------------------------------------------------------
+// 12. Gỡ kẹt: nhúng bù tự động, và nút xử lý lại
+// ---------------------------------------------------------------------------------
+
+/// Bộ nhúng tắt lúc nạp rồi bật lại sau — Ollama trên máy người dùng, đúng nghĩa đen.
+///
+/// Cùng một `id` ở cả hai trạng thái: đây là **một** máy chủ lúc tắt lúc bật, không phải
+/// hai mô hình khác nhau, nên không có vector nào đáng bị xoá khi nó quay lại.
+struct BatTat {
+    song: std::sync::atomic::AtomicBool,
+    that: TuiTuGia,
+}
+
+#[async_trait]
+impl Embedder for BatTat {
+    fn id(&self) -> &str {
+        "bat-tat"
+    }
+
+    fn dim(&self) -> Option<usize> {
+        self.that.dim()
+    }
+
+    async fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, RagError> {
+        if !self.song.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(RagError::Embed {
+                id: "bat-tat".into(),
+                reason: "máy chủ không trả lời".into(),
+            });
+        }
+        self.that.embed(texts).await
+    }
+
+    async fn health(&self) -> bool {
+        self.song.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// Nạp lúc bộ nhúng tắt, bật lại, rồi **chỉ mở màn hình** — thư viện phải tự bắt kịp.
+///
+/// Đây là lỗi mà cả mục này sinh ra để sửa. `embed_pending` xưa nay chỉ chạy sau mỗi tệp
+/// vừa nạp, nên một thư viện nạp xong lúc Ollama tắt sẽ đứng ở "đang xếp hàng" mãi mãi:
+/// lần quét sau không thấy tệp nào đổi nên không nạp tệp nào, và không nạp tệp nào thì
+/// không ai gọi tới bộ nhúng. Người dùng bật Ollama lên và không có gì xảy ra.
+#[tokio::test]
+async fn bat_lai_bo_nhung_roi_quet_lai_thi_nhung_bu_phan_con_xep_hang() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+    let path = viet(nguon.path(), "so-tay.md", VAN_BAN_TIENG_VIET);
+
+    let cong_tac = Arc::new(BatTat {
+        song: std::sync::atomic::AtomicBool::new(false),
+        that: TuiTuGia::moi(),
+    });
+    let embedder: Arc<dyn Embedder> = cong_tac.clone();
+    let library = Library::open(kho.path(), nguon.path(), Some(embedder)).unwrap();
+    nap(&library, vec![path]).await;
+
+    // Tài liệu đã vào, chưa có vector nào, và `stats()` nói ra lý do.
+    let truoc = library.stats().unwrap();
+    assert_eq!(truoc.documents, 1);
+    assert!(truoc.chunks > 0);
+    assert_eq!(truoc.embedded_chunks, 0);
+    assert!(!truoc.semantic_ready);
+
+    // Ollama bật lại. Không tệp nào trong thư mục đổi — người dùng chỉ mở lại màn hình.
+    cong_tac
+        .song
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let su_kien = quet(&library).await;
+
+    assert!(
+        !su_kien.iter().any(|e| e.stage == IngestStage::Reading),
+        "không tệp nào đổi thì không tệp nào được đọc lại"
+    );
+    assert!(
+        su_kien.iter().any(|e| e.stage == IngestStage::Embedding),
+        "lượt quét phải nói ra rằng nó vừa nhúng bù: {su_kien:?}"
+    );
+
+    let sau = library.stats().unwrap();
+    assert_eq!(sau.embedded_chunks, sau.chunks, "còn đoạn chưa có vector");
+    assert_eq!(sau.documents, 1, "tài liệu bị mất trong lúc nhúng bù");
+    // Và lý do hỏng cũ phải biến mất cùng lúc: giữ nó lại thì `stats()` vẫn báo chưa sẵn
+    // sàng sau khi mọi đoạn đã có vector, tức là vẫn đúng cái kẹt cũ, chỉ đổi câu chữ.
+    assert!(sau.semantic_ready, "{:?}", sau.reason);
+    assert!(sau.reason.is_none(), "{:?}", sau.reason);
+    let hits = library.search("chứng chỉ", 5).await.unwrap();
+    assert!(!hits.is_empty());
+}
+
+/// Một lượt quét thường **không** thử lại tệp hỏng — xem bài ngay trên. `reprocess` thì
+/// có, và đó là toàn bộ lý do nó tồn tại.
+///
+/// Dựng lại đúng cảnh người dùng gặp: tệp đọc hỏng một lần vì một lý do đã qua, rồi nội
+/// dung tốt lên mà `mtime` và kích thước thì không đổi. Không lượt quét nào chạm lại vào
+/// nó nữa, nên nếu không có nút này thì người dùng không còn cách nào ngoài việc đi sửa
+/// tệp cho `mtime` khác đi.
+#[tokio::test]
+async fn xu_ly_lai_doc_lai_ca_tep_lan_truoc_doc_hong() {
+    let kho = TempDir::new().unwrap();
+    let nguon = TempDir::new().unwrap();
+
+    // Mười hai byte khoảng trắng: rút chữ ra rỗng, nên nó vào bảng `failures`.
+    let path = viet(nguon.path(), "ghi-chep.txt", "            ");
+    let dau = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    let library = Library::open(kho.path(), nguon.path(), None).unwrap();
+    quet(&library).await;
+    assert_eq!(library.documents().unwrap().len(), 0, "tệp rỗng chữ mà vào");
+    assert_eq!(library.stats().unwrap().unreadable, 1);
+
+    // Cũng mười hai byte, và `mtime` được đặt lại về đúng lúc cũ: với lượt quét tăng dần
+    // thì tệp này **không đổi**.
+    std::fs::write(&path, "mimi meo xyz").unwrap();
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_modified(dau)
+        .unwrap();
+
+    quet(&library).await;
+    assert_eq!(
+        library.documents().unwrap().len(),
+        0,
+        "lượt quét thường không được thử lại tệp hỏng — nếu đổi luật này thì đổi cả bài"
+    );
+
+    // Nút bấm của người dùng.
+    let su_kien = library.reprocess().collect::<Vec<_>>().await;
+    assert!(
+        su_kien.iter().any(|e| e.stage == IngestStage::Stored),
+        "xử lý lại phải nạp được tệp: {su_kien:?}"
+    );
+    let tai_lieu = library.documents().unwrap();
+    assert_eq!(tai_lieu.len(), 1, "xử lý lại không nhặt lại tệp đã hỏng");
+    assert_eq!(library.stats().unwrap().unreadable, 0);
+    let hits = library.search("mimi", 5).await.unwrap();
+    assert!(!hits.is_empty(), "nạp lại rồi mà không tìm ra");
 }

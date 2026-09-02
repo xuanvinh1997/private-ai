@@ -1,42 +1,56 @@
-//! Giam tiến trình: một seam, ba chế độ, một bản cài đặt cho mỗi hệ điều hành.
+//! Process confinement: one seam, three modes, one implementation per operating system.
 //!
-//! Ba câu dưới đây là toàn bộ nội dung của crate này, và cả ba đều là câu phủ định.
+//! The four statements below are the entire content of this crate, and all four are
+//! negative.
 //!
-//! **Sandbox ở đây chỉ quản *hiệu ứng lên tệp*.** Không chế độ nào chặn mạng, trên bất
-//! kỳ hệ điều hành nào. macOS thì `(deny network*)` phá `cargo` và `npm` tới mức không
-//! ai bật; Linux cần seccomp riêng; Windows cần một tài khoản riêng làm principal cho
-//! luật tường lửa. Một lệnh bị giam vẫn tải được mọi thứ về và vẫn gửi được mọi thứ đi.
-//! Đây là giới hạn đã biết, không phải việc còn dở: viết nó ra đây để không ai đọc chữ
-//! "sandbox" rồi suy ra một bảo đảm không tồn tại.
+//! **The sandbox governs file effects, and the network only when asked.** No mode blocks the
+//! network *by default*, and that default stands: a blanket deny breaks `cargo` and `npm`
+//! badly enough that an always-on version would make the agent useless. What changed is that
+//! the choice now exists — [`Policy::deny_network`] cuts a process off, and reading a repo
+//! someone sent you is a different job from building your own.
 //!
-//! **Hai nền tảng không giam giống hệt nhau.** macOS mở đúng một cống `/dev/null`; Linux
-//! phải mở cả thư mục `/dev` cho quyền cấp tệp, vì Landlock không quản device node theo
-//! từng tệp. Cả hai đều không tạo hay xoá được mục trong `/dev`. Ghi ra đây vì một bảng
-//! nói "cả hai đều `Full`" mà không nói chỗ khác nhau là một bảng nói dối bằng cách im
-//! lặng.
+//! What it covers is **not the same on both platforms**, and rounding that off would be the
+//! same lie this crate refuses everywhere else:
 //!
-//! **Sandbox không quản việc *đọc*.** Cả ba chế độ đều cho đọc toàn máy. Một coding
-//! agent phải đọc được repo, toolchain, cache phụ thuộc và cấu hình git; đục đủ lỗ để
-//! nó chạy được thì ranh giới đọc chẳng còn nghĩa gì. Bí mật nằm trong `~/.ssh` vẫn đọc
-//! được — thứ chặn nó là danh sách đường dẫn được bảo vệ của `pai-fs`, không phải chỗ này.
-//!
-//! **Sandbox không tự nhận là đang giam.** [`Enforcement`] là *sự thật báo cáo*, không
-//! phải lời hứa. Một sandbox nói dối nguy hiểm hơn hẳn không có sandbox: người dùng bấm
-//! "cho phép" vì tin rằng có vòng vây, nên một vòng vây không tồn tại còn tệ hơn một
-//! vòng vây không được nhắc tới. Vì vậy mọi provider ở đây trả về `None` kèm lý do thay
-//! vì trả về `Full` cho chắc.
-//!
-//! # Bản đồ hệ điều hành
-//!
-//! | | Chặn ghi ngoài workspace | Cách làm |
+//! | | Covers | How |
 //! |---|---|---|
-//! | macOS | có, `Full` | `sandbox-exec` với hồ sơ SBPL sinh động ([`seatbelt`]) |
-//! | Linux | có, `Full`/`Partial` theo ABI kernel | Landlock qua một binary trung gian ([`landlock`]) |
-//! | Windows | chưa | [`Enforcement::None`] kèm lý do ([`unconfined`]) |
+//! | macOS | everything, TCP and UDP | `(deny network*)` in the SBPL profile |
+//! | Linux | **TCP only**, from Landlock ABI 4 | handle the net access, grant no port |
 //!
-//! Trên máy không thuộc ba nhóm trên, provider cũng là một bản `None` có lý do — chứ
-//! không phải không có provider nào, vì "không ai trả lời" và "trả lời là không giam
-//! được" là hai câu khác nhau đối với hộp thoại duyệt.
+//! Landlock has no UDP verb, so on Linux a confined process can still resolve names and
+//! still send over UDP. A socket already connected when the ruleset is applied also stays
+//! usable. Ask [`seam::SandboxProvider::network_confinable`] before relying on any of it:
+//! below ABI 4, and on Windows, it answers false rather than accepting the flag and building
+//! nothing — a caller told "no" is better off than one silently given an empty boundary.
+//!
+//! **The two platforms do not confine identically.** macOS opens exactly one hole for
+//! `/dev/null`; Linux opens the whole `/dev` directory at the file-permission level, because
+//! Landlock does not govern device nodes per file. Neither can create or delete entries in
+//! `/dev`. A table saying "both are `Full`" without saying where they differ lies by
+//! omission.
+//!
+//! **The sandbox does not govern *reads*.** All three modes allow reading the whole machine.
+//! A coding agent has to read the repo, the toolchain, the dependency cache and the git
+//! config; punching enough holes to make that work leaves the read boundary meaningless.
+//! Secrets in `~/.ssh` are still readable — what blocks those is `pai-fs`'s protected-path
+//! list, not this crate.
+//!
+//! **The sandbox does not claim to be confining.** [`Enforcement`] is *reported truth*, not
+//! a promise. A lying sandbox is more dangerous than none: the user clicks "allow" because
+//! they believe there is a boundary. Which is why every provider here returns `None` with a
+//! reason rather than returning `Full` to be safe.
+//!
+//! # Operating-system map
+//!
+//! | | Blocks writes outside the workspace | How |
+//! |---|---|---|
+//! | macOS | yes, `Full` | `sandbox-exec` with a generated SBPL profile ([`seatbelt`]) |
+//! | Linux | yes, `Full`/`Partial` by kernel ABI | Landlock via a helper binary ([`landlock`]) |
+//! | Windows | not yet | [`Enforcement::None`] with a reason ([`unconfined`]) |
+//!
+//! Elsewhere the provider is also a `None` with a reason — rather than no provider at all,
+//! because "nobody answered" and "confinement is unavailable" are two different sentences as
+//! far as the approval dialog is concerned.
 
 pub mod plugin;
 pub mod policy;

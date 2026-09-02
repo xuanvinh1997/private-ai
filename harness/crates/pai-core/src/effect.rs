@@ -1,13 +1,15 @@
-//! Đăng ký là hiệu ứng gỡ lại được.
+//! Registration is an undoable effect.
 //!
-//! Cordis cần `ctx.effect()` vì JavaScript không có destructor. Rust có, nên mặc định ở
-//! đây là RAII: mọi hàm đăng ký trả về một guard, và thả guard là gỡ đăng ký.
+//! Cordis needs `ctx.effect()` because JavaScript has no destructors. Rust does, so the
+//! default here is RAII: every registration function returns a guard, and dropping the
+//! guard unregisters.
 //!
-//! Vẫn cần một scope tường minh cho hai việc `Drop` không làm được:
+//! An explicit scope is still needed for two things `Drop` cannot do:
 //!
-//! 1. **Dọn bất đồng bộ.** Đóng một client MCP, flush WAL, `await` một `JoinHandle`.
-//! 2. **Thứ tự.** Cordis dọn theo LIFO. Rust thả field theo thứ tự khai báo và phần tử
-//!    `Vec` từ đầu về cuối — ngược lại. Đây là loại sai khác không báo lỗi, chỉ chạy sai.
+//! 1. **Async cleanup.** Closing an MCP client, flushing a WAL, `await`ing a `JoinHandle`.
+//! 2. **Order.** Cordis disposes LIFO. Rust drops fields in declaration order and `Vec`
+//!    elements front to back — the opposite. This is the kind of mismatch that raises no
+//!    error and simply behaves wrongly.
 
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -22,7 +24,7 @@ enum Disposer {
     Async(Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>),
 }
 
-/// Sở hữu mọi đăng ký của một plugin — tương đương một fiber của Cordis.
+/// Owns every registration made by one plugin — the equivalent of a Cordis fiber.
 pub struct EffectScope {
     label: &'static str,
     disposers: Mutex<Vec<(&'static str, Disposer)>>,
@@ -46,7 +48,7 @@ impl EffectScope {
         self.label
     }
 
-    /// Một scope con. Con được dọn trước cha.
+    /// A child scope. Children are disposed before their parent.
     pub fn child(self: &Arc<Self>, label: &'static str) -> Arc<EffectScope> {
         let child = EffectScope::new(label);
         self.children.lock().push(child.clone());
@@ -69,10 +71,11 @@ impl EffectScope {
             .push((label, Disposer::Async(Box::new(move || Box::pin(f())))));
     }
 
-    /// Token huỷ sống đúng bằng scope này.
+    /// A cancellation token that lives exactly as long as this scope.
     ///
-    /// Dựng lười và nhớ lại, nên mọi việc chạy dưới cùng một scope chia chung một token —
-    /// gỡ scope là mọi thứ nó sinh ra dừng lại, không cần ai đi thu từng cái một.
+    /// Built lazily and memoised, so everything running under one scope shares a single
+    /// token — disposing the scope stops everything it spawned, with nobody having to
+    /// collect them one by one.
     pub fn cancel_token(&self) -> tokio_util::sync::CancellationToken {
         let mut slot = self.cancel.lock();
         slot.get_or_insert_with(|| {
@@ -84,13 +87,14 @@ impl EffectScope {
         .clone()
     }
 
-    /// Giao một guard cho scope: nó sống đúng bằng plugin đã tạo ra nó.
+    /// Hand a guard to the scope: it then lives exactly as long as the plugin that made
+    /// it.
     pub fn keep<G: Send + 'static>(&self, guard: G) {
         self.defer("keep", move || drop(guard));
     }
 
-    /// Dọn. Gọi nhiều lần không sao. Một disposer hỏng không chặn những cái còn lại —
-    /// dọn dở dang tệ hơn dọn có một chỗ hỏng.
+    /// Dispose. Safe to call more than once. One failing disposer does not stop the rest
+    /// — a half-finished cleanup is worse than a cleanup with one broken step.
     pub async fn dispose(&self) {
         if self.disposed.swap(true, Ordering::SeqCst) {
             return;
@@ -104,7 +108,7 @@ impl EffectScope {
             match disposer {
                 Disposer::Sync(f) => {
                     if let Err(err) = catch_unwind(AssertUnwindSafe(f)) {
-                        tracing::error!(label, "disposer hoảng loạn: {err:?}");
+                        tracing::error!(label, "disposer panicked: {err:?}");
                     }
                 }
                 Disposer::Async(f) => f().await,
@@ -118,17 +122,18 @@ impl Drop for EffectScope {
         if !self.disposed.load(Ordering::SeqCst) && !self.disposers.lock().is_empty() {
             tracing::warn!(
                 label = self.label,
-                "EffectScope bị thả mà chưa dispose() — phần dọn bất đồng bộ đã bị bỏ qua"
+                "EffectScope dropped without dispose() — async cleanup was skipped"
             );
         }
     }
 }
 
-/// Guard chung cho một đăng ký. Thả nó là gỡ đăng ký.
+/// The generic guard for one registration. Dropping it unregisters.
 ///
-/// `#[must_use]` biến lỗi kinh điển của Cordis — quên disposer — thành cảnh báo lúc
-/// biên dịch. Muốn đăng ký sống bằng plugin thì giao cho scope bằng `Context::keep`.
-#[must_use = "thả guard ngay lập tức sẽ gỡ đăng ký; hãy giữ nó hoặc gọi ctx.keep(guard)"]
+/// `#[must_use]` turns the classic Cordis mistake — a forgotten disposer — into a compile
+/// -time warning. To make a registration live as long as the plugin, hand it to the scope
+/// with `Context::keep`.
+#[must_use = "dropping the guard immediately unregisters; hold it or call ctx.keep(guard)"]
 pub struct Guard(Option<Box<dyn FnOnce() + Send>>);
 
 impl Guard {
@@ -136,8 +141,8 @@ impl Guard {
         Guard(Some(Box::new(undo)))
     }
 
-    /// Bỏ guard đi và giữ đăng ký vĩnh viễn. Dùng cho những thứ thật sự sống bằng
-    /// tiến trình; ở mọi chỗ khác, `keep` mới là câu trả lời đúng.
+    /// Discard the guard and keep the registration forever. For things that genuinely
+    /// live as long as the process; everywhere else, `keep` is the right answer.
     pub fn leak(mut self) {
         self.0 = None;
     }

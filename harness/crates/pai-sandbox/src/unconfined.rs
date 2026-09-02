@@ -1,35 +1,38 @@
-//! Provider cho những máy chưa giam được — hôm nay là Windows.
+//! The provider for machines that cannot confine yet — today, Windows.
 //!
-//! Đây **không phải** một bản giả. Nó không bọc argv, không sinh hồ sơ, và không bao giờ
-//! trả về `Enforcement::Full`. Việc duy nhất nó làm là trả lời câu hỏi "có giam được
-//! không" bằng "không, vì lý do này" — và câu trả lời đó có giá trị, vì im lặng thì hộp
-//! thoại duyệt không phân biệt được "chưa ai cắm sandbox" với "đã cắm và nó nói không".
+//! This is **not** a stub. It does not wrap argv, does not generate a profile, and never
+//! returns `Enforcement::Full`. The only thing it does is answer "can this be confined"
+//! with "no, for this reason" — and that answer has value, because in silence the approval
+//! dialog cannot tell "nobody mounted a sandbox" apart from "one is mounted and it says no".
 //!
-//! Vì sao Windows chưa có: đã khảo sát bốn primitive và chỉ **một** cái khả thi.
+//! Why Windows is missing: four primitives were surveyed and only **one** is viable.
 //!
-//! - **Restricted token** (`CreateRestrictedToken` với `WRITE_RESTRICTED` + SID tổng hợp
-//!   cho workspace + Job Object) — khả thi, không cần quyền quản trị, và là thứ cả dsh
-//!   lẫn Codex CLI chọn. Nhưng nó chỉ giao với quyền **ghi**: đọc, mạng và khả năng nhìn
-//!   thấy tiến trình khác đều không bị hạn chế, `Everyone` bắt buộc phải nằm trong danh
-//!   sách hạn chế (bỏ ra thì DLL init chết `0xC0000142`) nên mọi đối tượng NTFS cấp ghi
-//!   cho `Everyone` vẫn ghi được, và hard link NTFS alias cùng một file object qua nhiều
-//!   đường dẫn. Nghĩa là khi nó có mặt, nó phải báo cáo `Partial`, không bao giờ `Full`.
-//! - **AppContainer** — mặc định từ chối *đọc*. Một coding agent phải đọc repo,
-//!   toolchain, cấu hình git và cache phụ thuộc; đục đủ lỗ cho nó chạy thì ranh giới
-//!   không còn nghĩa. Ngoài ra capability phải khai trước, mà agent chọn binary lúc chạy.
-//! - **Windows Sandbox (Hyper-V)** — không có trên bản Home, và quan trọng hơn: nó không
-//!   tác động được lên workspace thật của người dùng. Hợp cho computer-use agent, không
-//!   hợp cho coding agent.
-//! - **Mandatory Integrity Control (Low IL)** — để lại nhãn SACL trên đĩa, ảnh hưởng mọi
-//!   tiến trình Low-integrity khác trên máy. Không tách được ranh giới của riêng agent.
+//! - **Restricted token** (`CreateRestrictedToken` with `WRITE_RESTRICTED` + a synthesised
+//!   SID for the workspace + a Job Object) — viable, needs no administrator rights, and is
+//!   what both dsh and the Codex CLI chose. But it only intersects with **write** access:
+//!   reads, the network and the ability to see other processes are all unrestricted,
+//!   `Everyone` must remain in the restricting list (removing it kills DLL init with
+//!   `0xC0000142`) so every NTFS object granting write to `Everyone` is still writable, and
+//!   NTFS hard links alias one file object across several paths. Meaning that when it does
+//!   land, it has to report `Partial`, never `Full`.
+//! - **AppContainer** — denies *reads* by default. A coding agent has to read the repo, the
+//!   toolchain, the git config and the dependency cache; punching enough holes to make it
+//!   work leaves the boundary meaningless. Capabilities must also be declared up front,
+//!   while the agent picks binaries at run time.
+//! - **Windows Sandbox (Hyper-V)** — absent from Home editions, and more importantly it
+//!   cannot act on the user's real workspace. Right for a computer-use agent, wrong for a
+//!   coding agent.
+//! - **Mandatory Integrity Control (Low IL)** — leaves SACL labels on disk and affects every
+//!   other Low-integrity process on the machine. It cannot carve out a boundary for the
+//!   agent alone.
 //!
-//! Nên mục Windows nằm ở v1.0 của lộ trình, và cho tới lúc đó câu trả lời trung thực là
-//! câu trả lời trong tệp này.
+//! So Windows sits at v1.0 on the roadmap, and until then the honest answer is the one in
+//! this file.
 
 use crate::policy::Policy;
 use crate::seam::{Enforcement, SandboxError, SandboxProvider};
 
-/// Lý do mặc định cho Windows, viết một lần để mọi chỗ nói cùng một câu.
+/// The default reason for Windows, written once so every place says the same sentence.
 pub const WINDOWS_REASON: &str = "Windows chưa có backend giam tiến trình: restricted \
      token là đường khả thi duy nhất và nó chưa được viết. Lệnh chạy với đầy đủ quyền \
      của bạn, và thứ duy nhất đứng giữa là hộp thoại duyệt.";
@@ -48,10 +51,10 @@ impl Unconfined {
 
 impl SandboxProvider for Unconfined {
     fn wrap(&self, argv: Vec<String>, policy: &Policy) -> Result<Vec<String>, SandboxError> {
-        // `danger-full-access` không đòi hỏi gì, nên nó vẫn chạy được ở đây. Hai chế độ
-        // kia thì **lỗi**, không phải chạy nguyên văn: trả lại argv gốc cho một người
-        // gọi đã xin được giam là đúng cái hành vi làm cho một vòng vây không tồn tại
-        // trông như đang có.
+        // `danger-full-access` asks for nothing, so it still runs here. The other two are
+        // an **error**, not a passthrough: returning the original argv to a caller that
+        // asked to be confined is exactly the behaviour that makes a non-existent boundary
+        // look present.
         if argv.is_empty() {
             return Err(SandboxError::EmptyArgv);
         }

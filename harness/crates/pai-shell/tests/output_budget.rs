@@ -1,8 +1,8 @@
-//! Output lệnh cũng là output lớn.
+//! Command output is large output too.
 //!
-//! Một `cargo build` hay một bộ test đỏ nhả ra vài trăm KiB, và phần đuôi — mã thoát,
-//! dòng lỗi cuối — là phần đáng giá nhất. Cắt chỉ-lấy-đầu ở đây dạy mô hình rằng một
-//! lệnh chạy mười nghìn dòng không có kết cục nào cả.
+//! A `cargo build` or a red test suite emits a few hundred KiB, and the tail — the exit
+//! code, the last error line — is the most valuable part. Head-only truncation here
+//! teaches the model that a command producing ten thousand lines has no outcome at all.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,15 +22,15 @@ fn call(args: Value) -> Invocation {
     Invocation::new(ToolName::from("bash"), "c1", map)
 }
 
-/// Khoá: **output dài bị gấp lại, không bị cắt cụt** — cả đầu lẫn đuôi còn, toàn văn nằm
-/// trong kho, và kết quả nói ra cách lấy tiếp.
+/// Locks in: **long output is folded, not truncated** — head and tail both survive, the
+/// full text goes to the store, and the result says how to fetch the rest.
 #[tokio::test]
-async fn output_bash_rat_dai_bi_gap_lai_va_do_vao_kho() {
+async fn very_long_bash_output_is_folded_and_spilled_to_the_store() {
     let ctx = Context::root();
     let store = MemorySpillStore::new();
     ctx.keep(
         ctx.provide::<Spill>(store.clone() as Arc<dyn SpillStore>)
-            .expect("cắm được kho tràn"),
+            .expect("the spill store mounts"),
     );
 
     let shell: Arc<dyn ShellExecutor> = Arc::new(LocalShell::new(
@@ -49,32 +49,32 @@ async fn output_bash_rat_dai_bi_gap_lai_va_do_vao_kho() {
             "command": "seq 1 5000 | sed 's/^/dong /'; echo XONG-CUOI"
         })))
         .await
-        .expect("chạy được");
+        .expect("runs");
 
     assert!(!outcome.is_error, "{}", outcome.content);
     assert!(
         outcome.content.contains("dong 1\n"),
-        "mất phần đầu:\n{}",
+        "lost the head:\n{}",
         outcome.content
     );
     assert!(
         outcome.content.contains("XONG-CUOI"),
-        "mất phần đuôi — đây mới là chỗ có kết cục của lệnh:\n{}",
+        "lost the tail — this is where the command's outcome lives:\n{}",
         outcome.content
     );
     assert!(
         outcome.content.contains("đã cắt bớt"),
-        "cắt trong im lặng:\n{}",
+        "truncated silently:\n{}",
         outcome.content
     );
     assert!(
         outcome.content.contains("`spill_read` với `id:"),
-        "không nói cách lấy toàn văn:\n{}",
+        "does not say how to fetch the full text:\n{}",
         outcome.content
     );
     assert!(
         outcome.content.contains("| tail -n 200"),
-        "không nói cách lọc ngay trong lệnh:\n{}",
+        "does not say how to filter inside the command itself:\n{}",
         outcome.content
     );
 
@@ -83,27 +83,27 @@ async fn output_bash_rat_dai_bi_gap_lai_va_do_vao_kho() {
             .meta
             .get("spill")
             .cloned()
-            .expect("kết quả bị cắt phải mang vé"),
+            .expect("a folded result must carry a ticket"),
     )
-    .expect("vé đọc được");
-    let full = store.read(&handle).expect("vé còn giá trị");
-    assert!(full.contains("dong 2500"), "phần giữa không được mất");
+    .expect("the ticket parses");
+    let full = store.read(&handle).expect("the ticket is still valid");
+    assert!(full.contains("dong 2500"), "the middle must not be lost");
     assert!(
         outcome.content.len() < full.len() / 4,
-        "phần gửi cho mô hình vẫn dài: {} byte",
+        "what went to the model is still long: {} bytes",
         outcome.content.len()
     );
 }
 
-/// Khoá: **output vừa ngân sách thì đi nguyên vẹn** — không có vé, không có lời cắt nào.
-/// Không có bài này thì "luôn cắt" cũng làm bài trên xanh.
+/// Locks in: **output within budget passes through untouched** — no ticket, no mention of
+/// truncation. Without this test, "always truncate" would make the one above pass too.
 #[tokio::test]
-async fn output_ngan_di_nguyen_ven_va_khong_sinh_ve() {
+async fn short_output_passes_through_and_mints_no_ticket() {
     let ctx = Context::root();
     let store = MemorySpillStore::new();
     ctx.keep(
         ctx.provide::<Spill>(store.clone() as Arc<dyn SpillStore>)
-            .expect("cắm được kho tràn"),
+            .expect("the spill store mounts"),
     );
 
     let shell: Arc<dyn ShellExecutor> = Arc::new(LocalShell::new(
@@ -120,7 +120,7 @@ async fn output_ngan_di_nguyen_ven_va_khong_sinh_ve() {
     let outcome = bash
         .execute(&call(json!({ "command": "echo xin-chao" })))
         .await
-        .expect("chạy được");
+        .expect("runs");
 
     assert!(outcome.content.contains("xin-chao"));
     assert!(
@@ -129,5 +129,5 @@ async fn output_ngan_di_nguyen_ven_va_khong_sinh_ve() {
         outcome.content
     );
     assert!(outcome.meta.get("spill").is_none());
-    assert!(store.is_empty(), "không cắt thì không cất gì");
+    assert!(store.is_empty(), "nothing truncated means nothing stored");
 }

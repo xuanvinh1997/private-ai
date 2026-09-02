@@ -3,6 +3,7 @@ import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
 import type { ProjectKind, SessionSummary } from "../lib/protocol";
 import { groupSessions, relativeTime } from "../lib/sessions";
 import { setTheme, theme, type ThemeChoice } from "../lib/theme";
+import { BrandLockup } from "./Brand";
 import Icon, { type IconName } from "./Icon";
 import Menu from "./Menu";
 import { IconButton } from "./primitives";
@@ -142,9 +143,12 @@ export default function Sidebar(props: SidebarProps) {
           rỗng: mọi thứ ta muốn đặt vào đây sẽ nằm dưới ba cái nút ấy. */}
       <div class="h-(--titlebar-h) shrink-0" data-tauri-drag-region />
 
-      {/* Hàng đầu: tên ứng dụng bên trái, hai nút nhỏ bên phải. */}
-      <div class="flex shrink-0 items-center gap-2xs px-sm pb-2xs">
-        <span class="min-w-0 flex-1 truncate text-sm font-semibold text-ink">Private AI</span>
+      {/* Hàng đầu: dấu hiệu thương hiệu bên trái, hai nút nhỏ bên phải.
+          `pb-xs` chứ không `pb-2xs`: hàng này giờ cao hơn hàng điều hướng bên dưới, và
+          hai hàng cao gần bằng nhau dính sát nhau thì cái trên đọc ra là mục đầu tiên
+          của danh sách chứ không ra là đầu đề của cả cột. */}
+      <div class="flex shrink-0 items-center gap-2xs px-sm pb-xs">
+        <BrandLockup class="flex-1" />
         <IconButton
           icon="search"
           label={searching() ? "Đóng ô tìm phiên" : "Tìm phiên"}

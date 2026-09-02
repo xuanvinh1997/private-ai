@@ -485,3 +485,150 @@ async fn meta_cua_tool_di_toi_duoc_giao_dien() {
         seen[0]
     );
 }
+
+/// Sổ ghi mọi câu `notice` mà driver nói ra trong một lượt.
+struct NoticeSink {
+    said: Mutex<Vec<String>>,
+}
+
+impl pai_agent::TurnSink for NoticeSink {
+    fn notice(&self, message: &str) {
+        self.said.lock().push(message.to_string());
+    }
+}
+
+/// Middleware luôn rút gọn hai message đầu, để bài dưới không phụ thuộc vào ngưỡng nén.
+struct AlwaysCompact;
+
+impl Middleware<PreStep> for AlwaysCompact {
+    fn call<'a>(
+        &'a self,
+        req: &'a mut PreStepRequest,
+        next: Next<'a, PreStep>,
+    ) -> futures::future::BoxFuture<'a, StepDecision> {
+        Box::pin(async move {
+            match next.run(req).await {
+                StepDecision::Enter {
+                    messages,
+                    replace: None,
+                } => StepDecision::Enter {
+                    messages,
+                    replace: Some(pai_agent::Replacement {
+                        start: 0,
+                        end: 2,
+                        summary: Message::user("<tóm tắt>"),
+                    }),
+                },
+                decided => decided,
+            }
+        })
+    }
+}
+
+/// Nén ngữ cảnh phải **nói ra**, không được xảy ra trong im lặng.
+///
+/// Đây là cùng một luật với bộ đệm terminal ("đã bỏ bao nhiêu dòng") và với sandbox (báo
+/// `Partial` thay vì làm tròn lên). Cái mất ở đây còn khó thấy hơn cả hai: mô hình bỗng
+/// không nhớ một quyết định từ đầu phiên, và người dùng kết luận nó kém đi chứ không kết
+/// luận là cửa sổ ngữ cảnh đã đầy.
+#[tokio::test]
+async fn nen_ngu_canh_thi_phai_noi_ra() {
+    let script = Script::new(vec![text("xong")]);
+    let bench = bench(script, 12);
+    bench
+        .ctx
+        .on_waterfall_first::<PreStep>(Arc::new(AlwaysCompact))
+        .leak();
+
+    let mut session = session(&bench).await;
+    for i in 0..3 {
+        session
+            .append_surface(pai_session::SessionEvent::UserMessage(Message::user(
+                format!("câu {i}"),
+            )))
+            .await
+            .expect("ghi vào sổ");
+    }
+
+    let sink = NoticeSink {
+        said: Mutex::new(Vec::new()),
+    };
+    bench
+        .driver
+        .run_turn(
+            &mut session,
+            1,
+            vec![Message::user("tiếp đi")],
+            CancellationToken::new(),
+            &sink,
+        )
+        .await
+        .expect("lượt chạy được");
+
+    let said = sink.said.lock().clone();
+    assert!(
+        said.iter().any(|line| line.contains("rút gọn")),
+        "người dùng phải được báo là ngữ cảnh vừa bị nén, nhưng driver chỉ nói: {said:?}"
+    );
+    assert!(
+        said.iter().any(|line| line.contains('2')),
+        "câu báo phải nói **bao nhiêu** tin nhắn đã mất nguyên văn: {said:?}"
+    );
+}
+
+/// Sổ ghi số token mà driver báo ra.
+struct UsageSink {
+    seen: Mutex<Vec<(u64, u64)>>,
+}
+
+impl pai_agent::TurnSink for UsageSink {
+    fn usage(&self, input_tokens: u64, output_tokens: u64) {
+        self.seen.lock().push((input_tokens, output_tokens));
+    }
+}
+
+/// Số token máy chủ báo phải đi tiếp, không được rơi mất ở driver.
+///
+/// Trước đây bộ ghép giữ đúng con số ấy còn driver ghi thẳng `usage: None` vào sổ, nên nó
+/// bị parse rồi vứt. Hệ quả là sổ phiên không trả lời được "lượt này tốn bao nhiêu", và
+/// giao diện không có cách nào cho thấy ngữ cảnh đang đầy dần **trước** khi nén cắt phần
+/// đầu — người dùng chỉ biết sau khi mất.
+#[tokio::test]
+async fn so_token_may_chu_bao_phai_di_tiep() {
+    let mut turn = text("xong");
+    turn.insert(
+        turn.len() - 1,
+        StreamChunk::Usage {
+            usage: pai_llm::TokenUsage {
+                input_tokens: 1234,
+                output_tokens: 56,
+                total_tokens: None,
+            },
+        },
+    );
+
+    let script = Script::new(vec![turn]);
+    let bench = bench(script, 12);
+    let mut session = session(&bench).await;
+
+    let sink = UsageSink {
+        seen: Mutex::new(Vec::new()),
+    };
+    bench
+        .driver
+        .run_turn(
+            &mut session,
+            1,
+            vec![Message::user("chào")],
+            CancellationToken::new(),
+            &sink,
+        )
+        .await
+        .expect("lượt chạy được");
+
+    assert_eq!(
+        sink.seen.lock().clone(),
+        vec![(1234, 56)],
+        "driver phải báo lại đúng con số máy chủ đã nói"
+    );
+}

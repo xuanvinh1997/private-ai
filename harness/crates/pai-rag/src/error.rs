@@ -29,6 +29,16 @@ pub enum RagError {
     #[error("{0} trông như tệp nhị phân; thư viện chỉ nhận văn bản, PDF và DOCX")]
     Binary(String),
 
+    /// Tệp mở ra được, bộ rút chữ chạy xong, và **không có lấy một ký tự nào**.
+    ///
+    /// Nhánh riêng chứ không gộp vào [`RagError::Extract`], vì nó là nhánh duy nhất mà
+    /// mọi bước trước đó đều báo thành công. Không có nó, tài liệu được ghi vào kho với 0
+    /// đoạn và `error` rỗng — mà "chưa có vector, chưa có lỗi" chính là định nghĩa của
+    /// *đang xếp hàng* ở giao diện. Người dùng nhìn thấy một tài liệu chờ nhúng vĩnh
+    /// viễn, trong khi thật ra không có gì để nhúng và sẽ không bao giờ có.
+    #[error("{path} không có chữ nào để nạp: {reason}")]
+    Empty { path: String, reason: String },
+
     #[error("chưa rút được chữ từ định dạng của {0}")]
     Unsupported(String),
 
@@ -60,6 +70,13 @@ impl RagError {
         reason: impl std::fmt::Display,
     ) -> RagError {
         RagError::Extract {
+            path: path.to_string(),
+            reason: reason.to_string(),
+        }
+    }
+
+    pub(crate) fn empty(path: impl std::fmt::Display, reason: impl std::fmt::Display) -> RagError {
+        RagError::Empty {
             path: path.to_string(),
             reason: reason.to_string(),
         }

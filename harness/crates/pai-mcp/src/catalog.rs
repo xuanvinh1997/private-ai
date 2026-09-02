@@ -45,15 +45,24 @@ pub struct CatalogEntry {
     pub args: &'static [&'static str],
     pub env: &'static [EnvVar],
     pub homepage: &'static str,
-    /// `node`, `python` hoặc `docker`.
+    /// `node`, `python` hoặc `docker`. Rỗng với một mục chạy từ xa — nó không cần gì trên
+    /// máy này cả, và đó chính là điểm của nó.
     pub requires: &'static [&'static str],
+    /// Endpoint HTTP, cho server **chạy từ xa**.
+    ///
+    /// `None` là mục chạy tại chỗ: [`instantiate`] dựng một tiến trình con qua `command`.
+    /// `Some` thì `command`, `args` và `requires` không được dùng tới — server đã chạy ở
+    /// đâu đó rồi, và ta chỉ quay số tới nó.
+    ///
+    /// Cùng chỗ điền `${TÊN_BIẾN}` như `args`, nên một endpoint có tenant hay vùng trong
+    /// đường dẫn vẫn khai được bằng một hàng trong bảng.
+    pub url: Option<&'static str>,
 }
 
 /// Cần `node` để chạy `npx`.
 const NODE: &[&str] = &["node"];
 /// Cần `python` để chạy `uvx`.
 const PYTHON: &[&str] = &["python"];
-const DOCKER: &[&str] = &["docker"];
 
 pub const CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
@@ -76,6 +85,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         }],
         homepage: "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
         requires: NODE,
+        url: None,
     },
     CatalogEntry {
         id: "git",
@@ -91,30 +101,27 @@ pub const CATALOG: &[CatalogEntry] = &[
         }],
         homepage: "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
         requires: PYTHON,
+        url: None,
     },
     CatalogEntry {
         id: "github",
         name: "GitHub",
         summary: "Đọc và viết issue, pull request, mã nguồn và Actions trên GitHub.",
-        command: "docker",
-        // Bản chính thức của GitHub là một ảnh Docker, không phải một gói npm: gói
-        // `@modelcontextprotocol/server-github` cũ đã ngừng phát hành.
-        args: &[
-            "run",
-            "-i",
-            "--rm",
-            "-e",
-            "GITHUB_PERSONAL_ACCESS_TOKEN",
-            "ghcr.io/github/github-mcp-server",
-        ],
+        // GitHub chạy server này **cho** ta, nên không có tiến trình con nào ở đây và
+        // `command` không bao giờ được gọi tới. Bản Docker vẫn chạy được, nhưng nó bắt
+        // người dùng cài Docker chỉ để nói chuyện với một máy chủ vốn đã đứng sẵn trên
+        // Internet — một yêu cầu vài gigabyte cho một việc không cần gì cả.
+        command: "",
+        args: &[],
         env: &[EnvVar {
-            key: "GITHUB_PERSONAL_ACCESS_TOKEN",
-            label: "Personal access token của GitHub",
+            key: "Authorization",
+            label: "Personal access token của GitHub (dán nguyên, không cần chữ Bearer)",
             required: true,
             secret: true,
         }],
         homepage: "https://github.com/github/github-mcp-server",
-        requires: DOCKER,
+        requires: &[],
+        url: Some("https://api.githubcopilot.com/mcp/"),
     },
     CatalogEntry {
         id: "fetch",
@@ -125,6 +132,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         env: &[],
         homepage: "https://github.com/modelcontextprotocol/servers/tree/main/src/fetch",
         requires: PYTHON,
+        url: None,
     },
     CatalogEntry {
         id: "memory",
@@ -140,6 +148,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         }],
         homepage: "https://github.com/modelcontextprotocol/servers/tree/main/src/memory",
         requires: NODE,
+        url: None,
     },
     CatalogEntry {
         id: "sequential-thinking",
@@ -150,6 +159,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         env: &[],
         homepage: "https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking",
         requires: NODE,
+        url: None,
     },
     CatalogEntry {
         id: "time",
@@ -160,21 +170,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         env: &[],
         homepage: "https://github.com/modelcontextprotocol/servers/tree/main/src/time",
         requires: PYTHON,
-    },
-    CatalogEntry {
-        id: "sqlite",
-        name: "SQLite",
-        summary: "Truy vấn và sửa một tệp cơ sở dữ liệu SQLite trên máy.",
-        command: "uvx",
-        args: &["mcp-server-sqlite", "--db-path=${SQLITE_DB_PATH}"],
-        env: &[EnvVar {
-            key: "SQLITE_DB_PATH",
-            label: "Đường dẫn tệp .sqlite",
-            required: true,
-            secret: false,
-        }],
-        homepage: "https://pypi.org/project/mcp-server-sqlite/",
-        requires: PYTHON,
+        url: None,
     },
     CatalogEntry {
         id: "postgres",
@@ -192,6 +188,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         }],
         homepage: "https://github.com/crystaldba/postgres-mcp",
         requires: PYTHON,
+        url: None,
     },
     CatalogEntry {
         id: "playwright",
@@ -202,6 +199,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         env: &[],
         homepage: "https://github.com/microsoft/playwright-mcp",
         requires: NODE,
+        url: None,
     },
     CatalogEntry {
         id: "brave-search",
@@ -222,6 +220,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         }],
         homepage: "https://github.com/brave/brave-search-mcp-server",
         requires: NODE,
+        url: None,
     },
     CatalogEntry {
         id: "slack",
@@ -237,6 +236,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         }],
         homepage: "https://github.com/korotovsky/slack-mcp-server",
         requires: NODE,
+        url: None,
     },
 ];
 
@@ -309,11 +309,29 @@ pub fn instantiate(
         .collect();
 
     let mut config = ServerConfig::stdio(entry.id, entry.command);
-    config.transport = McpTransport::Stdio {
-        command: entry.command.to_string(),
-        args,
-        env,
-        cwd: None,
+    config.transport = match entry.url {
+        // Từ xa: biến của người dùng đi vào **header**, không vào môi trường. Một token dán
+        // vào biến môi trường của tiến trình này thì chẳng tới được máy chủ ở đầu kia, và
+        // hỏng theo kiểu im lặng — server trả 401 còn người dùng vừa dán đúng token.
+        Some(template) => {
+            let mut url = template.to_string();
+            for var in entry.env {
+                let slot = format!("${{{}}}", var.key);
+                if let Some(value) = filled(var.key) {
+                    url = url.replace(&slot, value);
+                }
+            }
+            McpTransport::Http {
+                url,
+                headers: env.into_iter().collect(),
+            }
+        }
+        None => McpTransport::Stdio {
+            command: entry.command.to_string(),
+            args,
+            env,
+            cwd: None,
+        },
     };
     // Kiểm ngay tại đây chứ không tin bảng ở trên: bảng là dữ liệu, và một `id` gõ sai lúc
     // thêm mục mới phải hỏng ở bài kiểm chứng chứ không phải ở máy người dùng.

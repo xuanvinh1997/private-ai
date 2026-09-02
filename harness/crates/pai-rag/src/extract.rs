@@ -23,6 +23,24 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::RagError;
 
+/// Bộ rút chữ đang chạy là bản mấy.
+///
+/// Thư viện quét tăng dần: tệp có `mtime` và kích thước không đổi thì **không** đi qua bộ
+/// rút chữ lần nữa. Bất biến đó tiết kiệm cả một buổi chờ, và nó cũng có nghĩa là một tệp
+/// từng đọc ra rác sẽ ở lại dạng rác vĩnh viễn — người dùng không sửa tệp, nên `mtime`
+/// không đổi, nên không có gì mời thư viện thử lại.
+///
+/// Tăng số này mỗi khi bộ rút chữ **đọc ra kết quả khác** trên cùng một tệp. Lần mở kho
+/// ngay sau đó sẽ vô hiệu hoá dấu vân tay cũ và lần quét kế tiếp đọc lại cả thư mục — xem
+/// [`crate::library::Library::open`]. Đây là bước không có thì một bản vá ở tầng này chỉ
+/// tới được với thư viện mới, còn thư viện của người đã dùng phần mềm thì không.
+///
+/// - **1** — bản đầu.
+/// - **2** — vá `adobe-cmap-parser` (xem `vendor/adobe-cmap-parser/README.md`): mọi PDF
+///   có tên CMap chứa dấu gạch ngang — Calibre, LibreOffice — trước đó rút ra toàn khoảng
+///   trắng và cho 0 đoạn.
+pub const EXTRACT_VERSION: u32 = 2;
+
 /// Trần kích thước một tệp được nạp.
 ///
 /// 64 MiB không phải một con số thiêng liêng; nó là chỗ mà cả `pdf-extract` lẫn phần cắt
@@ -152,6 +170,16 @@ pub fn extract(path: &Path) -> Result<Extracted, RagError> {
         // cũng có một lớp tệp mà nó đọc hỏng.
         _ => as_text(&shown, bytes)?,
     };
+
+    // Rút chữ "thành công" mà không ra chữ nào là một thất bại, và nó phải được gọi tên ở
+    // đây. Xem [`RagError::Empty`]: đi tiếp thì tài liệu vào kho với 0 đoạn và không lý
+    // do, rồi nằm ở "đang xếp hàng" mãi mãi. Đếm ký tự không phải khoảng trắng chứ không
+    // phải `is_empty`, vì đúng trường hợp hay gặp nhất — PDF mà bảng mã font không đọc
+    // được — trả về hàng trăm nghìn dấu cách và xuống dòng, tức là `is_empty()` bằng
+    // `false` trên một tài liệu rỗng.
+    if !text.chars().any(|c| !c.is_whitespace()) {
+        return Err(RagError::empty(&shown, empty_reason(format)));
+    }
 
     Ok(Extracted {
         title: title_of(format, &text, &stem),
@@ -387,6 +415,22 @@ fn squeeze(text: &str) -> String {
 /// Ngưỡng 120 ký tự loại đúng trường hợp hay sai: một tệp `.txt` không có tiêu đề, và
 /// dòng đầu của nó là câu mở bài dài ba dòng. Lấy nó làm tên hiển thị thì danh sách tài
 /// liệu thành một bức tường chữ.
+/// Vì sao một tệp mở được lại không cho chữ nào — nói theo đúng định dạng của nó.
+///
+/// Câu này đi thẳng lên huy hiệu tài liệu ở giao diện, nên nó phải nói được **bước tiếp
+/// theo**. "Không rút được chữ" đúng nhưng để người dùng đứng yên; "bản quét ảnh, cần
+/// OCR" thì họ biết mình đang cầm cái gì.
+fn empty_reason(format: Format) -> &'static str {
+    match format {
+        Format::Pdf => {
+            "PDF này không có lớp chữ nào đọc được — thường là bản quét ảnh, và thư viện \
+             chưa có OCR nên chưa nạp được nội dung của nó"
+        }
+        Format::Docx => "tệp Word mở ra được nhưng phần thân không có chữ nào",
+        _ => "tệp rỗng, hoặc chỉ có khoảng trắng",
+    }
+}
+
 fn title_of(format: Format, text: &str, stem: &str) -> String {
     const MAX_TITLE: usize = 120;
     let first = text

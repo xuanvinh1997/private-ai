@@ -1,8 +1,9 @@
-//! `write` — ghi đè cả một tệp.
+//! `write` — overwrite a whole file.
 //!
-//! Tách khỏi `edit` vì hai việc khác nhau: `write` dựng một tệp, `edit` sửa một chỗ. Gộp
-//! lại thì mô hình sẽ dùng `write` cho việc sửa, và mỗi lần sửa một dòng là một lần chép
-//! lại cả tệp từ trí nhớ — nơi mọi thứ nó không nhớ sẽ biến mất.
+//! Separate from `edit` because they are different jobs: `write` creates a file, `edit`
+//! changes one place. Merged, the model would use `write` for edits, and every one-line
+//! change becomes a retyping of the whole file from memory — where everything it does not
+//! remember disappears.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -18,9 +19,9 @@ use crate::tools::diff;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteArgs {
-    /// Đường dẫn tuyệt đối. Thư mục cha được tạo nếu chưa có.
+    /// The absolute path. Parent directories are created if missing.
     pub file_path: String,
-    /// Toàn bộ nội dung mới của tệp.
+    /// The file's complete new contents.
     pub content: String,
 }
 
@@ -49,8 +50,8 @@ impl Tool for Write {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Hai lần ghi song song lên cùng một tệp thì một trong hai biến mất, và không có
-        // cách nào biết là cái nào.
+        // Two parallel writes to the same file lose one of them, with no way to know
+        // which.
         ToolMeta::mutating().concurrency_safe(false)
     }
 

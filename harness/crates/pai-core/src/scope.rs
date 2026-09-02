@@ -1,19 +1,19 @@
-//! Phạm vi theo agent.
+//! Per-agent scoping.
 //!
-//! Một đăng ký không gắn phạm vi thì mọi agent đều thấy. Một đăng ký có gắn thì chỉ
-//! agent đó — và con cháu của nó — mới thấy. Sự kiện chảy **lên** cây: một listener gắn
-//! ở agent cha nhận được sự kiện phát ra từ agent con, không có chiều ngược lại.
+//! An unscoped registration is visible to every agent. A scoped one is visible only to
+//! that agent — and its descendants. Events flow **up** the tree: a listener attached to a
+//! parent agent receives events emitted by a child agent, never the other way around.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::RwLock;
 
-/// Danh tính một phạm vi. Thường là một agent hoặc một phiên.
+/// The identity of one scope. Usually an agent or a session.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
 pub struct ScopeKey(u64);
 
-/// Quan hệ cha–con giữa các phạm vi.
+/// Parent–child relationships between scopes.
 #[derive(Default)]
 pub struct ScopeTree {
     parents: RwLock<HashMap<ScopeKey, Option<ScopeKey>>>,
@@ -35,10 +35,10 @@ impl ScopeTree {
         self.parents.read().get(&key).copied().flatten()
     }
 
-    /// Listener có `tag` có nhận được sự kiện phát ra tại `dispatch` không?
+    /// Does a listener tagged `tag` receive an event emitted at `dispatch`?
     ///
-    /// Không tag thì nhận tất. Có tag thì nhận khi tag chính là nơi phát, hoặc là tổ
-    /// tiên của nơi phát.
+    /// No tag receives everything. A tag receives when it *is* the emitting scope, or is
+    /// an ancestor of it.
     pub fn admits(&self, dispatch: Option<ScopeKey>, tag: Option<ScopeKey>) -> bool {
         let Some(tag) = tag else { return true };
         let mut cursor = dispatch;

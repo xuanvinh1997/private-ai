@@ -191,6 +191,27 @@ impl Store {
         })
     }
 
+    /// Đường dẫn của mọi tệp đã biết, để hoàn thành `@` trong ô soạn tin.
+    ///
+    /// Chỉ lấy cột `path`, không lấy dấu vân tay như [`Store::known_files`]: gõ thêm một
+    /// ký tự là một lần gọi lại, và kéo cả `mtime` lẫn `size` về chỉ để vứt đi là trả giá
+    /// ở đúng chỗ người dùng cảm thấy — giữa hai lần nhấn phím.
+    ///
+    /// Xếp theo đường dẫn để thứ tự ổn định giữa hai lần gọi. Việc chấm điểm nằm ở
+    /// [`crate::complete`], không ở đây: SQL xếp theo chữ cái, còn thứ người ta muốn thấy
+    /// trước là tệp có **tên** khớp, thứ SQL không nói được.
+    pub fn paths(&self) -> Result<Vec<String>> {
+        self.with(|conn| {
+            let mut stmt = conn.prepare("SELECT path FROM files ORDER BY path")?;
+            let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row?);
+            }
+            Ok(out)
+        })
+    }
+
     /// Thay toàn bộ ký hiệu **và** tham chiếu của một tệp, trong một giao dịch.
     ///
     /// Thay chứ không vá: một tệp vừa sửa có thể mất ký hiệu chứ không chỉ thêm, và lần

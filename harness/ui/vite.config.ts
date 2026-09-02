@@ -1,4 +1,4 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import solid from "vite-plugin-solid";
 import tailwindcss from "@tailwindcss/vite";
 
@@ -11,6 +11,13 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     watch: { ignored: ["**/src-tauri/**", "**/target/**"] },
+  },
+  // `vite-plugin-solid` tự đặt môi trường `jsdom` khi thấy vitest. Bài kiểm trong `lib/`
+  // là logic thuần — nói rõ `node` để khỏi kéo thêm một phụ thuộc chỉ để chạy vài hàm
+  // không chạm DOM. Thêm bài kiểm cho component thì đây là chỗ đổi.
+  test: {
+    environment: "node",
+    include: ["src/**/*.test.ts"],
   },
   build: {
     target: "safari15",

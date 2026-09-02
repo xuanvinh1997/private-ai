@@ -1,7 +1,8 @@
-//! Những bất biến mà một coding agent sai thì mất tệp của người dùng.
+//! Invariants a coding agent losing means losing the user's files.
 //!
-//! Mỗi bài ở đây khoá một câu đã viết trong tài liệu. Nếu một bài đỏ thì hoặc mã sai,
-//! hoặc câu trong tài liệu đã hết đúng — không có khả năng thứ ba.
+//! Every test here locks a sentence written in the documentation. If one goes red then
+//! either the code is wrong or the sentence has stopped being true — there is no third
+//! possibility.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,11 +16,11 @@ use pai_tools::{Invocation, Overflow, Tool, ToolName, ToolOutcome};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 
-/// Ngân sách không có kho tràn nào phía sau, nên nó không cắt gì.
+/// A budget with no spill store behind it, so it truncates nothing.
 ///
-/// Cố ý: những bài trong tệp này kiểm chính sách đường dẫn và hình dạng kết quả, và một
-/// lần cắt xen vào giữa sẽ khiến chúng đỏ vì một lý do không liên quan. Việc cắt được
-/// kiểm riêng ở `budget.rs`.
+/// Deliberate: the tests in this file check path policy and result shapes, and a fold
+/// slipping in between would make them go red for an unrelated reason. Folding is tested
+/// separately in `budget.rs`.
 fn no_budget() -> Overflow {
     Overflow::new(&Context::root())
 }
@@ -30,8 +31,8 @@ fn call(name: &str, args: Value) -> Invocation {
 }
 
 fn bench() -> (TempDir, FileRoots, Arc<dyn FsProvider>, Arc<ReadLedger>) {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let root = dir.path().canonicalize().expect("phân giải gốc");
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path().canonicalize().expect("root canonicalises");
     let roots = FileRoots::new([root.clone()], [root.join("bi-mat")]);
     (
         dir,
@@ -47,11 +48,11 @@ async fn read_ok(read: &Read, path: &Path) -> ToolOutcome {
         json!({ "file_path": path.display().to_string() }),
     ))
     .await
-    .expect("đọc được")
+    .expect("reads")
 }
 
 #[tokio::test]
-async fn dau_cham_cham_va_symlink_khong_thoat_khoi_goc() {
+async fn dot_dot_and_symlinks_cannot_escape_the_root() {
     let (dir, roots, fs, ledger) = bench();
     let root = dir.path().canonicalize().unwrap();
     let outside = TempDir::new().unwrap();
@@ -60,7 +61,7 @@ async fn dau_cham_cham_va_symlink_khong_thoat_khoi_goc() {
 
     let read = Read::new(fs, roots, ledger, no_budget());
 
-    // Đi lên bằng `..`.
+    // Climbing out with `..`.
     let escape = root.join("..").join(secret.file_name().unwrap());
     let err = read
         .execute(&call(
@@ -68,9 +69,9 @@ async fn dau_cham_cham_va_symlink_khong_thoat_khoi_goc() {
             json!({ "file_path": escape.display().to_string() }),
         ))
         .await;
-    assert!(err.is_err(), "`..` không được thoát khỏi gốc");
+    assert!(err.is_err(), "`..` must not escape the root");
 
-    // Đi ra bằng symlink nằm *trong* gốc.
+    // Going out through a symlink that lives *inside* the root.
     #[cfg(unix)]
     {
         let link = root.join("loi-tat.txt");
@@ -81,12 +82,12 @@ async fn dau_cham_cham_va_symlink_khong_thoat_khoi_goc() {
                 json!({ "file_path": link.display().to_string() }),
             ))
             .await;
-        assert!(err.is_err(), "symlink trỏ ra ngoài phải bị coi là ở ngoài");
+        assert!(err.is_err(), "a symlink pointing outside must count as outside");
     }
 }
 
 #[tokio::test]
-async fn duong_dan_duoc_bao_ve_khong_doc_duoc_va_khong_hien_trong_listing() {
+async fn a_protected_path_is_unreadable_and_absent_from_listings() {
     let (dir, roots, fs, ledger) = bench();
     let root = dir.path().canonicalize().unwrap();
     let secret = root.join("bi-mat");
@@ -100,28 +101,28 @@ async fn duong_dan_duoc_bao_ve_khong_doc_duoc_va_khong_hien_trong_listing() {
             json!({ "file_path": secret.display().to_string() }),
         ))
         .await
-        .expect_err("tệp được bảo vệ không đọc được");
+        .expect_err("a protected file cannot be read");
     assert!(
         err.to_string().contains("được bảo vệ"),
-        "lý do phải là lý do đúng: {err}"
+        "the reason has to be the right one: {err}"
     );
 
-    // Và nó cũng không được lộ ra qua đường liệt kê — chặn đọc mà vẫn kể tên là đã nói
-    // cho mô hình biết có cái gì ở đó để mà đi tìm đường khác.
+    // Nor may it leak through the listing path — blocking the read while still naming the
+    // file has already told the model something is there to go find another way to.
     let listing = GlobTool::new(roots)
         .execute(&call("glob", json!({ "pattern": "*" })))
         .await
-        .expect("liệt kê được");
+        .expect("lists");
     assert!(
         !listing.content.contains("bi-mat"),
-        "listing lộ tệp được bảo vệ:\n{}",
+        "the listing leaked a protected file:\n{}",
         listing.content
     );
     assert!(listing.content.contains("thuong.txt"));
 }
 
 #[tokio::test]
-async fn tep_nhi_phan_bi_tu_choi_thay_vi_tra_ve_rac() {
+async fn a_binary_file_is_refused_rather_than_returned_as_garbage() {
     assert!(looks_binary(&[0x7f, b'E', b'L', b'F', 0x00]));
     assert!(!looks_binary("chào bạn".as_bytes()));
 
@@ -136,12 +137,12 @@ async fn tep_nhi_phan_bi_tu_choi_thay_vi_tra_ve_rac() {
             json!({ "file_path": binary.display().to_string() }),
         ))
         .await
-        .expect_err("tệp nhị phân bị từ chối");
+        .expect_err("a binary file is refused");
     assert!(err.to_string().contains("nhị phân"), "{err}");
 }
 
 #[tokio::test]
-async fn edit_khop_nhieu_lan_thi_loi_va_khong_sua_gi() {
+async fn a_multi_match_edit_errors_and_changes_nothing() {
     let (dir, roots, fs, _) = bench();
     let root = dir.path().canonicalize().unwrap();
     let file = root.join("a.rs");
@@ -159,18 +160,18 @@ async fn edit_khop_nhieu_lan_thi_loi_va_khong_sua_gi() {
             }),
         ))
         .await
-        .expect_err("khớp hai chỗ thì phải từ chối");
+        .expect_err("two matches must be refused");
     assert!(
         err.to_string().contains('2'),
-        "lỗi phải nói khớp bao nhiêu chỗ: {err}"
+        "the error has to say how many places matched: {err}"
     );
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         before,
-        "tệp phải y nguyên"
+        "the file has to be untouched"
     );
 
-    // Nói rõ ý định thì làm được.
+    // Stating the intent explicitly makes it work.
     edit.execute(&call(
         "edit",
         json!({
@@ -181,7 +182,7 @@ async fn edit_khop_nhieu_lan_thi_loi_va_khong_sua_gi() {
         }),
     ))
     .await
-    .expect("replace_all sửa được");
+    .expect("replace_all edits");
     assert_eq!(
         std::fs::read_to_string(&file).unwrap(),
         "let x = 2;\nlet x = 2;\n"
@@ -189,11 +190,12 @@ async fn edit_khop_nhieu_lan_thi_loi_va_khong_sua_gi() {
 }
 
 #[tokio::test]
-async fn so_dong_trong_hunk_la_so_dong_that_trong_tep() {
+async fn hunk_line_numbers_are_the_real_line_numbers_in_the_file() {
     let (dir, roots, fs, ledger) = bench();
     let root = dir.path().canonicalize().unwrap();
     let file = root.join("a.txt");
-    // Thay đổi nằm ở dòng 12, đủ xa để phân biệt "đếm trong hunk" với "đếm trong tệp".
+    // The change sits on line 12, far enough to tell "counted within the hunk" apart from
+    // "counted within the file".
     let before: String = (1..=20).map(|n| format!("dòng {n}\n")).collect();
     std::fs::write(&file, &before).unwrap();
 
@@ -210,25 +212,25 @@ async fn so_dong_trong_hunk_la_so_dong_that_trong_tep() {
             }),
         ))
         .await
-        .expect("sửa được");
+        .expect("edits");
 
     let diffs = outcome
         .meta
         .get("diffs")
         .and_then(|v| v.as_array())
-        .expect("có diffs");
-    let hunk = diffs.first().expect("một hunk");
-    // Ngữ cảnh ba dòng, nên hunk bắt đầu ở dòng 9.
+        .expect("diffs are present");
+    let hunk = diffs.first().expect("one hunk");
+    // Three lines of context, so the hunk starts at line 9.
     assert_eq!(
         hunk["old_start"],
         json!(9),
-        "hunk phải mang vị trí thật: {hunk}"
+        "the hunk has to carry its real position: {hunk}"
     );
     assert_eq!(hunk["new_start"], json!(9));
 }
 
 #[tokio::test]
-async fn write_tep_moi_thi_old_text_la_null_chu_khong_phai_chuoi_rong() {
+async fn writing_a_new_file_gives_old_text_null_not_an_empty_string() {
     let (dir, roots, fs, _) = bench();
     let root = dir.path().canonicalize().unwrap();
     let file = root.join("moi.txt");
@@ -239,20 +241,20 @@ async fn write_tep_moi_thi_old_text_la_null_chu_khong_phai_chuoi_rong() {
             json!({ "file_path": file.display().to_string(), "content": "xin chào\n" }),
         ))
         .await
-        .expect("tạo được");
+        .expect("creates");
 
     let diffs = outcome
         .meta
         .get("diffs")
         .and_then(|v| v.as_array())
-        .expect("có diffs");
-    // `null` nghĩa là "tệp mới"; chuỗi rỗng nghĩa là "tệp cũ vốn rỗng". Giao diện vẽ hai
-    // thứ đó khác nhau, nên chúng không được phép lẫn.
+        .expect("diffs are present");
+    // `null` means "new file"; an empty string means "the old file was empty". The UI draws
+    // those two differently, so they must not be conflated.
     assert_eq!(diffs[0]["old_text"], Value::Null);
 }
 
 #[tokio::test]
-async fn grep_bo_qua_tep_nhi_phan_va_dem_du_tong_so() {
+async fn grep_skips_binary_files_and_still_counts_the_total() {
     let (dir, roots, _, _) = bench();
     let root = dir.path().canonicalize().unwrap();
     std::fs::write(root.join("a.txt"), "cần tìm\nkhông\ncần tìm\n").unwrap();
@@ -264,20 +266,20 @@ async fn grep_bo_qua_tep_nhi_phan_va_dem_du_tong_so() {
     let outcome = Grep::new(roots, no_budget())
         .execute(&call("grep", json!({ "pattern": "cần tìm" })))
         .await
-        .expect("tìm được");
+        .expect("searches");
 
-    let search = outcome.meta.get("search").expect("có search");
+    let search = outcome.meta.get("search").expect("search is present");
     assert_eq!(
         search["total"],
         json!(2),
-        "tệp nhị phân không được góp khớp"
+        "a binary file must not contribute matches"
     );
     assert_eq!(search["shape"], json!("matches"));
     assert!(!outcome.content.contains("b.bin"));
 }
 
 #[tokio::test]
-async fn glob_khong_liet_ke_thu_muc_va_mau_khong_co_gach_cheo_khop_moi_do_sau() {
+async fn glob_lists_no_directories_and_a_slashless_pattern_matches_at_any_depth() {
     let (dir, roots, _, _) = bench();
     let root = dir.path().canonicalize().unwrap();
     std::fs::create_dir_all(root.join("src/sau")).unwrap();
@@ -287,23 +289,23 @@ async fn glob_khong_liet_ke_thu_muc_va_mau_khong_co_gach_cheo_khop_moi_do_sau() 
     let outcome = GlobTool::new(roots)
         .execute(&call("glob", json!({ "pattern": "*.rs" })))
         .await
-        .expect("tìm được");
+        .expect("searches");
 
-    // Không có luật "khớp tên tệp ở mọi độ sâu" thì kết quả này rỗng, và mô hình kết
-    // luận sai rằng repo không có tệp Rust nào.
+    // Without the "match the file name at any depth" rule this result is empty, and the
+    // model wrongly concludes the repo has no Rust files.
     assert!(outcome.content.contains("a.rs"));
     assert!(
         outcome.content.contains("b.rs"),
-        "mẫu không có `/` phải khớp mọi độ sâu"
+        "a pattern without `/` has to match at any depth"
     );
     assert!(
         !outcome.content.contains("src\n"),
-        "thư mục không được liệt kê"
+        "directories must not be listed"
     );
 }
 
 #[test]
-fn goc_trong_nghia_la_tu_choi_tat_chu_khong_phai_cho_phep_tat() {
+fn empty_roots_means_refuse_everything_not_allow_everything() {
     let roots = FileRoots::new(Vec::<PathBuf>::new(), Vec::<PathBuf>::new());
     assert!(roots.resolve_read(Path::new("/etc/hosts")).is_err());
 }

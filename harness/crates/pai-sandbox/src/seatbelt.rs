@@ -1,24 +1,24 @@
-//! macOS: `sandbox-exec` với hồ sơ SBPL sinh động.
+//! macOS: `sandbox-exec` with a generated SBPL profile.
 //!
-//! **Đứng trên nền đã bị Apple đánh dấu deprecated.** `sandbox-exec` mang cảnh báo
-//! deprecated từ macOS 10.7 và `sandbox.h` cũng vậy; đến 2026 nó vẫn chạy, và chính App
-//! Sandbox vẫn dựa trên cùng bộ máy. Không có API công khai nào thay thế được nó cho
-//! việc giam một tiến trình tuỳ ý ngoài App Store, nên đây là lựa chọn duy nhất chứ
-//! không phải lựa chọn tốt nhất. Rủi ro phải viết ra: nếu Apple gỡ nó, backend này chết
-//! hẳn và không có đường vá — [`Seatbelt::detect`] sẽ trả `None`, provider rơi về
-//! [`crate::Unconfined`], và hộp thoại duyệt bắt đầu nói "không giam được". Đó là hành
-//! vi đúng cho ngày đó.
+//! **Built on something Apple marked deprecated.** `sandbox-exec` has carried a deprecation
+//! warning since macOS 10.7, and so has `sandbox.h`; as of 2026 it still works, and App
+//! Sandbox itself still rests on the same machinery. No public API replaces it for
+//! confining an arbitrary process outside the App Store, so this is the only choice rather
+//! than the best one. The risk has to be written down: if Apple removes it, this backend
+//! dies outright with no way to patch around it — [`Seatbelt::detect`] returns `None`, the
+//! provider falls back to [`crate::Unconfined`], and the approval dialog starts saying
+//! confinement is unavailable. That is the correct behaviour for that day.
 //!
-//! Hồ sơ chỉ nói về **ghi tệp**. Không có `(deny network*)`: nó chặn được thật, nhưng nó
-//! phá `cargo`, `npm`, `pip` và `git` — nghĩa là mọi lệnh người ta thật sự chạy — nên
-//! bật nó lên chỉ dẫn tới việc người dùng chuyển sang `danger-full-access` cho xong.
-//! Cũng không có `(deny file-read*)`: một coding agent phải đọc được toolchain và cache.
+//! The profile talks only about **file writes**. No `(deny network*)`: it genuinely blocks,
+//! but it breaks `cargo`, `npm`, `pip` and `git` — that is, every command people actually
+//! run — so turning it on only leads users to switch to `danger-full-access` and be done.
+//! No `(deny file-read*)` either: a coding agent has to read the toolchain and the caches.
 //!
-//! Một chi tiết nhỏ và chết người: Seatbelt so khớp trên **đường dẫn đã phân giải**.
-//! `/tmp` là `/private/tmp`, `/var/folders/...` là `/private/var/folders/...`. Quên
-//! chuẩn hoá thì hồ sơ vẫn hợp lệ, `sandbox-exec` vẫn chạy, và vùng cho phép trỏ vào
-//! một chỗ không ai chạm tới. [`crate::writable_roots`] chuẩn hoá sẵn; đừng luồn đường
-//! dẫn thô qua đây.
+//! One small, fatal detail: Seatbelt matches on **resolved paths**. `/tmp` is
+//! `/private/tmp`, `/var/folders/...` is `/private/var/folders/...`. Forget to canonicalise
+//! and the profile is still valid, `sandbox-exec` still runs, and the allowed area points at
+//! somewhere nobody touches. [`crate::writable_roots`] canonicalises already; do not slip
+//! raw paths through here.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -26,15 +26,15 @@ use std::process::{Command, Stdio};
 use crate::policy::{Policy, writable_roots};
 use crate::seam::{Enforcement, SandboxError, SandboxProvider};
 
-/// Đường dẫn tuyệt đối, không tra `PATH`: một `sandbox-exec` do người khác đặt trước
-/// trong `PATH` là một sandbox do người khác viết.
+/// An absolute path, never a `PATH` lookup: a `sandbox-exec` somebody else placed earlier
+/// on `PATH` is a sandbox somebody else wrote.
 pub const RUNNER: &str = "/usr/bin/sandbox-exec";
 
-/// Dòng stderr mà macOS in ra khi hồ sơ **từ chối** một thao tác ghi.
+/// The stderr line macOS prints when the profile **refuses** a write.
 ///
-/// Đây là bằng chứng sandbox đang làm đúng việc, không phải bằng chứng lệnh hỏng — và
-/// phân biệt hai thứ đó là việc của người tiêu thụ kết quả, nên dialect phải nằm ở đây
-/// chứ không nằm rải rác trong tool.
+/// This is evidence the sandbox is doing its job, not evidence the command is broken — and
+/// telling those apart is the job of whoever consumes the result, so the dialect belongs
+/// here rather than scattered across the tools.
 pub const DENIAL_SIGNATURE: &str = "operation not permitted";
 
 pub struct Seatbelt {
@@ -42,12 +42,12 @@ pub struct Seatbelt {
 }
 
 impl Seatbelt {
-    /// Có dùng được `sandbox-exec` trên máy này không.
+    /// Whether `sandbox-exec` is usable on this machine.
     ///
-    /// Dò bằng cách **chạy thật** một hồ sơ rỗng, không phải bằng cách kiểm tệp có tồn
-    /// tại: bản đóng gói cho Mac App Store tự nó chạy trong App Sandbox và ở đó
-    /// `sandbox-exec` có mặt nhưng không spawn được. "Tệp có đó" và "giam được" là hai
-    /// câu khác nhau, và chỉ câu thứ hai đáng để báo cáo.
+    /// Probes by **actually running** an empty profile rather than checking the file
+    /// exists: a Mac App Store build runs inside App Sandbox itself, and there
+    /// `sandbox-exec` is present but cannot spawn. "The file is there" and "confinement
+    /// works" are two different sentences, and only the second is worth reporting.
     pub fn detect() -> Option<Seatbelt> {
         let runner = PathBuf::from(RUNNER);
         if !runner.exists() {
@@ -65,7 +65,7 @@ impl Seatbelt {
         }
     }
 
-    /// Bản dùng cho test: bỏ qua bước dò.
+    /// The test constructor: skips the probe.
     pub fn with_runner(runner: impl Into<PathBuf>) -> Seatbelt {
         Seatbelt {
             runner: runner.into(),
@@ -82,7 +82,8 @@ impl SandboxProvider for Seatbelt {
         if argv.is_empty() {
             return Err(SandboxError::EmptyArgv);
         }
-        // `danger-full-access` đi thẳng, không qua runner: xem [`crate::Mode::confining`].
+        // `danger-full-access` goes straight through, no runner: see
+        // [`crate::Mode::confining`].
         if !policy.mode.confining() {
             return Ok(argv);
         }
@@ -90,35 +91,47 @@ impl SandboxProvider for Seatbelt {
         wrapped.push(self.runner.display().to_string());
         wrapped.push("-p".to_string());
         wrapped.push(profile(policy));
-        // `--` đóng phần tuỳ chọn. Không có nó, một lệnh bắt đầu bằng `-` sẽ bị
-        // `sandbox-exec` nuốt mất làm cờ của chính nó.
+        // `--` closes the option section. Without it, a command starting with `-` gets
+        // swallowed by `sandbox-exec` as one of its own flags.
         wrapped.push("--".to_string());
         wrapped.extend(argv);
         Ok(wrapped)
     }
 
     fn enforcement(&self) -> Enforcement {
-        // `Full` **chỉ** cho hiệu ứng lên tệp, và đó là toàn bộ phạm vi của từ vựng này:
-        // xem tài liệu crate. Kernel thi hành `deny file-write*` không có ngoại lệ nào
-        // mà người gọi cần biết.
+        // `Full` covers file effects **only**, and that is the entire scope of this
+        // vocabulary: see the crate docs. The kernel enforces `deny file-write*` with no
+        // exception the caller needs to know about.
         Enforcement::Full
+    }
+
+    /// True: `(deny network*)` is enforced by the kernel here, not by convention.
+    fn network_confinable(&self) -> bool {
+        true
     }
 }
 
-/// Hồ sơ SBPL cho một chính sách.
+/// The SBPL profile for a policy.
 ///
-/// Thứ tự các mệnh đề là ngữ nghĩa, không phải thẩm mỹ: SBPL lấy **luật khớp cuối cùng**,
-/// nên `(allow default)` phải đứng trước `(deny file-write*)`, và mọi `allow` cho vùng
-/// ghi được phải đứng sau nó. Đảo lại thì hồ sơ vẫn hợp lệ và không giam gì cả.
+/// Clause order is semantics, not aesthetics: SBPL takes the **last matching rule**, so
+/// `(allow default)` has to come before `(deny file-write*)`, and every `allow` for a
+/// writable area has to come after it. Reversed, the profile is still valid and confines
+/// nothing.
 pub fn profile(policy: &Policy) -> String {
     let mut forms = vec![
         "(version 1)".to_string(),
         "(allow default)".to_string(),
         "(deny file-write*)".to_string(),
-        // Cống bắt buộc. Không có nó thì `read-only` không chạy nổi một lệnh nào:
-        // gần như mọi thứ đều mở `/dev/null` để vứt output đi.
+        // The mandatory hole. Without it `read-only` cannot run a single command: nearly
+        // everything opens `/dev/null` to discard output.
         format!("(allow file-write* (literal {}))", sbpl_string("/dev/null")),
     ];
+    // Network. Last-matching-rule again: this has to come after `(allow default)`, and it
+    // is emitted **only** when the caller asked for it. `(deny network*)` is a real kernel
+    // control on macOS, which is why it can be reported as confinement rather than hope.
+    if policy.deny_network {
+        forms.push("(deny network*)".to_string());
+    }
     let roots = writable_roots(policy);
     if !roots.is_empty() {
         let subpaths = roots
@@ -131,10 +144,10 @@ pub fn profile(policy: &Policy) -> String {
     forms.join("\n")
 }
 
-/// Chuỗi SBPL. Escape trước, nhúng sau.
+/// An SBPL string. Escape first, embed second.
 ///
-/// Một dấu nháy kép chưa escape trong đường dẫn không làm hồ sơ hỏng một cách ồn ào — nó
-/// làm hồ sơ **đổi nghĩa**, và `sandbox-exec` sẽ vui vẻ thi hành cái nghĩa mới.
+/// An unescaped double quote in a path does not break the profile loudly — it **changes
+/// what the profile means**, and `sandbox-exec` happily enforces the new meaning.
 fn sbpl_string(raw: &str) -> String {
     let escaped = raw.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")

@@ -1,15 +1,15 @@
-//! Lõi plugin: mọi thứ khác trong harness là một plugin cắm vào đây.
+//! The plugin core: everything else in the harness is a plugin that mounts here.
 //!
-//! Bốn ý, mượn từ Cordis nhưng viết lại cho hệ kiểu của Rust:
+//! Four ideas, borrowed from Cordis but rewritten for Rust's type system:
 //!
-//! - **Seam** — một khả năng được đánh địa chỉ bằng marker type, không phải bằng bản
-//!   cài đặt. Đổi provider không đụng tới consumer. Xem [`service::ServiceKey`].
-//! - **Phụ thuộc là nhu cầu, không phải trình tự** — plugin `wait_for` service nó cần,
-//!   nên thứ tự khởi động tự sắp xếp. Xem [`context::Context::wait_for`].
-//! - **Sự kiện có kiểu** — quan sát, chọn-người-đầu-tiên, và middleware bao quanh.
-//!   Xem [`event`].
-//! - **Đăng ký là hiệu ứng gỡ lại được** — guard RAII cho mặc định, scope tường minh
-//!   khi việc dọn cần `await`. Xem [`effect`].
+//! - **Seams** — a capability addressed by a marker type, not by an implementation.
+//!   Swapping a provider does not touch its consumers. See [`service::ServiceKey`].
+//! - **Dependencies are needs, not ordering** — a plugin calls `wait_for` on the services
+//!   it needs, so startup order sorts itself out. See [`context::Context::wait_for`].
+//! - **Typed events** — observation, first-responder, and surrounding middleware.
+//!   See [`event`].
+//! - **Registration is an undoable effect** — an RAII guard by default, an explicit scope
+//!   when cleanup has to `await`. See [`effect`].
 
 pub mod config;
 pub mod context;

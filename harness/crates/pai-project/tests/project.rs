@@ -1,74 +1,78 @@
-//! Danh tính dự án, và cây tệp.
+//! Project identity.
 
 use pai_project::{ProjectKind, ProjectStore, SqliteProjectStore};
 use rusqlite::Connection;
 use tempfile::TempDir;
 
 fn store() -> SqliteProjectStore {
-    SqliteProjectStore::open_in_memory().expect("mở kho")
+    SqliteProjectStore::open_in_memory().expect("opens")
 }
 
 #[test]
-fn hai_loi_vao_cung_mot_thu_muc_la_mot_du_an() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let root = dir.path().canonicalize().expect("phân giải");
-    std::fs::create_dir_all(root.join("con")).expect("tạo thư mục con");
+fn two_ways_into_one_directory_are_one_project() {
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path().canonicalize().expect("canonicalises");
+    std::fs::create_dir_all(root.join("child")).expect("create a subdirectory");
     let store = store();
 
-    let direct = store.touch(&root).expect("mở được");
-    // Cùng thư mục, tới bằng một lối khác. Không chuẩn hoá thì đây thành hàng thứ hai, và
-    // người dùng có hai mục trỏ cùng một chỗ, mỗi mục nhớ một nửa lịch sử.
-    let round_about = store.touch(&root.join("con").join("..")).expect("mở được");
+    let direct = store.touch(&root).expect("opens");
+    // Same directory, reached another way. Without canonicalisation this becomes a second
+    // row, and the user has two entries pointing at one place, each remembering half the
+    // history.
+    let round_about = store.touch(&root.join("child").join("..")).expect("opens");
 
     assert_eq!(direct.id, round_about.id);
-    assert_eq!(store.list().expect("liệt kê").len(), 1);
+    assert_eq!(store.list().expect("lists").len(), 1);
 }
 
 #[test]
-fn mo_lai_thi_len_dau_danh_sach() {
+fn reopening_moves_a_project_to_the_top() {
     let (a, b) = (TempDir::new().unwrap(), TempDir::new().unwrap());
     let store = store();
-    let first = store.touch(a.path()).expect("mở được");
+    let first = store.touch(a.path()).expect("opens");
     std::thread::sleep(std::time::Duration::from_millis(5));
-    store.touch(b.path()).expect("mở được");
+    store.touch(b.path()).expect("opens");
     std::thread::sleep(std::time::Duration::from_millis(5));
-    store.touch(a.path()).expect("mở lại");
+    store.touch(a.path()).expect("reopens");
 
-    // Mới nhất trước — thứ tự người ta nghĩ tới khi mở lại một dự án.
-    assert_eq!(store.list().expect("liệt kê")[0].id, first.id);
+    // Most recent first — the order people think in when reopening a project.
+    assert_eq!(store.list().expect("lists")[0].id, first.id);
 }
 
 #[test]
-fn bo_khoi_danh_sach_khong_dung_toi_dia() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let marker = dir.path().join("con-nguyen.txt");
-    std::fs::write(&marker, "còn").expect("ghi tệp");
+fn forgetting_a_project_never_touches_the_disk() {
+    let dir = TempDir::new().expect("temp dir");
+    let marker = dir.path().join("still-here.txt");
+    std::fs::write(&marker, "còn").expect("write a file");
     let store = store();
-    let project = store.touch(dir.path()).expect("mở được");
+    let project = store.touch(dir.path()).expect("opens");
 
-    store.forget(&project.id).expect("bỏ được");
-    assert!(store.list().expect("liệt kê").is_empty());
-    // Nhầm chỗ này là mất việc của người ta.
-    assert!(marker.exists(), "bỏ khỏi danh sách mà lại xoá thư mục");
-    assert!(store.forget(&project.id).is_err(), "bỏ hai lần phải nói ra");
+    store.forget(&project.id).expect("forgets");
+    assert!(store.list().expect("lists").is_empty());
+    // Getting this wrong destroys the user's work.
+    assert!(marker.exists(), "forgetting from the list deleted the directory");
+    assert!(
+        store.forget(&project.id).is_err(),
+        "forgetting twice has to be reported"
+    );
 }
 
 #[test]
-fn duong_khong_phai_thu_muc_bi_tu_choi() {
-    let dir = TempDir::new().expect("thư mục tạm");
+fn a_path_that_is_not_a_directory_is_refused() {
+    let dir = TempDir::new().expect("temp dir");
     let file = dir.path().join("a.txt");
-    std::fs::write(&file, "x").expect("ghi tệp");
+    std::fs::write(&file, "x").expect("write a file");
     assert!(store().touch(&file).is_err());
-    assert!(store().touch(&dir.path().join("khong-co")).is_err());
+    assert!(store().touch(&dir.path().join("does-not-exist")).is_err());
 }
 
-/// Cơ sở dữ liệu của người dùng đang chạy không có hai cột mới. Nó phải sống sót.
+/// The database a user is already running lacks the two new columns. It has to survive.
 ///
-/// Danh sách dự án là thứ người ta tự gõ vào từng dòng; dựng lại nó thì không có nguồn
-/// nào để dựng, và mở ứng dụng lên thấy danh sách trống là mất việc của người ta.
+/// The project list is something people typed in one line at a time; there is no source to
+/// rebuild it from, and opening the application to an empty list destroys their work.
 #[test]
-fn schema_cu_duoc_them_cot_tai_cho_va_khong_mat_hang_nao() {
-    let conn = Connection::open_in_memory().expect("mở kết nối");
+fn an_old_schema_gains_columns_in_place_and_loses_no_rows() {
+    let conn = Connection::open_in_memory().expect("opens a connection");
     conn.execute_batch(
         "CREATE TABLE projects (
            id             TEXT    PRIMARY KEY,
@@ -79,180 +83,177 @@ fn schema_cu_duoc_them_cot_tai_cho_va_khong_mat_hang_nao() {
          INSERT INTO projects VALUES ('mot', '/nha/mot', 'mot', 10);
          INSERT INTO projects VALUES ('hai', '/nha/hai', 'hai', 20);",
     )
-    .expect("dựng schema cũ");
+    .expect("builds the old schema");
 
-    let store = SqliteProjectStore::from_connection(conn).expect("mở kho trên db cũ");
-    let danh_sach = store.list().expect("liệt kê");
+    let store = SqliteProjectStore::from_connection(conn).expect("opens on the old db");
+    let rows = store.list().expect("lists");
 
-    assert_eq!(danh_sach.len(), 2, "migrate mà mất hàng");
-    for du_an in &danh_sach {
+    assert_eq!(rows.len(), 2, "the migration lost a row");
+    for project in &rows {
         assert_eq!(
-            du_an.kind,
+            project.kind,
             ProjectKind::Code,
-            "hàng cũ phải là dự án mã nguồn"
+            "old rows must be source projects"
         );
-        assert_eq!(du_an.origin, None, "hàng cũ không từ đâu clone về");
+        assert_eq!(project.origin, None, "old rows were cloned from nowhere");
     }
-    assert_eq!(danh_sach[0].id, "hai", "mới nhất vẫn phải lên đầu");
+    assert_eq!(rows[0].id, "hai", "the most recent still has to come first");
 }
 
-/// Mở lại một dự án tài liệu **không** được biến nó thành dự án mã nguồn.
+/// Reopening a document project must **not** turn it into a source project.
 ///
-/// Một `ON CONFLICT DO UPDATE` viết ẩu làm đúng việc đó, im lặng, và chỉ lộ ra khi tool
-/// chạy lệnh bỗng xuất hiện trong một thư mục toàn tệp người ngoài gửi tới.
+/// A carelessly written `ON CONFLICT DO UPDATE` does exactly that, silently, and it only
+/// surfaces when command-running tools appear in a folder full of files strangers sent in.
 #[test]
-fn touch_giu_nguyen_loai_cua_hang_da_co() {
-    let dir = TempDir::new().expect("thư mục tạm");
+fn touch_preserves_the_kind_of_an_existing_row() {
+    let dir = TempDir::new().expect("temp dir");
     let store = store();
-    let tao = store
+    let created = store
         .create(
             dir.path(),
             ProjectKind::Docs,
             Some("https://vi.du/tai-lieu.git"),
         )
-        .expect("tạo được");
+        .expect("creates");
 
-    let mo_lai = store.touch(dir.path()).expect("mở lại");
+    let reopened = store.touch(dir.path()).expect("reopens");
 
-    assert_eq!(mo_lai.id, tao.id, "vẫn phải là một dự án");
-    assert_eq!(mo_lai.kind, ProjectKind::Docs, "mở lại mà đổi mất loại");
+    assert_eq!(reopened.id, created.id, "it still has to be one project");
     assert_eq!(
-        mo_lai.origin.as_deref(),
-        Some("https://vi.du/tai-lieu.git"),
-        "mở lại mà quên mất chỗ nó từ đâu tới"
+        reopened.kind,
+        ProjectKind::Docs,
+        "reopening changed the kind"
     );
-    assert!(mo_lai.last_opened_at >= tao.last_opened_at);
+    assert_eq!(
+        reopened.origin.as_deref(),
+        Some("https://vi.du/tai-lieu.git"),
+        "reopening forgot where it came from"
+    );
+    assert!(reopened.last_opened_at >= created.last_opened_at);
 }
 
 #[test]
-fn create_va_list_tra_dung_loai_va_nguon() {
-    let (ma, tai_lieu) = (TempDir::new().expect("tạm"), TempDir::new().expect("tạm"));
+fn create_and_list_return_the_right_kind_and_origin() {
+    let (code, docs) = (TempDir::new().expect("temp"), TempDir::new().expect("temp"));
     let store = store();
     store
-        .create(ma.path(), ProjectKind::Code, None)
-        .expect("tạo");
+        .create(code.path(), ProjectKind::Code, None)
+        .expect("creates");
     store
-        .create(
-            tai_lieu.path(),
-            ProjectKind::Docs,
-            Some("https://vi.du/x.git"),
-        )
-        .expect("tạo");
+        .create(docs.path(), ProjectKind::Docs, Some("https://vi.du/x.git"))
+        .expect("creates");
 
-    let danh_sach = store.list().expect("liệt kê");
-    let tim = |kind| {
-        danh_sach
-            .iter()
-            .find(|du_an| du_an.kind == kind)
-            .expect("phải có")
+    let rows = store.list().expect("lists");
+    let find = |kind| {
+        rows.iter()
+            .find(|project| project.kind == kind)
+            .expect("must be present")
     };
-    assert_eq!(tim(ProjectKind::Code).origin, None);
+    assert_eq!(find(ProjectKind::Code).origin, None);
     assert_eq!(
-        tim(ProjectKind::Docs).origin.as_deref(),
+        find(ProjectKind::Docs).origin.as_deref(),
         Some("https://vi.du/x.git")
     );
-    assert_eq!(danh_sach.len(), 2);
+    assert_eq!(rows.len(), 2);
 }
 
-/// Thêm lại bằng tay một thư mục đã clone về không được xoá mất chỗ nó từ đâu tới.
+/// Manually re-adding a cloned directory must not erase where it came from.
 ///
-/// Đường thêm bằng tay chỉ có đường dẫn trong tay, nó **không biết** URL. Ghi thẳng
-/// `origin = excluded.origin` ở đây là dùng cái nó không biết để đè lên cái đã biết.
+/// The manual path holds only a directory path; it **does not know** the URL. Writing
+/// `origin = excluded.origin` here uses what it does not know to overwrite what is known.
 #[test]
-fn them_lai_bang_tay_khong_xoa_mat_cho_no_tu_dau_toi() {
-    let dir = TempDir::new().expect("thư mục tạm");
+fn re_adding_by_hand_does_not_erase_the_origin() {
+    let dir = TempDir::new().expect("temp dir");
     let store = store();
     store
         .create(dir.path(), ProjectKind::Code, Some("https://vi.du/x.git"))
-        .expect("clone về");
+        .expect("cloned in");
 
-    let lai = store
+    let again = store
         .create(dir.path(), ProjectKind::Code, None)
-        .expect("thêm lại bằng tay");
+        .expect("re-added by hand");
 
-    assert_eq!(lai.origin.as_deref(), Some("https://vi.du/x.git"));
+    assert_eq!(again.origin.as_deref(), Some("https://vi.du/x.git"));
 }
 
-/// Ngược với `touch`: ở `create` người dùng vừa nói ra loại, nên loại mới thắng.
+/// The opposite of `touch`: in `create` the user just stated the kind, so the new one wins.
 ///
-/// Hai đường phải ngược nhau đúng ở điểm này. Cho `create` giữ nguyên loại cũ nghĩa là
-/// người dùng chọn "tài liệu" trong hộp thoại rồi nhận về một dự án mã nguồn, không có
-/// thông báo nào.
+/// The two paths have to be opposite at exactly this point. Making `create` preserve the
+/// old kind means the user picks "documents" in the dialog and gets a source project back,
+/// with no notice.
 #[test]
-fn create_noi_ro_loai_thi_loai_moi_thang() {
-    let dir = TempDir::new().expect("thư mục tạm");
+fn create_states_the_kind_explicitly_so_the_new_one_wins() {
+    let dir = TempDir::new().expect("temp dir");
     let store = store();
-    let dau = store
+    let first = store
         .create(dir.path(), ProjectKind::Docs, None)
-        .expect("tạo");
-    let sau = store
+        .expect("creates");
+    let second = store
         .create(dir.path(), ProjectKind::Code, None)
-        .expect("khai lại loại");
+        .expect("restates the kind");
 
-    assert_eq!(sau.id, dau.id, "vẫn phải là một dự án");
-    assert_eq!(sau.kind, ProjectKind::Code);
+    assert_eq!(second.id, first.id, "it still has to be one project");
+    assert_eq!(second.kind, ProjectKind::Code);
 }
 
-/// `set_kind` là đường ra duy nhất khỏi một dự án vào nhầm loại.
+/// `set_kind` is the only way out of a project recorded as the wrong kind.
 ///
-/// Loại đặt một lần lúc ghi nhận và `touch` cố ý giữ nguyên nó, nên thiếu đường này thì
-/// một repo mã nguồn lỡ ghi nhận thành thư viện tài liệu sẽ mãi mãi không có `read`,
-/// `grep` hay `bash` — và người dùng chỉ thấy trợ lý nói nó không có tool nào.
+/// The kind is set once at record time and `touch` deliberately preserves it, so without
+/// this there is no other way out. That is a real dead end: a source repo accidentally
+/// recorded as a document library would never have `read`, `grep` or `bash` again — and all
+/// the user would see is the assistant saying it has no tools.
 #[test]
-fn set_kind_la_duong_ra_khoi_ngo_cut() {
-    let dir = TempDir::new().expect("thư mục tạm");
+fn set_kind_is_the_way_out_of_the_dead_end() {
+    let dir = TempDir::new().expect("temp dir");
     let store = store();
-    let nham = store
+    let wrong = store
         .create(dir.path(), ProjectKind::Docs, None)
-        .expect("tạo");
+        .expect("creates");
 
-    let sua = store
-        .set_kind(&nham.id, ProjectKind::Code)
-        .expect("đổi được loại");
-    assert_eq!(sua.kind, ProjectKind::Code);
+    let fixed = store
+        .set_kind(&wrong.id, ProjectKind::Code)
+        .expect("the kind changes");
+    assert_eq!(fixed.kind, ProjectKind::Code);
+    assert_eq!(store.get(&wrong.id).expect("reads back").kind, ProjectKind::Code);
+
+    // And reopening afterwards keeps the corrected kind.
     assert_eq!(
-        store.get(&nham.id).expect("đọc lại").kind,
+        store.touch(dir.path()).expect("reopens").kind,
         ProjectKind::Code
     );
-
-    // Và mở lại sau đó vẫn giữ loại đã sửa.
-    assert_eq!(
-        store.touch(dir.path()).expect("mở lại").kind,
-        ProjectKind::Code
-    );
 }
 
-/// Một `id` không có thật thì mọi đường đều nói ra, và nói ra **cái id ấy**.
+/// An id that does not exist is reported by every path, and reported **by name**.
 ///
-/// Một lỗi sqlite thô ("query returned no rows") đi ngược lên tới giao diện thì người
-/// dùng đọc được một câu không dính gì tới việc họ vừa làm. Gọi tên cái id là thứ duy
-/// nhất phân biệt "dự án này không còn nữa" với "kho hỏng".
+/// A raw sqlite error ("query returned no rows") reaching the UI gives the user a sentence
+/// with nothing to do with what they just did. Naming the id is the only thing separating
+/// "this project is gone" from "the store is broken".
 #[test]
-fn id_khong_co_that_thi_moi_duong_deu_goi_ten_no_ra() {
+fn a_nonexistent_id_is_named_in_every_error() {
     let store = store();
-    for loi in [
-        store.get("khong-co").expect_err("phải là lỗi").to_string(),
+    for err in [
+        store.get("no-such-id").expect_err("must be an error").to_string(),
         store
-            .forget("khong-co")
-            .expect_err("phải là lỗi")
+            .forget("no-such-id")
+            .expect_err("must be an error")
             .to_string(),
         store
-            .set_kind("khong-co", ProjectKind::Docs)
-            .expect_err("phải là lỗi")
+            .set_kind("no-such-id", ProjectKind::Docs)
+            .expect_err("must be an error")
             .to_string(),
     ] {
-        assert!(loi.contains("khong-co"), "lỗi không gọi tên id: {loi}");
+        assert!(err.contains("no-such-id"), "the error does not name the id: {err}");
     }
 }
 
-/// Một loại lạ trong cơ sở dữ liệu đọc chệch về `code`, chứ không làm mất cả hàng.
+/// An unknown kind in the database reads back as `code` rather than losing the whole row.
 ///
-/// Xảy ra khi người dùng chạy một bản mới hơn — bản ấy ghi xuống một loại thứ ba — rồi mở
-/// lại bản cũ. Mất một cái nhãn thì sửa được bằng một cú bấm; từ chối cả hàng thì mất một
-/// dự án khỏi danh sách, mà danh sách này không dựng lại được từ đâu.
+/// Happens when the user runs a newer build — which wrote a third kind — and then reopens
+/// an older one. Losing a label is one click to fix; rejecting the row loses a project from
+/// the list, and this list cannot be rebuilt from anywhere.
 #[test]
-fn loai_la_trong_co_so_du_lieu_doc_chech_ve_ma_nguon() {
-    let conn = Connection::open_in_memory().expect("mở kết nối");
+fn an_unknown_kind_in_the_database_reads_back_as_source() {
+    let conn = Connection::open_in_memory().expect("opens a connection");
     conn.execute_batch(
         "CREATE TABLE projects (
            id             TEXT    PRIMARY KEY,
@@ -262,19 +263,15 @@ fn loai_la_trong_co_so_du_lieu_doc_chech_ve_ma_nguon() {
            kind           TEXT    NOT NULL DEFAULT 'code',
            origin         TEXT
          ) STRICT;
-         INSERT INTO projects VALUES ('la', '/nha/la', 'la', 10, 'ban-do', NULL);",
+         INSERT INTO projects VALUES ('odd', '/home/odd', 'odd', 10, 'ban-do', NULL);",
     )
-    .expect("dựng hàng có loại lạ");
+    .expect("builds a row with an unknown kind");
 
-    let store = SqliteProjectStore::from_connection(conn).expect("mở kho");
-    let danh_sach = store
+    let store = SqliteProjectStore::from_connection(conn).expect("opens");
+    let rows = store
         .list()
-        .expect("một loại lạ không được làm hỏng cả lời gọi");
+        .expect("one unknown kind must not fail the whole call");
 
-    assert_eq!(
-        danh_sach.len(),
-        1,
-        "mất hàng vì một cái nhãn không đọc được"
-    );
-    assert_eq!(danh_sach[0].kind, ProjectKind::Code);
+    assert_eq!(rows.len(), 1, "lost a row over an unreadable label");
+    assert_eq!(rows[0].kind, ProjectKind::Code);
 }

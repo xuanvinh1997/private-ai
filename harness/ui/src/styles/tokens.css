@@ -55,7 +55,11 @@
    * thời gian bên phải — hẹp hơn thì mọi hàng đều cắt, và một danh sách toàn dấu ba chấm
    * không giúp chọn được gì. */
   --sidebar-w: 260px;
-  /* Cây của màn hình đồ thị. Rộng hơn thanh bên vì tên ký hiệu thụt vào theo cấp. */
+  /* Bảng thay đổi bên phải. Hẹp hơn thanh bên vì mỗi hàng là một tên tệp đã rút gọn, không
+   * phải một tiêu đề phiên hai dòng. Nó **phải** có mặt ở đây: `ChangesPanel` đặt bề rộng
+   * bằng `w-(--changes-col-w)`, và một biến không tồn tại làm cả khai báo `width` bị bỏ —
+   * bảng khi ấy rộng theo nội dung, và một tên tệp dài đẩy cột hội thoại hẹp lại. */
+  --changes-col-w: 288px;
   /* Cột đọc: ChatGPT giữ hội thoại ở khoảng 48rem và căn giữa. Trải hết bề rộng trên một
    * màn hình 27" là ép mắt quét ngang 200 ký tự mỗi dòng. */
   --reading-measure: 720px;
@@ -156,5 +160,5 @@
  * thanh bên vẫn thu được bằng tay, và đó là quyết định của họ chứ không của một media
  * query. */
 @media (max-width: 1180px) {
-  :root { --sidebar-w: 232px; }
+  :root { --sidebar-w: 232px; --changes-col-w: 248px; }
 }

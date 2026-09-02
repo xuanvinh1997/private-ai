@@ -129,6 +129,16 @@ export type AgentEvent =
       /** CHƯA có bên Rust. Nguồn của mọi thẻ giàu (diff, terminal, read, search). */
       meta?: ToolMeta | null;
     }
+  /**
+   * Token của bước vừa xong. `context_window` là `null` khi không hỏi được mô hình — và
+   * khi ấy giao diện chỉ hiện con số, không hiện tỉ lệ.
+   */
+  | {
+      kind: "usage";
+      input_tokens: number;
+      output_tokens: number;
+      context_window: number | null;
+    }
   | { kind: "final"; message_id: string }
   | { kind: "error"; message: string }
   /**
@@ -314,7 +324,7 @@ export interface DocumentView {
 
 export interface IngestProgress {
   path: string;
-  /** `reading` `stored` `failed` `skipped` `removed` `finished`. */
+  /** `reading` `stored` `failed` `skipped` `removed` `embedding` `finished`. */
   stage: string;
   done: number;
   total: number;
@@ -475,6 +485,13 @@ export interface McpCatalogEntry {
   homepage: string;
   /** `node`, `python`, `docker` — cảnh báo trước, chứ không để người dùng nhìn `failed`. */
   requires: string[];
+  /**
+   * Endpoint của một server **chạy từ xa**. `null` là mục chạy tại chỗ.
+   *
+   * Có nó thì `requires` rỗng: không phải vì mục này quên khai, mà vì nó thật sự không cần
+   * gì trên máy — và đó là thứ đáng nói ra to nhất ở màn hình này.
+   */
+  url: string | null;
 }
 
 export interface McpServerInput {

@@ -46,6 +46,34 @@ const NHOM: { title: string; desc: string; items: Shortcut[] }[] = [
         what: "Xuống dòng",
         desc: "Ô soạn tin tự cao thêm theo số dòng, không có thanh cuộn riêng.",
       },
+      {
+        keys: "Enter",
+        what: "Xếp hàng khi đang bận",
+        desc: "Trợ lý đang trả lời thì Enter giữ câu lại và gửi khi lượt hiện tại xong. Đúng một câu chờ; gõ tiếp thì thay câu cũ.",
+      },
+    ],
+  },
+  {
+    title: "Hoàn thành trong ô soạn tin",
+    desc: "Danh sách gợi ý giành trước các phím điều hướng khi nó đang mở.",
+    items: [
+      {
+        keys: "@",
+        what: "Chèn đường dẫn tệp",
+        desc: "Gõ @ ở đầu một từ rồi gõ tiếp để lọc. Chỉ thấy tệp mà chỉ mục đã quét.",
+      },
+      {
+        keys: "/",
+        what: "Bảng lệnh",
+        desc: "Chỉ mở khi / là ký tự đầu tiên của ô nhập, nên gõ một đường dẫn không làm nó bật ra.",
+      },
+      { keys: "↑ / ↓", what: "Đi trong danh sách gợi ý" },
+      { keys: "Enter / Tab", what: "Chọn gợi ý đang sáng" },
+      {
+        keys: "Esc",
+        what: "Đóng danh sách gợi ý",
+        desc: "Chỉ đóng danh sách, giữ nguyên chữ đã gõ. Gõ tiếp thì nó mở lại.",
+      },
     ],
   },
 ];

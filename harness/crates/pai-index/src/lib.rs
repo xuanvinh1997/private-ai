@@ -2,20 +2,18 @@
 //!
 //! # Không có embedding, không có mô hình
 //!
-//! Chỉ mục này là **cú pháp và ký hiệu**, không phải ngữ nghĩa. Nó không gọi LLM, không
-//! sinh vector, và không có chỗ nào để cắm một cái vào. Ba lý do, theo thứ tự quan trọng:
+//! Chỉ mục này là **cú pháp và ký hiệu**, không phải ngữ nghĩa: không gọi LLM, không sinh
+//! vector, không có chỗ để cắm một cái vào. Ba lý do, theo thứ tự quan trọng:
 //!
-//! 1. **Một chỉ mục cần mô hình thì hỏng đúng lúc mô hình không chạy.** Ollama chưa bật,
-//!    máy đang hết VRAM, người dùng vừa đổi sang một model không có embedding — đó là
-//!    những lúc người ta cần tìm một hàm nhất, và là những lúc một chỉ mục ngữ nghĩa im
-//!    lặng trả về rỗng.
-//! 2. **Với mã nguồn, tên ký hiệu cộng cấu trúc đã mang gần hết thông tin.** Người ta đi
-//!    tìm `resolve_read`, không đi tìm "chỗ kiểm tra đường dẫn"; và khi người ta thật sự
-//!    đi tìm theo ý nghĩa thì `grep` với một mô tả cụ thể đã đủ xa. Đồ thị AST là thứ có
-//!    thật trong tệp, còn đồ thị thực thể do mô hình sinh ra là một phỏng đoán được lưu
-//!    lại như thể nó là sự thật — đó là lý do LightRAG dừng lại ở bản Python.
-//! 3. **Nó cho phép chỉ mục tăng dần rẻ tới mức chạy được trước mỗi lần hỏi.** Không có
-//!    bước sinh vector thì một tệp không đổi tốn đúng một lần `stat`.
+//! 1. **Chỉ mục cần mô hình thì hỏng đúng lúc mô hình không chạy.** Ollama chưa bật, máy hết
+//!    VRAM, người dùng vừa đổi sang model không có embedding — đó là những lúc người ta cần
+//!    tìm một hàm nhất, và là những lúc chỉ mục ngữ nghĩa im lặng trả về rỗng.
+//! 2. **Với mã nguồn, tên ký hiệu cộng cấu trúc đã mang gần hết thông tin.** Người ta đi tìm
+//!    `resolve_read`, không đi tìm "chỗ kiểm tra đường dẫn". Đồ thị AST là thứ có thật trong
+//!    tệp, còn đồ thị thực thể do mô hình sinh ra là một phỏng đoán được lưu như thể nó là
+//!    sự thật — đó là lý do LightRAG dừng ở bản Python.
+//! 3. **Nó cho phép chỉ mục tăng dần rẻ tới mức chạy được trước mỗi lần hỏi.** Không có bước
+//!    sinh vector thì một tệp không đổi tốn đúng một lần `stat`.
 //!
 //! # Hình dạng
 //!
@@ -32,14 +30,13 @@
 //!
 //! Đỉnh là ký hiệu, cạnh là quan hệ. Đúng **một** loại cạnh là sự thật cú pháp —
 //! `contains`; năm loại còn lại là phỏng đoán theo tên, vì không có phân tích kiểu ở đây.
-//! Điều đó không được giấu đi ở bất kỳ tầng nào: xem [`graph::NAME_BASED_NOTICE`], thứ đi
-//! kèm mọi kết quả tool. Cùng lý do khiến `pai-sandbox` báo `Enforcement::Partial` thay
-//! vì làm tròn lên thành "có giam".
+//! Điều đó không giấu ở tầng nào: xem [`graph::NAME_BASED_NOTICE`], thứ đi kèm mọi kết quả
+//! tool. Cùng lý do khiến `pai-sandbox` báo `Enforcement::Partial` thay vì làm tròn lên.
 //!
-//! Hai chỗ bản Python thua, và cả hai đều rẻ ở đây: nó **không có FTS5** nên mỗi câu hỏi
-//! là một lần quét toàn bộ, và nó **không có chỉ mục tăng dần** nên mỗi lần quét là một
-//! lần đọc lại mọi tệp.
+//! Hai chỗ bản Python thua, cả hai đều rẻ ở đây: **không có FTS5** nên mỗi câu hỏi là một
+//! lần quét toàn bộ, và **không có chỉ mục tăng dần** nên mỗi lần quét đọc lại mọi tệp.
 
+pub mod complete;
 pub mod error;
 pub mod extract;
 pub mod graph;

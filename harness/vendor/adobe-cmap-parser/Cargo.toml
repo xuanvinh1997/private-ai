@@ -1,0 +1,20 @@
+# Bản sao có vá của `adobe-cmap-parser 0.4.1` — xem README.md cho lý do.
+# Giữ nguyên tên, phiên bản và giấy phép của bản gốc: `[patch.crates-io]` khớp theo
+# tên, và một phiên bản bịa ra chỉ làm lần so với thượng nguồn sau này khó hơn.
+[package]
+name = "adobe-cmap-parser"
+version = "0.4.1"
+authors = ["Jeff Muizelaar <jmuizelaar@mozilla.com>"]
+description = "A library to parse Adobe CMap files"
+documentation = "https://docs.rs/crate/adobe-cmap-parser/"
+repository = "https://github.com/jrmuizel/adobe-cmap-parser"
+keywords = ["cmap", "font", "pdf", "postscript"]
+license = "MIT"
+edition = "2015"
+
+[lib]
+name = "adobe_cmap_parser"
+path = "src/lib.rs"
+
+[dependencies]
+pom = "1.0.1"

@@ -1,10 +1,10 @@
-//! Sự kiện có kiểu.
+//! Typed events.
 //!
-//! Cordis có năm chế độ phát. Hai trong số đó — `serial` và `bail` — chỉ tách nhau vì
-//! JavaScript phân biệt `T` với `Promise<T>` ngay tại chỗ gọi. Rust không có vấn đề đó,
-//! nên ở đây còn ba:
+//! Cordis has five emit modes. Two of them — `serial` and `bail` — are separate only
+//! because JavaScript distinguishes `T` from `Promise<T>` at the call site. Rust does not
+//! have that problem, so three remain:
 //!
-//! | Cordis            | Ở đây                                  |
+//! | Cordis            | Here                                   |
 //! |-------------------|----------------------------------------|
 //! | `emit`, `parallel`| [`Notify`] → `Context::notify`         |
 //! | `serial`, `bail`  | [`First`]  → `Context::first`          |
@@ -12,40 +12,41 @@
 
 use futures::future::BoxFuture;
 
-/// Sự kiện chỉ để quan sát. Listener không trả lời được.
+/// An event for observation only. Listeners cannot answer.
 pub trait Notify: Send + Sync + 'static {
     const NAME: &'static str;
     type Payload: Send + Sync + 'static;
 }
 
-/// Sự kiện dừng ở listener đầu tiên trả lời. Thay cho `serial` + `bail`.
+/// An event that stops at the first listener to answer. Replaces `serial` + `bail`.
 pub trait First: Send + Sync + 'static {
     const NAME: &'static str;
     type Payload: Send + Sync + 'static;
     type Out: Send + 'static;
 }
 
-/// Middleware bao quanh — bản Rust của `waterfall`.
+/// Surrounding middleware — the Rust version of `waterfall`.
 ///
-/// `Req` là yêu cầu dùng chung mà listener được phép sửa trên đường xuôi; `Out` là kết
-/// quả chảy ngược lên. Không gọi `next` nghĩa là phủ quyết, đúng như Cordis.
+/// `Req` is the shared request listeners may edit on the way down; `Out` is the result
+/// flowing back up. Not calling `next` is a veto, exactly as in Cordis.
 pub trait Waterfall: Send + Sync + 'static {
     const NAME: &'static str;
     type Req: Send + 'static;
     type Out: Send + 'static;
 }
 
-/// Hành vi trong cùng của một chuỗi waterfall — cái chạy khi mọi middleware đã uỷ quyền.
+/// The innermost behaviour of a waterfall chain — what runs once every middleware has
+/// delegated.
 pub type Tail<'t, E> = &'t (
         dyn for<'r> Fn(&'r mut <E as Waterfall>::Req) -> BoxFuture<'r, <E as Waterfall>::Out>
             + Send
             + Sync
     );
 
-/// Con trỏ tới phần còn lại của chuỗi.
+/// A pointer to the rest of the chain.
 ///
-/// Nó tiêu thụ chính mình khi chạy, nên **không thể uỷ quyền hai lần**. Cordis cho phép
-/// gọi `next()` nhiều lần và đó là nguồn lỗi; ở đây trình biên dịch chặn.
+/// It consumes itself when run, so it **cannot delegate twice**. Cordis allows calling
+/// `next()` more than once and that is a source of bugs; here the compiler stops it.
 pub struct Next<'a, E: Waterfall> {
     pub(crate) rest: &'a [std::sync::Arc<dyn Middleware<E>>],
     pub(crate) tail: Tail<'a, E>,
@@ -69,10 +70,10 @@ impl<'a, E: Waterfall> Next<'a, E> {
     }
 }
 
-/// Một tầng của chuỗi.
+/// One layer of the chain.
 ///
-/// Trả về `BoxFuture` chứ không dùng `async fn`: trait này luôn được dùng dưới dạng
-/// `dyn`, mà `async fn` trong trait thì không dyn-safe.
+/// Returns a `BoxFuture` rather than using `async fn`: this trait is always used as `dyn`,
+/// and `async fn` in a trait is not dyn-safe.
 pub trait Middleware<E: Waterfall>: Send + Sync + 'static {
     fn call<'a>(&'a self, req: &'a mut E::Req, next: Next<'a, E>) -> BoxFuture<'a, E::Out>;
 }

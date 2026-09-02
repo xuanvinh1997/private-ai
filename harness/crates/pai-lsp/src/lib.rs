@@ -2,34 +2,29 @@
 //!
 //! # Ranh giới với `pai-index`
 //!
-//! Hai crate cùng trả lời câu hỏi về ký hiệu, và ranh giới giữa chúng phải rõ, nếu không
-//! ta có hai tool cho một câu hỏi và mô hình phải đoán.
+//! Ranh giới phải rõ, nếu không ta có hai tool cho một câu hỏi và mô hình phải đoán.
 //!
-//! `pai-index` là **tree-sitter**: nó biết một cái tên được *khai báo* ở đâu, và nó biết
-//! điều đó chỉ bằng cách nhìn hình dạng của tệp. Nó chạy offline, không cần cài gì, trả
-//! lời trong vài mili giây, và đúng cho mọi repo. `symbol_search` và `outline` là của nó,
-//! và **crate này không được làm lại chúng**.
+//! `pai-index` là **tree-sitter**: nó biết một cái tên được *khai báo* ở đâu chỉ bằng hình
+//! dạng của tệp — offline, không cần cài gì, vài mili giây, đúng cho mọi repo.
+//! `symbol_search` và `outline` là của nó, và **crate này không được làm lại chúng**.
 //!
-//! Cái nó không làm được là mọi thứ cần một trình biên dịch: đi tới định nghĩa qua `use`
-//! và qua nhiều tệp khi hai hàm trùng tên, tìm mọi nơi *tham chiếu* thay vì mọi nơi trùng
-//! chữ, kiểu suy ra được, và lỗi biên dịch thật. Đó là bốn thao tác của tool `lsp` —
-//! không nhiều hơn.
+//! Cái nó không làm được là mọi thứ cần một trình biên dịch: đi tới định nghĩa qua `use` và
+//! qua nhiều tệp khi hai hàm trùng tên, tìm mọi nơi *tham chiếu* thay vì mọi nơi trùng chữ,
+//! kiểu suy ra được, và lỗi biên dịch thật. Đó là bốn thao tác của tool `lsp` — không hơn.
 //!
-//! # Ràng buộc thiết kế: server có thể không tồn tại
+//! # Ràng buộc: server có thể không tồn tại
 //!
-//! Language server là **tiến trình bên ngoài mà người dùng có thể chưa cài**. Ba hệ quả,
-//! và cả ba đều là mã chứ không phải lời hứa:
+//! Language server là tiến trình bên ngoài mà người dùng có thể chưa cài. Ba hệ quả, cả ba
+//! đều là mã chứ không phải lời hứa:
 //!
-//! 1. **Không dò được server nào thì tool không được đăng ký.** Xem [`plugin`]. Một tool
-//!    có trong danh sách mà lần nào gọi cũng lỗi dạy mô hình bỏ qua danh sách.
-//! 2. **Dò một lần, lúc cắm plugin.** Xem [`launch::locate`]. Không dò lại mỗi lần gọi để
-//!    trả lời một câu gần như không đổi.
-//! 3. **Chờ có hạn, rồi nói thật.** `rust-analyzer` mất hàng chục giây để nạp một
-//!    workspace. Lần gọi đầu chờ tối đa [`config::STARTUP_TIMEOUT`] rồi trả lời rằng
-//!    server chưa sẵn sàng — không treo, và **không** trả về rỗng, vì rỗng đọc y hệt "hàm
-//!    đó không tồn tại". Trong lúc server còn lập chỉ mục, mọi câu trả lời đi kèm một lời
-//!    nhắc rằng nó có thể còn thiếu; cơ sở của lời nhắc đó là `$/progress` của spec, xem
-//!    [`client`].
+//! 1. **Không dò được server nào thì tool không được đăng ký** ([`plugin`]). Một tool lần
+//!    nào gọi cũng lỗi dạy mô hình bỏ qua cả danh sách.
+//! 2. **Dò một lần, lúc cắm plugin** ([`launch::locate`]), không dò lại mỗi lần gọi.
+//! 3. **Chờ có hạn, rồi nói thật.** `rust-analyzer` mất hàng chục giây để nạp workspace.
+//!    Lần gọi đầu chờ tối đa [`config::STARTUP_TIMEOUT`] rồi báo server chưa sẵn sàng —
+//!    không treo, và **không** trả rỗng, vì rỗng đọc y hệt "hàm đó không tồn tại". Trong
+//!    lúc còn lập chỉ mục, mọi câu trả lời kèm lời nhắc rằng nó có thể còn thiếu; cơ sở là
+//!    `$/progress` của spec, xem [`client`].
 //!
 //! # Hình dạng
 //!
@@ -44,11 +39,10 @@
 //! plugin    cắm vào cây, hoặc cố ý không cắm
 //! ```
 //!
-//! Chỗ khó nhất — nói một giao thức JSON-RPC với một tiến trình con qua stdio, giám sát
-//! vòng đời, và không để một server bên ngoài chết làm hỏng ứng dụng — đã được `pai-mcp`
-//! giải xong, và cách làm ở đây chép của nó: một trait mở-kết-nối để bài kiểm chứng thay
-//! được bằng một ống trong bộ nhớ, một chủ duy nhất cho mỗi kết nối, và mọi lỗi của phía
-//! ngoài dừng lại trước khi chạm tới tool của người dùng.
+//! Phần khó — JSON-RPC với tiến trình con qua stdio, giám sát vòng đời, và không để một
+//! server bên ngoài chết làm hỏng ứng dụng — đã được `pai-mcp` giải xong, và cách làm ở đây
+//! chép của nó: một trait mở-kết-nối để bài kiểm chứng thay được bằng ống trong bộ nhớ, một
+//! chủ duy nhất cho mỗi kết nối, và mọi lỗi phía ngoài dừng trước khi chạm tool người dùng.
 
 pub mod client;
 pub mod config;

@@ -86,6 +86,18 @@ export default function App() {
   const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
   const [currentId, setCurrentId] = createSignal("phien-nhap");
   const [draft, setDraft] = createSignal("");
+  /**
+   * Tin nhắn gõ **trong lúc lượt trước còn chạy**, chờ tới lượt nó.
+   *
+   * Trước đây ô soạn tin bị khoá suốt lượt, nên nghĩ ra câu hỏi tiếp theo giữa chừng là
+   * phải giữ nó trong đầu cho tới khi trợ lý nói xong. Một agent chạy vài chục giây mỗi
+   * lượt thì đó là vài chục giây người dùng không làm được gì.
+   *
+   * Đúng **một** ô chờ, không phải một hàng đợi: gửi liên tiếp ba câu vào một lượt đang
+   * chạy là ba câu hỏi trên một ngữ cảnh mà người gõ chưa đọc, và câu thứ ba gần như luôn
+   * là câu họ sẽ viết khác đi nếu đọc câu trả lời trước. Gõ tiếp thì thay ô chờ.
+   */
+  const [queued, setQueued] = createSignal("");
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [tab, setTab] = createSignal<TabId>("chat");
   // Trang cài đặt do đây giữ, không do `SettingsView` giữ: thanh bên có một hàng đi thẳng
@@ -259,6 +271,10 @@ export default function App() {
     parked.set(currentId(), conversation.nodes().slice());
     setCurrentId(id);
     setLoadError(null);
+    // Số token thuộc về phiên vừa rời đi. Giữ lại là để chip ngữ cảnh báo 90% trên một
+    // phiên trống — một con số sai ở đúng chỗ người dùng dựa vào nó để quyết định có nên
+    // bắt đầu phiên mới hay không.
+    conversation.clearUsage();
 
     const cached = parked.get(id);
     if (cached) {
@@ -564,7 +580,14 @@ export default function App() {
 
   async function send(text: string) {
     const trimmed = text.trim();
-    if (conversation.busy() || trimmed === "") return;
+    if (trimmed === "") return;
+    // Lượt trước chưa xong: giữ lại, đừng nuốt. Trả về ở đây mà không giữ gì là đúng cái
+    // cách cũ làm mất một câu vừa gõ xong.
+    if (conversation.busy()) {
+      setQueued(trimmed);
+      setDraft("");
+      return;
+    }
 
     nameFromFirstMessage(trimmed);
     conversation.addUser(trimmed);
@@ -613,6 +636,64 @@ export default function App() {
           ),
         );
       }
+
+      // Câu đang chờ thuộc về **phiên đã nhận nó**. Người dùng đổi phiên giữa lượt thì gửi
+      // nó vào phiên mới là gửi một câu hỏi vào một ngữ cảnh nó không nói về — nên nó rơi
+      // về ô soạn tin, còn nguyên chữ, để họ quyết định. Chỉ rơi khi bản nháp đang trống:
+      // ghi đè lên thứ họ vừa gõ là đổi một phiền toái lấy một mất mát.
+      const cho = queued();
+      if (cho !== "") {
+        setQueued("");
+        if (currentId() === cuaLuot) void send(cho);
+        else setDraft((hien) => (hien.trim() === "" ? cho : hien));
+      }
+    }
+  }
+
+  /**
+   * Chạy một lệnh `/` từ ô soạn tin.
+   *
+   * Mỗi nhánh ở đây phải trỏ vào một hành động **đã tồn tại**, không được là một đường đi
+   * thứ hai tự viết lấy: hai đường tới cùng một việc là hai chỗ để chúng lệch nhau, và
+   * người dùng gặp cái lệch ấy dưới dạng "bấm menu thì được, gõ lệnh thì không".
+   */
+  function runCommand(name: string) {
+    switch (name) {
+      case "moi":
+        void newSession();
+        break;
+      case "tim":
+        setPaletteOpen(true);
+        break;
+      case "duan":
+        setTab("projects");
+        break;
+      case "thaydoi":
+        setChangesPanelOpen(true);
+        break;
+      case "taplieu":
+        setTab("library");
+        break;
+      case "mohinh":
+        setSettingsPage("provider");
+        setTab("settings");
+        break;
+      case "mcp":
+        setSettingsPage("mcp");
+        setTab("settings");
+        break;
+      case "quyen":
+        setSettingsPage("quyen");
+        setTab("settings");
+        break;
+      case "phimtat":
+        setSettingsPage("phim-tat");
+        setTab("settings");
+        break;
+      case "caidat":
+        setSettingsPage("chung");
+        setTab("settings");
+        break;
     }
   }
 
@@ -738,6 +819,7 @@ export default function App() {
         <main class="flex min-w-0 flex-1 flex-col">
           <WorkspaceHeader
             title={title()}
+            scope={project()?.name}
             busy={conversation.busy() || switching()}
             busyLabel={switching() ? "đang chuyển dự án…" : undefined}
             sidebarOpen={sidebarOpen()}
@@ -776,7 +858,7 @@ export default function App() {
                           <Switch
                             fallback={
                               <EmptyLead
-                                hasProject={hasProject()}
+                                kind={project()?.kind ?? null}
                                 onOpenProject={() => setTab("projects")}
                               />
                             }
@@ -811,9 +893,13 @@ export default function App() {
                       value={draft()}
                       onChange={setDraft}
                       onSubmit={() => void send(draft())}
-                      disabled={conversation.busy() || switching()}
+                      disabled={switching()}
                       busy={conversation.busy()}
+                      queued={queued()}
+                      onUnqueue={() => setQueued("")}
                       onStop={() => void cancelTurn(currentId())}
+                      onCommand={runCommand}
+                      usage={conversation.usage()}
                       model={model()}
                       models={models()}
                       onPickModel={setModel}
@@ -838,7 +924,7 @@ export default function App() {
                       <div class="shrink-0 px-(--page-pad-x) pb-(--page-pad-y)">
                         <PromptChips
                           disabled={conversation.busy()}
-                          hasProject={hasProject()}
+                          kind={project()?.kind ?? null}
                           onPick={(text) => void send(text)}
                         />
                       </div>
@@ -908,6 +994,7 @@ export default function App() {
         <Show when={paletteOpen()}>
           <SessionPalette
             sessions={sessions()}
+            currentId={currentId()}
             onPick={(id) => {
               switchTo(id);
               setTab("chat");

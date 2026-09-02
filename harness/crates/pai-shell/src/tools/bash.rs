@@ -1,15 +1,18 @@
-//! `bash` — chạy một lệnh shell.
+//! `bash` — run a shell command.
 //!
-//! Tool nguy hiểm nhất trong bộ, nên hai quyết định được viết ra đây thay vì để ngầm:
+//! The most dangerous tool in the set, so two decisions are written down here rather than
+//! left implicit:
 //!
-//! **Mặc định phải hỏi.** `meta().mutating` bật, và plugin gắn một canh gác đẩy mọi lời
-//! gọi qua `PreDecision::Ask`. Đây là mặc định chứ không phải tuỳ chọn: một tool chạy
-//! lệnh mà chưa có đường hỏi người dùng thì không có chế độ an toàn nào để rơi vào.
+//! **Asking is the default.** `meta().mutating` is set, and the plugin attaches a guard
+//! that routes every call through `PreDecision::Ask`. This is the default, not an option:
+//! a tool that runs commands with no path to ask the user has no safe mode to fall back
+//! to.
 //!
-//! **Không có danh sách đen.** Không lọc `rm -rf`, không lọc `curl | sh`. Một danh sách
-//! đen cho lệnh shell luôn thủng — `r''m`, `$(echo cm0K | base64 -d)`, một script trung
-//! gian — và cái nó tạo ra không phải an toàn mà là cảm giác an toàn, thứ khiến người ta
-//! bấm "cho phép" mà không đọc. Phòng thủ thật là duyệt và sandbox.
+//! **There is no blocklist.** No filtering of `rm -rf`, none of `curl | sh`. A blocklist
+//! for shell commands always leaks — `r''m`, `$(echo cm0K | base64 -d)`, an intermediate
+//! script — and what it produces is not safety but the feeling of safety, the thing that
+//! gets people to click "allow" without reading. The real defences are approval and the
+//! sandbox.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,16 +30,17 @@ use tokio_util::sync::CancellationToken;
 use crate::jobs::{JobState, Jobs};
 use crate::provider::{Request, ShellExecutor};
 
-/// Không có hạn giờ thì một lệnh chờ nhập liệu sẽ treo cả lượt cho tới khi người dùng bỏ.
+/// Without a deadline, a command waiting on input hangs the whole turn until the user
+/// gives up.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct BashArgs {
-    /// Lệnh cần chạy, diễn giải bởi `/bin/sh -c`.
+    /// The command to run, interpreted by `/bin/sh -c`.
     pub command: String,
-    /// Hạn giờ, mili-giây. Mặc định 120000.
+    /// Deadline in milliseconds. Defaults to 120000.
     pub timeout: Option<u64>,
-    /// Chạy nền và trả `job_id` ngay. Dùng cho tiến trình sống lâu.
+    /// Run in the background and return a `job_id` immediately. For long-lived processes.
     #[serde(default)]
     pub run_in_background: bool,
 }
@@ -80,8 +84,8 @@ impl Tool for Bash {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Không đánh dấu `concurrency_safe`: hai lệnh chạy song song trong cùng một thư
-        // mục làm việc là hai lệnh có thể giẫm lên nhau, và shell không nói cho ai biết.
+        // Not marked `concurrency_safe`: two commands running in parallel in the same
+        // working directory can step on each other, and the shell tells nobody.
         ToolMeta::mutating().untrusted().concurrency_safe(false)
     }
 
@@ -99,8 +103,8 @@ impl Tool for Bash {
         );
 
         if args.run_in_background {
-            // Token riêng, không phải token của lượt: job phải sống qua lượt sinh ra nó,
-            // nếu không `run_in_background` chẳng khác gì chạy thường.
+            // Its own token, not the turn's: the job has to outlive the turn that
+            // started it, or `run_in_background` is no different from running normally.
             let cancel = CancellationToken::new();
             let job = self
                 .jobs
@@ -157,9 +161,9 @@ impl Tool for Bash {
             rendered = "(không có output)".to_string();
         }
 
-        // Output lệnh cũng là output lớn: `cargo build` một kho vừa phải nhả ra vài trăm
-        // KiB, và phần đuôi — nơi có mã thoát và dòng lỗi cuối — là phần đáng giá nhất.
-        // Vì thế giữ cả hai đầu chứ không chỉ đầu.
+        // Command output is large output too: `cargo build` on a medium repo emits a few
+        // hundred KiB, and the tail — where the exit code and the last error line are — is
+        // the most valuable part. So keep both ends, not just the head.
         let folded = self.overflow.fold(&call.name, rendered, |_| {
             "Chạy lại và lọc ngay trong lệnh (`| tail -n 200`, `| grep …`) nếu bạn cần \
              phần giữa."
@@ -176,8 +180,8 @@ impl Tool for Bash {
             "job_id": serde_json::Value::Null,
         });
 
-        // Mã thoát khác 0 **không** phải `is_error`: lệnh đã chạy đúng như được bảo, và
-        // một bộ test đỏ là kết quả hữu ích chứ không phải một lần gọi tool hỏng.
+        // A non-zero exit code is **not** `is_error`: the command did exactly what it was
+        // told, and a red test suite is a useful result, not a failed tool call.
         let mut outcome = ToolOutcome::ok(folded.content).with_meta("terminal", meta);
         if let Some(handle) = folded.spill {
             outcome.meta.insert("spill".into(), handle.to_json());

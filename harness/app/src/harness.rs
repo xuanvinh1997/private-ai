@@ -44,6 +44,12 @@ không làm được, hãy nói ra thay vì làm một việc gần giống.";
 
 pub struct Harness {
     pub ctx: Context,
+    /// Cửa sổ ngữ cảnh mà **plugin nén** đang dùng làm ngưỡng.
+    ///
+    /// Lấy đúng con số ấy chứ không lấy `context_window` của mô hình: thanh áp lực ngữ cảnh
+    /// trên giao diện phải đầy đúng lúc nén sắp chạy. Hai con số khác nhau thì thanh báo
+    /// còn chỗ trong khi phần đầu cuộc trò chuyện vừa bị rút gọn.
+    pub context_window: usize,
     pub sessions: SessionService,
     pub driver: Arc<Driver>,
     /// Cây đã áp lớp, giữ lại để trả lời câu hỏi "bản đang chạy gồm những gì".
@@ -927,6 +933,7 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     apply_llm(&runtime, &llm, &embedder);
     Ok(Harness {
         ctx: ctx.clone(),
+        context_window: config.context_window,
         sessions: sessions.clone(),
         driver,
         plugins: composed.clone(),

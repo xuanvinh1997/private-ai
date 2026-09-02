@@ -1,4 +1,4 @@
-//! Chạy một lệnh hook và đọc quyết định của nó.
+//! Run one hook command and read its decision.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -8,38 +8,39 @@ use serde_json::{Map, Value};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
-/// Hook chậm thì lời gọi tool chậm theo, và người dùng không biết vì sao. Cắt sớm.
+/// A slow hook makes the tool call slow, and the user has no idea why. Cut it short.
 pub const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Cái hook đọc trên stdin.
+/// What the hook reads on stdin.
 #[derive(Debug, Clone, Serialize)]
 pub struct HookInput<'a> {
-    /// `pre-execute` hoặc `post-execute`.
+    /// `pre-execute` or `post-execute`.
     pub event: &'a str,
-    /// Tên tool ở dạng có dấu chấm — dạng chuẩn, không phải dạng trên dây.
+    /// The tool name in dotted form — the canonical form, not the wire form.
     pub tool: &'a str,
     pub call_id: &'a str,
     pub arguments: &'a Map<String, Value>,
-    /// Chỉ có ở `post-execute`.
+    /// Only present on `post-execute`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<&'a str>,
 }
 
-/// Cái hook ghi ra stdout.
+/// What the hook writes to stdout.
 ///
-/// Không có biến thể "hỏi": một hook là một lệnh chạy không có người ngồi đó, nên nó
-/// không có cách nào hỏi ai. Muốn hỏi thì đó là việc của `Approver`.
+/// There is no "ask" variant: a hook is a command running with nobody sitting there, so it
+/// has no way to ask anyone. Asking is `Approver`'s job.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "decision", rename_all = "lowercase")]
 pub enum HookDecision {
     Allow,
     Deny {
-        /// Đi thẳng tới mô hình, nên nó phải nói được cho mô hình biết nên làm gì khác.
+        /// Goes straight to the model, so it has to tell the model what to do instead.
         reason: String,
     },
 }
 
-/// Chạy một hook. `None` nghĩa là hook không trả lời được — xem luật fail-open ở đầu crate.
+/// Run a hook. `None` means the hook could not answer — see the fail-open rule at the top
+/// of the crate.
 pub async fn run(command: &str, input: &HookInput<'_>, deadline: Duration) -> Option<HookDecision> {
     let payload = serde_json::to_vec(input).ok()?;
 
@@ -51,12 +52,12 @@ pub async fn run(command: &str, input: &HookInput<'_>, deadline: Duration) -> Op
         .stderr(Stdio::piped())
         .kill_on_drop(true)
         .spawn()
-        .inspect_err(|err| tracing::warn!(command, "không chạy được hook: {err}"))
+        .inspect_err(|err| tracing::warn!(command, "could not run hook: {err}"))
         .ok()?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        // Lỗi ghi ở đây gần như luôn là hook đã đóng stdin vì nó không đọc — không phải
-        // lý do để dừng, cứ chờ nó nói gì.
+        // A write error here is almost always the hook closing stdin because it does not
+        // read — not a reason to stop, so wait and see what it says.
         let _ = stdin.write_all(&payload).await;
         let _ = stdin.shutdown().await;
     }
@@ -64,28 +65,24 @@ pub async fn run(command: &str, input: &HookInput<'_>, deadline: Duration) -> Op
     let output = match tokio::time::timeout(deadline, child.wait_with_output()).await {
         Ok(Ok(output)) => output,
         Ok(Err(err)) => {
-            tracing::warn!(command, "hook hỏng: {err}");
+            tracing::warn!(command, "hook failed: {err}");
             return None;
         }
         Err(_) => {
-            tracing::warn!(command, ?deadline, "hook hết giờ");
+            tracing::warn!(command, ?deadline, "hook timed out");
             return None;
         }
     };
 
     if !output.status.success() {
-        tracing::warn!(
-            command,
-            code = output.status.code(),
-            "hook thoát với mã khác 0"
-        );
+        tracing::warn!(command, code = output.status.code(), "hook exited non-zero");
         return None;
     }
     let text = String::from_utf8_lossy(&output.stdout);
     match serde_json::from_str::<HookDecision>(text.trim()) {
         Ok(decision) => Some(decision),
         Err(err) => {
-            tracing::warn!(command, "hook trả về thứ không đọc được: {err}");
+            tracing::warn!(command, "hook returned something unreadable: {err}");
             None
         }
     }

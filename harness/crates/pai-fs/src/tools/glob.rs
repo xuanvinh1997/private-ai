@@ -1,9 +1,9 @@
-//! `glob` — tìm tệp theo mẫu tên.
+//! `glob` — find files by name pattern.
 //!
-//! Hai chi tiết nhỏ quyết định mô hình dùng đúng hay sai, nên viết ra đây: kết quả **chỉ
-//! có tệp, không có thư mục**, và một mẫu không chứa `/` khớp **tên tệp ở mọi độ sâu**.
-//! Không có luật thứ hai thì `*.rs` trả về rỗng ở mọi repo có thư mục con, và mô hình
-//! kết luận sai rằng repo không có tệp Rust nào.
+//! Two small details decide whether the model uses this correctly, so they are written down:
+//! results contain **files only, never directories**, and a pattern without `/` matches
+//! **the file name at any depth**. Without the second rule `*.rs` returns nothing in every
+//! repo with subdirectories, and the model wrongly concludes the repo has no Rust files.
 
 use std::path::{Path, PathBuf};
 
@@ -17,15 +17,15 @@ use serde_json::json;
 
 use crate::path::FileRoots;
 
-/// Bao nhiêu đường dẫn được hiện ra. Phần dư không mất — nó nằm trong content, và đường
-/// ống cất content dài vào kho tràn.
+/// How many paths are shown. The remainder is not lost — it is in the content, and the
+/// pipeline spills long content to the store.
 const DISPLAY_CAP: usize = 100;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GlobArgs {
-    /// Mẫu tên tệp, ví dụ `*.rs` hoặc `src/**/*.ts`.
+    /// The file-name pattern, e.g. `*.rs` or `src/**/*.ts`.
     pub pattern: String,
-    /// Thư mục bắt đầu. Bỏ trống là gốc workspace.
+    /// Where to start. Empty means the workspace root.
     pub path: Option<String>,
 }
 
@@ -41,7 +41,8 @@ impl GlobTool {
     }
 }
 
-/// Mẫu không có `/` thì khớp tên tệp; có `/` thì khớp đường dẫn tương đối từ gốc tìm.
+/// A pattern without `/` matches the file name; with `/` it matches the path relative to
+/// the search root.
 fn matcher(pattern: &str) -> Result<(GlobMatcher, bool), ToolError> {
     let by_name = !pattern.contains('/');
     let glob = Glob::new(pattern).map_err(|err| ToolError::Invalid(err.to_string()))?;
@@ -61,7 +62,7 @@ impl Tool for GlobTool {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Tên tệp do người dùng đặt, nên chúng cũng là dữ liệu chứ không phải chỉ dẫn.
+        // File names are chosen by the user, so they are data too, not instructions.
         ToolMeta::read_only().untrusted().concurrency_safe(true)
     }
 
@@ -83,8 +84,8 @@ impl Tool for GlobTool {
         let (glob, by_name) = matcher(&args.pattern)?;
         let roots = self.roots.clone();
 
-        // Đi cây thư mục là việc chặn. Đưa nó ra khỏi runtime, nếu không một repo lớn sẽ
-        // giữ luôn cả reactor trong lúc quét.
+        // Walking the tree is blocking work. Move it off the runtime, or a large repo
+        // holds the whole reactor for the duration of the scan.
         let found = tokio::task::spawn_blocking(move || {
             let mut hits: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
             for entry in WalkBuilder::new(&base).hidden(false).build().flatten() {
@@ -100,8 +101,9 @@ impl Tool for GlobTool {
                 if !glob.is_match(candidate) {
                     continue;
                 }
-                // Giấu khỏi listing, không chỉ chặn đọc: kể tên một tệp được bảo vệ là
-                // đã nói cho mô hình biết có cái gì ở đó để mà đi tìm đường khác.
+                // Hidden from the listing, not merely blocked from reading: naming a
+                // protected file already tells the model something is there to go find
+                // another way to.
                 if roots.is_protected(path) {
                     continue;
                 }
@@ -112,7 +114,8 @@ impl Tool for GlobTool {
                     .unwrap_or(std::time::UNIX_EPOCH);
                 hits.push((path.to_path_buf(), mtime));
             }
-            // Mới nhất trước: tệp vừa đụng gần như luôn là tệp đang được hỏi tới.
+            // Most recent first: the file just touched is almost always the one being
+            // asked about.
             hits.sort_unstable_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
             hits.into_iter().map(|(path, _)| path).collect::<Vec<_>>()
         })

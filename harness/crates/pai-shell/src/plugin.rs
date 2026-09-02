@@ -1,11 +1,12 @@
-//! Cắm shell vào cây.
+//! Mount the shell into the tree.
 //!
-//! Plugin làm ba việc, và việc thứ ba mới là việc quan trọng: cung cấp provider, đăng ký
-//! bốn tool, và gắn một canh gác đẩy `bash` qua đường hỏi người dùng. Không có canh gác
-//! đó thì `bash` là một tool chạy được bất cứ thứ gì mà không ai kịp nói không.
+//! The plugin does three things, and the third is the one that matters: provide the
+//! executor, register four tools, and attach a guard that routes `bash` through the ask-
+//! the-user path. Without that guard, `bash` is a tool that runs anything with nobody
+//! given a chance to say no.
 //!
-//! Gỡ plugin giết sạch job nền. Một tiến trình sống lâu hơn thứ sinh ra nó là một tiến
-//! trình không ai còn nhớ để dọn.
+//! Disposing the plugin kills every background job. A process that outlives the thing that
+//! spawned it is a process nobody remembers to clean up.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,16 +24,16 @@ use crate::tools::bash::Bash;
 use crate::tools::job::{JobKill, JobList, JobOutput};
 use pai_sandbox::Policy;
 
-/// Đẩy mọi lời gọi `bash` qua người dùng.
+/// Route every `bash` call through the user.
 ///
-/// Là một middleware chứ không phải một canh gác, vì canh gác cố ý **đơn điệu**: chúng
-/// chỉ từ chối hoặc bỏ qua, không mở được đường hỏi. Đó là thiết kế đúng — nếu canh gác
-/// trả về `Ask` được thì thứ tự đăng ký sẽ biến một lệnh từ chối thành một câu hỏi, và
-/// một câu hỏi thì trả lời "có" được.
+/// A middleware rather than a guard, because guards are deliberately **monotonic**: they
+/// only deny or abstain, and cannot open an ask. That is the right design — if a guard
+/// could return `Ask`, registration order would turn a denial into a question, and a
+/// question can be answered yes.
 ///
-/// Là một plugin riêng chứ không phải một trường trong `ToolMeta`, vì chính sách phải gỡ
-/// ra được: một bản chạy không giao diện với sandbox thật sẽ thay nó bằng cái khác, và
-/// lúc đó không ai phải sửa `bash`.
+/// A separate plugin rather than a field on `ToolMeta`, because the policy has to be
+/// removable: a headless build with a real sandbox will swap it for something else, and
+/// nobody should have to edit `bash` to do that.
 struct AskBeforeShell {
     ctx: Context,
 }
@@ -47,13 +48,13 @@ impl Middleware<PreExecute> for AskBeforeShell {
             if req.name.as_str() != Bash::NAME {
                 return next.run(req).await;
             }
-            // Uỷ quyền trước rồi mới hỏi: nếu một tầng dưới đã từ chối thì không có gì
-            // để hỏi, và hỏi một câu mà câu trả lời không đổi được gì là làm người dùng
-            // quen với việc bấm cho qua.
+            // Delegate first, ask second: if a layer below already denied, there is
+            // nothing to ask about, and asking a question whose answer changes nothing
+            // trains the user to click straight through.
             match next.run(req).await {
-                // Câu hỏi phải nói đúng mức rủi ro thật. Người dùng đọc đúng dòng này
-                // trước khi bấm "cho phép", nên một câu chung chung ở đây là một câu
-                // khiến họ quen với việc bấm cho qua.
+                // The question has to state the real level of risk. This is the exact
+                // line the user reads before clicking "allow", so anything vague here is
+                // a line that trains them to click through.
                 PreDecision::Allow => PreDecision::Ask {
                     reason: self.risk(),
                 },
@@ -101,8 +102,8 @@ impl Plugin for ShellPlugin {
     }
 
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
-        // `workspace-write` là mặc định: một coding agent phải sửa được repo, và mọi
-        // thứ ngoài repo thì không. Chế độ chặt hơn hay lỏng hơn là quyết định của phiên.
+        // `workspace-write` is the default: a coding agent has to be able to edit the
+        // repo, and nothing outside it. Tighter or looser is a per-session decision.
         let policy = Policy::workspace_write(self.cwd.clone());
         let shell: Arc<dyn ShellExecutor> = Arc::new(LocalShell::new(ctx.clone(), policy));
         ctx.keep(ctx.provide::<Shell>(shell.clone())?);

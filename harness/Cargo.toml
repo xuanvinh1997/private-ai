@@ -1,6 +1,18 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "app"]
+# Bản vá không phải một crate của ta: nó không dùng `[workspace.package]`, không theo
+# edition của ta, và `cargo test --workspace` không nên chạy vào nó.
+exclude = ["vendor/adobe-cmap-parser"]
+
+# `pdf-extract` đọc bảng `ToUnicode` qua `adobe-cmap-parser`, và bộ lexer của crate đó
+# dừng ở dấu `-` trong `/CMapName LiberationSerif-cmap def` rồi trả về một bảng **rỗng**
+# kèm `Ok`. Hệ quả: mọi PDF sinh bởi Calibre hay LibreOffice rút ra toàn khoảng trắng,
+# "nạp thành công" với 0 đoạn. 0.4.1 là bản mới nhất trên crates.io và `pdf-extract 0.12`
+# vẫn hỏng y hệt, nên không có đường vòng nào ở phía trên. Xem
+# `vendor/adobe-cmap-parser/README.md`.
+[patch.crates-io]
+adobe-cmap-parser = { path = "vendor/adobe-cmap-parser" }
 
 [workspace.package]
 version = "0.1.0"

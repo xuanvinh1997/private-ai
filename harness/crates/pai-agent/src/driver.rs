@@ -24,7 +24,7 @@ use pai_llm::{ChatRequest, LlmAdapter, Message as LlmMessage, StreamChunk};
 use pai_session::{
     AssistantChunk, AssistantMessage, ContentBlock as LogBlock, Message as LogMessage, Role,
     Session, SessionEvent, StepEnd, StepStart, ToolCall as LogToolCall,
-    ToolResult as LogToolResult, TurnEnd, TurnEndReason, TurnStart,
+    ToolResult as LogToolResult, TurnEnd, TurnEndReason, TurnStart, Usage,
 };
 use pai_tools::ToolPipeline;
 use serde_json::{Map, Value};
@@ -55,6 +55,12 @@ pub trait TurnSink: Send + Sync {
     ) {
     }
     fn notice(&self, _message: &str) {}
+
+    /// Token của bước vừa xong, khi máy chủ chịu nói.
+    ///
+    /// Mặc định không làm gì: đây là số liệu, không phải một phần của câu trả lời, và một
+    /// sink chỉ quan tâm tới chữ thì không phải viết gì thêm.
+    fn usage(&self, _input_tokens: u64, _output_tokens: u64) {}
 }
 
 /// Sink không làm gì. Dùng cho chạy không giao diện và cho test.
@@ -196,6 +202,17 @@ impl Driver {
                     // phép chiếu mà listener vừa nhìn thấy, và thêm gì vào trước sẽ làm
                     // mọi vị trí đó trượt đi một chỗ.
                     if let Some(replace) = replace {
+                        // Nói ra rằng phần đầu cuộc trò chuyện vừa bị rút gọn.
+                        //
+                        // Nén trong im lặng là đúng cái kiểu hỏng mà cả dự án này từ chối ở
+                        // mọi chỗ khác: bộ đệm terminal **nói** đã bỏ bao nhiêu dòng, sandbox
+                        // **báo** `Partial` thay vì làm tròn lên. Ở đây cái mất còn khó thấy
+                        // hơn — mô hình bỗng không nhớ một quyết định từ đầu phiên, và người
+                        // dùng kết luận nó ngu đi chứ không kết luận là ngữ cảnh đã đầy.
+                        let bo = replace.end.saturating_sub(replace.start);
+                        sink.notice(&format!(
+                            "Ngữ cảnh đã đầy: {bo} tin nhắn đầu phiên được rút gọn thành một                              bản tóm tắt. Chi tiết trong phần đó không còn nguyên văn — hỏi                              lại nếu cần."
+                        ));
                         session
                             .append_replacing(
                                 SessionEvent::UserMessage(replace.summary),
@@ -354,12 +371,26 @@ impl Driver {
         drop(stream);
 
         let message = assembler.message();
+        // Máy chủ đã nói số token và bộ ghép đã giữ lại — ghi nó vào sổ thay vì bỏ đi.
+        // Không có nó thì sổ phiên không trả lời được câu "lượt này tốn bao nhiêu", và
+        // giao diện không có cách nào cho người dùng thấy ngữ cảnh đang đầy dần **trước**
+        // lúc nén cắt mất phần đầu.
+        let usage = assembler.usage().map(|counted| Usage {
+            input_tokens: counted.input_tokens,
+            output_tokens: counted.output_tokens,
+            // Không phải máy chủ nào cũng tách phần đọc từ cache; để `None` chứ không
+            // đoán bằng 0 — số 0 đọc ra là "cache không giúp gì", một câu khác hẳn.
+            cached_input_tokens: None,
+        });
+        if let Some(counted) = usage {
+            sink.usage(counted.input_tokens, counted.output_tokens);
+        }
         session
             .append_surface(SessionEvent::AssistantMessage(AssistantMessage {
                 turn,
                 step,
                 message: assistant_to_log(&message),
-                usage: None,
+                usage,
                 interrupted: interrupted.then_some(true),
             }))
             .await?;

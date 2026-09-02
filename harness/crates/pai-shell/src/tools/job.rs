@@ -1,4 +1,4 @@
-//! `job_output`, `job_kill`, `job_list` — nhìn và dừng những gì đang chạy nền.
+//! `job_output`, `job_kill`, `job_list` — see and stop what is running in the background.
 
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ use crate::jobs::{JobState, Jobs};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct JobRef {
-    /// Id trả về từ `bash` khi chạy nền.
+    /// The id `bash` returns when backgrounding.
     pub job_id: String,
 }
 
@@ -52,7 +52,7 @@ impl Tool for JobOutput {
 
         let state = job.state.lock().clone();
         let (text, meta) = match state {
-            // Chưa xong không phải là treo, và câu trả lời phải nói được điều đó.
+            // Not finished is not the same as hung, and the answer has to say so.
             JobState::Running => (
                 format!("Job `{}` vẫn đang chạy.", job.id),
                 json!({ "exit_code": serde_json::Value::Null, "background": true }),

@@ -1,23 +1,25 @@
-//! `list_dir` — thư mục này có gì.
+//! `list_dir` — what is in this directory.
 //!
-//! Đây là tool đầu tiên một mô hình gọi trong một kho lạ, và trước khi có nó thì câu hỏi
-//! đó không trả lời được: `glob` đòi một **mẫu tên** mà mô hình phải đoán, `grep` đòi một
-//! **chuỗi** mà mô hình cũng phải đoán. Trong một dự án chưa biết gì, cả hai đều là đoán
-//! mò, và một lần đoán trượt trả về rỗng — thứ mô hình rất dễ đọc thành "ở đây không có
-//! gì".
+//! This is the first tool a model reaches for in an unfamiliar repo, and before it existed
+//! that question had no answer: `glob` wants a **name pattern** the model has to guess, and
+//! `grep` wants a **string** it also has to guess. In a project it knows nothing about both
+//! are shots in the dark, and a missed guess returns empty — which a model very easily reads
+//! as "there is nothing here".
 //!
-//! Ba quyết định đáng viết ra:
+//! Three decisions worth writing down:
 //!
-//! **Đường dẫn được bảo vệ bị giấu khỏi danh sách**, không chỉ bị chặn đọc — luật 3 của
-//! repo. Kể tên một tệp rồi từ chối mở nó là đã nói cho mô hình biết có cái gì ở đó.
+//! **Protected paths are hidden from the listing**, not merely blocked from reading — rule 3
+//! of the repo. Naming a file and then refusing to open it has already told the model
+//! something is there.
 //!
-//! **`require_git(false)`.** Mặc định của `ignore` chỉ đọc `.gitignore` khi đang ở trong
-//! một kho git. Một thư mục người dùng chưa `git init` vẫn có `.gitignore`, và tôn trọng
-//! nó ở đó cũng đúng như trong kho. Bỏ dòng này là bài test `.gitignore` xanh trong repo
-//! mà đỏ trong thư mục tạm — repo này đã cắn đúng lỗi ấy một lần.
+//! **`require_git(false)`.** The `ignore` crate only reads `.gitignore` when inside a git
+//! repo by default. A directory the user never ran `git init` in can still have a
+//! `.gitignore`, and honouring it there is as correct as honouring it in a repo. Dropping
+//! this line makes the `.gitignore` test pass in the repo and fail in a temp directory —
+//! this repo hit exactly that bug once.
 //!
-//! **Kèm kích thước.** Không có nó, mô hình chọn tệp để đọc bằng cách nhìn tên, và nó sẽ
-//! mở một tệp khoá 2 MB vì cái tên nghe hợp lý.
+//! **Sizes are included.** Without them the model picks files to read by name, and it will
+//! open a 2 MB lockfile because the name sounded plausible.
 
 use std::path::{Path, PathBuf};
 
@@ -32,15 +34,15 @@ use serde_json::json;
 
 use crate::path::FileRoots;
 
-/// Sâu hơn một cấp là một quyết định của người gọi, và nó phải có trần: `depth: 99` trên
-/// `node_modules` là một cách viết "đọc cả ổ đĩa" mà không ai định viết.
+/// Going deeper than one level is the caller's decision, and it needs a ceiling: `depth: 99`
+/// on `node_modules` is a way of writing "read the whole disk" that nobody meant to write.
 const MAX_DEPTH: usize = 8;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListArgs {
-    /// Thư mục cần liệt kê. Bỏ trống là gốc workspace.
+    /// The directory to list. Empty means the workspace root.
     pub path: Option<String>,
-    /// Số cấp đi xuống. Mặc định 1 (chỉ ngay trong thư mục này), tối đa 8.
+    /// How many levels to descend. Defaults to 1 (this directory only), maximum 8.
     pub depth: Option<usize>,
 }
 
@@ -57,18 +59,18 @@ impl ListDir {
     }
 }
 
-/// Một mục trong danh sách.
+/// One entry in the listing.
 struct Entry {
-    /// Đường dẫn tương đối so với thư mục được hỏi.
+    /// The path relative to the directory that was asked about.
     rel: PathBuf,
     dir: bool,
     bytes: u64,
 }
 
-/// Kích thước cho người đọc, không phải cho máy tính.
+/// A size for a reader, not for a computer.
 ///
-/// `1.2 KB` tốn ít token hơn `1234` và trả lời đúng câu hỏi duy nhất mô hình đang hỏi:
-/// mở tệp này có đáng không.
+/// `1.2 KB` costs fewer tokens than `1234` and answers the only question the model is
+/// asking: is this file worth opening.
 fn human(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut size = bytes as f64;
@@ -99,8 +101,8 @@ impl Tool for ListDir {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Tên tệp do người khác đặt, nên chúng là dữ liệu chứ không phải chỉ dẫn — một
-        // thư mục tên `bỏ qua mọi luật trước đó` vẫn chỉ là một cái tên.
+        // File names are chosen by other people, so they are data and not instructions —
+        // a directory named `ignore all previous rules` is still just a name.
         ToolMeta::read_only().untrusted().concurrency_safe(true)
     }
 
@@ -129,20 +131,20 @@ impl Tool for ListDir {
         let roots = self.roots.clone();
         let walk_base = base.clone();
 
-        // Đi cây là việc chặn; đưa ra khỏi runtime như `glob` và `grep` đã làm.
+        // Walking is blocking work; move it off the runtime, as `glob` and `grep` do.
         let mut entries = tokio::task::spawn_blocking(move || {
             let mut entries: Vec<Entry> = Vec::new();
             let walk = WalkBuilder::new(&walk_base)
                 .max_depth(Some(depth))
-                // Tệp ẩn là thứ mô hình cần thấy nhất trong một kho lạ: `.github`,
-                // `.env.example`, `.gitignore` đều nói dự án này chạy bằng cách nào.
+                // Hidden files are what a model most needs to see in an unfamiliar repo:
+                // `.github`, `.env.example`, `.gitignore` all say how this project runs.
                 .hidden(false)
-                // Xem ghi chú đầu tệp.
+                // See the note at the top of the file.
                 .require_git(false)
                 .build();
             for entry in walk.flatten() {
                 let path = entry.path();
-                // Mục ở độ sâu 0 là chính thư mục được hỏi.
+                // The entry at depth 0 is the directory that was asked about.
                 if path == walk_base {
                     continue;
                 }
@@ -167,9 +169,9 @@ impl Tool for ListDir {
         .await
         .map_err(|err| ToolError::Failed(err.to_string()))?;
 
-        // Thư mục trước, rồi theo tên. Thứ tự của `WalkBuilder` là thứ tự của hệ tệp, tức
-        // là không có thứ tự nào cả — hai lần gọi cho hai danh sách khác nhau, và mô hình
-        // đọc sự khác nhau đó thành một thay đổi trên đĩa.
+        // Directories first, then by name. `WalkBuilder`'s order is the filesystem's order,
+        // which is to say no order at all — two calls give two different listings, and the
+        // model reads that difference as a change on disk.
         entries.sort_by(|a, b| (!a.dir, &a.rel).cmp(&(!b.dir, &b.rel)));
 
         if entries.is_empty() {
@@ -201,8 +203,8 @@ impl Tool for ListDir {
             "Gọi lại với `path` trỏ vào một thư mục con, hoặc `depth` nhỏ hơn.".to_string()
         });
 
-        // Dùng lại hình dạng `paths` của `glob`: giao diện đã biết vẽ nó, và một hình
-        // dạng thứ hai cho cùng một thứ là một hình dạng sẽ lệch pha.
+        // Reuse `glob`'s `paths` shape: the UI already knows how to draw it, and a second
+        // shape for the same thing is a shape that will drift out of sync.
         let meta = json!({
             "shape": "paths",
             "truncated": folded.truncated,

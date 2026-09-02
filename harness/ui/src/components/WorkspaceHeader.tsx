@@ -1,4 +1,5 @@
 import { Show } from "solid-js";
+import { BrandMark } from "./Brand";
 import { IconButton } from "./primitives";
 
 /**
@@ -11,11 +12,16 @@ import { IconButton } from "./primitives";
  * Nút duy nhất ở bên phải là công tắc bảng thay đổi — đối chiếu với "diff panel toggle"
  * của Codex, thứ nó cũng để ở đây. Nó chỉ xuất hiện khi có bảng để bật.
  *
- * Vì thế thanh này **không** mang dòng phạm vi hay đường dẫn dự án nào: khi chưa mở dự án
- * thì dòng đó rỗng, và một nhãn rỗng nằm cạnh tiêu đề đọc ra là lỗi vẽ chứ không đọc ra
- * là "chưa có gì". Chỗ nói về trạng thái không-dự-án là ô soạn tin và màn hình trống, nơi
- * còn đủ chỗ để nói cả *vì sao*. Cùng lẽ đó, chỗ gọi bỏ `onToggleChangesPanel` khi không
- * có dự án: không tool nào chạm được tới đĩa thì bảng ấy vĩnh viễn trống.
+ * Tên dự án đứng trước tiêu đề như một mẩu đường dẫn, và **chỉ khi có dự án đang mở**.
+ * Không có thì cả mẩu ấy biến mất chứ không để lại một dấu gạch chéo trơ ra — một nhãn
+ * rỗng nằm cạnh tiêu đề đọc ra là lỗi vẽ chứ không đọc ra là "chưa có gì". Chỗ nói về
+ * trạng thái không-dự-án vẫn là ô soạn tin và màn hình trống, nơi còn đủ chỗ để nói cả
+ * *vì sao*. Cùng lẽ đó, chỗ gọi bỏ `onToggleChangesPanel` khi không có dự án: không tool
+ * nào chạm được tới đĩa thì bảng ấy vĩnh viễn trống.
+ *
+ * Khi thanh bên thu lại, dấu hiệu thương hiệu chuyển sang đứng ở đây. Nó sống ở đầu thanh
+ * bên, nên thanh bên đóng lại là cả cửa sổ không còn chỗ nào xưng tên ứng dụng — và đó
+ * đúng là lúc người dùng dễ quên mình đang ở cửa sổ nào nhất, vì cột trái vừa biến mất.
  *
  * Cả dải là vùng kéo cửa sổ vì cửa sổ mở ở chế độ "Overlay" — không có thanh tiêu đề nào
  * khác để kéo. Mọi control bên trong tự khai `no-drag` qua luật chung trong app.css, nên
@@ -23,6 +29,8 @@ import { IconButton } from "./primitives";
  */
 export default function WorkspaceHeader(props: {
   title: string;
+  /** Dự án đang mở. Vắng mặt nghĩa là chưa mở dự án nào — không phải một chuỗi rỗng. */
+  scope?: string;
   busy: boolean;
   /** Chữ đứng cạnh tiêu đề lúc bận. Mặc định là lượt đang chạy. */
   busyLabel?: string;
@@ -48,9 +56,22 @@ export default function WorkspaceHeader(props: {
     >
       <Show when={!props.sidebarOpen}>
         <IconButton icon="panel-left" label="Hiện thanh bên" onClick={props.onOpenSidebar} />
+        <BrandMark size={22} class="shrink-0 text-accent" />
       </Show>
 
-      <div class="flex min-w-0 flex-1 items-center gap-sm">
+      <div class="flex min-w-0 flex-1 items-baseline gap-xs">
+        {/* Tên dự án nhường chỗ trước: cắt cụt cái tiêu đề mà người dùng vừa bấm để mở là
+            cắt mất thứ họ đang tìm, còn tên dự án thì họ đã đọc ở cột trái rồi. */}
+        <Show when={props.scope}>
+          {(scope) => (
+            <>
+              <span class="min-w-0 max-w-40 shrink truncate text-sm text-muted">{scope()}</span>
+              <span class="shrink-0 text-sm text-faint" aria-hidden="true">
+                /
+              </span>
+            </>
+          )}
+        </Show>
         {/* `text-lg` chứ không `text-base`: thanh này cao 56px và chỉ mang đúng một dòng
             chữ, nên một tiêu đề cỡ chữ thân bài đứng trong đó đọc ra là một mẩu nhãn bị bỏ
             quên chứ không ra là tên của thứ đang mở. */}

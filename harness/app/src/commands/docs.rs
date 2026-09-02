@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use futures::StreamExt;
-use pai_rag::{DocLibrary, Docs, Document};
+use futures::stream::BoxStream;
+use pai_rag::{DocLibrary, Docs, Document, IngestEvent};
 use tauri::State;
 use tauri::ipc::Channel;
 
@@ -42,6 +43,40 @@ fn view(doc: Document) -> DocumentView {
         added_at: doc.added_at,
         error: doc.error,
     }
+}
+
+/// Thu một dòng nạp cho tới hết, đẩy từng mốc lên giao diện, rồi trả về **cả thư viện**.
+///
+/// Ba lệnh dưới đây khác nhau ở đúng một chỗ — dòng nào — nên phần còn lại nằm ở đây.
+/// Chép nó ra ba bản là ba chỗ để quên mất `drop(stream)` hoặc để bỏ sót một mốc.
+async fn drain(
+    library: &Arc<dyn DocLibrary>,
+    mut stream: BoxStream<'_, IngestEvent>,
+    on_progress: Channel<IngestProgress>,
+) -> Result<Vec<DocumentView>, String> {
+    while let Some(event) = stream.next().await {
+        let progress = IngestProgress {
+            path: event.path,
+            stage: event.stage.as_str().to_string(),
+            done: event.done,
+            total: event.total,
+            finished: event.finished,
+            error: event.error,
+        };
+        if let Err(err) = on_progress.send(progress) {
+            // Cửa sổ đóng giữa chừng không phải lý do bỏ dở việc nạp: những tệp đã sao
+            // vào kho sẽ nằm đó dở dang nếu ta dừng ở đây.
+            tracing::debug!("không gửi được tiến trình nạp: {err}");
+        }
+    }
+    drop(stream);
+
+    Ok(library
+        .documents()
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .map(view)
+        .collect())
 }
 
 #[tauri::command]
@@ -98,30 +133,8 @@ pub async fn add_documents(
     let library = library(&harness)?;
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
 
-    let mut stream = library.ingest(files);
-    while let Some(event) = stream.next().await {
-        let progress = IngestProgress {
-            path: event.path,
-            stage: event.stage.as_str().to_string(),
-            done: event.done,
-            total: event.total,
-            finished: event.finished,
-            error: event.error,
-        };
-        if let Err(err) = on_progress.send(progress) {
-            // Cửa sổ đóng giữa chừng không phải lý do bỏ dở việc nạp: những tệp đã sao
-            // vào kho sẽ nằm đó dở dang nếu ta dừng ở đây.
-            tracing::debug!("không gửi được tiến trình nạp: {err}");
-        }
-    }
-    drop(stream);
-
-    Ok(library
-        .documents()
-        .map_err(|err| err.to_string())?
-        .into_iter()
-        .map(view)
-        .collect())
+    let stream = library.ingest(files);
+    drain(&library, stream, on_progress).await
 }
 
 /// Quét lại thư mục dự án và đồng bộ thư viện với nó.
@@ -140,28 +153,31 @@ pub async fn sync_library(
     let harness = state.harness().await?;
     let library = library(&harness)?;
 
-    let mut stream = library.sync();
-    while let Some(event) = stream.next().await {
-        let progress = IngestProgress {
-            path: event.path,
-            stage: event.stage.as_str().to_string(),
-            done: event.done,
-            total: event.total,
-            finished: event.finished,
-            error: event.error,
-        };
-        if let Err(err) = on_progress.send(progress) {
-            tracing::debug!("không gửi được tiến trình quét: {err}");
-        }
-    }
-    drop(stream);
+    let stream = library.sync();
+    drain(&library, stream, on_progress).await
+}
 
-    Ok(library
-        .documents()
-        .map_err(|err| err.to_string())?
-        .into_iter()
-        .map(view)
-        .collect())
+/// Xử lý lại toàn bộ thư viện, theo một cú bấm của người dùng.
+///
+/// # Vì sao có một nút cho việc mà máy đáng ra tự làm
+///
+/// Lượt quét khi mở màn hình là lượt tăng dần: tệp không đổi thì không đọc lại, tệp đã
+/// đọc hỏng một lần thì cũng không đọc lại. Đúng cho việc thường ngày, và sai cho đúng
+/// những lần người dùng đi tìm một nút bấm — tệp hỏng vì một lý do đã qua nằm nguyên đó,
+/// không đổi một byte, nên không lượt quét nào chạm lại vào nó nữa.
+///
+/// Lệnh này quên sạch dấu vân tay rồi rút chữ lại cả thư mục, và nhúng nốt phần còn thiếu
+/// vector ở cuối. Nó đắt, nên nó đứng sau một cú bấm chứ không tự chạy.
+#[tauri::command]
+pub async fn reprocess_library(
+    on_progress: Channel<IngestProgress>,
+    state: State<'_, AppState>,
+) -> Result<Vec<DocumentView>, String> {
+    let harness = state.harness().await?;
+    let library = library(&harness)?;
+
+    let stream = library.reprocess();
+    drain(&library, stream, on_progress).await
 }
 
 #[tauri::command]

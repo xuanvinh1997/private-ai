@@ -1,19 +1,18 @@
 //! Thư viện tài liệu: nạp nhiều loại tệp, rồi hỏi đáp trên chúng.
 //!
-//! Đây là tầng của **loại dự án thứ hai**. Dự án mã nguồn có `pai-index`: tree-sitter ra
-//! ký hiệu, không có mô hình nào trong đường chạy. Dự án tài liệu thì ngược lại — không
-//! có cấu trúc nào để dựa vào, chỉ có chữ — nên ở đây có nhúng vector, và cùng với nó là
-//! một ràng buộc mà `pai-index` không có: **mô hình có thể vắng mặt.**
+//! Đây là tầng của **loại dự án thứ hai**. Dự án mã nguồn có `pai-index`: tree-sitter ra ký
+//! hiệu, không mô hình nào trong đường chạy. Dự án tài liệu thì ngược lại — không có cấu
+//! trúc để dựa vào, chỉ có chữ — nên ở đây có nhúng vector, kèm một ràng buộc mà
+//! `pai-index` không có: **mô hình có thể vắng mặt.**
 //!
 //! # Bất biến trung tâm
 //!
 //! > Nạp tài liệu **không bao giờ** phụ thuộc vào việc bộ nhúng có chạy hay không.
 //!
-//! Không có bộ nhúng, hoặc Ollama chưa bật, thì tài liệu vẫn được rút chữ, cắt đoạn và
-//! đưa vào FTS5; tìm bằng từ khoá chạy ngay lập tức, và [`Stats::reason`] nói ra bằng
-//! tiếng Việt vì sao phần tìm theo ý nghĩa chưa có. Đây là yêu cầu sản phẩm chứ không
-//! phải một lựa chọn kỹ thuật: người dùng vừa thả hai mươi tệp vào cửa sổ, và "không có
-//! gì xảy ra" là câu trả lời tệ nhất có thể đưa cho họ.
+//! Thiếu bộ nhúng thì tài liệu vẫn được rút chữ, cắt đoạn và đưa vào FTS5; tìm bằng từ khoá
+//! chạy ngay, và [`Stats::reason`] nói ra bằng tiếng Việt vì sao phần tìm theo ý nghĩa chưa
+//! có. Đây là yêu cầu sản phẩm, không phải lựa chọn kỹ thuật: người dùng vừa thả hai mươi
+//! tệp vào cửa sổ, và "không có gì xảy ra" là câu trả lời tệ nhất có thể đưa cho họ.
 //!
 //! # Hình dạng
 //!
@@ -31,10 +30,9 @@
 //!
 //! # Ranh giới tin cậy
 //!
-//! Tài liệu do người dùng nạp lên là **dữ liệu từ ngoài vào**. Cả ba tool khai
-//! `returns_untrusted_content`, nên sổ đăng ký chèn lời cảnh báo vào mô tả của chúng — và
-//! không có đường nào từ tầng này tạo, đặt tên hay sửa một skill. Xem `docs/CONTRACT.md`,
-//! luật 7.
+//! Tài liệu người dùng nạp lên là **dữ liệu từ ngoài vào**. Cả ba tool khai
+//! `returns_untrusted_content`, nên sổ đăng ký chèn cảnh báo vào mô tả của chúng — và không
+//! có đường nào từ tầng này tạo, đặt tên hay sửa một skill. Xem `docs/CONTRACT.md`, luật 7.
 
 pub mod chunk;
 pub mod embed;

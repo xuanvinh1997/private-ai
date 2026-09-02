@@ -1,12 +1,13 @@
-//! Vòng giam Linux có thật không.
+//! Is the Linux confinement real.
 //!
-//! Giống bài macOS, những bài này **chạy lệnh thật** thay vì so chuỗi tham số: một chính
-//! sách dựng đúng cú pháp nhưng sai ngữ nghĩa vẫn khớp mọi phép so chuỗi và vẫn không
-//! giam gì cả.
+//! Like the macOS tests, these **run real commands** rather than compare argument strings: a
+//! policy built with correct syntax but wrong semantics passes every string comparison and
+//! confines nothing.
 //!
-//! Chạy chúng cần một kernel có Landlock **và** không bị seccomp chặn syscall. Trong
-//! Docker mặc định thì bị chặn — và đó không phải lý do để bỏ qua, mà là một trường hợp
-//! kiểm chứng: lúc đó provider phải báo `None` kèm lý do chứ không im lặng cho qua.
+//! Running them needs a kernel with Landlock **and** no seccomp filter blocking the syscall.
+//! In default Docker it is blocked — and that is not a reason to skip, it is a test case:
+//! the provider then has to report `None` with a reason rather than quietly letting things
+//! through.
 
 #![cfg(target_os = "linux")]
 
@@ -18,19 +19,19 @@ use pai_sandbox::seam::{Enforcement, SandboxProvider};
 use pai_sandbox::{Mode, Policy};
 use tempfile::TempDir;
 
-/// Binary trung gian do chính bộ test build.
+/// The helper binary, built by this test suite itself.
 const RUNNER: &str = env!("CARGO_BIN_EXE_pai-landlock-run");
 
 fn provider() -> Landlock {
     Landlock::with_runner(RUNNER)
 }
 
-/// Kernel này giam được không. Không giam được thì bài bỏ qua thay vì báo đỏ — một bộ
-/// test đỏ vì môi trường là một bộ test không ai còn tin.
-fn giam_duoc() -> bool {
+/// Can this kernel confine. If not, the test skips rather than going red — a suite that goes
+/// red because of the environment is a suite nobody trusts any more.
+fn can_confine() -> bool {
     match provider().enforcement() {
         Enforcement::None(reason) => {
-            eprintln!("bỏ qua: {reason}");
+            eprintln!("skipped: {reason}");
             false
         }
         _ => true,
@@ -40,8 +41,8 @@ fn giam_duoc() -> bool {
 fn runs(policy: &Policy, command: &str) -> bool {
     let argv = provider()
         .wrap(vec!["/bin/sh".into(), "-c".into(), command.into()], policy)
-        .expect("bọc được argv");
-    let (program, args) = argv.split_first().expect("argv không rỗng");
+        .expect("argv wraps");
+    let (program, args) = argv.split_first().expect("argv is not empty");
     Command::new(program)
         .args(args)
         .stdin(Stdio::null())
@@ -53,94 +54,178 @@ fn runs(policy: &Policy, command: &str) -> bool {
 }
 
 #[test]
-fn workspace_write_cho_ghi_trong_workspace() {
-    if !giam_duoc() {
+fn workspace_write_allows_writes_inside_the_workspace() {
+    if !can_confine() {
         return;
     }
-    let workspace = TempDir::new().expect("thư mục tạm");
-    let root = workspace.path().canonicalize().expect("phân giải");
+    let workspace = TempDir::new().expect("temp dir");
+    let root = workspace.path().canonicalize().expect("canonicalises");
     let policy = Policy::workspace_write(&root);
     assert!(
         runs(
             &policy,
             &format!("echo xin-chao > {}/a.txt", root.display())
         ),
-        "ghi trong workspace phải chạy được, nếu không thì agent không sửa được repo"
+        "writing inside the workspace has to work, or the agent cannot edit the repo"
     );
 }
 
 #[test]
-fn workspace_write_chan_ghi_ngoai_workspace() {
-    if !giam_duoc() {
+fn workspace_write_blocks_writes_outside_the_workspace() {
+    if !can_confine() {
         return;
     }
-    let workspace = TempDir::new().expect("thư mục tạm");
-    let root = workspace.path().canonicalize().expect("phân giải");
+    let workspace = TempDir::new().expect("temp dir");
+    let root = workspace.path().canonicalize().expect("canonicalises");
     let policy = Policy::workspace_write(&root);
 
-    // **Không** dùng `TempDir` hay `/var/tmp` làm chỗ "ngoài workspace": `writable_roots`
-    // cố ý cho ghi cả `/tmp` lẫn `/var/tmp`, nên một tệp ở đó nằm ngay trong vùng được
-    // phép và bài sẽ đo nhầm rằng sandbox không giam. Nhà của người dùng thì thật sự ở
-    // ngoài.
-    let home = std::env::var("HOME").expect("có HOME");
-    let target = Path::new(&home).join(format!("pai-khong-duoc-{}.txt", std::process::id()));
+    // Do **not** use a `TempDir` or `/var/tmp` as the "outside" location: `writable_roots`
+    // deliberately allows writing both `/tmp` and `/var/tmp`, so a file there sits inside
+    // the allowed area and the test would wrongly conclude the sandbox does not confine.
+    // The user's home directory really is outside.
+    let home = std::env::var("HOME").expect("HOME is set");
+    let target = Path::new(&home).join(format!("pai-must-not-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&target);
 
     assert!(
         !runs(&policy, &format!("echo x > {}", target.display())),
-        "ghi ra ngoài workspace phải thất bại"
+        "writing outside the workspace has to fail"
     );
     let leaked = target.exists();
     let _ = std::fs::remove_file(&target);
     assert!(
         !leaked,
-        "tệp bị chặn nhưng vẫn xuất hiện: {}",
+        "the write was blocked but the file appeared anyway: {}",
         target.display()
     );
 }
 
 #[test]
-fn read_only_chan_ghi_ngay_ca_trong_workspace() {
-    if !giam_duoc() {
+fn read_only_blocks_writes_even_inside_the_workspace() {
+    if !can_confine() {
         return;
     }
-    let workspace = TempDir::new().expect("thư mục tạm");
-    let root = workspace.path().canonicalize().expect("phân giải");
+    let workspace = TempDir::new().expect("temp dir");
+    let root = workspace.path().canonicalize().expect("canonicalises");
     let policy = Policy::read_only(&root);
 
     assert!(!runs(
         &policy,
         &format!("echo x > {}/a.txt", root.display())
     ));
-    // Nhưng đọc vẫn phải chạy: một agent chỉ-đọc không đọc được thì vô dụng. Lệnh này
-    // cũng là bài kiểm cho cống `/dev/null` — gần như mọi lệnh đều mở nó để vứt output.
+    // But reading still has to work: a read-only agent that cannot read is useless. This
+    // command also tests the `/dev/null` hole — nearly every command opens it to discard
+    // output.
     assert!(runs(&policy, "/bin/ls / > /dev/null"));
 }
 
 #[test]
-fn danger_full_access_khong_boc_gi_ca() {
-    let workspace = TempDir::new().expect("thư mục tạm");
+fn danger_full_access_wraps_nothing() {
+    let workspace = TempDir::new().expect("temp dir");
     let policy = Policy::danger_full_access(workspace.path());
-    let argv = vec!["/bin/echo".to_string(), "chao".to_string()];
+    let argv = vec!["/bin/echo".to_string(), "hello".to_string()];
 
-    // Chế độ này là *sự vắng mặt* của sandbox; bọc nó là dựng một vòng vây rỗng rồi phải
-    // nuôi. Bài này chạy được cả khi kernel không có Landlock — nó không đụng tới kernel.
+    // This mode is the *absence* of a sandbox; wrapping it would build an empty boundary
+    // that then has to be maintained. This test runs even on a kernel without Landlock — it
+    // never touches the kernel.
     assert_eq!(
-        provider().wrap(argv.clone(), &policy).expect("bọc được"),
+        provider().wrap(argv.clone(), &policy).expect("wraps"),
         argv
     );
     assert_eq!(policy.mode, Mode::DangerFullAccess);
 }
 
 #[test]
-fn khong_giam_duoc_thi_tu_choi_chay_chu_khong_chay_tran() {
-    let workspace = TempDir::new().expect("thư mục tạm");
+fn without_confinement_it_refuses_to_run_rather_than_running_bare() {
+    let workspace = TempDir::new().expect("temp dir");
     let policy = Policy::workspace_write(workspace.path());
-    // Runner không tồn tại ⇒ `enforcement()` là `None` ⇒ `wrap` phải **từ chối**.
-    let broken = Landlock::with_runner("/khong-co-tep-nay");
+    // A runner that does not exist ⇒ `enforcement()` is `None` ⇒ `wrap` has to **refuse**.
+    let broken = Landlock::with_runner("/no-such-file");
     let err = broken
-        .wrap(vec!["/bin/echo".into(), "chao".into()], &policy)
-        .expect_err("không giam được thì không chạy");
-    // Trả lại argv trần ở đây là lặng lẽ bỏ vòng vây đúng lúc người dùng tin là có.
+        .wrap(vec!["/bin/echo".into(), "hello".into()], &policy)
+        .expect_err("no confinement means nothing runs");
+    // Returning bare argv here silently drops the boundary at exactly the moment the user
+    // believes it is there.
     assert!(err.to_string().contains("không giam được"), "{err}");
+}
+
+/// Opt-in network confinement really blocks a TCP connect.
+///
+/// Written the same way as the macOS twin: connect to a port opened by the test itself, not
+/// to a name on the internet. A container with no outbound route would make an internet
+/// probe "pass" for entirely the wrong reason, and that is how a security test quietly stops
+/// testing anything.
+#[test]
+fn deny_network_really_blocks_a_tcp_connection() {
+    if !can_confine() {
+        return;
+    }
+    if !provider().network_confinable() {
+        eprintln!("skipped: this kernel is below Landlock ABI 4, which has no network rules");
+        return;
+    }
+
+    let workspace = TempDir::new().expect("temp dir");
+    let root = workspace.path().canonicalize().expect("canonicalises");
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("opens a port");
+    let port = listener.local_addr().expect("has an address").port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().take(8) {
+            drop(stream);
+        }
+    });
+
+    // dash has no `/dev/tcp`, so the probe goes through python3 when it exists and skips
+    // otherwise — better to test nothing than to test something else by accident.
+    let probe = format!(
+        "command -v python3 >/dev/null || exit 111; \
+         python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(2); \
+         sys.exit(0 if s.connect_ex((\"127.0.0.1\",{port}))==0 else 1)'"
+    );
+
+    let open = Policy::new(Mode::WorkspaceWrite, &root);
+    if !runs(&open, &probe) {
+        eprintln!("skipped: no connection even unconfined, so the deny cannot be tested");
+        return;
+    }
+
+    let denied = Policy::new(Mode::WorkspaceWrite, &root).deny_network();
+    assert!(
+        !runs(&denied, &probe),
+        "`deny_network` is set and TCP still connected: the Landlock ruleset denies nothing"
+    );
+}
+
+/// Denying the network must **not** weaken the file confinement.
+///
+/// Both go into the same ruleset, and adding a `handle_access` for the network is exactly
+/// where the filesystem half can be dropped by accident — the ruleset still builds, still
+/// enforces, and simply stops blocking writes.
+#[test]
+fn denying_the_network_leaves_file_confinement_intact() {
+    if !can_confine() || !provider().network_confinable() {
+        return;
+    }
+    let workspace = TempDir::new().expect("temp dir");
+    let root = workspace.path().canonicalize().expect("canonicalises");
+
+    // The same trap `workspace_write_blocks_writes_outside_the_workspace` already recorded:
+    // `writable_roots` **deliberately** allows both `/tmp` and `/var/tmp`, so a second
+    // `TempDir` sits *inside* the permitted area and the test would wrongly conclude the
+    // confinement is broken. The home directory really is outside.
+    let home = std::env::var("HOME").expect("HOME is set");
+    let blocked = Path::new(&home).join(format!("pai-net-must-not-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&blocked);
+
+    let policy = Policy::new(Mode::WorkspaceWrite, &root).deny_network();
+    assert!(
+        runs(&policy, &format!("echo x > {}/trong.txt", root.display())),
+        "writes inside the workspace must still work when the network is denied"
+    );
+    assert!(
+        !runs(&policy, &format!("echo x > {}", blocked.display())),
+        "denying the network must not loosen the file confinement"
+    );
+    assert!(!blocked.exists(), "no file outside the workspace may be created");
 }

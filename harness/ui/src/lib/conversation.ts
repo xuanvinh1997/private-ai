@@ -54,6 +54,14 @@ export function createConversation() {
   const [state, setState] = createStore<{ nodes: ConversationNode[] }>({ nodes: [] });
   const [busy, setBusy] = createSignal(false);
   const [approval, setApproval] = createSignal<PendingApproval | null>(null);
+  /**
+   * Ngữ cảnh đã dùng ở bước gần nhất, theo lời máy chủ.
+   *
+   * Chỉ giữ số của bước **cuối**, không cộng dồn: mỗi lần gọi mô hình gửi lại cả lịch sử,
+   * nên `input_tokens` của bước cuối *đã là* tổng chỗ đang chiếm. Cộng lại là đếm mỗi tin
+   * nhắn thêm một lần cho mỗi bước, và thanh sẽ báo đầy từ giữa lượt thứ hai.
+   */
+  const [usage, setUsage] = createSignal<{ used: number; window: number | null } | null>(null);
 
   let seq = 0;
   const nextId = (prefix: string) => `${prefix}-${seq++}`;
@@ -177,6 +185,13 @@ export function createConversation() {
         setTodos(event.items);
         break;
       }
+      case "usage": {
+        setUsage({
+          used: event.input_tokens + event.output_tokens,
+          window: event.context_window,
+        });
+        break;
+      }
       case "notice": {
         closeAssistant();
         push({ id: nextId("n"), kind: "notice", message: event.message });
@@ -220,6 +235,9 @@ export function createConversation() {
     nodes: () => state.nodes,
     busy,
     setBusy,
+    usage,
+    /** Quên số cũ khi chuyển sang một phiên khác — nó nói về phiên vừa rời đi. */
+    clearUsage: () => setUsage(null),
     approval,
     clearApproval: () => setApproval(null),
     applyEvent,

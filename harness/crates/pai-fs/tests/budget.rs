@@ -1,8 +1,8 @@
-//! Ngân sách, phần tràn, và câu hỏi "thư mục này có gì".
+//! Budgets, spill, and the question "what is in this directory".
 //!
-//! Mỗi bài ở đây khoá một chỗ mù đã có thật: kết quả bị cắt trong im lặng, trần đếm nhầm
-//! đơn vị, một kho lớn làm `grep` chạy mãi, và một kho lạ mà không tool nào trả lời được
-//! câu hỏi đầu tiên của mô hình.
+//! Every test here locks a blind spot that was real: results truncated in silence, a cap
+//! counting the wrong unit, a large repo making `grep` run forever, and an unfamiliar repo
+//! where no tool could answer the model's first question.
 
 use std::sync::Arc;
 
@@ -24,20 +24,20 @@ fn call(name: &str, args: Value) -> Invocation {
     Invocation::new(ToolName::from(name), "c1", map)
 }
 
-/// Một cây có kho tràn cắm sẵn — không có nó thì không có gì bị cắt, đúng theo thiết kế.
+/// A tree with a spill store mounted — without one nothing is folded, by design.
 fn tree() -> (Context, Arc<MemorySpillStore>) {
     let ctx = Context::root();
     let store = MemorySpillStore::new();
     ctx.keep(
         ctx.provide::<Spill>(store.clone() as Arc<dyn SpillStore>)
-            .expect("cắm được kho tràn"),
+            .expect("the spill store mounts"),
     );
     (ctx, store)
 }
 
 fn bench() -> (TempDir, FileRoots) {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let root = dir.path().canonicalize().expect("phân giải gốc");
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path().canonicalize().expect("root canonicalises");
     let roots = FileRoots::new([root.clone()], [root.join("bi-mat")]);
     (dir, roots)
 }
@@ -48,20 +48,21 @@ fn spill_of(outcome: &pai_tools::ToolOutcome) -> SpillRef {
             .meta
             .get("spill")
             .cloned()
-            .expect("kết quả bị cắt phải mang vé lấy lại"),
+            .expect("a folded result must carry a ticket"),
     )
-    .expect("vé đọc được")
+    .expect("the ticket parses")
 }
 
-// --- 1. đọc một tệp vượt ngân sách ------------------------------------------------------
+// --- 1. reading a file that blows the budget --------------------------------------------
 
-/// Khoá: **cắt là gấp lại, không phải vứt đi.** Kết quả phải có cả đầu lẫn đuôi, phải
-/// mang vé, và phải nói ra *bằng chữ mô hình đọc được* cách lấy phần còn lại.
+/// Locks in: **truncation is folding, not discarding.** The result must have both head and
+/// tail, must carry a ticket, and must say *in words the model reads* how to get the rest.
 ///
-/// Khẳng định đi thẳng vào chuỗi thật chứ không vào "có trường nào đó": một trường
-/// `truncated = true` mà nội dung không nói gì thì mô hình vẫn kết luận nó đã thấy hết.
+/// The assertions go at the real strings rather than at "some field exists": a
+/// `truncated = true` field whose content says nothing still leaves the model concluding it
+/// saw everything.
 #[tokio::test]
-async fn doc_tep_vuot_ngan_sach_thi_co_ca_dau_lan_duoi_va_chi_dan_doc_tiep() {
+async fn reading_over_budget_keeps_head_and_tail_and_says_how_to_read_on() {
     let (ctx, store) = tree();
     let (dir, roots) = bench();
     let file = dir.path().canonicalize().unwrap().join("dai.txt");
@@ -77,64 +78,64 @@ async fn doc_tep_vuot_ngan_sach_thi_co_ca_dau_lan_duoi_va_chi_dan_doc_tiep() {
     let outcome = read
         .execute(&call(
             "read",
-            // `limit` tường minh: ngân sách là một trần **độc lập**, không phải một cách
-            // viết khác của `limit`. Xin đủ 4000 dòng rồi vẫn bị gấp lại mới chứng minh
-            // được điều đó.
+            // An explicit `limit`: the budget is an **independent** ceiling, not another
+            // way of writing `limit`. Asking for all 4000 lines and still getting folded is
+            // what proves that.
             json!({ "file_path": file.display().to_string(), "limit": 4000 }),
         ))
         .await
-        .expect("đọc được");
+        .expect("reads");
 
-    // Đầu.
+    // The head.
     assert!(
         outcome.content.contains("dòng số 1\n"),
-        "mất phần đầu:\n{}",
+        "lost the head:\n{}",
         outcome.content
     );
-    // Đuôi. Không có nó, mô hình không biết tệp kết thúc ở đâu.
+    // The tail. Without it the model does not know where the file ends.
     assert!(
         outcome.content.contains("dòng số 4000"),
-        "mất phần đuôi:\n{}",
+        "lost the tail:\n{}",
         outcome.content
     );
-    // Chỉ dẫn lấy tiếp, nói ra bằng chữ và **cụ thể**.
+    // Instructions for getting the rest, stated in words and **specifically**.
     assert!(
         outcome.content.contains("đã cắt bớt"),
-        "không nói là đã cắt:\n{}",
+        "did not say it truncated:\n{}",
         outcome.content
     );
     assert!(
         outcome
             .content
             .contains("`read` với `file_path` như cũ và `offset:"),
-        "không nói cách đọc tiếp:\n{}",
+        "did not say how to read on:\n{}",
         outcome.content
     );
     assert!(
         outcome.content.contains("`spill_read` với `id:"),
-        "không nói cách lấy toàn văn:\n{}",
+        "did not say how to fetch the full text:\n{}",
         outcome.content
     );
 
-    // Toàn văn còn nguyên.
+    // The full text survives intact.
     let handle = spill_of(&outcome);
-    let full = store.read(&handle).expect("vé còn giá trị");
+    let full = store.read(&handle).expect("the ticket is still valid");
     assert!(
         full.contains("dòng số 2000"),
-        "phần giữa phải còn trong kho"
+        "the middle has to stay in the store"
     );
     assert!(
         outcome.content.len() < full.len() / 2,
-        "phần gửi cho mô hình vẫn dài"
+        "what went to the model is still long"
     );
 }
 
-// --- 2. đếm dòng là đếm nhầm thứ --------------------------------------------------------
+// --- 2. counting lines counts the wrong thing -------------------------------------------
 
-/// Khoá: **ngân sách đo byte, không đo dòng.** Năm dòng thì mọi trần theo dòng đều cho
-/// qua, nhưng năm dòng này nặng 15 KiB.
+/// Locks in: **the budget measures bytes, not lines.** Five lines pass every line-based cap,
+/// but these five lines weigh 15 KiB.
 #[tokio::test]
-async fn it_dong_ma_dong_rat_dai_van_bi_cat_theo_ngan_sach() {
+async fn few_but_very_long_lines_are_still_folded_by_the_budget() {
     let (ctx, store) = tree();
     let (dir, roots) = bench();
     let file = dir.path().canonicalize().unwrap().join("mot-dong.json");
@@ -155,49 +156,50 @@ async fn it_dong_ma_dong_rat_dai_van_bi_cat_theo_ngan_sach() {
             json!({ "file_path": file.display().to_string() }),
         ))
         .await
-        .expect("đọc được");
+        .expect("reads");
 
-    // Chỉ năm dòng — một trần "256 dòng" hay `limit: 2000` sẽ thả trọn cả tệp đi qua.
-    let read_meta = outcome.meta.get("read").expect("có meta read");
+    // Only five lines — a "256 lines" cap or `limit: 2000` would let the whole file through.
+    let read_meta = outcome.meta.get("read").expect("read meta is present");
     assert_eq!(read_meta["total_lines"], json!(5));
     assert!(
         outcome.content.contains("đã cắt bớt"),
-        "ít dòng mà dòng dài vẫn phải bị cắt:\n{}",
+        "few lines but long ones still have to be folded:\n{}",
         &outcome.content[..200.min(outcome.content.len())]
     );
 
     let handle = spill_of(&outcome);
     assert!(
         store.read(&handle).map(|s| s.len()).unwrap_or(0) > 15_000,
-        "toàn văn phải còn nguyên trong kho"
+        "the full text has to survive in the store"
     );
     assert!(
         outcome.content.len() < 2_000,
-        "kết quả gửi đi phải nằm quanh ngân sách 200 token, đang là {} byte",
+        "what is sent has to sit near the 200-token budget, currently {} bytes",
         outcome.content.len()
     );
 }
 
-// --- 3. grep trên kho lớn ---------------------------------------------------------------
+// --- 3. grep over a large repo ----------------------------------------------------------
 
-/// Khoá: **chạm trần thì nói ra.** Một danh sách cụt trông y hệt một danh sách đầy đủ.
+/// Locks in: **hitting a cap has to be said out loud.** A truncated list looks exactly like
+/// a complete one.
 #[tokio::test]
-async fn grep_cham_tran_so_khop_thi_noi_ra_va_do_spill() {
+async fn grep_hitting_the_match_cap_says_so_and_spills() {
     let (ctx, store) = tree();
     let (dir, roots) = bench();
     let root = dir.path().canonicalize().unwrap();
-    // Nhiều khớp hơn trần, trong một tệp — đúng hình dạng của một tệp sinh mã.
+    // More matches than the cap, inside one file — the shape of a generated file.
     let content: String = (0..6_000).map(|n| format!("khop {n}\n")).collect();
     std::fs::write(root.join("nhieu.txt"), content).unwrap();
 
     let outcome = Grep::new(roots, Overflow::new(&ctx))
         .execute(&call("grep", json!({ "pattern": "khop" })))
         .await
-        .expect("tìm được");
+        .expect("searches");
 
     assert!(
         outcome.content.contains("đã dừng ở 5000 khớp"),
-        "không nói là đã chạm trần:\n{}",
+        "did not say it hit the cap:\n{}",
         &outcome.content[outcome.content.len().saturating_sub(600)..]
     );
     assert!(
@@ -207,27 +209,27 @@ async fn grep_cham_tran_so_khop_thi_noi_ra_va_do_spill() {
             || outcome
                 .content
                 .contains("Hãy thu hẹp bằng `path` hoặc `include`"),
-        "không nói cách thu hẹp:\n{}",
+        "did not say how to narrow the search:\n{}",
         &outcome.content[outcome.content.len().saturating_sub(600)..]
     );
 
-    let search = outcome.meta.get("search").expect("có meta search");
-    assert_eq!(search["total"], json!(5000), "trần chặn ở chỗ thu thập");
+    let search = outcome.meta.get("search").expect("search meta is present");
+    assert_eq!(search["total"], json!(5000), "the cap bites at collection");
     assert_eq!(search["truncated"], json!(true));
 
     let handle = spill_of(&outcome);
-    let full = store.read(&handle).expect("toàn văn còn trong kho");
-    assert!(full.contains("khop 2500"), "phần giữa không được mất");
+    let full = store.read(&handle).expect("the full text is in the store");
+    assert!(full.contains("khop 2500"), "the middle must not be lost");
     assert!(outcome.content.len() < full.len() / 4);
 }
 
-// --- 4. thư mục này có gì ---------------------------------------------------------------
+// --- 4. what is in this directory -------------------------------------------------------
 
-/// Khoá bốn thứ cùng lúc: đường dẫn được bảo vệ **bị giấu khỏi danh sách** (luật 3),
-/// `.gitignore` có hiệu lực **ngoài kho git** (`require_git(false)`), tệp ẩn vẫn hiện, và
-/// thứ tự là thư mục trước rồi theo tên.
+/// Locks four things at once: protected paths are **hidden from the listing** (rule 3),
+/// `.gitignore` takes effect **outside a git repo** (`require_git(false)`), hidden files
+/// still appear, and the order is directories first then by name.
 #[tokio::test]
-async fn list_dir_giau_duong_dan_duoc_bao_ve_va_ton_trong_gitignore() {
+async fn list_dir_hides_protected_paths_and_honours_gitignore() {
     let (ctx, _) = tree();
     let (dir, roots) = bench();
     let root = dir.path().canonicalize().unwrap();
@@ -243,56 +245,56 @@ async fn list_dir_giau_duong_dan_duoc_bao_ve_va_ton_trong_gitignore() {
     let outcome = ListDir::new(roots, Overflow::new(&ctx))
         .execute(&call("list_dir", json!({})))
         .await
-        .expect("liệt kê được");
+        .expect("lists");
     let text = &outcome.content;
 
     assert!(
         !text.contains("bi-mat"),
-        "danh sách lộ tệp được bảo vệ:\n{text}"
+        "the listing leaked a protected file:\n{text}"
     );
-    // Thư mục tạm này **không** phải kho git. Không có `require_git(false)` thì
-    // `.gitignore` bị bỏ qua và `bo-qua` hiện ra.
+    // This temp directory is **not** a git repo. Without `require_git(false)` the
+    // `.gitignore` is ignored and `bo-qua` shows up.
     assert!(
         !text.contains("bo-qua"),
-        "`.gitignore` không có hiệu lực ngoài kho git:\n{text}"
+        "`.gitignore` had no effect outside a git repo:\n{text}"
     );
     assert!(
         text.contains(".gitignore"),
-        "tệp ẩn phải hiện — nó nói dự án chạy bằng cách nào:\n{text}"
+        "hidden files have to appear — they say how the project runs:\n{text}"
     );
-    assert!(text.contains("src/"), "thư mục phải có dấu `/`:\n{text}");
-    assert!(text.contains("2.0 KB"), "phải kèm kích thước:\n{text}");
+    assert!(text.contains("src/"), "directories need a trailing `/`:\n{text}");
+    assert!(text.contains("2.0 KB"), "sizes have to be included:\n{text}");
 
-    let dir_at = text.find("src/").expect("có src");
-    let file_at = text.find("alpha.txt").expect("có alpha.txt");
-    assert!(dir_at < file_at, "thư mục phải đứng trước tệp:\n{text}");
+    let dir_at = text.find("src/").expect("src is present");
+    let file_at = text.find("alpha.txt").expect("alpha.txt is present");
+    assert!(dir_at < file_at, "directories have to come before files:\n{text}");
     assert!(
         text.find("alpha.txt") < text.find("zeta.txt"),
-        "tệp phải theo tên:\n{text}"
+        "files have to be ordered by name:\n{text}"
     );
 }
 
-// --- 6. tool mới đăng ký được vào sổ thật ------------------------------------------------
+// --- 6. a new tool really registers in the real registry --------------------------------
 
-/// Khoá: **`list_dir` là một tool thật trong cây thật**, không phải một struct chỉ gọi
-/// được từ bài test. Đi qua đúng đường mà mô hình đi: sổ đăng ký, tên dạng wire, đường ống.
+/// Locks in: **`list_dir` is a real tool in the real tree**, not a struct only the test can
+/// call. Goes the exact route the model goes: the registry, the wire name, the pipeline.
 #[tokio::test]
-async fn list_dir_dang_ky_duoc_vao_so_that_va_goi_duoc() {
-    let dir = TempDir::new().expect("thư mục tạm");
-    let root = dir.path().canonicalize().expect("phân giải gốc");
+async fn list_dir_registers_in_the_real_registry_and_is_callable() {
+    let dir = TempDir::new().expect("temp dir");
+    let root = dir.path().canonicalize().expect("root canonicalises");
     std::fs::write(root.join("co-that.txt"), "nội dung").unwrap();
 
     let ctx = Context::root();
     ToolsPlugin
         .apply(&ctx.plugin("tools"))
         .await
-        .expect("cắm được tools");
+        .expect("tools mounts");
     FsPlugin::new([root.clone()], [root.join("bi-mat")])
         .apply(&ctx.plugin("fs"))
         .await
-        .expect("cắm được fs");
+        .expect("fs mounts");
 
-    let registry: Arc<ToolRegistry> = ctx.require::<Tools>().expect("có sổ đăng ký");
+    let registry: Arc<ToolRegistry> = ctx.require::<Tools>().expect("the registry is present");
     let names: Vec<String> = registry
         .schemas(None)
         .into_iter()
@@ -301,10 +303,10 @@ async fn list_dir_dang_ky_duoc_vao_so_that_va_goi_duoc() {
     assert!(names.contains(&"list_dir".to_string()), "{names:?}");
     assert!(
         names.contains(&"spill_read".to_string()),
-        "không có `spill_read` thì lời nhắn \"toàn văn vẫn còn\" là lời hứa suông: {names:?}"
+        "without `spill_read`, the \"the full text is still there\" message is an empty promise: {names:?}"
     );
 
-    // Tra bằng đúng cái tên mô hình gõ.
+    // Resolved by the exact name the model types.
     assert!(matches!(
         registry.resolve(None, "list_dir"),
         Resolution::Found(_, _)

@@ -231,6 +231,17 @@ pub enum AgentEvent {
     ApprovalCancel {
         request_id: String,
     },
+    /// Token của bước vừa xong, kèm cửa sổ ngữ cảnh của mô hình đang chạy.
+    ///
+    /// Có nó thì giao diện vẽ được **áp lực ngữ cảnh** trong lúc nó còn đang tăng, chứ
+    /// không đợi tới lúc nén đã cắt mất phần đầu rồi mới báo. `contextWindow` là `None`
+    /// khi không hỏi được mô hình — và khi ấy giao diện chỉ hiện con số, không hiện tỉ lệ:
+    /// một thanh đầy vơi không có mẫu số là một hình vẽ không nói gì.
+    Usage {
+        input_tokens: u64,
+        output_tokens: u64,
+        context_window: Option<u64>,
+    },
     Final {
         message_id: String,
     },
@@ -642,6 +653,12 @@ pub struct McpCatalogEntry {
     /// Cần gì có sẵn trên máy: `node`, `python`, `docker`. Giao diện cảnh báo trước khi
     /// người dùng bấm cắm rồi nhìn một server `failed` mà không hiểu vì sao.
     pub requires: Vec<String>,
+    /// Endpoint của một server **chạy từ xa**, nếu mục này là loại đó.
+    ///
+    /// Có nó thì `command`, `args` và `requires` đều rỗng và không có tiến trình con nào
+    /// được dựng. Giao diện phải nói ra điều đó: "không cần cài gì" là lý do chính người
+    /// dùng chọn một mục từ xa thay cho bản chạy tại chỗ của cùng một dịch vụ.
+    pub url: Option<String>,
 }
 
 /// Một đỉnh trong đồ thị mã nguồn.

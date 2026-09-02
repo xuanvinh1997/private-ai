@@ -71,3 +71,71 @@ export function groupSessions(sessions: SessionSummary[], now = Date.now()): Ses
     ] satisfies SessionGroup[]
   ).filter((group) => group.sessions.length > 0);
 }
+
+/**
+ * Bỏ dấu tiếng Việt trước khi so khớp.
+ *
+ * Gõ "phien" phải tìm ra "phiên". Người đang lọc một danh sách thường gõ không dấu — bật
+ * bộ gõ lên chỉ để tìm một hàng là một bước thừa — nên khoá so khớp là chuỗi đã bỏ dấu,
+ * còn chuỗi hiển thị giữ nguyên.
+ *
+ * `đ` không phải `d` cộng dấu tổ hợp nên `NFD` không tách nó ra; phải thay tay.
+ */
+export function foldDiacritics(text: string): string {
+  return text
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/đ/g, "d");
+}
+
+/**
+ * Điểm khớp của một token, hoặc `null` khi không khớp.
+ *
+ * Ba bậc, và thứ tự giữa chúng mới là thứ đáng kể chứ không phải giá trị tuyệt đối: khớp
+ * từ đầu tiêu đề đứng trên khớp đầu một từ, và cả hai đứng trên khớp lọt giữa từ.
+ */
+function scoreToken(haystack: string, token: string): number | null {
+  const at = haystack.indexOf(token);
+  if (at < 0) return null;
+  if (at === 0) return 3;
+  return /\s/.test(haystack[at - 1] ?? "") ? 2 : 1;
+}
+
+/**
+ * Lọc và xếp hạng phiên theo tên.
+ *
+ * Tách truy vấn thành token rồi bắt **mọi** token phải khớp, thay vì so cả câu như một
+ * chuỗi con: người ta gõ mấy mẩu còn nhớ được, không gõ lại đúng thứ tự trong tiêu đề. Nhờ
+ * đó "auth sua" tìm ra "Sửa authentication", còn "authx" thì không tìm ra gì — nới thêm
+ * nữa (khớp theo ký tự rời rạc) thì mọi truy vấn đều khớp mọi hàng, và một danh sách không
+ * bao giờ rỗng thì không lọc được gì.
+ *
+ * Truy vấn rỗng trả về cả danh sách theo thứ tự mới nhất trước; đó là câu trả lời đúng cho
+ * "tôi chưa gõ gì", không phải một danh sách rỗng.
+ */
+export function rankSessions(sessions: SessionSummary[], query: string): SessionSummary[] {
+  const tokens = foldDiacritics(query).trim().split(/\s+/).filter((token) => token !== "");
+  if (tokens.length === 0) return [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+
+  const scored: { session: SessionSummary; score: number }[] = [];
+  for (const session of sessions) {
+    const haystack = foldDiacritics(session.title);
+    let total = 0;
+    for (const token of tokens) {
+      const score = scoreToken(haystack, token);
+      if (score === null) {
+        total = -1;
+        break;
+      }
+      total += score;
+    }
+    if (total >= 0) scored.push({ session, score: total });
+  }
+
+  // Cùng điểm thì phiên mới hơn đứng trước: hai tiêu đề khớp ngang nhau thì cái vừa động
+  // tới gần như luôn là cái đang tìm.
+  return scored
+    .sort((a, b) => b.score - a.score || b.session.updatedAt - a.session.updatedAt)
+    .map((entry) => entry.session);
+}

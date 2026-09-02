@@ -1,14 +1,15 @@
-//! Cắm vòng giam vào cây.
+//! Mount the sandbox into the tree.
 //!
-//! Plugin không chọn chính sách — nó chỉ cắm một provider. Chính sách (`read-only` hay
-//! `workspace-write`) thuộc về phiên, vì cùng một máy có thể chạy một agent chỉ-đọc bên
-//! cạnh một agent được sửa repo, và cả hai dùng chung đúng một vòng giam.
+//! The plugin does not choose the policy — it only mounts a provider. The policy
+//! (`read-only` or `workspace-write`) belongs to the session, because one machine can run a
+//! read-only agent next to an agent allowed to edit the repo, and both share exactly one
+//! sandbox.
 //!
-//! Không có provider nào là một trạng thái **hợp lệ**, không phải một lỗi cấu hình: bản
-//! chạy trong test và bản chạy trên hệ điều hành chưa hỗ trợ đều rơi vào đó. Người tiêu
-//! thụ phải xử lý được trường hợp seam trống, và `for_this_machine` luôn trả về một
-//! provider có lý do chứ không trả về "không có gì" — "không ai trả lời" và "trả lời là
-//! không giam được" là hai câu khác nhau đối với hộp thoại duyệt.
+//! Having no provider at all is a **valid** state, not a config error: test runs and runs on
+//! unsupported operating systems both land there. Consumers have to handle an empty seam,
+//! and `for_this_machine` always returns a provider with a reason rather than returning
+//! nothing — "nobody answered" and "the answer is that confinement is unavailable" are two
+//! different sentences as far as the approval dialog is concerned.
 
 use std::sync::Arc;
 
@@ -30,13 +31,13 @@ impl Default for SandboxPlugin {
 }
 
 impl SandboxPlugin {
-    /// Provider cho máy đang chạy.
+    /// The provider for the running machine.
     pub fn new() -> SandboxPlugin {
         SandboxPlugin::default()
     }
 
-    /// Provider chỉ định sẵn. Dành cho test và cho bản chạy từ xa, nơi vòng giam nằm ở
-    /// đầu bên kia chứ không nằm trên máy này.
+    /// A caller-supplied provider. For tests, and for remote runs where the sandbox lives
+    /// at the far end rather than on this machine.
     pub fn with_provider(provider: Arc<dyn SandboxProvider>) -> SandboxPlugin {
         SandboxPlugin { provider }
     }
@@ -51,15 +52,15 @@ impl Plugin for SandboxPlugin {
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
         let enforcement = self.provider.enforcement();
         match enforcement.reason() {
-            // Ghi ở mức `warn` chứ không `info`: một bản cài đặt chạy không có vòng giam
-            // mà không ai nhận ra là đúng cái tình huống mà `Enforcement` sinh ra để tránh.
+            // Logged at `warn`, not `info`: an installation running unconfined with
+            // nobody noticing is precisely the situation `Enforcement` exists to prevent.
             Some(reason) => {
                 tracing::warn!(
                     mode = enforcement.label(),
-                    "giam tiến trình hạn chế: {reason}"
+                    "process confinement is limited: {reason}"
                 )
             }
-            None => tracing::info!(mode = enforcement.label(), "giam tiến trình đầy đủ"),
+            None => tracing::info!(mode = enforcement.label(), "process confinement is full"),
         }
         ctx.keep(ctx.provide::<Sandbox>(self.provider.clone())?);
         Ok(())

@@ -1,18 +1,20 @@
-//! Dự án: một thư mục, và mọi thứ gắn với nó.
+//! Projects: a directory, and everything attached to it.
 //!
-//! Trước khi có tệp này, ứng dụng có đúng **một** thư mục làm việc, chốt lúc khởi động từ
-//! biến môi trường. Bảy plugin bắt lấy giá trị đó lúc dựng, và không có đường nào đổi.
-//! Một coding agent như thế chỉ dùng được cho một repo mỗi lần chạy.
+//! Before this file, the application had exactly **one** working directory, fixed at
+//! startup from an environment variable. Seven plugins captured that value at construction
+//! time, and there was no way to change it. A coding agent like that is usable for one repo
+//! per launch.
 //!
-//! Dự án là câu trả lời, và điểm đáng nói không nằm ở crate này mà ở chỗ **đổi dự án được
-//! hiện thực thế nào**: nhánh plugin thuộc dự án bị tháo rồi cắm lại với đường dẫn mới.
-//! Không có đường "cấu hình lại mọi thứ" nào song song — nếu phải viết một đường như thế
-//! thì kiến trúc plugin đã sai từ đầu. Xem `Harness::open_project` bên `pai-app`.
+//! Projects are the answer, and the interesting part is not in this crate but in **how
+//! switching projects is implemented**: the project-tier branch of the plugin tree is torn
+//! down and mounted again with the new path. There is no parallel "reconfigure everything"
+//! path — needing to write one would mean the plugin architecture was wrong from the start.
+//! See `Harness::open_project` in `pai-app`.
 //!
-//! **Danh tính của một dự án là đường dẫn đã chuẩn hoá**, không phải cái tên. Hai lối vào
-//! cùng một thư mục — qua symlink, qua `..` — phải là một dự án, nếu không người dùng sẽ
-//! có hai hàng trong danh sách trỏ cùng một chỗ, mỗi hàng nhớ một nửa lịch sử.
-
+//! **A project's identity is its canonical path**, not its name. Two ways into the same
+//! directory — through a symlink, through `..` — have to be one project, or the user ends
+//! up with two rows in the list pointing at the same place, each remembering half the
+//! history.
 mod clone;
 mod store;
 

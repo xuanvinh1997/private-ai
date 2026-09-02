@@ -1,9 +1,9 @@
-//! Seam hệ tệp.
+//! The filesystem seam.
 //!
-//! Tool không gọi `std::fs` mà gọi qua đây. Lý do không phải là trừu tượng cho vui: khi
-//! provider này trỏ vào một sandbox hoặc một máy từ xa, cả năm tool đi theo mà không tool
-//! nào phải sửa. Đó là điều duy nhất khiến "đổi một provider là đổi cả sản phẩm" thành
-//! sự thật thay vì khẩu hiệu.
+//! Tools do not call `std::fs`; they go through here. The reason is not abstraction for its
+//! own sake: when this provider points at a sandbox or a remote machine, all five tools move
+//! with it and none of them needs editing. That is the one thing that makes "swapping a
+//! provider changes the product" true rather than a slogan.
 
 use std::path::{Path, PathBuf};
 
@@ -41,7 +41,7 @@ impl ServiceKey for Fs {
     const NAME: &'static str = "fs";
 }
 
-/// Đĩa của chính máy này.
+/// This machine's own disk.
 #[derive(Default)]
 pub struct LocalFs;
 
@@ -56,8 +56,8 @@ impl FsProvider for LocalFs {
         if looks_binary(&bytes) {
             return Err(FsError::Binary(path.to_path_buf()));
         }
-        // Tới đây đã biết không có byte không; phần còn lại vẫn có thể là UTF-8 hỏng, và
-        // lúc đó thay ký tự là đúng: tệp *là* văn bản, chỉ có vài byte lẻ.
+        // By here we know there is no NUL byte; the rest can still be broken UTF-8, and
+        // replacement characters are then correct: the file *is* text, with a few odd bytes.
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 

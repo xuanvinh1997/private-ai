@@ -1,8 +1,8 @@
-//! `read` — đọc một tệp, có đánh số dòng.
+//! `read` — read a file, with line numbers.
 //!
-//! Số dòng không phải để trang trí: `edit` khớp theo chuỗi nguyên văn, nên mô hình cần
-//! biết nó đang nhìn dòng nào để trích đúng đoạn cần thay. Không đánh số thì nó đếm, và
-//! nó đếm sai.
+//! The line numbers are not decoration: `edit` matches on literal strings, so the model needs
+//! to know which line it is looking at to quote the right stretch. Without numbers it counts,
+//! and it counts wrong.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -19,21 +19,21 @@ use crate::observed::ReadLedger;
 use crate::path::FileRoots;
 use crate::provider::FsProvider;
 
-/// Đọc quá nhiều dòng một lúc thì phần đầu bị đẩy ra khỏi cửa sổ ngữ cảnh trước khi mô
-/// hình dùng tới. Hai nghìn là chỗ dsh dừng lại, và không có lý do gì để khác.
+/// Reading too many lines at once pushes the head out of the context window before the model
+/// gets to it. Two thousand is where dsh stopped, and there is no reason to differ.
 ///
-/// Đây là **lựa chọn mặc định của người gọi**, không phải trần. Trần là ngân sách token,
-/// và hai thứ đó độc lập: một tệp JSON tối giản 100 dòng vẫn vượt ngân sách trong khi một
-/// tệp Rust 2000 dòng thưa thì không, nên `limit` không thay được cho việc đo.
+/// This is the **caller's default**, not a ceiling. The ceiling is the token budget, and the
+/// two are independent: a 100-line minified JSON file blows the budget while a sparse
+/// 2000-line Rust file does not, so `limit` is no substitute for measuring.
 const DEFAULT_LIMIT: usize = 2000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadArgs {
-    /// Đường dẫn tuyệt đối tới tệp cần đọc.
+    /// Absolute path of the file to read.
     pub file_path: String,
-    /// Dòng bắt đầu, đếm từ 1. Bỏ trống là đọc từ đầu.
+    /// The first line, counting from 1. Empty reads from the start.
     pub offset: Option<usize>,
-    /// Số dòng tối đa. Bỏ trống là 2000.
+    /// Maximum number of lines. Defaults to 2000.
     pub limit: Option<usize>,
 }
 
@@ -76,8 +76,8 @@ impl Tool for Read {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Nội dung tệp là dữ liệu của người dùng, không phải chỉ dẫn cho mô hình — kể cả
-        // khi tệp đó chứa một câu trông rất giống chỉ dẫn.
+        // File contents are the user's data, not instructions to the model — including
+        // when the file contains a sentence that looks very much like an instruction.
         ToolMeta::read_only().untrusted().concurrency_safe(true)
     }
 
@@ -115,12 +115,12 @@ impl Tool for Read {
             rendered = format!("(tệp có {total} dòng; không có dòng nào trong khoảng đã hỏi)\n");
         }
 
-        // Ghi nhận *sau* khi đọc thành công: một lần đọc hỏng không mở khoá cho `edit`.
+        // Recorded *after* a successful read: a failed read does not unlock `edit`.
         self.ledger.note_read(&resolved);
 
-        // Ngân sách áp **sau** `offset`/`limit`: hai thứ đó là ý muốn của người gọi, còn
-        // ngân sách là trần trên của kết quả. Số dòng lấy tiếp tính từ số dòng trọn vẹn
-        // trong phần đầu — một dòng bị cắt làm đôi chưa được coi là đã đọc.
+        // The budget applies **after** `offset`/`limit`: those two are the caller's intent,
+        // while the budget is a ceiling on the result. The next offset counts whole lines in
+        // the head — a line cut in half does not count as read.
         let folded = self.overflow.fold(&call.name, rendered, |split| {
             format!(
                 "Đọc tiếp bằng `read` với `file_path` như cũ và `offset: {}`.",

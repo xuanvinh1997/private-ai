@@ -1,8 +1,8 @@
-//! Kiểm chứng lõi bằng đúng hình dạng mà harness sẽ dùng: một seam, một plugin đóng góp
-//! vào seam đó, và một middleware chen vào giữa để phủ quyết.
+//! Exercise the core in exactly the shape the harness will use it: a seam, a plugin that
+//! contributes to that seam, and a middleware that cuts in to veto.
 //!
-//! Nếu ba thứ này không ghép được với nhau thì mọi thứ xây bên trên đều sai, nên bài này
-//! chạy trước khi có tool thật.
+//! If those three do not fit together, everything built on top is wrong, so these tests run
+//! before there are any real tools.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -12,7 +12,7 @@ use futures::FutureExt;
 use futures::future::BoxFuture;
 use pai_core::{Context, Middleware, Next, Notify, ServiceKey, Waterfall};
 
-// --- một seam -----------------------------------------------------------------------
+// --- a seam -------------------------------------------------------------------------
 
 #[async_trait]
 trait ToolRegistry: Send + Sync {
@@ -34,7 +34,7 @@ impl ToolRegistry for EchoTools {
     }
 }
 
-// --- một waterfall ------------------------------------------------------------------
+// --- a waterfall --------------------------------------------------------------------
 
 struct ToolCall {
     name: String,
@@ -48,7 +48,7 @@ impl Waterfall for PreExecute {
     type Out = Result<String, String>;
 }
 
-/// Chặn một tool và không uỷ quyền — đúng nghĩa phủ quyết.
+/// Block one tool and do not delegate — a veto in the literal sense.
 struct DenyGate {
     deny: &'static str,
 }
@@ -61,7 +61,7 @@ impl Middleware<PreExecute> for DenyGate {
     ) -> BoxFuture<'a, Result<String, String>> {
         async move {
             if req.name == self.deny {
-                // Từ chối là văn bản, không phải lỗi: mô hình phải đọc được vì sao.
+                // A refusal is text, not an error: the model has to be able to read why.
                 return Err(format!(
                     "tool `{}` không được phép trong phạm vi này",
                     req.name
@@ -73,7 +73,7 @@ impl Middleware<PreExecute> for DenyGate {
     }
 }
 
-/// Sửa yêu cầu rồi vẫn uỷ quyền — nhánh cộng tác, khác hẳn nhánh phủ quyết.
+/// Edit the request and still delegate — the cooperative branch, quite unlike the veto.
 struct Rewrite;
 
 impl Middleware<PreExecute> for Rewrite {
@@ -90,7 +90,7 @@ impl Middleware<PreExecute> for Rewrite {
     }
 }
 
-// --- một sự kiện quan sát -----------------------------------------------------------
+// --- an observation event -----------------------------------------------------------
 
 enum ToolCalled {}
 impl Notify for ToolCalled {
@@ -98,7 +98,7 @@ impl Notify for ToolCalled {
     type Payload = String;
 }
 
-// --- ráp lại ------------------------------------------------------------------------
+// --- putting it together ------------------------------------------------------------
 
 async fn dispatch(ctx: &Context, name: &str, args: &str) -> Result<String, String> {
     let mut req = ToolCall {
@@ -117,23 +117,23 @@ async fn dispatch(ctx: &Context, name: &str, args: &str) -> Result<String, Strin
 }
 
 #[tokio::test]
-async fn seam_middleware_va_effect_ghep_duoc_voi_nhau() {
+async fn seams_middleware_and_effects_fit_together() {
     let root = Context::root();
 
-    // Plugin cung cấp provider cho seam.
+    // A plugin provides the seam's provider.
     let tools_plugin = root.plugin("tools");
     let provided = tools_plugin
         .provide::<Tools>(Arc::new(EchoTools))
-        .expect("cắm được");
+        .expect("mounts");
     tools_plugin.keep(provided);
 
-    // Không có middleware nào: chạy thẳng vào thân.
+    // No middleware: straight through to the body.
     assert_eq!(
         dispatch(&root, "read", "a.rs").await,
         Ok("read(a.rs)".into())
     );
 
-    // Một plugin chính sách chen vào. Nó không biết gì về `EchoTools`.
+    // A policy plugin cuts in. It knows nothing about `EchoTools`.
     let gate = root.plugin("gate");
     let gate_guard = gate.on_waterfall::<PreExecute>(Arc::new(DenyGate { deny: "bash" }));
     gate.keep(gate_guard);
@@ -144,7 +144,7 @@ async fn seam_middleware_va_effect_ghep_duoc_voi_nhau() {
     );
     assert!(dispatch(&root, "bash", "rm -rf /").await.is_err());
 
-    // Một plugin nữa sửa yêu cầu rồi vẫn uỷ quyền.
+    // Another plugin edits the request and still delegates.
     let rewrite = root.plugin("rewrite");
     let rewrite_guard = rewrite.on_waterfall::<PreExecute>(Arc::new(Rewrite));
     rewrite.keep(rewrite_guard);
@@ -153,7 +153,7 @@ async fn seam_middleware_va_effect_ghep_duoc_voi_nhau() {
         Ok("read(a.rs+đã-sửa)".into())
     );
 
-    // Gỡ plugin chính sách: đăng ký của nó biến mất, phần còn lại nguyên vẹn.
+    // Dispose the policy plugin: its registration disappears, the rest is untouched.
     gate.effects().dispose().await;
     assert!(dispatch(&root, "bash", "ls").await.is_ok());
     assert_eq!(
@@ -163,12 +163,12 @@ async fn seam_middleware_va_effect_ghep_duoc_voi_nhau() {
 }
 
 #[tokio::test]
-async fn go_plugin_la_thu_hoi_dang_ky_cua_no() {
+async fn disposing_a_plugin_withdraws_its_registrations() {
     let root = Context::root();
     let plugin = root.plugin("tools");
     let guard = plugin
         .provide::<Tools>(Arc::new(EchoTools))
-        .expect("cắm được");
+        .expect("mounts");
     plugin.keep(guard);
 
     assert!(root.get::<Tools>().is_some());
@@ -177,40 +177,40 @@ async fn go_plugin_la_thu_hoi_dang_ky_cua_no() {
 }
 
 #[tokio::test]
-async fn hai_provider_cung_seam_cung_coi_la_loi_cau_hinh() {
+async fn two_providers_for_one_seam_in_one_realm_is_a_config_error() {
     let root = Context::root();
     let first = root
         .provide::<Tools>(Arc::new(EchoTools))
-        .expect("cắm được");
+        .expect("mounts");
     assert!(root.provide::<Tools>(Arc::new(EchoTools)).is_err());
 
-    // Nhưng ở một cõi khác thì sống cạnh nhau được.
+    // But in a different realm they coexist.
     let isolated = root.isolate::<Tools>();
     let second = isolated
         .provide::<Tools>(Arc::new(EchoTools))
-        .expect("cõi riêng");
+        .expect("its own realm");
 
     first.leak();
     second.leak();
 }
 
 #[tokio::test]
-async fn cho_service_xuat_hien_thay_vi_sap_xep_thu_tu_khoi_dong() {
+async fn waiting_for_a_service_replaces_hand_ordering_startup() {
     let root = Context::root();
     let waiter = root.clone();
     let task = tokio::spawn(async move { waiter.wait_for::<Tools>().await.call("x", "").await });
 
-    // Cắm muộn. Bên chờ phải tự thức dậy.
+    // Mounted late. The waiter has to wake itself.
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     root.provide::<Tools>(Arc::new(EchoTools))
-        .expect("cắm được")
+        .expect("mounts")
         .leak();
 
     assert_eq!(task.await.unwrap(), "x()");
 }
 
 #[tokio::test]
-async fn listener_co_pham_vi_khong_cham_toi_agent_khac() {
+async fn a_scoped_listener_does_not_reach_other_agents() {
     let root = Context::root();
     let seen = Arc::new(AtomicUsize::new(0));
 
@@ -221,11 +221,12 @@ async fn listener_co_pham_vi_khong_cham_toi_agent_khac() {
     });
     agent.keep(guard);
 
-    // Phát ở gốc: listener của agent con không nhận, vì sự kiện chảy lên chứ không xuống.
+    // Emit at the root: the child agent's listener does not receive it, because events
+    // flow up, not down.
     root.notify::<ToolCalled>(&"read".to_string());
     assert_eq!(seen.load(Ordering::SeqCst), 0);
 
-    // Phát trong phạm vi của chính nó: nhận.
+    // Emit inside its own scope: received.
     agent.notify::<ToolCalled>(&"read".to_string());
     assert_eq!(seen.load(Ordering::SeqCst), 1);
 }

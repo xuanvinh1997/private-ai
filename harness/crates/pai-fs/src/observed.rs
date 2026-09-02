@@ -1,13 +1,14 @@
-//! Đọc trước khi sửa.
+//! Read before edit.
 //!
-//! Luật: `edit` và `write` lên một tệp **đã tồn tại** chỉ chạy nếu tệp đó đã được `read`
-//! trong phiên này. Nó chặn đúng một kiểu hỏng: mô hình đoán nội dung một tệp nó chưa mở,
-//! rồi ghi đè bằng thứ nó tưởng tượng ra.
+//! The rule: `edit` and `write` on an **existing** file only run if that file has been
+//! `read` this session. It blocks exactly one failure: the model guessing the contents of a
+//! file it never opened, then overwriting with what it imagined.
 //!
-//! Chỗ đặt luật quan trọng ngang nội dung luật. Nó là **một middleware trên đường ống**,
-//! không phải một trường trong schema tool. Vì thế: tool `edit` không biết luật này tồn
-//! tại, tắt luật đi là gỡ một plugin chứ không phải sửa một tool, và một tool ghi tệp
-//! viết sau này tự động chịu luật mà tác giả của nó không phải nhớ gì cả.
+//! Where the rule lives matters as much as what the rule says. It is **a middleware on the
+//! pipeline**, not a field in a tool schema. So: the `edit` tool does not know this rule
+//! exists, turning it off is removing a plugin rather than editing a tool, and any
+//! file-writing tool written later is covered automatically with its author having to
+//! remember nothing.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -18,7 +19,7 @@ use futures::future::BoxFuture;
 use pai_core::{Middleware, Next};
 use pai_tools::{PreDecision, PreExecute, PreRequest};
 
-/// Những tệp đã được đọc trong phiên này.
+/// The files that have been read this session.
 #[derive(Default)]
 pub struct ReadLedger {
     seen: parking_lot::RwLock<HashSet<PathBuf>>,
@@ -34,7 +35,7 @@ impl ReadLedger {
     }
 }
 
-/// Tool nào phải tuân luật, và đọc đường dẫn ở tham số nào.
+/// Which tools the rule applies to.
 const GATED: &[&str] = &["edit", "write"];
 
 pub struct ReadBeforeEdit {
@@ -62,11 +63,11 @@ impl Middleware<PreExecute> for ReadBeforeEdit {
                 return next.run(req).await;
             };
             let Ok(resolved) = self.roots.resolve_write(Path::new(raw)) else {
-                // Đường dẫn hỏng là việc của tầng gốc, không phải của luật này. Uỷ quyền
-                // để nó báo đúng lý do thật thay vì báo "chưa đọc".
+                // A broken path is the roots layer's business, not this rule's. Delegate
+                // so it reports the real reason rather than "not read yet".
                 return next.run(req).await;
             };
-            // Tệp chưa tồn tại thì không có nội dung nào để đoán sai.
+            // A file that does not exist yet has no contents to guess wrongly.
             if !resolved.exists() || self.ledger.has_read(&resolved) {
                 return next.run(req).await;
             }

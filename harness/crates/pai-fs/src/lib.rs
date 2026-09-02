@@ -1,17 +1,18 @@
-//! Hệ tệp: một seam, một chính sách, năm tool.
+//! The filesystem: one seam, one policy, five tools.
 //!
-//! Ba ý đáng nhớ:
+//! Three things worth remembering:
 //!
-//! **Chuẩn hoá trước, kiểm tra sau.** Kiểm trước khi chuẩn hoá nghĩa là
-//! `gốc/../../etc/passwd` đi lọt, vì lúc so khớp nó vẫn còn bắt đầu bằng `gốc/`. Xem
-//! [`path`].
+//! **Canonicalise first, check second.** Checking before canonicalising lets
+//! `root/../../etc/passwd` through, because at comparison time it still starts with
+//! `root/`. See [`path`].
 //!
-//! **Chính sách không nằm trong tool.** Luật đọc-trước-khi-sửa là một middleware trên
-//! đường ống của `pai-tools`, nên `edit` không biết luật đó tồn tại, tắt luật là gỡ một
-//! plugin, và một tool ghi tệp viết sau này tự động chịu luật. Xem [`observed`].
+//! **Policy does not live inside the tools.** The read-before-edit rule is a middleware on
+//! the `pai-tools` pipeline, so `edit` does not know the rule exists, disabling it is
+//! removing a plugin, and any file-writing tool written later is covered automatically.
+//! See [`observed`].
 //!
-//! **Tool không gọi `std::fs`.** Chúng gọi qua [`provider::Fs`], nên trỏ provider vào một
-//! sandbox là cả năm tool đi theo mà không tool nào phải sửa.
+//! **Tools do not call `std::fs`.** They go through [`provider::Fs`], so pointing the
+//! provider at a sandbox moves all five tools with it and none of them needs editing.
 
 pub mod observed;
 pub mod path;

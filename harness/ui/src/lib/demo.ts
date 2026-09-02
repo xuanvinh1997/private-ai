@@ -657,3 +657,33 @@ function demoDiagramText(): string {
     "  A->>D: stream_turn",
   ].join("\n");
 }
+
+/**
+ * Đường dẫn giả cho ô hoàn thành `@` khi chạy không có lõi.
+ *
+ * Chấm điểm ở đây **cố ý thô hơn** bản Rust: chỉ cần khớp chuỗi con, không xếp hạng theo
+ * tên tệp. Chép lại đúng thuật toán kia sẽ tạo ra bản thứ hai của một luật đã có chủ sở
+ * hữu, và hai bản thì sớm muộn lệch nhau — lúc đó bản demo dạy sai về chính sản phẩm.
+ * Việc của demo là chứng minh giao diện nối đúng dây, không phải tái hiện lõi.
+ */
+export function demoPaths(query: string, limit: number): string[] {
+  const all = [
+    "README.md",
+    "app/src/lib.rs",
+    "app/src/harness.rs",
+    "app/src/protocol.rs",
+    "crates/pai-core/src/plugin.rs",
+    "crates/pai-fs/src/tools/read.rs",
+    "crates/pai-fs/src/tools/write.rs",
+    "crates/pai-index/src/complete.rs",
+    "crates/pai-index/src/store.rs",
+    "crates/pai-rag/src/library.rs",
+    "docs/ARCHITECTURE.md",
+    "docs/ROADMAP.md",
+    "ui/src/components/Composer.tsx",
+    "ui/src/lib/complete.ts",
+  ];
+  const needle = query.trim().toLowerCase();
+  const hits = needle === "" ? all : all.filter((path) => path.toLowerCase().includes(needle));
+  return hits.slice(0, limit);
+}

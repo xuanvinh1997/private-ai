@@ -141,6 +141,7 @@ pub async fn mcp_catalog(state: State<'_, AppState>) -> Result<Vec<McpCatalogEnt
                 .filter(|tool| !on_path(tool))
                 .map(|tool| tool.to_string())
                 .collect(),
+            url: entry.url.map(|url| url.to_string()),
         })
         .collect())
 }

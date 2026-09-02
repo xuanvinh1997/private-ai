@@ -64,17 +64,24 @@ impl AppState {
 }
 
 /// Dịch sự kiện của vòng lặp sang sự kiện giao diện.
-struct ChannelSink(Coalescer);
+///
+/// Ôm luôn cửa sổ ngữ cảnh của mô hình đang chạy, vì `TurnSink::usage` chỉ đưa tử số. Không
+/// có mẫu số thì giao diện chỉ vẽ được một con số token trần — đúng, nhưng không trả lời
+/// được câu người dùng thật sự hỏi: "còn bao nhiêu chỗ nữa".
+struct ChannelSink {
+    events: Coalescer,
+    context_window: Option<u64>,
+}
 
 impl TurnSink for ChannelSink {
     fn token(&self, text: &str) {
-        self.0.send(AgentEvent::Token {
+        self.events.send(AgentEvent::Token {
             text: text.to_string(),
         });
     }
 
     fn tool_start(&self, call_id: &str, name: &str, arguments: &str) {
-        self.0.send(AgentEvent::ToolStart {
+        self.events.send(AgentEvent::ToolStart {
             call_id: call_id.to_string(),
             name: name.to_string(),
             // Tham số hỏng vẫn phải hiện được: giao diện vẽ một thẻ có tham số lạ tốt hơn
@@ -97,7 +104,7 @@ impl TurnSink for ChannelSink {
         let meta = (!meta.is_empty())
             .then(|| serde_json::from_value(serde_json::Value::Object(meta.clone())).ok())
             .flatten();
-        self.0.send(AgentEvent::ToolEnd {
+        self.events.send(AgentEvent::ToolEnd {
             call_id: call_id.to_string(),
             name: name.to_string(),
             is_error,
@@ -107,8 +114,16 @@ impl TurnSink for ChannelSink {
     }
 
     fn notice(&self, message: &str) {
-        self.0.send(AgentEvent::Notice {
+        self.events.send(AgentEvent::Notice {
             message: message.to_string(),
+        });
+    }
+
+    fn usage(&self, input_tokens: u64, output_tokens: u64) {
+        self.events.send(AgentEvent::Usage {
+            input_tokens,
+            output_tokens,
+            context_window: self.context_window,
         });
     }
 }
@@ -145,7 +160,10 @@ async fn send_message(
         .lock()
         .insert(input.session_id.clone(), cancel.clone());
 
-    let sink = ChannelSink(Coalescer::spawn(on_event.clone()));
+    let sink = ChannelSink {
+        events: Coalescer::spawn(on_event.clone()),
+        context_window: u64::try_from(harness.context_window).ok(),
+    };
     // Người duyệt ôm chính `Channel` của lượt này: câu hỏi phải đi ra đúng cửa sổ đã gửi
     // câu hỏi đi. Xem `approval::TurnApprover`.
     let approver: Arc<dyn pai_tools::Approver> = Arc::new(approval::TurnApprover::new(
@@ -162,18 +180,18 @@ async fn send_message(
     // khối trả lời, rồi token muộn tới và đẻ ra một tin nhắn cụt mang con trỏ nhấp nháy
     // không bao giờ tắt. Bộ gộp xả hết token trước khi cho bất kỳ sự kiện nào khác đi qua,
     // nên chỉ cần đi chung đường là thứ tự đúng.
-    state.approvals.cancel_all(|event| sink.0.send(event));
+    state.approvals.cancel_all(|event| sink.events.send(event));
 
     match result {
-        Ok(message_id) => sink.0.send(AgentEvent::Final { message_id }),
+        Ok(message_id) => sink.events.send(AgentEvent::Final { message_id }),
         // Lỗi đi ra bằng đường sự kiện chứ không bằng `Err`: giao diện đã dựng một khối
         // cho lượt này rồi, và một lời từ chối im lặng để nó treo ở đó mãi.
-        Err(message) => sink.0.send(AgentEvent::Error { message }),
+        Err(message) => sink.events.send(AgentEvent::Error { message }),
     }
 
     // Và trả về **sau khi** kênh đã nhận hết: `invoke` resolve là tín hiệu giao diện dùng
     // để kết thúc lượt, nên nó không được sớm hơn sự kiện cuối cùng.
-    sink.0.finish().await;
+    sink.events.finish().await;
     Ok(())
 }
 
@@ -518,8 +536,10 @@ pub fn run() {
             commands::mcp::remove_mcp_server,
             commands::mcp::set_mcp_enabled,
             commands::mcp::reload_mcp_servers,
+            commands::complete::complete_paths,
             commands::docs::list_documents,
             commands::docs::sync_library,
+            commands::docs::reprocess_library,
             commands::docs::library_stats,
             commands::docs::add_documents,
             commands::docs::remove_document,

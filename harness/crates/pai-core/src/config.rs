@@ -1,37 +1,38 @@
-//! Cây plugin dựng từ cấu hình theo lớp.
+//! The plugin tree, built from layered config.
 //!
-//! Cả kiến trúc này dựa trên câu "mọi thứ đều thay được từ cấu hình". Chừng nào danh sách
-//! plugin còn nằm trong mã thì câu đó chỉ là ý định. Tệp này biến nó thành sự thật.
+//! This whole architecture rests on the claim "everything is replaceable from config".
+//! While the plugin list lives in code, that claim is only an intention. This file makes
+//! it true.
 //!
-//! Ba khái niệm, mượn nguyên từ dsh:
+//! Three concepts, taken straight from dsh:
 //!
-//! - **Hàng (row)** — một plugin cùng cấu hình của nó, mang một `id` bền vững.
-//! - **Lớp (layer)** — một tập thao tác lên danh sách hàng: chèn, thay, hoặc tắt.
-//! - **Áp lớp** — các lớp áp lần lượt lên một danh sách rỗng, theo đúng thứ tự đã cho.
+//! - **Row** — one plugin plus its config, carrying a stable `id`.
+//! - **Layer** — a set of operations on the row list: insert, replace, or disable.
+//! - **Composition** — layers applied in turn onto an empty list, in the given order.
 //!
-//! Hai quyết định khác dsh, cả hai đều vì đây là ứng dụng desktop chứ không phải CLI cho
-//! lập trình viên:
+//! Two decisions differ from dsh, both because this is a desktop application rather than a
+//! developer CLI:
 //!
-//! **Không có biểu thức trong cấu hình.** dsh cho phép `!!js` trong tệp cấu hình, tức là
-//! thực thi mã tuỳ ý từ một tệp. Chấp nhận được cho một công cụ dòng lệnh; không chấp
-//! nhận được cho một ứng dụng mà người dùng cài từ một tệp `.dmg`.
+//! **No expressions in config.** dsh allows `!!js` in the config file, which is arbitrary
+//! code execution from a file. Acceptable for a command-line tool; not acceptable for an
+//! application a user installs from a `.dmg`.
 //!
-//! **Tắt chứ không xoá.** Một lớp trên chỉ **tắt** được hàng của lớp dưới. Xoá hẳn thì
-//! một hàng vắng mặt trong lớp trên sẽ lặng lẽ sống lại vào ngày ai đó đổi thứ tự lớp,
-//! còn `disabled` thì luôn nhìn thấy trong `dump`.
+//! **Disable, never delete.** An upper layer can only **disable** a lower layer's row.
+//! With real deletion, a row missing from an upper layer quietly comes back the day
+//! somebody reorders the layers, whereas `disabled` is always visible in `dump`.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Một plugin trong cây, cùng cấu hình của nó.
+/// One plugin in the tree, along with its config.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Row {
-    /// Danh tính bền vững. Lớp trên nhắm vào hàng bằng `id`, nên đổi `id` là mất mọi bản
-    /// vá đang trỏ vào nó.
+    /// A stable identity. Upper layers target rows by `id`, so changing an `id` loses
+    /// every patch pointing at it.
     pub id: String,
-    /// Tên plugin, khớp với thứ đã đăng ký trong [`PluginCatalog`].
+    /// The plugin name, matching what was registered in [`PluginCatalog`].
     pub plugin: String,
     #[serde(default)]
     pub config: Value,
@@ -39,17 +40,17 @@ pub struct Row {
     pub disabled: bool,
 }
 
-/// Một thao tác lên danh sách hàng.
+/// One operation on the row list.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Patch {
-    /// Thêm một hàng mới. Trùng `id` với hàng đã có là lỗi cấu hình, không phải ghi đè
-    /// im lặng — người viết lớp gần như chắc chắn đang định `replace`.
+    /// Add a new row. Colliding with an existing `id` is a config error, not a silent
+    /// overwrite — whoever wrote the layer almost certainly meant `replace`.
     Insert(Row),
-    /// Thay **toàn bộ** cấu hình của một hàng.
+    /// Replace a row's config **wholesale**.
     ///
-    /// Thay cả khối chứ không trộn vào: trộn thì không có cách nào xoá một trường, và
-    /// người viết bản vá phải đoán xem trường nào của lớp dưới còn sót lại.
+    /// The whole block rather than a merge: with a merge there is no way to remove a field,
+    /// and whoever writes the patch has to guess which of the lower layer's fields survive.
     Replace {
         id: String,
         config: Value,
@@ -62,10 +63,10 @@ pub enum Patch {
     },
 }
 
-/// Một lớp cấu hình, kèm nơi nó đến từ.
+/// One config layer, along with where it came from.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Layer {
-    /// Đường dẫn tệp, tên bundle, hay `"--patch"`. Chỉ dùng để nói cho con người.
+    /// A file path, a bundle name, or `"--patch"`. Used only to talk to humans.
     #[serde(skip)]
     pub origin: String,
     #[serde(default)]
@@ -80,7 +81,7 @@ impl Layer {
         }
     }
 
-    /// Một lớp toàn hàng mới. Dạng thường gặp của lớp nền.
+    /// A layer that is nothing but new rows. The usual shape of a base layer.
     pub fn base(origin: impl Into<String>, rows: Vec<Row>) -> Layer {
         Layer::new(origin, rows.into_iter().map(Patch::Insert).collect())
     }
@@ -88,9 +89,9 @@ impl Layer {
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
-    #[error("{origin}: đã có hàng `{id}`; dùng `replace` nếu muốn thay cấu hình của nó")]
+    #[error("{origin}: row `{id}` already exists; use `replace` to change its config")]
     Duplicate { origin: String, id: String },
-    #[error("{origin}: không có hàng nào tên `{id}` để {op}")]
+    #[error("{origin}: no row named `{id}` to {op}")]
     Unknown {
         origin: String,
         id: String,
@@ -98,24 +99,28 @@ pub enum ConfigError {
     },
 }
 
-/// Kết quả áp lớp: danh sách hàng, kèm dấu vết ai đã đụng vào hàng nào.
+/// The result of composition: the row list, plus a trail of who touched which row.
 #[derive(Clone, Debug, Default)]
 pub struct Composed {
     pub rows: Vec<Row>,
-    /// `id` → nơi tạo ra nó, rồi tới những nơi đã sửa nó, theo thứ tự.
+    /// `id` → where it was created, then everywhere that edited it, in order.
     pub provenance: HashMap<String, Vec<String>>,
 }
 
 impl Composed {
-    /// Những hàng thật sự sẽ được cắm.
+    /// The rows that will actually be mounted.
     pub fn active(&self) -> impl Iterator<Item = &Row> {
         self.rows.iter().filter(|row| !row.disabled)
     }
 
-    /// Bản in cho con người — tương đương `--dump-config` của dsh.
+    /// The human-readable dump — the equivalent of dsh's `--dump-config`.
     ///
-    /// Có mặt vì cùng một lý do: trong một kiến trúc mà mọi thứ đều thay được từ cấu
-    /// hình, câu hỏi đầu tiên khi có gì đó sai luôn là "bản đang chạy gồm những gì".
+    /// Here for the same reason: in an architecture where everything is replaceable from
+    /// config, the first question when something is wrong is always "what is actually
+    /// running".
+    ///
+    /// The `[tắt]` marker is parsed by the settings screen (`settings/harness.ts`), so it
+    /// is a wire contract, not display text. Changing it silently breaks that parser.
     pub fn dump(&self) -> String {
         self.rows
             .iter()
@@ -133,7 +138,7 @@ impl Composed {
     }
 }
 
-/// Áp các lớp lên một danh sách rỗng, theo đúng thứ tự đã cho.
+/// Apply the layers onto an empty list, in the given order.
 pub fn compose(layers: &[Layer]) -> Result<Composed, ConfigError> {
     let mut out = Composed::default();
 
@@ -152,16 +157,16 @@ pub fn compose(layers: &[Layer]) -> Result<Composed, ConfigError> {
                     out.rows.push(row.clone());
                 }
                 Patch::Replace { id, config } => {
-                    let row = find(&mut out.rows, id, &layer.origin, "thay")?;
+                    let row = find(&mut out.rows, id, &layer.origin, "replace")?;
                     row.config = config.clone();
                     note(&mut out.provenance, id, &layer.origin);
                 }
                 Patch::Disable { id } => {
-                    find(&mut out.rows, id, &layer.origin, "tắt")?.disabled = true;
+                    find(&mut out.rows, id, &layer.origin, "disable")?.disabled = true;
                     note(&mut out.provenance, id, &layer.origin);
                 }
                 Patch::Enable { id } => {
-                    find(&mut out.rows, id, &layer.origin, "bật")?.disabled = false;
+                    find(&mut out.rows, id, &layer.origin, "enable")?.disabled = false;
                     note(&mut out.provenance, id, &layer.origin);
                 }
             }
@@ -192,10 +197,10 @@ fn note(provenance: &mut HashMap<String, Vec<String>>, id: &str, origin: &str) {
         .push(origin.to_string());
 }
 
-/// Tên plugin → cách dựng nó từ cấu hình.
+/// Plugin name → how to build it from config.
 ///
-/// Đây là chỗ duy nhất một chuỗi trong tệp cấu hình biến thành mã. Danh sách đóng, khai
-/// báo trong lúc khởi động: một tệp cấu hình không gọi được thứ chưa ai đăng ký ở đây.
+/// This is the only place a string in a config file turns into code. The list is closed and
+/// declared at startup: a config file cannot reach anything nobody registered here.
 #[derive(Default)]
 pub struct PluginCatalog {
     builders: HashMap<String, Builder>,
@@ -218,10 +223,10 @@ impl PluginCatalog {
 
     pub fn build(&self, row: &Row) -> anyhow::Result<Box<dyn crate::Plugin>> {
         let builder = self.builders.get(&row.plugin).ok_or_else(|| {
-            anyhow::anyhow!("hàng `{}`: không biết plugin `{}`", row.id, row.plugin)
+            anyhow::anyhow!("row `{}`: unknown plugin `{}`", row.id, row.plugin)
         })?;
         builder(&row.config)
-            .map_err(|err| anyhow::anyhow!("hàng `{}` ({}): {err}", row.id, row.plugin))
+            .map_err(|err| anyhow::anyhow!("row `{}` ({}): {err}", row.id, row.plugin))
     }
 
     pub fn names(&self) -> Vec<&str> {

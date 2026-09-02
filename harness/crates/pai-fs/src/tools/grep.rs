@@ -1,9 +1,9 @@
-//! `grep` — tìm nội dung.
+//! `grep` — search file contents.
 //!
-//! Dùng thẳng `grep-searcher` + `grep-regex` + `ignore`, tức là chính ruột của ripgrep
-//! dưới dạng thư viện. Không spawn tiến trình nào, nên không phải đóng gói một binary
-//! ngoài rồi nuôi nó qua từng bản phát hành, và không phụ thuộc vào việc máy người dùng
-//! có `rg` hay không. Đây là chỗ Rust thắng đậm nhất so với bản Python.
+//! Uses `grep-searcher` + `grep-regex` + `ignore` directly — ripgrep's own internals as a
+//! library. No process is spawned, so there is no external binary to package and maintain
+//! across releases, and no dependency on whether the user's machine has `rg`. This is where
+//! Rust wins most decisively over the Python version.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -23,24 +23,25 @@ use serde_json::json;
 
 use crate::path::FileRoots;
 
-/// Bao nhiêu khớp được gom vào `meta` cho giao diện vẽ.
+/// How many matches are collected into `meta` for the UI to draw.
 const DISPLAY_CAP: usize = 250;
 
-/// Trần cứng số khớp thu thập.
+/// A hard cap on matches collected.
 ///
-/// Không có nó, một mẫu như `.` trên một kho vài trăm nghìn tệp gom hàng chục triệu dòng
-/// vào bộ nhớ trước khi có ai kịp nói gì. Trần này chặn ở chỗ *thu thập*, không phải chỗ
-/// hiển thị: dừng đi cây luôn, chứ không quét xong rồi mới vứt.
+/// Without it, a pattern like `.` over a repo of a few hundred thousand files pulls tens of
+/// millions of lines into memory before anyone can say anything. This cap bites at
+/// *collection*, not at display: it stops the walk, rather than scanning everything and then
+/// throwing it away.
 const MATCH_CAP: usize = 5_000;
 
-/// Trần thời gian đi cây.
+/// A time cap on the walk.
 ///
-/// Một kho lớn trên ổ mạng có thể quét lâu hơn cả hạn giờ của tool, và lúc đó mô hình
-/// nhận về một dòng "quá 120 giây" thay vì những khớp đã tìm được. Kết quả một phần kèm
-/// lời nói rõ nó là một phần thì có ích; im lặng hết giờ thì không.
+/// A large repo on a network drive can take longer to scan than the tool's own deadline, and
+/// the model then gets a line saying "over 120 seconds" instead of the matches already
+/// found. Partial results that say they are partial are useful; a silent timeout is not.
 const SEARCH_DEADLINE: Duration = Duration::from_secs(20);
 
-/// Vì sao việc đi cây dừng sớm.
+/// Why the walk stopped early.
 #[derive(Clone, Copy)]
 enum Stopped {
     MatchCap,
@@ -49,11 +50,11 @@ enum Stopped {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GrepArgs {
-    /// Biểu thức chính quy, cú pháp Rust regex.
+    /// The regular expression, Rust regex syntax.
     pub pattern: String,
-    /// Thư mục hoặc tệp để tìm. Bỏ trống là gốc workspace.
+    /// The directory or file to search. Empty means the workspace root.
     pub path: Option<String>,
-    /// Lọc theo tên tệp, ví dụ `*.rs`.
+    /// Filter by file name, e.g. `*.rs`.
     pub include: Option<String>,
 }
 
@@ -123,8 +124,9 @@ impl Tool for Grep {
                 }
 
                 let mut searcher = SearcherBuilder::new()
-                    // Gặp byte không thì bỏ cả tệp: một tệp nhị phân khớp regex sẽ nhả ra
-                    // hàng nghìn dòng rác và đẩy mọi kết quả thật ra khỏi tầm nhìn.
+                    // A NUL byte abandons the whole file: a binary file matching the
+                    // regex emits thousands of junk lines and pushes every real result out
+                    // of view.
                     .binary_detection(BinaryDetection::quit(0))
                     .line_number(true)
                     .build();
@@ -133,9 +135,10 @@ impl Tool for Grep {
                 let mut hits: Vec<Hit> = Vec::new();
                 let mut stopped = None;
                 for entry in walk.build().flatten() {
-                    // Trần số khớp dừng việc đi cây, nhưng **không** kết luận ở đây: nó
-                    // được kết luận sau vòng lặp, vì một tệp duy nhất cũng có thể tự nó
-                    // chạm trần và lúc đó vòng lặp kết thúc mà chưa lần nào chạy tới đây.
+                    // The match cap stops the walk, but the conclusion is **not** drawn
+                    // here: it is drawn after the loop, because a single file can hit the
+                    // cap on its own and then the loop ends without ever reaching this
+                    // point.
                     if hits.len() >= MATCH_CAP {
                         break;
                     }
@@ -159,14 +162,15 @@ impl Tool for Grep {
                                 line,
                                 text: text.trim_end().to_string(),
                             });
-                            // `false` dừng ngay tệp này: một tệp sinh mã có thể một mình
-                            // vượt cả trần.
+                            // `false` stops this file immediately: one generated file can
+                            // blow the cap by itself.
                             Ok(hits.len() < MATCH_CAP)
                         }),
                     );
                 }
-                // Chạm trần là chạm trần, dù vòng lặp dừng vì trần hay vì hết tệp: khi
-                // đã đủ `MATCH_CAP` khớp thì không còn cách nào biết ngoài kia còn gì.
+                // Hitting the cap is hitting the cap, whether the loop ended on the cap
+                // or on running out of files: once there are `MATCH_CAP` matches there is
+                // no way to know what else is out there.
                 if stopped.is_none() && hits.len() >= MATCH_CAP {
                     stopped = Some(Stopped::MatchCap);
                 }
@@ -189,8 +193,8 @@ impl Tool for Grep {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Gom theo tệp cho phần hiển thị: đọc mười khớp trong một tệp dễ hơn mười dòng
-        // rời rạc lặp lại cùng một đường dẫn.
+        // Grouped by file for display: ten matches inside one file read more easily than
+        // ten loose lines repeating the same path.
         let mut groups: Vec<serde_json::Value> = Vec::new();
         for hit in hits.iter().take(DISPLAY_CAP) {
             let entry = json!({ "line": hit.line, "text": hit.text });
@@ -210,11 +214,12 @@ impl Tool for Grep {
                 .to_string()
         });
 
-        // Lời báo chạm trần nối vào **sau** khi gấp, không phải trước.
+        // The cap notice is appended **after** folding, not before.
         //
-        // Nối trước thì nó rơi đúng vào khúc giữa bị cắt đi, và mô hình nhận về một danh
-        // sách cụt trông y hệt một danh sách đầy đủ — đúng cái lỗi mà trần này sinh ra để
-        // nói với nó. Một cảnh báo bị chính cơ chế cắt nuốt mất còn tệ hơn không có.
+        // Appended before, it lands in the middle section that gets cut, and the model
+        // receives a truncated list that looks exactly like a complete one — precisely the
+        // mistake this cap exists to warn about. A warning swallowed by the very mechanism
+        // it describes is worse than no warning.
         let mut content = folded.content;
         match stopped {
             Some(Stopped::MatchCap) => content.push_str(&format!(

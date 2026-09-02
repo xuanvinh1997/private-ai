@@ -1,13 +1,14 @@
-//! Seam thi hành lệnh, và bản cục bộ của nó.
+//! The command execution seam, and its local implementation.
 //!
-//! Ý duy nhất đáng nhớ trong tệp này: **cái ta chạy là một cây tiến trình, không phải một
-//! tiến trình.** `sh -c "npm test"` sinh ra `npm`, sinh ra `node`. Giết cái shell để lại
-//! cả hai đứa kia, và chúng giữ cổng, giữ khoá tệp, ghi tiếp vào cùng thư mục — sau một
-//! lượt bị huỷ thì lượt sau chạy trong một cái máy đã bị nhiễm.
+//! The one thing worth remembering in this file: **what we run is a process tree, not a
+//! process.** `sh -c "npm test"` spawns `npm`, which spawns `node`. Killing the shell
+//! leaves both of those behind, holding ports, holding file locks, still writing into the
+//! same directory — so after one cancelled turn, the next one runs on a contaminated
+//! machine.
 //!
-//! Nên tiến trình con được đặt vào **nhóm tiến trình riêng**, và mọi tín hiệu gửi cho cả
-//! nhóm. Đây là chỗ dễ làm sai nhất trong crate này, và cũng là chỗ sai không bao giờ tự
-//! lộ ra: mọi thứ trông vẫn chạy.
+//! So the child is placed in its **own process group**, and every signal goes to the whole
+//! group. This is the easiest thing in the crate to get wrong, and also the kind of wrong
+//! that never announces itself: everything still looks like it works.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -26,7 +27,8 @@ pub struct Execution {
     pub output: String,
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
-    /// Bị cắt vì hết giờ hoặc vì bị huỷ. Kết quả một phần vẫn có ích, nhưng phải nói rõ.
+    /// Cut short by a timeout or a cancellation. Partial output is still useful, but the
+    /// fact that it is partial has to be said.
     pub interrupted: Option<String>,
 }
 
@@ -54,24 +56,25 @@ impl ServiceKey for Shell {
     const NAME: &'static str = "shell";
 }
 
-/// Gửi tín hiệu cho cả nhóm tiến trình.
+/// Signal the whole process group.
 #[cfg(unix)]
 fn signal_group(pid: u32, signal: i32) {
-    // Số âm nghĩa là "cả nhóm". Đây là toàn bộ lý do phải đặt process group ở trên.
+    // A negative pid means "the whole group". This is the entire reason for setting the
+    // process group above.
     unsafe { libc::kill(-(pid as i32), signal) };
 }
 
 #[cfg(not(unix))]
 fn signal_group(_pid: u32, _signal: i32) {
-    // Windows không có nhóm tiến trình theo nghĩa này; việc tương ứng là Job Object và
-    // nó thuộc về `pai-sandbox`. Cho tới lúc đó, chỉ tiến trình trực tiếp bị giết.
+    // Windows has no process group in this sense; the equivalent is a Job Object, and
+    // that belongs to `pai-sandbox`. Until then, only the direct child is killed.
 }
 
-/// Đĩa của chính máy này.
+/// This machine's own disk.
 ///
-/// Nó giữ một `Context` để hỏi seam giam tiến trình **tại thời điểm spawn**, không phải
-/// lúc dựng: gỡ plugin sandbox ra phải làm mọi lệnh sau đó chạy không giam, chứ không
-/// phải đi qua một bản sao còn sót lại của provider cũ.
+/// It holds a `Context` so it can ask for the sandbox seam **at spawn time**, not at
+/// construction time: disposing the sandbox plugin must make every subsequent command run
+/// unconfined, rather than going through a leftover copy of the old provider.
 pub struct LocalShell {
     ctx: Context,
     policy: Policy,
@@ -82,11 +85,12 @@ impl LocalShell {
         LocalShell { ctx, policy }
     }
 
-    /// argv sau khi đã bọc, nếu có ai bọc.
+    /// argv after wrapping, if anything wrapped it.
     ///
-    /// Không có provider thì chạy argv gốc — đó là hành vi đúng khi chưa ai cắm vòng
-    /// giam. Nhưng provider **có** mà bọc **hỏng** thì không chạy: một lần bỏ qua im
-    /// lặng là một lần người dùng tin vào một vòng vây không tồn tại.
+    /// With no provider, the original argv runs — that is the correct behaviour when
+    /// nobody has mounted a sandbox. But a provider that **is** present and **fails** to
+    /// wrap means nothing runs: one silent fallthrough is one user trusting a confinement
+    /// that does not exist.
     fn argv(&self, command: &str) -> Result<Vec<String>, ShellError> {
         let argv = vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()];
         match self.ctx.get::<Sandbox>() {
@@ -122,8 +126,9 @@ impl ShellExecutor for LocalShell {
             .map_err(|err| ShellError::Spawn(err.to_string()))?;
         let pid = child.id();
 
-        // stdout và stderr gộp theo thứ tự tới, không tách hai khối: một dòng lỗi in ra
-        // giữa chừng chỉ có nghĩa khi biết nó nằm giữa những dòng nào.
+        // stdout and stderr are interleaved in arrival order, not split into two blocks:
+        // an error line printed midway only means something once you know which lines it
+        // sits between.
         let collected = Arc::new(Mutex::new(String::new()));
         let mut pumps = Vec::new();
         for stream in [
@@ -172,10 +177,10 @@ impl ShellExecutor for LocalShell {
             _ = req.cancel.cancelled() => Some("lượt đã bị huỷ".to_string()),
         };
 
-        // Giết cả nhóm, không chỉ cái shell.
+        // Kill the whole group, not just the shell.
         if let Some(pid) = pid {
             signal_group(pid, libc_sigterm());
-            // Cho cây tiến trình một khoảnh khắc để tự dọn, rồi mới ép.
+            // Give the process tree a moment to clean up after itself before forcing.
             tokio::time::sleep(Duration::from_millis(200)).await;
             signal_group(pid, libc_sigkill());
         }
@@ -193,7 +198,7 @@ impl ShellExecutor for LocalShell {
     }
 }
 
-/// `None` nghĩa là không có hạn giờ: chờ mãi thay vì chờ 0 giây.
+/// `None` means no deadline: wait forever, rather than waiting zero seconds.
 async fn sleep_opt(duration: Option<Duration>) {
     match duration {
         Some(duration) => tokio::time::sleep(duration).await,

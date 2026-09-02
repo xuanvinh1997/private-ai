@@ -1,17 +1,17 @@
-//! Dựng hunk diff kèm **số dòng thật trong tệp**.
+//! Build diff hunks carrying **real line numbers from the file**.
 //!
-//! Giao diện vẽ số dòng cạnh mỗi dòng diff. Nếu hunk không mang theo vị trí của nó trong
-//! tệp thì giao diện đánh số từ 1, và người đọc thấy một con số trông đúng nhưng chỉ vào
-//! chỗ khác — sai lệch im lặng, kiểu tệ nhất. Nên `old_start`/`new_start` được tính ở
-//! đây, chỗ duy nhất còn biết cả hai bản văn bản.
+//! The UI draws a line number beside every diff line. If a hunk does not carry its position
+//! in the file, the UI numbers from 1 and the reader sees a number that looks right and
+//! points somewhere else — a silent discrepancy, the worst kind. So `old_start`/`new_start`
+//! are computed here, the only place that still has both versions of the text.
 
 use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};
 
-/// Bao nhiêu dòng không đổi giữ lại quanh mỗi thay đổi.
+/// How many unchanged lines to keep around each change.
 const CONTEXT: usize = 3;
 
-/// Một tệp mới: không có bản cũ để so.
+/// A new file: there is no old version to compare against.
 pub fn created(path: &str, content: &str) -> Value {
     json!([{
         "path": path,
@@ -22,14 +22,14 @@ pub fn created(path: &str, content: &str) -> Value {
     }])
 }
 
-/// Hunk giữa hai bản văn bản. Trả mảng rỗng nếu không có gì đổi.
+/// The hunks between two texts. Returns an empty array when nothing changed.
 pub fn between(path: &str, old: &str, new: &str) -> Value {
     let diff = TextDiff::from_lines(old, new);
     let mut hunks = Vec::new();
 
     for group in diff.grouped_ops(CONTEXT) {
         let (mut old_text, mut new_text) = (String::new(), String::new());
-        // `grouped_ops` cho các chỉ số 0-based; số dòng cho người đọc đếm từ 1.
+        // `grouped_ops` gives 0-based indices; line numbers for readers count from 1.
         let old_start = group.first().map(|op| op.old_range().start + 1);
         let new_start = group.first().map(|op| op.new_range().start + 1);
 
