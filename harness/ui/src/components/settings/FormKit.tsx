@@ -1,4 +1,4 @@
-import { createUniqueId, For, Show, type JSX } from "solid-js";
+import { createSignal, createUniqueId, For, Show, type JSX } from "solid-js";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import Icon, { type IconName } from "./../Icon";
 
@@ -24,6 +24,8 @@ import Icon, { type IconName } from "./../Icon";
 export function DialogShell(props: {
   title: string;
   desc?: string;
+  /** Đoạn dài đằng sau `desc`, cất trong `InfoDot` cạnh tiêu đề hộp thoại. */
+  more?: string;
   icon: IconName;
   /** Biểu mẫu MCP có hai cột ô nhập, không vừa bề rộng mặc định. */
   wide?: boolean;
@@ -59,8 +61,9 @@ export function DialogShell(props: {
             <Icon name={props.icon} size={16} />
           </span>
           <div class="flex min-w-0 flex-1 flex-col gap-3xs">
-            <h2 id={titleId} class="m-0 text-md font-semibold text-ink">
+            <h2 id={titleId} class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
               {props.title}
+              <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
             </h2>
             <Show when={props.desc}>
               {(desc) => <p class="m-0 text-xs text-muted">{desc()}</p>}
@@ -94,6 +97,8 @@ export function TextField(props: {
   value: string;
   onInput: (value: string) => void;
   hint?: string;
+  /** Câu dài đứng sau `hint`, cất trong `InfoDot` cạnh nhãn thay vì trải dưới ô. */
+  more?: string;
   placeholder?: string;
   type?: "text" | "password";
   mono?: boolean;
@@ -113,9 +118,19 @@ export function TextField(props: {
   const hintId = createUniqueId();
   return (
     <div class="flex min-w-0 flex-col gap-2xs">
-      <label for={id} class={props.hideLabel === true ? "sr-only" : "text-2xs text-faint"}>
-        {props.label}
-      </label>
+      <Show
+        when={props.more !== undefined && props.hideLabel !== true}
+        fallback={
+          <label for={id} class={props.hideLabel === true ? "sr-only" : "text-2xs text-faint"}>
+            {props.label}
+          </label>
+        }
+      >
+        <span class="flex items-center gap-2xs text-2xs text-faint">
+          <label for={id}>{props.label}</label>
+          <InfoDot text={props.more ?? ""} label={`Về ${props.label}`} />
+        </span>
+      </Show>
       <input
         id={id}
         ref={props.ref}
@@ -221,10 +236,17 @@ export function PillChoice<T extends string>(props: {
   options: { id: T; label: string; icon?: IconName }[];
   onPick: (value: T) => void;
   hint?: string;
+  /** Câu dài đứng sau `hint`, cất trong `InfoDot` cạnh nhãn của nhóm. */
+  more?: string;
 }) {
   return (
     <div class="flex flex-col gap-2xs">
-      <span class="text-2xs text-faint">{props.label}</span>
+      <span class="flex items-center gap-2xs text-2xs text-faint">
+        {props.label}
+        <Show when={props.more}>
+          {(more) => <InfoDot text={more()} label={`Về ${props.label}`} />}
+        </Show>
+      </span>
       <div role="radiogroup" aria-label={props.label} class="flex flex-wrap gap-2xs">
         <For each={props.options}>
           {(option) => (
@@ -284,6 +306,10 @@ export function Row(props: {
   desc?: string;
   /** Tên server MCP là một định danh — nó xuất hiện nguyên văn trong tiền tố tên tool. */
   labelMono?: boolean;
+  /** Biểu tượng đứng đầu hàng. Nó thay phần nghĩa mà `desc` một dòng không chứa nổi. */
+  icon?: IconName;
+  /** Đoạn giải thích dài, cất trong `InfoDot` cạnh nhãn. */
+  more?: string;
   /** Chấm trạng thái hoặc biểu tượng đứng trước nhãn. */
   lead?: () => JSX.Element;
   /** Điều khiển ở cột phải — công tắc, nút, ô chọn. */
@@ -300,12 +326,20 @@ export function Row(props: {
     >
       <div class="flex flex-wrap items-center gap-md">
         <Show when={props.lead}>{(render) => <>{render()()}</>}</Show>
+        <Show when={props.icon}>
+          {(icon) => (
+            <span class="grid size-7 shrink-0 place-items-center rounded-panel bg-surface-soft text-muted">
+              <Icon name={icon()} size={14} />
+            </span>
+          )}
+        </Show>
         <div class="flex min-w-0 flex-1 flex-col gap-3xs">
           <span
-            class="min-w-0 text-xs font-medium text-ink"
+            class="flex min-w-0 items-center gap-2xs text-xs font-medium text-ink"
             classList={{ "font-mono": props.labelMono === true }}
           >
             {props.label}
+            <Show when={props.more}>{(more) => <InfoDot text={more()} label={`Về ${props.label}`} />}</Show>
           </span>
           <Show when={props.desc}>
             {(desc) => <p class="m-0 text-2xs text-muted">{desc()}</p>}
@@ -334,14 +368,23 @@ export function Select(props: {
   onPick: (value: string) => void;
   disabled?: boolean;
   mono?: boolean;
+  /**
+   * Chiếm trọn bề ngang thay vì dừng ở 280px.
+   *
+   * Bề rộng mặc định hợp với một `<Row>` của trang cài đặt, nơi ô điều khiển đứng ở cột
+   * phải cạnh một cột nhãn. Trong một hộp thoại thì nó lại là ô duy nhất trên dòng, và
+   * một ô hẹp hơn ô ngay trên nó đọc như một ô bị vỡ.
+   */
+  full?: boolean;
 }) {
+  const WIDTH = props.full === true ? "w-full" : "max-w-[280px]";
   return (
     <select
       aria-label={props.label}
       value={props.value}
       disabled={props.disabled}
       onChange={(event) => props.onPick(event.currentTarget.value)}
-      class="h-(--control-h) max-w-[280px] min-w-0 rounded-btn border border-line bg-bg px-sm text-xs text-text outline-none transition-colors duration-[var(--dur-fast)] focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+      class={`h-(--control-h) ${WIDTH} min-w-0 truncate rounded-btn border border-line bg-bg px-sm text-xs text-text outline-none transition-colors duration-[var(--dur-fast)] focus:border-accent disabled:cursor-not-allowed disabled:opacity-50`}
       classList={{ "font-mono": props.mono === true }}
     >
       {/* `selected` đặt trên từng `<option>` chứ không chỉ dựa vào `value` của `<select>`:
@@ -365,6 +408,8 @@ export function Banner(props: {
   tone: BannerTone;
   icon: IconName;
   title?: string;
+  /** Đoạn dài đằng sau lời cảnh báo, cất trong `InfoDot` cạnh tiêu đề. */
+  more?: string;
   children: JSX.Element;
   role?: "status" | "alert";
 }) {
@@ -384,9 +429,21 @@ export function Banner(props: {
       </span>
       <div class="flex min-w-0 flex-col gap-3xs">
         <Show when={props.title}>
-          {(title) => <span class="font-medium">{title()}</span>}
+          {(title) => (
+            <span class="flex items-center gap-2xs font-medium">
+              {title()}
+              <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
+            </span>
+          )}
         </Show>
-        <div class="min-w-0">{props.children}</div>
+        <div class="flex min-w-0 items-start gap-2xs">
+          <span class="min-w-0">{props.children}</span>
+          {/* Không tiêu đề thì chấm hỏi đi cùng thân: gắn nó vào `title` và chỉ vậy thôi
+              thì một banner không tiêu đề nuốt mất `more` mà không báo gì. */}
+          <Show when={props.more !== undefined && props.title === undefined}>
+            <InfoDot text={props.more ?? ""} />
+          </Show>
+        </div>
       </div>
     </div>
   );
@@ -415,17 +472,75 @@ export function ExternalLink(props: { href: string; children: JSX.Element }) {
   );
 }
 
+
+/**
+ * Dấu chấm hỏi cạnh một nhãn: câu giải thích dài nằm trong đây, không nằm trên trang.
+ *
+ * Mọi nhãn và mô tả trên màn hình bị giới hạn một câu ngắn, vì một trang cài đặt được
+ * *quét* chứ không được đọc. Nhưng lý do đằng sau một công tắc vẫn phải còn ở đâu đó —
+ * mất nó thì người dùng bật/tắt theo phỏng đoán. Chỗ đó là đây: chữ đầy đủ hiện khi rê
+ * chuột hoặc khi tiêu điểm bàn phím rơi vào, và luôn nối với nhãn qua `aria-describedby`
+ * nên trình đọc màn hình đọc được kể cả khi không có con trỏ nào.
+ */
+export function InfoDot(props: { text: string; label?: string }) {
+  const [open, setOpen] = createSignal(false);
+  const id = createUniqueId();
+  return (
+    <span class="relative inline-flex shrink-0 items-center">
+      <button
+        type="button"
+        aria-label={props.label ?? "Giải thích"}
+        aria-describedby={id}
+        aria-expanded={open()}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={() => setOpen((was) => !was)}
+        class="grid size-4 place-items-center rounded-pill text-faint transition-colors duration-[var(--dur-fast)] hover:text-ink"
+      >
+        <Icon name="info" size={13} />
+      </button>
+      <span
+        id={id}
+        role="tooltip"
+        class="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-40 w-64 -translate-x-1/2 rounded-panel border border-line bg-surface px-sm py-2xs text-2xs leading-relaxed text-muted shadow-pop transition-opacity duration-[var(--dur-fast)]"
+        classList={{ "opacity-0": !open(), "opacity-100": open() }}
+        aria-hidden={!open()}
+      >
+        {props.text}
+      </span>
+    </span>
+  );
+}
+
 /** Tiêu đề một khu vực trong trang, cùng nhịp với `SettingsView`. */
 export function SectionHead(props: {
   title: string;
   desc: string;
+  /** Biểu tượng của khu vực. Nó gánh phần nghĩa mà câu mô tả một dòng phải bỏ lại. */
+  icon?: IconName;
+  /** Đoạn dài đằng sau tiêu đề, cất trong `InfoDot` thay vì trải ra trang. */
+  more?: string;
   actions?: () => JSX.Element;
 }) {
   return (
     <div class="flex flex-wrap items-end justify-between gap-sm">
-      <div class="flex min-w-0 flex-col gap-3xs">
-        <h2 class="m-0 text-md font-semibold text-ink">{props.title}</h2>
-        <p class="m-0 text-xs text-muted">{props.desc}</p>
+      <div class="flex min-w-0 flex-1 items-start gap-sm">
+        <Show when={props.icon}>
+          {(icon) => (
+            <span class="mt-3xs grid size-7 shrink-0 place-items-center rounded-panel bg-accent-soft text-accent-ink">
+              <Icon name={icon()} size={15} />
+            </span>
+          )}
+        </Show>
+        <div class="flex min-w-0 flex-col gap-3xs">
+          <h2 class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
+            {props.title}
+            <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
+          </h2>
+          <p class="m-0 text-xs text-muted">{props.desc}</p>
+        </div>
       </div>
       <Show when={props.actions}>{(render) => <div class="flex gap-sm">{render()()}</div>}</Show>
     </div>

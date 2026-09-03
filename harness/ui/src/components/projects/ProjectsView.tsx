@@ -1,10 +1,12 @@
 import { Key } from "@solid-primitives/keyed";
 import { createMemo, createSignal, For, Show } from "solid-js";
+import { useDragDrop } from "../../hooks/useDragDrop";
 import { originHost } from "../../lib/projects";
 import type { Project, ProjectKind } from "../../lib/protocol";
 import { relativeTime } from "../../lib/sessions";
 import Icon, { type IconName } from "../Icon";
 import { Chip, IconButton } from "../primitives";
+import { InfoDot } from "../settings/FormKit";
 import CloneDialog from "./CloneDialog";
 import ConfirmDialog from "./ConfirmDialog";
 import { Button } from "./DialogShell";
@@ -34,6 +36,8 @@ export default function ProjectsView(props: {
   /** Lỗi từ lần mở hoặc lần bỏ gần nhất, do chỗ gọi giữ. */
   error?: string | null;
   onOpen: (project: Project) => void;
+  /** Mở một thư mục **chưa có trong danh sách** — lối vào duy nhất của nó là cú kéo thả. */
+  onOpenPath: (path: string) => void;
   onForget: (project: Project) => void;
   /** Lõi đã tạo/clone xong; chỗ gọi nạp lại danh sách và chuyển sang dự án này. */
   onCreated: (project: Project) => void;
@@ -43,6 +47,27 @@ export default function ProjectsView(props: {
   const [newKind, setNewKind] = createSignal<ProjectKind | null>(null);
   const [cloning, setCloning] = createSignal(false);
   const [forgetting, setForgetting] = createSignal<Project | null>(null);
+
+  /**
+   * Thả một thư mục vào cửa sổ là mở nó thành dự án — và việc ấy sống ở **màn hình này**.
+   *
+   * `useDragDrop` phát cho mọi chỗ đang nghe, nên cú thả phải có đúng một chủ trên mỗi màn
+   * hình. Trước đây vỏ ứng dụng nghe cú thả ở khắp nơi trừ hai màn hình có chủ, nên một tệp
+   * thả vào ô soạn tin vừa được đính kèm vừa bị đem đi mở thành dự án — hai việc từ một cử
+   * chỉ, và một trong hai luôn là việc người dùng không định làm. Ở đây thì không có gì để
+   * lẫn: trang này nói về dự án, và thứ duy nhất thả vào nó có nghĩa là một thư mục.
+   *
+   * Hộp thoại đang mở thì nhường: `NewProjectDialog` nhận cú thả vào ô đường dẫn của nó, và
+   * mở ngay ở đây là trả lời hộ người dùng đúng câu hỏi khó mà hộp thoại đang chờ họ trả
+   * lời. Hai hộp thoại kia không nhận cú thả, nhưng một dự án mở ra sau lưng một câu hỏi
+   * "bỏ khỏi danh sách?" thì cũng khó hiểu ngang thế.
+   */
+  useDragDrop((paths) => {
+    if (props.switching === true) return;
+    if (newKind() !== null || cloning() || forgetting() !== null) return;
+    const first = paths[0];
+    if (first !== undefined) props.onOpenPath(first);
+  });
 
   // Mới nhất trước, giống menu dự án. Dự án đang mở không bị ghim lên đầu: nó đã có dấu
   // riêng rồi, và ghim thêm làm thứ tự nhảy mỗi lần đổi dự án.
@@ -70,12 +95,17 @@ export default function ProjectsView(props: {
     <div class="min-h-0 flex-1 overflow-y-auto px-(--page-pad-x) py-(--page-pad-y)">
       <div class="mx-auto flex max-w-[880px] flex-col gap-2xl">
         <section class="flex flex-col gap-md">
-          <div class="flex flex-col gap-3xs">
-            <h2 class="m-0 text-md font-semibold text-ink">Dự án</h2>
-            <p class="m-0 text-xs text-muted">
-              Mỗi dự án là một thư mục trên máy. Trợ lý chỉ nhìn thấy thư mục của dự án
-              đang mở.
-            </p>
+          <div class="flex items-start gap-sm">
+            <span class="mt-3xs grid size-7 shrink-0 place-items-center rounded-panel bg-accent-soft text-accent-ink">
+              <Icon name="folder" size={15} />
+            </span>
+            <div class="flex min-w-0 flex-col gap-3xs">
+              <h2 class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
+                Dự án
+                <InfoDot text="Trợ lý chỉ nhìn thấy thư mục của dự án đang mở." />
+              </h2>
+              <p class="m-0 text-xs text-muted">Mỗi dự án là một thư mục trên máy.</p>
+            </div>
           </div>
 
           <div class="grid gap-sm sm:grid-cols-3">
@@ -159,8 +189,7 @@ export default function ProjectsView(props: {
                 <div class="flex flex-col gap-2xs">
                   <p class="m-0 text-sm font-medium text-ink">Chưa có dự án nào</p>
                   <p class="m-0 max-w-[44ch] text-xs text-muted">
-                    Mở một thư mục mã nguồn để trợ lý đọc và sửa được tệp, hoặc tạo một
-                    thư viện tài liệu để hỏi đáp trên tài liệu của bạn.
+                    Mở một thư mục để bắt đầu.
                   </p>
                 </div>
                 <div class="flex flex-wrap justify-center gap-sm">
@@ -178,7 +207,7 @@ export default function ProjectsView(props: {
               when={visible().length > 0}
               fallback={
                 <p class="m-0 rounded-card border border-dashed border-line px-(--card-pad-x) py-2xl text-center text-xs text-muted">
-                  Không có dự án nào khớp. Thử bỏ bộ lọc hoặc xoá bớt chữ trong ô tìm.
+                  Không có dự án nào khớp bộ lọc.
                 </p>
               }
             >
@@ -230,7 +259,8 @@ export default function ProjectsView(props: {
           <ConfirmDialog
             icon="trash"
             title={`Bỏ "${project().name}" khỏi danh sách?`}
-            body="Chỉ danh sách dự án gần đây bị đổi. Thư mục và toàn bộ tệp bên trong vẫn nguyên trên đĩa — mở lại thư mục này bất cứ lúc nào là dự án trở lại."
+            body="Thư mục trên đĩa không bị đụng tới."
+            more="Chỉ danh sách dự án gần đây bị đổi. Thư mục và toàn bộ tệp bên trong vẫn nguyên trên đĩa — mở lại thư mục này bất cứ lúc nào là dự án trở lại."
             detail={project().path}
             confirmLabel="Bỏ khỏi danh sách"
             onClose={() => setForgetting(null)}
@@ -321,8 +351,8 @@ function Row(props: {
           onClick={props.onForget}
           label={
             current()
-              ? `Không bỏ được "${props.project.name}" khỏi danh sách vì nó đang mở`
-              : `Bỏ "${props.project.name}" khỏi danh sách. Thư mục trên đĩa không bị xoá.`
+              ? `"${props.project.name}" đang mở, không bỏ được`
+              : `Bỏ "${props.project.name}" khỏi danh sách`
           }
           tip="left"
         />
@@ -348,18 +378,18 @@ const ENTRANCES: { id: ProjectKind | "clone"; label: string; icon: IconName; hin
     id: "code",
     label: "Mở thư mục mã nguồn",
     icon: "folder-open",
-    hint: "Một thư mục đã có trên máy. Trợ lý đọc, sửa tệp và chạy được lệnh.",
+    hint: "Trợ lý đọc, sửa tệp và chạy lệnh ở đó.",
   },
   {
     id: "clone",
     label: "Clone từ Git",
     icon: "git-branch",
-    hint: "Tải repo về máy rồi mở nó làm dự án mã nguồn.",
+    hint: "Tải repo về máy rồi mở làm dự án.",
   },
   {
     id: "docs",
     label: "Tạo thư viện tài liệu",
     icon: "library",
-    hint: "Nạp PDF, Word, Markdown… để hỏi đáp. Chỉ tìm và đọc, không sửa gì.",
+    hint: "Nạp PDF, Word, Markdown… để hỏi đáp; không sửa tệp.",
   },
 ];

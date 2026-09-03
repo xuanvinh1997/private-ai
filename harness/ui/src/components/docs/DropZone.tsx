@@ -1,6 +1,7 @@
 import { Show } from "solid-js";
 import { useDragDrop } from "../../hooks/useDragDrop";
 import Icon from "../Icon";
+import { InfoDot } from "../settings/FormKit";
 import { Button } from "../projects/DialogShell";
 
 /**
@@ -37,11 +38,13 @@ export default function DropZone(props: {
           <span class="grid size-12 place-items-center rounded-panel bg-accent-soft text-accent-ink">
             <Icon name="upload" size={24} />
           </span>
-          <div class="flex flex-col gap-2xs">
-            <p class="m-0 text-sm font-medium text-ink">Thư viện còn trống</p>
+          <div class="flex flex-col items-center gap-2xs">
+            <p class="m-0 flex items-center gap-2xs text-sm font-medium text-ink">
+              Thư viện còn trống
+              <InfoDot text="Nhận PDF, Word, Markdown, HTML, CSV và văn bản thuần — tệp gốc nằm nguyên chỗ cũ, thư viện chỉ đọc nội dung." />
+            </p>
             <p class="m-0 max-w-[46ch] text-xs text-muted">
-              Kéo tệp thả vào cửa sổ, hoặc chọn tệp từ máy. Nhận PDF, Word, Markdown, HTML,
-              CSV và văn bản thuần — tệp gốc nằm nguyên chỗ cũ, thư viện chỉ đọc nội dung.
+              Kéo tệp vào cửa sổ, hoặc chọn tệp từ máy.
             </p>
           </div>
           <Button variant="primary" icon="plus" disabled={props.busy} onClick={props.onPick}>

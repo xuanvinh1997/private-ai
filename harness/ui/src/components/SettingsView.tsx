@@ -1,7 +1,6 @@
 import { createMemo, createSignal, For, Match, onCleanup, onMount, Show, Switch } from "solid-js";
 import Icon from "./Icon";
 import McpView from "./mcp/McpView";
-import EmbeddingView from "./providers/EmbeddingView";
 import ProvidersView from "./providers/ProvidersView";
 import GeneralPage from "./settings/GeneralPage";
 import HooksPage from "./settings/HooksPage";
@@ -177,11 +176,12 @@ export default function SettingsView(props: {
                 <Match when={props.page === "phim-tat"}>
                   <ShortcutsPage />
                 </Match>
+                {/* Một trang cho cả hai vai. `ProvidersView` vẽ danh sách máy chủ rồi
+                    gọi `EmbeddingView` làm mục cuối của chính nó: hai vai được giao từ
+                    cùng một danh sách provider, nên tách ra hai trang là bắt người dùng đi
+                    qua danh sách ấy hai lần. */}
                 <Match when={props.page === "provider"}>
                   <ProvidersView />
-                </Match>
-                <Match when={props.page === "nhung"}>
-                  <EmbeddingView />
                 </Match>
                 <Match when={props.page === "mcp"}>
                   <McpView />
@@ -232,8 +232,7 @@ function SearchPane(props: {
         when={props.hits.length > 0}
         fallback={
           <p class="m-0 max-w-[60ch] text-xs text-muted">
-            Ô tìm chỉ thấy các mục cài đặt, không thấy tên provider hay tên server MCP trên
-            máy bạn — những cái đó là dữ liệu, và chúng nằm trong trang tương ứng.
+            Ô tìm chỉ thấy mục cài đặt, không thấy dữ liệu trên máy bạn.
           </p>
         }
       >

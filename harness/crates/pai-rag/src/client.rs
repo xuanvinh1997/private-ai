@@ -1,0 +1,556 @@
+//! [`DocLibrary`] nói chuyện với `pai-rag-service` qua MCP.
+//!
+//! # Đọc JSON phòng thủ, không `unwrap`
+//!
+//! Mọi trường ở đây đến từ một tiến trình khác, có thể là bản cũ hơn hoặc mới hơn. Một
+//! `unwrap` trên một trường vắng mặt sẽ làm sập cả cửa sổ vì service vừa được nâng cấp.
+//! Nên mỗi phép đọc có mặc định, và mặc định luôn nghiêng về phía **nói ít hơn sự thật**:
+//! thiếu `page` thành `0` (không hiện số trang) chứ không thành một số bịa.
+//!
+//! Ngoại lệ đúng một chỗ: thiếu `documentId` thì bỏ nguyên đoạn đó. Một trích dẫn không
+//! chỉ ra được tài liệu nào là một trích dẫn không kiểm chứng được, và hiện nó ra còn tệ
+//! hơn không hiện.
+//!
+//! # Ba dòng tiến trình
+//!
+//! `sync`, `ingest` và `reprocess` trả về [`BoxStream`], nhưng bên dưới là **một** lời gọi
+//! MCP — giao thức là hỏi-đáp, không có luồng. Dòng vì thế phát một mốc "đang chạy" ngay
+//! lập tức để giao diện dựng được thanh tiến trình, rồi phát phần còn lại khi kết quả về.
+//!
+//! Giữ chữ ký `BoxStream` chứ không đổi thành `async fn` trả về một kết quả: phía `app/`
+//! đẩy từng mốc lên một `Channel` của Tauri, và đổi hình dạng ở đây là sửa cả `docs.rs`
+//! lẫn `DocsView.tsx` để đổi lấy đúng một thứ — sự trung thực rằng bên dưới không có
+//! luồng. Cái giá đó không đáng, và ngày service phát progress notification thật thì
+//! chữ ký này đã sẵn sàng.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use futures::stream::{self, BoxStream, StreamExt};
+use serde_json::{Map, Value, json};
+
+use crate::error::RagError;
+use crate::format::Format;
+use crate::library::{DocLibrary, Document, Hit, IngestEvent, IngestStage, Stats};
+use crate::search::MatchedBy;
+use crate::sidecar::Sidecar;
+
+pub struct RagClient {
+    sidecar: Arc<Sidecar>,
+    /// Thư mục dự án. Giữ ở đây để [`Stats::root`] và các mốc tiến trình nói được nó
+    /// ngay cả khi service chưa trả lời lần nào.
+    root: PathBuf,
+}
+
+impl RagClient {
+    pub fn new(sidecar: Arc<Sidecar>, root: PathBuf) -> RagClient {
+        RagClient { sidecar, root }
+    }
+
+    pub async fn shutdown(&self) {
+        self.sidecar.shutdown().await;
+    }
+
+    /// Một lượt nạp, gói thành dòng mốc tiến trình.
+    fn ingest_stream<'a>(
+        &'a self,
+        tool: &'a str,
+        args: Map<String, Value>,
+    ) -> BoxStream<'a, IngestEvent> {
+        let root = self.root.display().to_string();
+        let started = IngestEvent {
+            path: root.clone(),
+            stage: IngestStage::Reading,
+            done: 0,
+            total: 0,
+            finished: false,
+            error: None,
+            document: None,
+        };
+
+        let tail = async move {
+            let outcome = self.sidecar.call(tool, args).await;
+            events_from_report(&root, outcome)
+        };
+
+        stream::once(async move { started })
+            .chain(stream::once(tail).flat_map(stream::iter))
+            .boxed()
+    }
+}
+
+#[async_trait]
+impl DocLibrary for RagClient {
+    async fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>, RagError> {
+        let mut args = Map::new();
+        args.insert("query".into(), json!(query));
+        args.insert("limit".into(), json!(limit));
+        let value = self.sidecar.call("docs.search", args).await?;
+        Ok(read_hits(&value))
+    }
+
+    async fn documents(&self) -> Result<Vec<Document>, RagError> {
+        let value = self.sidecar.call("docs.list", Map::new()).await?;
+        Ok(array(&value, "documents")
+            .iter()
+            .filter_map(read_document)
+            .collect())
+    }
+
+    async fn chunks(
+        &self,
+        document_id: &str,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<Hit>, RagError> {
+        let mut args = Map::new();
+        args.insert("document_id".into(), json!(document_id));
+        args.insert("offset".into(), json!(offset));
+        args.insert("limit".into(), json!(limit));
+        let value = self.sidecar.call("docs.read", args).await?;
+        Ok(read_hits(&value))
+    }
+
+    async fn stats(&self) -> Result<Stats, RagError> {
+        let value = self.sidecar.call("docs.stats", Map::new()).await?;
+        Ok(read_stats(&value, &self.root, self.sidecar.last_error()))
+    }
+
+    fn sync(&self) -> BoxStream<'_, IngestEvent> {
+        self.ingest_stream("docs.sync", Map::new())
+    }
+
+    fn ingest(&self, paths: Vec<PathBuf>) -> BoxStream<'_, IngestEvent> {
+        let mut args = Map::new();
+        args.insert(
+            "paths".into(),
+            json!(paths
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()),
+        );
+        self.ingest_stream("docs.ingest", args)
+    }
+
+    fn reprocess(&self) -> BoxStream<'_, IngestEvent> {
+        self.ingest_stream("docs.reprocess", Map::new())
+    }
+
+    async fn remove(&self, id: &str) -> Result<(), RagError> {
+        let mut args = Map::new();
+        args.insert("document_id".into(), json!(id));
+        let value = self.sidecar.call("docs.remove", args).await?;
+        if value.get("removed").and_then(Value::as_bool) == Some(false) {
+            return Err(RagError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+}
+
+/* ── đọc JSON ────────────────────────────────────────────────────────────────────── */
+
+fn array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
+fn text(value: &Value, key: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn number(value: &Value, key: &str) -> u64 {
+    value.get(key).and_then(Value::as_u64).unwrap_or(0)
+}
+
+fn read_hits(value: &Value) -> Vec<Hit> {
+    array(value, "hits").iter().filter_map(read_hit).collect()
+}
+
+fn read_hit(value: &Value) -> Option<Hit> {
+    let document_id = value.get("documentId").and_then(Value::as_str)?;
+    if document_id.is_empty() {
+        return None;
+    }
+    let heading = value
+        .get("section")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|found| !found.is_empty())
+        .map(str::to_string);
+    Some(Hit {
+        document_id: document_id.to_string(),
+        title: text(value, "title"),
+        path: PathBuf::from(text(value, "path")),
+        ordinal: number(value, "ordinal") as u32,
+        heading,
+        text: text(value, "text"),
+        score: value.get("score").and_then(Value::as_f64).unwrap_or(0.0) as f32,
+        matched_by: MatchedBy::parse(&text(value, "matchedBy")),
+        page: number(value, "page") as u32,
+    })
+}
+
+fn read_document(value: &Value) -> Option<Document> {
+    let id = value.get("documentId").and_then(Value::as_str)?;
+    let path = text(value, "path");
+    let chunks = number(value, "chunks") as u32;
+    let error = value
+        .get("error")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    Some(Document {
+        id: id.to_string(),
+        path: PathBuf::from(&path),
+        // Service không giữ khái niệm "tệp đến từ đâu": thư mục dự án **là** thư viện,
+        // nên nguồn gốc và chỗ đứng là một.
+        origin: path,
+        title: text(value, "title"),
+        format: Format::parse(&text(value, "format")),
+        bytes: number(value, "bytes"),
+        chunks,
+        // Service chỉ báo đã nhúng ở mức cả thư viện, không theo từng tài liệu. Một tài
+        // liệu có đoạn và không có lỗi thì coi như đã xong; `stats()` mới là chỗ nói ra
+        // phần còn đang xếp hàng, và nó nói bằng con số chứ không bằng một cờ mỗi hàng.
+        embedded: chunks > 0 && error.is_none(),
+        added_at: value.get("addedAt").and_then(Value::as_i64).unwrap_or(0),
+        error,
+        pages: number(value, "pages") as u32,
+        ocr_pages: array(value, "ocrPages")
+            .iter()
+            .filter_map(Value::as_u64)
+            .map(|page| page as u32)
+            .collect(),
+    })
+}
+
+fn read_stats(value: &Value, root: &PathBuf, sidecar_error: Option<String>) -> Stats {
+    let chunks = number(value, "chunks") as u32;
+    let vectors = number(value, "vectors") as u32;
+    let reachable = value
+        .get("qdrant_reachable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let embedder = value
+        .get("embedder")
+        .and_then(Value::as_str)
+        .filter(|found| !found.is_empty())
+        .map(str::to_string);
+
+    // Sẵn sàng nghĩa là **mọi** đoạn đều có vector. Một thư viện nhúng được nửa chừng
+    // vẫn trả về kết quả, nhưng nửa còn lại thì vô hình với phép tìm ngữ nghĩa — và đó
+    // đúng là điều người dùng cần biết trước khi kết luận "tài liệu không nhắc tới".
+    let semantic_ready = reachable && chunks > 0 && vectors >= chunks;
+    Stats {
+        documents: number(value, "documents") as u32,
+        chunks,
+        embedded_chunks: vectors,
+        embedder,
+        semantic_ready,
+        reason: reason_for(semantic_ready, reachable, chunks, vectors, sidecar_error),
+        root: value
+            .get("root")
+            .and_then(Value::as_str)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| root.clone()),
+        files_seen: number(value, "files_seen") as u32,
+        files_skipped: number(value, "files_skipped") as u32,
+        unreadable: array(value, "failures").len() as u32,
+        excluded: number(value, "excluded") as u32,
+        scanned_at: value.get("scanned_at").and_then(Value::as_i64),
+        scanning: None,
+    }
+}
+
+/// Vì sao phần tìm theo ý nghĩa chưa dùng được, bằng tiếng Việt và nói ra việc phải làm.
+///
+/// Thứ tự xét đi từ nguyên nhân gốc ra ngoài: service không chạy thì mọi câu khác đều vô
+/// nghĩa, và nói "chưa nhúng xong" cho một service đã chết là chỉ sai chỗ để sửa.
+fn reason_for(
+    ready: bool,
+    reachable: bool,
+    chunks: u32,
+    vectors: u32,
+    sidecar_error: Option<String>,
+) -> Option<String> {
+    if let Some(err) = sidecar_error {
+        return Some(format!("Service tài liệu không trả lời: {err}"));
+    }
+    if ready {
+        return None;
+    }
+    if !reachable {
+        return Some(
+            "Kho vector (Qdrant) chưa chạy nên chỉ có tìm theo từ khoá. Dựng nó bằng \
+             `docker compose up -d` ở thư mục gốc dự án."
+                .to_string(),
+        );
+    }
+    if chunks == 0 {
+        return Some(
+            "Thư viện chưa có đoạn nào. Thả tệp vào thư mục dự án rồi bấm đồng bộ."
+                .to_string(),
+        );
+    }
+    Some(format!(
+        "Đang nhúng: {vectors}/{chunks} đoạn đã có vector. Tìm theo từ khoá vẫn chạy \
+         bình thường trong lúc chờ."
+    ))
+}
+
+/// Báo cáo một lượt nạp → dãy mốc tiến trình cho giao diện.
+fn events_from_report(root: &str, outcome: Result<Value, RagError>) -> Vec<IngestEvent> {
+    let make = |stage: IngestStage, path: String, error: Option<String>, done: u32, total: u32| {
+        IngestEvent {
+            path,
+            stage,
+            done,
+            total,
+            finished: stage == IngestStage::Finished,
+            error,
+            document: None,
+        }
+    };
+
+    let report = match outcome {
+        Ok(value) => value,
+        // Cả lượt hỏng: một mốc `Failed` mang lý do, rồi `Finished` để giao diện đóng
+        // thanh tiến trình lại. Thiếu mốc cuối thì nó quay mãi.
+        Err(err) => {
+            return vec![
+                make(IngestStage::Failed, root.to_string(), Some(err.to_string()), 0, 0),
+                make(IngestStage::Finished, root.to_string(), None, 0, 0),
+            ];
+        }
+    };
+
+    let scanned = number(&report, "scanned") as u32;
+    let ingested = number(&report, "ingested") as u32;
+    let mut events = Vec::new();
+
+    for failure in array(&report, "failed") {
+        events.push(make(
+            IngestStage::Failed,
+            text(failure, "path"),
+            Some(text(failure, "reason")),
+            ingested,
+            scanned,
+        ));
+    }
+    if let Some(error) = report
+        .get("embed_error")
+        .and_then(Value::as_str)
+        .filter(|found| !found.is_empty())
+    {
+        // `Embedding` chứ không `Failed`: mọi tệp đã vào thư viện, chỉ có máy chủ nhúng
+        // là chưa trả lời. Đếm nó vào danh sách *tệp* hỏng là nói sai với người dùng.
+        events.push(make(
+            IngestStage::Embedding,
+            root.to_string(),
+            Some(error.to_string()),
+            ingested,
+            scanned,
+        ));
+    }
+    events.push(make(IngestStage::Finished, root.to_string(), None, ingested, scanned));
+    events
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Đọc JSON ở đây là đọc dữ liệu của **một tiến trình khác**, có thể cũ hơn hoặc mới
+    /// hơn. Bài này khoá luật: thiếu trường thì lùi về một giá trị nói *ít hơn* sự thật,
+    /// không panic và không bịa ra một con số.
+    #[test]
+    fn truong_thieu_khong_lam_sap_va_khong_bia() {
+        let hit = read_hit(&json!({ "documentId": "abc" })).expect("có documentId là đủ");
+        assert_eq!(hit.document_id, "abc");
+        assert_eq!(hit.page, 0, "thiếu trang phải là 0 — giao diện khi ấy không vẽ trang");
+        assert_eq!(hit.ordinal, 0);
+        assert_eq!(hit.score, 0.0);
+        assert!(hit.heading.is_none(), "mục rỗng không được thành một tiêu đề rỗng");
+        assert_eq!(
+            hit.matched_by,
+            MatchedBy::Keyword,
+            "nhãn lạ lùi về nhánh không cần bộ nhúng"
+        );
+    }
+
+    /// Ngoại lệ duy nhất của luật trên: không có mã tài liệu thì bỏ hẳn đoạn.
+    ///
+    /// Một trích dẫn không chỉ ra được tài liệu nào là một trích dẫn không kiểm chứng
+    /// được, và hiện nó ra còn tệ hơn không hiện.
+    #[test]
+    fn doan_khong_co_ma_tai_lieu_bi_bo() {
+        assert!(read_hit(&json!({ "title": "x", "text": "y" })).is_none());
+        assert!(read_hit(&json!({ "documentId": "" })).is_none());
+
+        let hits = read_hits(&json!({
+            "hits": [
+                { "documentId": "a", "title": "giữ" },
+                { "title": "bỏ" },
+            ]
+        }));
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "giữ");
+    }
+
+    #[test]
+    fn doc_mot_ket_qua_day_du() {
+        let hit = read_hit(&json!({
+            "documentId": "d1",
+            "title": "Quy trình",
+            "path": "D:/tl/a.docx",
+            "ordinal": 3,
+            "section": "Phê duyệt",
+            "page": 7,
+            "text": "Trưởng bộ phận duyệt trong 24 giờ.",
+            "score": 2.75,
+            "matchedBy": "both",
+        }))
+        .unwrap();
+        assert_eq!(hit.ordinal, 3);
+        assert_eq!(hit.page, 7);
+        assert_eq!(hit.heading.as_deref(), Some("Phê duyệt"));
+        assert_eq!(hit.matched_by, MatchedBy::Both);
+        assert!((hit.score - 2.75).abs() < 1e-6);
+    }
+
+    #[test]
+    fn dinh_dang_la_khong_lam_mat_ca_danh_sach() {
+        let doc = read_document(&json!({
+            "documentId": "d1",
+            "format": "dinh-dang-tuong-lai",
+            "chunks": 4,
+        }))
+        .unwrap();
+        assert_eq!(doc.format, Format::Text, "nhãn lạ lùi về text, không phải lỗi");
+        assert!(doc.embedded, "có đoạn và không lỗi nghĩa là đã xong");
+
+        let hong = read_document(&json!({
+            "documentId": "d2",
+            "chunks": 0,
+            "error": "PDF cụt",
+        }))
+        .unwrap();
+        assert!(!hong.embedded);
+        assert_eq!(hong.error.as_deref(), Some("PDF cụt"));
+    }
+
+    /// `semantic_ready` chỉ đúng khi **mọi** đoạn đều có vector.
+    ///
+    /// Nhúng nửa chừng vẫn trả về kết quả, nhưng nửa còn lại vô hình với phép tìm ngữ
+    /// nghĩa — và đó đúng là điều người dùng cần biết trước khi kết luận rằng tài liệu
+    /// không nhắc tới chuyện họ hỏi.
+    #[test]
+    fn nhung_nua_chung_khong_phai_la_san_sang() {
+        let root = PathBuf::from("D:/tl");
+        let half = read_stats(
+            &json!({ "chunks": 10, "vectors": 4, "qdrant_reachable": true }),
+            &root,
+            None,
+        );
+        assert!(!half.semantic_ready);
+        let reason = half.reason.expect("phải nói ra vì sao");
+        assert!(reason.contains("4/10"), "phải nói ra con số: {reason}");
+
+        let full = read_stats(
+            &json!({ "chunks": 10, "vectors": 10, "qdrant_reachable": true }),
+            &root,
+            None,
+        );
+        assert!(full.semantic_ready);
+        assert!(full.reason.is_none(), "sẵn sàng thì không có gì để giải thích");
+    }
+
+    /// Thứ tự giải thích đi từ nguyên nhân gốc ra ngoài: service chết thì mọi câu khác
+    /// đều vô nghĩa, và nói "chưa nhúng xong" cho một service đã chết là chỉ sai chỗ sửa.
+    #[test]
+    fn ly_do_chi_dung_nguyen_nhan_goc() {
+        let root = PathBuf::from("D:/tl");
+        let chet = read_stats(
+            &json!({ "chunks": 10, "vectors": 0, "qdrant_reachable": false }),
+            &root,
+            Some("không chạy được uv".to_string()),
+        );
+        let reason = chet.reason.unwrap();
+        assert!(reason.contains("Service"), "{reason}");
+        assert!(
+            !reason.contains("Qdrant"),
+            "đừng đổ lỗi cho Qdrant khi service đã chết"
+        );
+
+        let khong_qdrant = read_stats(
+            &json!({ "chunks": 10, "vectors": 0, "qdrant_reachable": false }),
+            &root,
+            None,
+        );
+        assert!(khong_qdrant.reason.unwrap().contains("docker compose"));
+
+        let trong = read_stats(&json!({ "chunks": 0, "qdrant_reachable": true }), &root, None);
+        assert!(trong.reason.unwrap().contains("Thả tệp"));
+    }
+
+    /// Dòng tiến trình **luôn** kết thúc bằng `Finished`. Thiếu nó thì thanh tiến trình
+    /// của giao diện quay mãi mãi.
+    #[test]
+    fn dong_tien_trinh_luon_dong_lai() {
+        let hong = events_from_report("D:/tl", Err(RagError::Service("chết".into())));
+        assert_eq!(hong.last().unwrap().stage, IngestStage::Finished);
+        assert!(hong.last().unwrap().finished);
+        assert_eq!(hong[0].stage, IngestStage::Failed);
+        assert!(hong[0].error.as_deref().unwrap().contains("chết"));
+
+        let xong = events_from_report(
+            "D:/tl",
+            Ok(json!({ "scanned": 5, "ingested": 5, "failed": [] })),
+        );
+        assert_eq!(xong.len(), 1);
+        assert_eq!(xong[0].stage, IngestStage::Finished);
+        assert_eq!(xong[0].done, 5);
+        assert_eq!(xong[0].total, 5);
+    }
+
+    /// Máy chủ nhúng chưa trả lời là `Embedding`, **không** phải `Failed`.
+    ///
+    /// "1 tệp không nạp được" là một câu sai khi mọi tệp đều đã vào thư viện và chỉ có
+    /// bước nhúng còn nợ. Giao diện đếm `Failed` vào danh sách tệp hỏng.
+    #[test]
+    fn nhung_hong_khong_bi_dem_la_tep_hong() {
+        let events = events_from_report(
+            "D:/tl",
+            Ok(json!({
+                "scanned": 3,
+                "ingested": 3,
+                "failed": [],
+                "embed_error": "không nối được Qdrant",
+            })),
+        );
+        let stages: Vec<_> = events.iter().map(|item| item.stage).collect();
+        assert_eq!(stages, vec![IngestStage::Embedding, IngestStage::Finished]);
+    }
+
+    #[test]
+    fn tep_hong_duoc_ke_ten_kem_ly_do() {
+        let events = events_from_report(
+            "D:/tl",
+            Ok(json!({
+                "scanned": 2,
+                "ingested": 1,
+                "failed": [{ "path": "D:/tl/a.pdf", "reason": "PDF cụt" }],
+            })),
+        );
+        assert_eq!(events[0].stage, IngestStage::Failed);
+        assert_eq!(events[0].path, "D:/tl/a.pdf");
+        assert_eq!(events[0].error.as_deref(), Some("PDF cụt"));
+    }
+}

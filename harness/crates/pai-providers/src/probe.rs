@@ -29,6 +29,16 @@ pub struct ProbeModel {
     /// `/api/show` trên từng mô hình. Giá trị có thẩm quyền đến sau, từ
     /// [`pai_llm::LlmAdapter::capabilities`], khi provider đã được chọn thật.
     pub tools: bool,
+    /// Trò chuyện được. Cùng mức chắc chắn với [`ProbeModel::tools`].
+    pub chat: bool,
+    /// Nhúng được.
+    ///
+    /// Cũng là phỏng đoán ở Ollama và OpenAI-compatible — nhưng là một phỏng đoán **đáng
+    /// hiện ra**: biểu mẫu dùng nó để xếp mô hình nhúng lên đầu ô chọn, và một thứ tự sai
+    /// chỉ tốn của người dùng một cú cuộn, trong khi không có thứ tự nào bắt họ phải nhớ
+    /// tên mô hình nhúng của máy chủ mình. Ở LM Studio thì cờ này **có** thẩm quyền: kho
+    /// của nó khai thẳng `type: "embeddings"`.
+    pub embedding: bool,
     pub context_window: Option<u64>,
 }
 
@@ -186,6 +196,8 @@ fn parse_lmstudio(payload: &Value) -> Vec<ProbeModel> {
                     Some(ProbeModel {
                         id: id.to_string(),
                         tools: caps.tools,
+                        chat: caps.chat,
+                        embedding: caps.embedding,
                         context_window: caps.context_window,
                     })
                 })
@@ -210,6 +222,8 @@ fn parse_names(payload: &Value, array: &str, field: &str) -> Vec<ProbeModel> {
                     Some(ProbeModel {
                         id: id.to_string(),
                         tools: caps.tools,
+                        chat: caps.chat,
+                        embedding: caps.embedding,
                         context_window: caps.context_window,
                     })
                 })

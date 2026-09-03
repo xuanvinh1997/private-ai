@@ -12,6 +12,7 @@ import {
 import { demoDocuments, demoIngestFrames, demoLibraryStats } from "../../lib/fixtures/docs";
 import type { DocumentView, IngestProgress, LibraryStats } from "../../lib/protocol";
 import Icon from "../Icon";
+import { InfoDot } from "../settings/FormKit";
 import ConfirmDialog from "../projects/ConfirmDialog";
 import { Button } from "../projects/DialogShell";
 import DocumentTable from "./DocumentTable";
@@ -212,14 +213,19 @@ export default function DocsView(props: {
     <div class="min-h-0 flex-1 overflow-y-auto px-(--page-pad-x) py-(--page-pad-y)">
       <div class="mx-auto flex max-w-[880px] flex-col gap-2xl">
         <section class="flex flex-col gap-md">
-          <div class="flex flex-col gap-3xs">
-            <h2 class="m-0 text-md font-semibold text-ink">
-              {props.name ?? "Thư viện tài liệu"}
-            </h2>
-            <p class="m-0 text-xs text-muted">
-              Trợ lý tìm và đọc những tài liệu ở đây để trả lời. Nó không sửa tệp và không
-              chạy lệnh trong dự án loại này.
-            </p>
+          <div class="flex items-start gap-sm">
+            <span class="mt-3xs grid size-7 shrink-0 place-items-center rounded-panel bg-accent-soft text-accent-ink">
+              <Icon name="library" size={15} />
+            </span>
+            <div class="flex min-w-0 flex-col gap-3xs">
+              <h2 class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
+                {props.name ?? "Thư viện tài liệu"}
+                <InfoDot text="Trợ lý không sửa tệp và không chạy lệnh trong dự án loại này." />
+              </h2>
+              <p class="m-0 text-xs text-muted">
+                Trợ lý đọc tài liệu ở đây để trả lời.
+              </p>
+            </div>
           </div>
 
           <StatsStrip
@@ -281,12 +287,13 @@ export default function DocsView(props: {
                 <span class="mt-3xs shrink-0 text-warn">
                   <Icon name="warn" size={15} />
                 </span>
-                <p class="m-0 flex-1 text-xs text-text">
-                  <Show when={added() > 0} fallback={<>Không tệp nào trong lô này nạp được.</>}>
-                    {added()} tệp đã vào thư viện.
-                  </Show>{" "}
-                  {failures().length} tệp không nạp được — thư viện vẫn dùng bình thường
-                  với phần còn lại.
+                <p class="m-0 flex flex-1 flex-wrap items-center gap-2xs text-xs text-text">
+                  <span>
+                    <Show when={added() > 0} fallback={<>Không tệp nào nạp được.</>}>
+                      {added()} tệp đã vào, {failures().length} tệp không nạp được.
+                    </Show>
+                  </span>
+                  <InfoDot text="Thư viện vẫn dùng bình thường với phần còn lại." />
                 </p>
                 <button
                   type="button"
@@ -345,7 +352,8 @@ export default function DocsView(props: {
           <ConfirmDialog
             icon="trash"
             title={`Xoá "${doc().title}" khỏi thư viện?`}
-            body="Tài liệu và toàn bộ đoạn đã cắt từ nó bị bỏ khỏi thư viện, nên trợ lý sẽ không còn tìm thấy nội dung này nữa. Tệp gốc trên đĩa vẫn nguyên — nạp lại được bất cứ lúc nào."
+            body="Tệp gốc trên đĩa vẫn nguyên."
+            more="Tài liệu và toàn bộ đoạn đã cắt từ nó bị bỏ khỏi thư viện, nên trợ lý sẽ không còn tìm thấy nội dung này nữa. Tệp gốc trên đĩa vẫn nguyên — nạp lại được bất cứ lúc nào."
             detail={doc().path}
             confirmLabel="Xoá khỏi thư viện"
             onClose={() => setRemoving(null)}
@@ -396,7 +404,7 @@ function StatsStrip(props: {
             fallback={
               <p class="m-0 flex items-center gap-2xs text-2xs text-success">
                 <Icon name="check" size={12} />
-                Tìm theo ngữ nghĩa và theo từ khoá đều đang chạy.
+                Tìm theo ngữ nghĩa và từ khoá đều đang chạy.
               </p>
             }
           >
@@ -404,13 +412,15 @@ function StatsStrip(props: {
               <span class="mt-3xs shrink-0 text-warn">
                 <Icon name="clock" size={13} />
               </span>
-              <p class="m-0 text-2xs text-text">
-                <Show when={stats().reason}>
-                  {(reason) => <>{reason()} </>}
-                </Show>
-                Tìm bằng <strong class="font-medium">từ khoá vẫn đang chạy</strong>, nên
-                thư viện dùng được ngay — câu trả lời sẽ bắt được nhiều cách diễn đạt hơn
-                khi phần nhúng chạy xong.
+              <p class="m-0 flex flex-wrap items-center gap-2xs text-2xs text-text">
+                <span>
+                  <Show when={stats().reason}>
+                    {(reason) => <>{reason()} </>}
+                  </Show>
+                  Tìm bằng <strong class="font-medium">từ khoá vẫn chạy</strong>, dùng
+                  được ngay.
+                </span>
+                <InfoDot text="Câu trả lời sẽ bắt được nhiều cách diễn đạt hơn khi phần nhúng chạy xong." />
               </p>
             </div>
           </Show>
@@ -419,19 +429,17 @@ function StatsStrip(props: {
               hỏng là một nút người dùng phải học thuộc chỗ nó *sẽ* xuất hiện, và họ tới
               đây vì đang không hiểu chuyện gì xảy ra — đó là lúc tệ nhất để đi tìm. */}
           <div class="flex flex-wrap items-center justify-between gap-sm border-t border-line pt-sm">
-            <p class="m-0 max-w-[52ch] text-2xs text-muted">
-              <Show
-                when={stats().chunks > stats().embeddedChunks}
-                fallback={
-                  <>
-                    Đọc lại mọi tệp trong thư mục, kể cả tệp lần trước đọc hỏng và tệp
-                    không đổi từ lần quét trước.
-                  </>
-                }
-              >
-                Còn {stats().chunks - stats().embeddedChunks} đoạn chờ nhúng. Nếu chờ mãi
-                không xong, bấm để đọc lại cả thư mục và nhúng nốt phần còn thiếu.
-              </Show>
+            <p class="m-0 flex max-w-[52ch] flex-wrap items-center gap-2xs text-2xs text-muted">
+              <span>
+                <Show
+                  when={stats().chunks > stats().embeddedChunks}
+                  fallback={<>Đọc lại mọi tệp, kể cả tệp lần trước hỏng.</>}
+                >
+                  Còn {stats().chunks - stats().embeddedChunks} đoạn chờ nhúng — bấm để
+                  nhúng nốt.
+                </Show>
+              </span>
+              <InfoDot text="Đọc lại mọi tệp trong thư mục, kể cả tệp lần trước đọc hỏng và tệp không đổi từ lần quét trước." />
             </p>
             <Button
               variant="outline"

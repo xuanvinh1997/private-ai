@@ -6,6 +6,7 @@ import {
   demoEmbeddingSetting,
   demoProbeEmbedding,
   demoProbeProvider,
+  demoProviderModels,
   demoProviderPresets,
   demoProviders,
   demoRemoveProvider,
@@ -25,11 +26,11 @@ import type {
 } from "./protocol";
 
 /**
- * Mười lệnh provider, chia hai nhóm theo cách xử lý lỗi — cùng ranh giới với
+ * Mười một lệnh provider, chia hai nhóm theo cách xử lý lỗi — cùng ranh giới với
  * `projects.ts`: "người dùng có đang đứng chờ một thứ hiện lên không".
  *
- *   - `listProviders`, `providerPresets`, `loadModels`, `embeddingSetting` chạy lúc mở
- *     màn hình. Chúng nuốt lỗi và trả mặc định: một hộp lỗi ở đó chặn mất lối vào trang
+ *   - `listProviders`, `providerPresets`, `loadModels`, `providerModels`,
+ *     `embeddingSetting` chạy lúc mở màn hình. Chúng nuốt lỗi và trả mặc định: một hộp lỗi ở đó chặn mất lối vào trang
  *     cài đặt, mà trang cài đặt lại đúng là chỗ người dùng đi tới để *sửa* cái đang hỏng.
  *   - `saveProvider`, `removeProvider`, `setActiveProvider`, `setProviderModel`,
  *     `setEmbedding`, `probeProvider`, `probeEmbedding` **ném ra ngoài**. Cả bảy đều đi
@@ -105,11 +106,18 @@ export function setProviderModel(id: string, model: string): Promise<void> {
  * nhất là giá trị người dùng vừa gõ vào và chưa dám lưu. Với provider đã có khoá thì để
  * `apiKey: null` và lõi tự lấy khoá cũ ra dùng.
  *
- * **`ProviderProbe.models[].tools` ở đây không có thẩm quyền.** Một lần thử cố ý không
- * trả tiền để hỏi năng lực gọi tool của từng mô hình, nên lõi trả `false` cho tất cả.
- * Giao diện phải đọc cờ đó từ `activeModels()`; hiện cảnh báo "không gọi được tool" từ
- * kết quả thử là dán nhãn sai lên toàn bộ danh sách, và một cảnh báo luôn bật là một
- * cảnh báo không ai đọc nữa.
+ * **Hai cờ, hai mức chắc chắn — đừng dùng lẫn.**
+ *
+ *   - `models[].tools` ở đây **không có thẩm quyền**: một lần thử cố ý không trả tiền để
+ *     hỏi năng lực gọi tool của từng mô hình, nên lõi trả `false` cho gần hết. Giao diện
+ *     phải đọc cờ đó từ `activeModels()`; hiện cảnh báo "không gọi được tool" từ kết quả
+ *     thử là dán nhãn sai lên toàn bộ danh sách, và một cảnh báo luôn bật là một cảnh báo
+ *     không ai đọc nữa.
+ *   - `models[].embedding` thì **dùng được ngay**. Nó cũng chỉ là đoán theo tên ở Ollama
+ *     và OpenAI-compatible (ở LM Studio thì có thẩm quyền), nhưng hậu quả của một lần
+ *     đoán trượt khác hẳn: nó chỉ xếp một mô hình xuống dưới trong ô chọn mô hình nhúng,
+ *     chứ không dán nhãn hỏng lên nó — và không có nó thì người dùng phải tự nhớ tên mô
+ *     hình nhúng của máy chủ mình.
  */
 export function probeProvider(input: ProviderInput): Promise<ProviderProbe> {
   if (isDemo()) return Promise.resolve(demoProbeProvider(input));
@@ -129,6 +137,28 @@ export function probeProvider(input: ProviderInput): Promise<ProviderProbe> {
 export async function activeModels(): Promise<ModelChoice[]> {
   if (isDemo()) return demoActiveModels();
   return await listModels();
+}
+
+/**
+ * Kho mô hình của **một provider bất kỳ**, kèm cờ `embedding` của từng cái.
+ *
+ * Khác `activeModels()` ở đúng chỗ màn hình mô hình nhúng cần: `activeModels()` chỉ biết
+ * provider đang giữ vai *hội thoại*, mà vai nhúng thường nằm trên một máy chủ khác —
+ * nhúng tại chỗ, trò chuyện từ xa là cấu hình mà việc tách hai vai tồn tại để phục vụ.
+ *
+ * Nuốt lỗi và trả rỗng: nó chạy ngay khi người dùng vừa chọn provider, và rỗng ở đây có
+ * nghĩa **không hỏi được máy chủ** — một trạng thái bình thường (máy chủ chưa bật, hoặc
+ * provider từ xa không liệt kê). Nơi gọi phải giữ lối nhập tay cho đúng trường hợp đó.
+ */
+export async function providerModels(providerId: string): Promise<ModelChoice[]> {
+  if (isDemo()) return demoProviderModels(providerId);
+  if (!inTauri()) return [];
+  try {
+    return await invoke<ModelChoice[]>("provider_models", { providerId });
+  } catch (err) {
+    console.error("không đọc được kho mô hình của provider", err);
+    return [];
+  }
 }
 
 /**

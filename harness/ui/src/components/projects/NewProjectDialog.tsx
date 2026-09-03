@@ -5,6 +5,7 @@ import { demoCreatedProject } from "../../lib/fixtures/projects";
 import { createProject, pickDirectory } from "../../lib/projects";
 import type { Project, ProjectKind } from "../../lib/protocol";
 import Icon, { type IconName } from "../Icon";
+import { InfoDot } from "../settings/FormKit";
 import DialogShell, { Button } from "./DialogShell";
 
 /**
@@ -75,7 +76,8 @@ export default function NewProjectDialog(props: {
     <DialogShell
       icon="plus"
       title="Dự án mới"
-      desc="Trỏ vào một thư mục đã có sẵn trên máy. Không có tệp nào bị tạo hay sửa trong thư mục đó."
+      desc="Trỏ vào một thư mục đã có trên máy."
+      more="Không có tệp nào bị tạo hay sửa trong thư mục đó."
       busy={busy()}
       width="lg"
       onClose={() => {
@@ -129,9 +131,9 @@ export default function NewProjectDialog(props: {
 
       {/* Câu này ở lại ngoài hai thẻ chọn: nó nói về *hậu quả của việc chọn sai*, thứ
           không thuộc về riêng thẻ nào và cũng là thứ người dùng chỉ hiểu ra rất muộn. */}
-      <p class="m-0 text-2xs text-faint">
-        Chọn nhầm loại thì trợ lý sẽ không sửa được tệp mà không nói rõ vì sao. Đổi loại
-        sau này nghĩa là tạo lại dự án — thư mục thì vẫn nguyên.
+      <p class="m-0 flex items-center gap-2xs text-2xs text-faint">
+        Đổi loại sau này nghĩa là tạo lại dự án.
+        <InfoDot text="Chọn nhầm loại thì trợ lý sẽ không sửa được tệp mà không nói rõ vì sao. Đổi loại sau này nghĩa là tạo lại dự án — thư mục thì vẫn nguyên." />
       </p>
 
       <div class="flex flex-col gap-2xs">
@@ -161,7 +163,7 @@ export default function NewProjectDialog(props: {
           </div>
         </label>
         <p class="m-0 text-2xs text-faint">
-          Kéo thẳng một thư mục vào cửa sổ cũng điền được ô này.
+          Kéo một thư mục vào cửa sổ cũng điền được.
         </p>
       </div>
 
@@ -187,14 +189,14 @@ const KINDS: { id: ProjectKind; label: string; icon: IconName; can: string; cann
     id: "code",
     label: "Mã nguồn",
     icon: "code",
-    can: "Trợ lý đọc, sửa tệp và chạy được lệnh trong thư mục.",
-    cannot: "Mỗi thao tác ghi vẫn hỏi ý bạn trước khi chạy.",
+    can: "Trợ lý đọc, sửa tệp và chạy lệnh.",
+    cannot: "Mỗi thao tác ghi đều hỏi ý bạn trước.",
   },
   {
     id: "docs",
     label: "Thư viện tài liệu",
     icon: "library",
-    can: "Trợ lý tìm và đọc tài liệu để trả lời câu hỏi.",
+    can: "Trợ lý tìm và đọc tài liệu để trả lời.",
     cannot: "Không sửa tệp, không chạy lệnh.",
   },
 ];

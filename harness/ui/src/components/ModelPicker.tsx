@@ -123,10 +123,11 @@ export default function ModelPicker(props: {
           <Show
             when={choices().length > 0}
             fallback={
-              <p class="m-0 px-sm py-xs text-2xs text-faint">
+              <p class="m-0 flex items-center gap-2xs px-sm py-xs text-2xs text-faint">
+                <Icon name="model" size={13} />
                 {props.models.length === 0
                   ? "Chưa hỏi được máy chủ mô hình nào."
-                  : "Máy chủ chỉ có mô hình nhúng — chưa có mô hình nào trò chuyện được."}
+                  : "Chỉ có mô hình nhúng, không trò chuyện được."}
               </p>
             }
           >

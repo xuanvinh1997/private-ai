@@ -1,0 +1,43 @@
+# Stack chạy nền của Private AI: Ollama phục vụ model, Qdrant giữ vector, Neo4j giữ
+# knowledge graph.
+#
+#   docker compose up -d
+#   docker compose exec ollama ollama create <ten> -f /models/<thu-muc>/Modelfile
+#
+# Tiến trình `pai-rag-service` **không** nằm ở đây: nó chạy trên máy, được ứng dụng khởi
+# động qua MCP stdio. Nhờ vậy nó đọc thẳng thư mục tài liệu của người dùng bằng đúng
+# đường dẫn Windows, không cần bind mount và không cần ánh xạ đường dẫn hai đầu.
+
+name: private-ai
+
+# Qdrant và Neo4j nằm ở services/rag/deploy/ cùng với README vận hành và tệp cấu hình
+# Qdrant của chúng. Gộp bằng `include` thay vì chép vào đây: một lệnh `docker compose
+# up -d` dựng cả stack, mà phần tinh chỉnh của hai kho dữ liệu vẫn ở cạnh tài liệu giải
+# thích chúng. Đường dẫn tương đối bên trong tệp được include (`./qdrant/local.yaml`)
+# vẫn tính theo thư mục của chính nó.
+include:
+  - path: services/rag/deploy/docker-compose.yml
+    env_file: services/rag/deploy/.env
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - "D:/ollama:/root/.ollama"
+      - "D:/Development/lmstudio/models/lmstudio-community:/models:ro"
+    environment:
+      - "OLLAMA_HOST=0.0.0.0:11434"
+      - "OLLAMA_KEEP_ALIVE=30m"
+      # RTX PRO 6000 Blackwell co 96 GB VRAM -> giu 2 model cung luc
+      - "OLLAMA_MAX_LOADED_MODELS=2"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

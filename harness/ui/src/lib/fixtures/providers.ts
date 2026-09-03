@@ -141,6 +141,22 @@ export function demoActiveModels(): ModelChoice[] {
 }
 
 /**
+ * Kho mô hình của một provider bất kỳ — bản mẫu của `provider_models`.
+ *
+ * Đi theo đúng địa chỉ như `demoProbeProvider` để hai lệnh không kể hai câu chuyện khác
+ * nhau về cùng một máy chủ. Hai hàng trả về **rỗng** là phần quan trọng nhất của bộ mẫu
+ * này: rỗng nghĩa là *không hỏi được*, và màn hình mô hình nhúng phải rơi về ô nhập tay
+ * ở đó chứ không được khoá lại.
+ */
+export function demoProviderModels(providerId: string): ModelChoice[] {
+  const entry = all().find((provider) => provider.id === providerId) ?? null;
+  if (entry === null) return [];
+  const url = entry.baseUrl;
+  if (url.includes(":8000") || url.includes(":1234")) return [];
+  return entry.kind === "ollama" ? [...OLLAMA_MODELS] : [...OPENAI_MODELS];
+}
+
+/**
  * Ba kiểu hỏng, ba câu khác nhau.
  *
  * "Không nối được", "nối được nhưng khoá bị từ chối" và "nối được nhưng chưa có mô hình
@@ -342,7 +358,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: true,
       defaultModel: "qwen2.5-coder:14b",
       homepage: "https://ollama.com",
-      hint: "Chạy mô hình ngay trên máy. Cài xong thì `ollama pull qwen2.5-coder:14b`.",
+      hint: "Chạy mô hình ngay trên máy của bạn.",
     },
     {
       id: "lmstudio",
@@ -353,7 +369,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: true,
       defaultModel: null,
       homepage: "https://lmstudio.ai",
-      hint: "Giao diện tải mô hình về máy, có sẵn máy chủ tương thích OpenAI.",
+      hint: "Giao diện tải mô hình về máy, kèm máy chủ OpenAI.",
     },
     {
       id: "llamacpp",
@@ -364,7 +380,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: true,
       defaultModel: null,
       homepage: "https://github.com/ggml-org/llama.cpp",
-      hint: "`llama-server` nhẹ nhất trong nhóm chạy tại chỗ, nhưng phải tự nạp tệp GGUF.",
+      hint: "Nhẹ nhất nhóm tại chỗ, nhưng phải tự nạp GGUF.",
     },
     {
       id: "vllm",
@@ -375,7 +391,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: false,
       defaultModel: null,
       homepage: "https://docs.vllm.ai",
-      hint: "Máy chủ suy luận cho GPU. Thường đặt trên một máy khác trong mạng nội bộ.",
+      hint: "Máy chủ GPU, thường đặt trên máy khác trong mạng.",
     },
     {
       id: "openai",
@@ -386,7 +402,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: false,
       defaultModel: "gpt-4o-mini",
       homepage: "https://platform.openai.com/api-keys",
-      hint: "Mã nguồn và câu hỏi của bạn được gửi tới máy chủ OpenAI.",
+      hint: "Mã nguồn và câu hỏi được gửi tới máy chủ OpenAI.",
     },
     {
       id: "anthropic",
@@ -397,7 +413,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: false,
       defaultModel: "claude-sonnet-4-5",
       homepage: "https://console.anthropic.com/settings/keys",
-      hint: "Mã nguồn và câu hỏi của bạn được gửi tới máy chủ Anthropic.",
+      hint: "Mã nguồn và câu hỏi được gửi tới máy chủ Anthropic.",
     },
     {
       id: "openrouter",
@@ -408,7 +424,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: false,
       defaultModel: "anthropic/claude-sonnet-4.5",
       homepage: "https://openrouter.ai/keys",
-      hint: "Một khoá đi tới nhiều nhà cung cấp. Yêu cầu của bạn đi qua máy chủ OpenRouter.",
+      hint: "Một khoá cho nhiều provider, đi qua máy chủ OpenRouter.",
     },
     {
       id: "deepseek",
@@ -419,7 +435,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: false,
       defaultModel: "deepseek-chat",
       homepage: "https://platform.deepseek.com/api_keys",
-      hint: "Mã nguồn và câu hỏi của bạn được gửi tới máy chủ DeepSeek.",
+      hint: "Mã nguồn và câu hỏi được gửi tới máy chủ DeepSeek.",
     },
     {
       id: "groq",
@@ -430,7 +446,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: false,
       defaultModel: "llama-3.3-70b-versatile",
       homepage: "https://console.groq.com/keys",
-      hint: "Suy luận rất nhanh, nhưng danh sách mô hình gọi được tool khá hẹp.",
+      hint: "Rất nhanh, nhưng ít mô hình gọi được tool.",
     },
     {
       id: "xai",
@@ -441,7 +457,7 @@ export function demoProviderPresets(): ProviderPreset[] {
       onDevice: false,
       defaultModel: "grok-4",
       homepage: "https://console.x.ai",
-      hint: "Mã nguồn và câu hỏi của bạn được gửi tới máy chủ xAI.",
+      hint: "Mã nguồn và câu hỏi được gửi tới máy chủ xAI.",
     },
   ];
 }

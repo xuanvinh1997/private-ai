@@ -2,6 +2,7 @@ import { For, Show } from "solid-js";
 import { displayMode } from "../lib/prefs";
 import type { ProjectKind } from "../lib/protocol";
 import Icon from "./Icon";
+import { InfoDot } from "./settings/FormKit";
 
 /**
  * Gợi ý cho dự án **mã nguồn**.
@@ -51,7 +52,7 @@ const SUGGESTIONS_TAI_LIEU = [
  */
 const SUGGESTIONS_KHONG_DU_AN = [
   "Khác nhau giữa async và luồng trong Rust là gì?",
-  "Viết regex khớp địa chỉ email rồi giải thích từng phần",
+  "Viết regex khớp email rồi giải thích từng phần",
   "SQLite hay Postgres cho một ứng dụng chạy tại chỗ?",
   "Giải thích `git rebase` bằng một ví dụ ngắn",
 ];
@@ -88,7 +89,7 @@ export function EmptyLead(props: {
                 rồi đóng nó lại. */}
             <h2 class="m-0 text-2xl font-semibold text-ink">Trò chuyện được ngay</h2>
             <p class="m-0 max-w-[48ch] text-sm text-muted">
-              Chưa mở dự án nào, nhưng cứ hỏi bên dưới — trợ lý trả lời bình thường.
+              Chưa có dự án, trợ lý vẫn trả lời được.
             </p>
 
             {/* Câu thứ hai là câu giới hạn, và nó nói bằng lời của người dùng chứ không
@@ -98,9 +99,12 @@ export function EmptyLead(props: {
               <span class="mt-3xs shrink-0 text-faint">
                 <Icon name="warn" size={13} />
               </span>
-              <span>
-                Chưa có dự án thì trợ lý không đọc, không sửa và không chạy được gì trên
-                máy này. Mở một dự án là chỉ cho nó đúng một thư mục để làm việc.
+              <span class="flex flex-wrap items-center gap-2xs">
+                Trợ lý chưa đọc, sửa hay chạy gì trên máy.
+                <InfoDot
+                  label="Về giới hạn khi chưa có dự án"
+                  text="Chưa có dự án thì trợ lý không đọc, không sửa và không chạy được gì trên máy này. Mở một dự án là chỉ cho nó đúng một thư mục để làm việc."
+                />
               </span>
             </p>
 
@@ -122,18 +126,24 @@ export function EmptyLead(props: {
             mở**. Hứa "sửa được tệp, chạy được lệnh" trong một thư viện tài liệu — nơi lõi
             chỉ cắm `rag` — là hứa hai thứ không tồn tại, và người dùng chỉ phát hiện ra
             sau khi đã nhờ một việc không ai làm được. */}
-        <p class="m-0 max-w-[46ch] text-sm text-muted">
+        <p class="m-0 flex max-w-[46ch] flex-wrap items-center justify-center gap-2xs text-sm text-muted">
           <Show
             when={props.kind === "docs"}
             fallback={
               <>
-                Trợ lý đọc và sửa được tệp trong thư mục làm việc, chạy được lệnh, và hỏi
-                lại trước mỗi thao tác ghi.
+                Trợ lý đọc, sửa tệp và chạy lệnh ở đây.
+                <InfoDot
+                  label="Về quyền trong dự án mã nguồn"
+                  text="Trợ lý đọc và sửa được tệp trong thư mục làm việc, chạy được lệnh, và hỏi lại trước mỗi thao tác ghi."
+                />
               </>
             }
           >
-            Trợ lý tìm và đọc tài liệu trong thư viện này để trả lời, kèm chỗ nó lấy ra.
-            Nó không sửa tệp và không chạy lệnh trong dự án loại này.
+            Trợ lý đọc tài liệu để trả lời, kèm nguồn.
+            <InfoDot
+              label="Về quyền trong thư viện tài liệu"
+              text="Trợ lý tìm và đọc tài liệu trong thư viện này để trả lời, kèm chỗ nó lấy ra. Nó không sửa tệp và không chạy lệnh trong dự án loại này."
+            />
           </Show>
         </p>
       </Show>

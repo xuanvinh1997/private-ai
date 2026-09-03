@@ -14,13 +14,12 @@ import type { ModelChoice, Provider, ProviderInput, ProviderPreset } from "../..
 import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
 import ConfirmDialog from "./ConfirmDialog";
-import { Banner, Button, Row, RowGroup, SectionHead, Select, Toggle } from "../settings/FormKit";
-import PresetPicker from "./PresetPicker";
+import EmbeddingView from "./EmbeddingView";
+import { Banner, Button, InfoDot, Row, RowGroup, SectionHead, Select, Toggle } from "../settings/FormKit";
 import ProviderForm from "./ProviderForm";
 
 type Sheet =
   | { kind: "none" }
-  | { kind: "presets" }
   | { kind: "form"; provider: Provider | null; preset: ProviderPreset | null }
   | { kind: "delete"; provider: Provider };
 
@@ -69,8 +68,16 @@ export default function ProvidersView() {
     active() === null ? Promise.resolve<ModelChoice[]>([]) : activeModels(),
   );
 
+  /**
+   * Mỗi lần danh sách máy chủ đổi thì con số này tăng, và mục nhúng ở cuối trang hỏi lại
+   * lõi. Một con số chứ không phải một `Provider[]` truyền xuống: mục nhúng cần cả cấu
+   * hình nhúng đang có hiệu lực nữa, và thứ đó chỉ lõi mới trả lời được.
+   */
+  const [stamp, setStamp] = createSignal(0);
+
   const refresh = async () => {
     setProviders(await listProviders());
+    setStamp((n) => n + 1);
   };
 
   onMount(() => {
@@ -131,14 +138,9 @@ export default function ProvidersView() {
     <div class="flex flex-col gap-2xl">
       <SectionHead
         title="Nhà cung cấp mô hình"
-        desc="Một provider giữ vai hội thoại tại một thời điểm. Vai nhúng chọn riêng ở mục Mô hình nhúng."
-        actions={() => (
-          <Button
-            label="Thêm provider"
-            icon="plus"
-            onClick={() => setSheet({ kind: "presets" })}
-          />
-        )}
+        icon="server"
+        desc="Mỗi lúc chỉ một provider giữ vai hội thoại."
+        more="Một provider giữ vai hội thoại tại một thời điểm. Vai nhúng chọn riêng ở mục Mô hình nhúng."
       />
 
       <Show when={error()}>
@@ -150,19 +152,7 @@ export default function ProvidersView() {
       </Show>
 
       <Show when={ready()} fallback={<Skeleton />}>
-        <Show
-          when={providers().length > 0}
-          fallback={
-            <div class="flex flex-col items-start gap-md rounded-card border border-dashed border-line bg-surface-soft px-(--card-pad-x) py-2xl">
-              <p class="m-0 max-w-[52ch] text-xs text-muted">
-                Chưa có nhà cung cấp nào. Không có provider thì trợ lý không gọi được mô
-                hình nào cả — thêm một cái chạy tại chỗ là xong, và mã nguồn của bạn không
-                đi đâu hết.
-              </p>
-              <Button label="Chọn từ danh mục" icon="model" onClick={() => setSheet({ kind: "presets" })} />
-            </div>
-          }
-        >
+        <Show when={providers().length > 0}>
           <ActiveNotice provider={active()} model={chosen()} loading={models.loading} />
 
           <RowGroup>
@@ -196,11 +186,11 @@ export default function ProvidersView() {
             </Key>
           </RowGroup>
         </Show>
-      </Show>
 
-      <Show when={sheet().kind === "presets"}>
-        <PresetPicker
+        <Catalog
           presets={presets()}
+          added={providers()}
+          empty={providers().length === 0}
           onPick={(preset) => {
             setFormError(null);
             setSheet({ kind: "form", provider: null, preset });
@@ -209,26 +199,31 @@ export default function ProvidersView() {
             setFormError(null);
             setSheet({ kind: "form", provider: null, preset: null });
           }}
-          onClose={() => setSheet({ kind: "none" })}
         />
+
+        {/* Vai nhúng, cùng trang, dưới cùng danh sách máy chủ.
+            Nó **không** phải một tuỳ chọn nâng cao của việc chọn mô hình hội thoại — hai
+            vai độc lập, và cấu hình đáng dùng nhất lại là cấu hình ghép chéo: nhúng bằng
+            một mô hình nhỏ chạy tại chỗ, trò chuyện bằng một mô hình lớn từ xa. Nhưng cả
+            hai đều được giao **từ đúng danh sách provider ở trên**, nên bắt người dùng
+            sang một trang khác để giao vai thứ hai là bắt họ đi qua cùng một danh sách hai
+            lần. Đứng dưới, sau danh mục, để thứ tự đọc trùng thứ tự làm: thêm máy chủ
+            trước, giao vai sau.
+
+            Chỉ hiện khi đã có provider: một ô chọn mô hình nhúng trên một máy không có máy
+            chủ nào là một câu hỏi chưa ai trả lời được. */}
+        <Show when={providers().length > 0}>
+          <div class="border-t border-line pt-2xl">
+            <EmbeddingView reloadKey={stamp()} />
+          </div>
+        </Show>
       </Show>
 
       <Show when={formSheet()} keyed>
         {(open) => (
           <ProviderForm
             provider={open.provider}
-            preset={
-              open.preset === null
-                ? null
-                : {
-                    name: open.preset.name,
-                    kind: open.preset.kind,
-                    baseUrl: open.preset.baseUrl,
-                    // `defaultModel` chỉ là gợi ý điền sẵn; danh sách có thẩm quyền đến
-                    // từ máy chủ sau khi có base URL và khoá.
-                    model: open.preset.defaultModel,
-                  }
-            }
+            preset={open.preset}
             busy={busy()}
             error={formError()}
             onSubmit={(input) => void submit(input)}
@@ -241,7 +236,8 @@ export default function ProvidersView() {
         {(target) => (
           <ConfirmDialog
             title={`Xoá ${target.name}?`}
-            body="Cấu hình và khoá API của provider này bị xoá khỏi máy. Thao tác không hoàn tác được."
+            body="Xoá vĩnh viễn cấu hình và khoá API khỏi máy."
+            more="Cấu hình và khoá API của provider này bị xoá khỏi máy. Thao tác không hoàn tác được."
             detail={target.baseUrl}
             confirmLabel="Xoá provider"
             busy={busy()}
@@ -260,6 +256,118 @@ export default function ProvidersView() {
 }
 
 /**
+ * Danh mục nhà cung cấp — **đứng thẳng trên trang**, không nằm sau một hộp thoại.
+ *
+ * Bản trước giấu nó sau nút "Thêm provider", nên trang này mở ra chỉ trả lời được câu hỏi
+ * của người *đã có* provider. Người mở nó ra vì chưa có cái nào thì gặp một ô rỗng và một
+ * cái nút, rồi một hộp thoại danh mục, rồi một hộp thoại biểu mẫu **chồng lên** hộp thoại
+ * đó — ba lớp cho một việc mà đối thủ làm bằng một cú bấm trên một hàng.
+ *
+ * Chỗ gập là điểm chính, và nó **không** phải "năm mục đầu" tuỳ tiện: mở sẵn là nhóm
+ * **chạy trên máy này**, còn nhóm gửi dữ liệu ra ngoài nằm sau một cú bấm. Trong một ứng
+ * dụng mà cả kiến trúc dựng quanh việc dữ liệu không rời khỏi máy, thứ tự mặc định của
+ * danh mục là một câu khẳng định chứ không phải một chi tiết sắp xếp.
+ *
+ * Nút "Nối" là `outline`, không phải nút chính: mười hàng, mười nút xanh thì không nút nào
+ * còn là hành động chính nữa.
+ */
+function Catalog(props: {
+  presets: ProviderPreset[];
+  added: Provider[];
+  /** Chưa có provider nào — khi ấy danh mục là nội dung chính của trang, không phải phần đuôi. */
+  empty: boolean;
+  onPick: (preset: ProviderPreset) => void;
+  onManual: () => void;
+}) {
+  const [more, setMore] = createSignal(false);
+  const local = () => props.presets.filter((entry) => entry.onDevice);
+  const remote = () => props.presets.filter((entry) => !entry.onDevice);
+
+  /** Đã có một provider trỏ vào đúng địa chỉ ấy chưa. Dấu `/` cuối không tính là khác. */
+  const already = (preset: ProviderPreset) => {
+    const bare = (url: string) => url.trim().replace(/\/+$/, "").toLowerCase();
+    return props.added.some((entry) => bare(entry.baseUrl) === bare(preset.baseUrl));
+  };
+
+  /**
+   * Một hàng danh mục: biểu tượng, tên, nút. **Không có dòng mô tả.**
+   *
+   * `hint` của mỗi mục dài mười tám chữ — nó nói cả điều kiện chạy được ("phải bật máy chủ
+   * cục bộ trong tab Developer") chứ không chỉ nói mục này là gì. Trải bốn câu như thế
+   * xuống bốn hàng thì danh mục thành một trang chữ, mà người đang lướt danh mục thì chưa
+   * cần điều kiện của mục họ chưa chọn. Nên nó vào `InfoDot`, và nó hiện đầy đủ ở hộp
+   * thoại — đúng lúc người dùng vừa bấm "Nối" và sắp cần tới nó.
+   */
+  const entry = (preset: ProviderPreset) => (
+    <Row
+      label={preset.name}
+      icon={preset.onDevice ? "plug" : "cloud"}
+      more={`${preset.hint} Địa chỉ mặc định ${preset.baseUrl}.${preset.needsKey ? " Cần khoá API." : ""}`}
+      control={() => (
+        <>
+          {/* "Đã thêm" không khoá cái nút: hai máy chủ Ollama ở hai cổng khác nhau là một
+              cấu hình hợp lệ, và một hàng bị khoá thì không có gì nói ra vì sao. */}
+          <Show when={already(preset)}>
+            <span class="rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-faint">
+              đã thêm
+            </span>
+          </Show>
+          <Button label="Nối" variant="outline" icon="plus" onClick={() => props.onPick(preset)} />
+        </>
+      )}
+    />
+  );
+
+  return (
+    <section class="flex flex-col gap-sm">
+      <h3 class="m-0 flex items-center gap-2xs text-xs font-semibold text-ink">
+        {props.empty ? "Chọn một nhà cung cấp để bắt đầu" : "Thêm nhà cung cấp"}
+        <InfoDot
+          label="Về danh mục nhà cung cấp"
+          text="Bốn mục đầu chạy ngay trên máy này: mã nguồn và câu hỏi của bạn không đi đâu cả. Các dịch vụ từ xa nằm sau nút xem thêm — chúng nhanh hơn và mạnh hơn, nhưng mọi thứ bạn gửi đều rời khỏi máy. Máy chủ không có trong danh mục thì dùng mục tự khai báo."
+        />
+      </h3>
+
+      <RowGroup>
+        <For each={local()}>{entry}</For>
+
+        {/* Tự khai báo là một hàng như mọi hàng khác, không phải một nút lạc ở chân hộp
+            thoại: `llama-server`, một cổng nội bộ, một máy chủ tự dựng — đó là những thứ
+            người dùng của ứng dụng này thật sự chạy, chứ không phải trường hợp ngoại lệ. */}
+        <Row
+          label="Tự khai báo"
+          icon="sparkle"
+          more="Dùng cho máy chủ không có trong danh mục: llama.cpp tự dựng, một cổng trung chuyển nội bộ, hay một dịch vụ tương thích OpenAI khác. Bạn tự điền tên, loại API và địa chỉ."
+          control={() => (
+            <>
+              <span class="rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-faint">
+                tuỳ chỉnh
+              </span>
+              <Button label="Khai báo" variant="outline" icon="plus" onClick={props.onManual} />
+            </>
+          )}
+        />
+
+        <Show when={more()}>
+          <For each={remote()}>{entry}</For>
+        </Show>
+      </RowGroup>
+
+      <Show when={!more() && remote().length > 0}>
+        <div>
+          <Button
+            label={`Xem thêm ${remote().length} dịch vụ từ xa`}
+            variant="ghost"
+            icon="cloud"
+            onClick={() => setMore(true)}
+          />
+        </div>
+      </Show>
+    </section>
+  );
+}
+
+/**
  * Lời cảnh báo đứng trên đầu danh sách.
  *
  * Một mô hình `tools: false` là kiểu hỏng tệ nhất mà màn hình này có thể để lọt: trợ lý
@@ -270,28 +378,37 @@ function ActiveNotice(props: { provider: Provider | null; model: ModelChoice | n
   return (
     <>
       <Show when={props.provider === null}>
-        <Banner tone="warn" icon="warn" title="Chưa provider nào giữ vai hội thoại">
-          Trợ lý chưa gọi được mô hình nào. Bấm "Dùng để trò chuyện" ở một hàng bên dưới.
+        <Banner
+          tone="warn"
+          icon="warn"
+          title="Chưa provider nào giữ vai hội thoại"
+          more={'Trợ lý chưa gọi được mô hình nào. Bấm "Dùng để trò chuyện" ở một hàng bên dưới.'}
+        >
+          Bấm "Dùng để trò chuyện" ở một hàng bên dưới.
         </Banner>
       </Show>
 
       <Show when={props.provider !== null && props.provider?.enabled === false}>
         <Banner tone="warn" icon="warn" title="Provider giữ vai hội thoại lại đang bị tắt">
-          Bật nó lên, hoặc giao vai hội thoại cho một provider khác.
+          Bật nó lên, hoặc giao vai cho provider khác.
         </Banner>
       </Show>
 
       <Show when={props.provider !== null && props.provider?.model === null && !props.loading}>
         <Banner tone="warn" icon="warn" title="Chưa chọn mô hình hội thoại">
-          Chọn một mô hình ở hàng của provider đang giữ vai hội thoại.
+          Chọn mô hình ở hàng provider đang giữ vai.
         </Banner>
       </Show>
 
       <Show when={props.model !== null && props.model?.tools === false}>
-        <Banner tone="danger" icon="warn" title="Mô hình đang chọn không gọi được tool">
-          <code class="font-mono">{props.model?.id}</code> vẫn trả lời được, nhưng nó không
-          đọc tệp, không sửa mã và không chạy lệnh — mọi câu trả lời sẽ là phỏng đoán từ
-          trí nhớ. Chọn một mô hình có tool nếu bạn cần nó làm việc trong dự án.
+        <Banner
+          tone="danger"
+          icon="warn"
+          title="Mô hình đang chọn không gọi được tool"
+          more={`${props.model?.id ?? "Mô hình này"} vẫn trả lời được, nhưng nó không đọc tệp, không sửa mã và không chạy lệnh — mọi câu trả lời sẽ là phỏng đoán từ trí nhớ. Chọn một mô hình có tool nếu bạn cần nó làm việc trong dự án.`}
+        >
+          <code class="font-mono">{props.model?.id}</code> không đọc tệp, không sửa mã,
+          không chạy lệnh.
         </Banner>
       </Show>
     </>
@@ -310,9 +427,43 @@ function ProviderRow(props: {
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  /** Tên loại API, hoặc `null` khi nó chỉ nhắc lại tên provider. */
+  const kindLabel = () => {
+    const label =
+      props.provider.kind === "ollama"
+        ? "Ollama"
+        : props.provider.kind === "lmstudio"
+          ? "LM Studio"
+          : "Tương thích OpenAI";
+    const bare = (value: string) => value.trim().toLowerCase();
+    return bare(props.provider.name).includes(bare(label)) ? null : label;
+  };
+
   return (
     <Row
       label={props.provider.name}
+      /* Icon dẫn hàng **mang màu**, và nó nói nốt phần mà huy hiệu "Chạy trên máy này"
+         từng nói bằng chữ. Chữ ấy lặp xuống mọi hàng tại chỗ — mà đa số hàng của ứng dụng
+         này là hàng tại chỗ — nên nó là một đoạn văn bản không ai đọc tới lần thứ hai. Ổ
+         cắm trong ô nhấn xanh đọc được trong một nhịp mắt, và `title` giữ nguyên câu đầy
+         đủ cho người cần nó. Cờ lấy thẳng từ lõi, không đoán lại từ URL: một lời hứa đoán
+         sai là lời hứa tệ nhất trong ứng dụng. */
+      lead={() => (
+        <span
+          class="grid size-7 shrink-0 place-items-center rounded-panel"
+          classList={{
+            "bg-accent-soft text-accent-ink": props.provider.onDevice,
+            "bg-[var(--overlay-faint)] text-muted": !props.provider.onDevice,
+          }}
+          title={
+            props.provider.onDevice
+              ? "Chạy trên máy này — dữ liệu không rời khỏi đây."
+              : "Máy chủ từ xa — mọi thứ bạn gửi đều rời khỏi máy này."
+          }
+        >
+          <Icon name={props.provider.onDevice ? "plug" : "cloud"} size={14} />
+        </span>
+      )}
       dim={!props.provider.enabled}
       control={() => (
         <>
@@ -345,23 +496,25 @@ function ProviderRow(props: {
           <div class="flex min-w-0 flex-wrap items-center gap-2xs">
             <Roles provider={props.provider} />
 
-            {/* Huy hiệu quyền riêng tư. Nó khẳng định dữ liệu không rời khỏi máy, nên nó
-                chỉ được vẽ khi lõi nói `onDevice === true` — không suy đoán lại từ URL ở
-                phía này, vì một lời hứa đoán sai là lời hứa tệ nhất trong ứng dụng. */}
-            <Show when={props.provider.onDevice}>
-              <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill border border-accent bg-accent-soft px-2xs py-3xs text-2xs font-medium text-accent-ink">
-                <Icon name="plug" size={10} />
-                Chạy trên máy này
+            {/* Chỉ **chiều đi ra ngoài** mới có huy hiệu chữ. Nhãn dán lên mọi hàng thì
+                không còn là cảnh báo; nhãn dán lên đúng ngoại lệ thì mới là. Chiều an
+                toàn đã nằm trong ô ổ cắm xanh ở đầu hàng. */}
+            <Show when={!props.provider.onDevice}>
+              <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-warn-soft px-2xs py-3xs text-2xs font-medium text-warn">
+                <Icon name="cloud" size={10} />
+                Gửi ra ngoài
               </span>
             </Show>
 
-            <span class="inline-flex shrink-0 items-center rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-muted">
-              {props.provider.kind === "ollama"
-                ? "Ollama"
-                : props.provider.kind === "lmstudio"
-                  ? "LM Studio"
-                  : "Tương thích OpenAI"}
-            </span>
+            {/* Loại API chỉ hiện khi nó **nói thêm** được gì. "Ollama" dán dưới một hàng
+                tên là Ollama là một chữ không mang tin; còn "Tương thích OpenAI" dưới một
+                hàng tên LM Studio thì đúng là thứ giải thích vì sao hàng ấy không đọc được
+                danh sách mô hình. */}
+            <Show when={kindLabel() !== null}>
+              <span class="inline-flex shrink-0 items-center rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-muted">
+                {kindLabel()}
+              </span>
+            </Show>
 
             {/* Chỉ ở hàng **không** giữ vai hội thoại: hàng đang hoạt động đã có cả một bộ
                 chọn mô hình bên dưới, và nhắc lại cùng một tên hai lần cách nhau một dòng
@@ -382,10 +535,15 @@ function ProviderRow(props: {
               </span>
             </Show>
 
+            {/* Chìa khoá đứng một mình. Hai chữ "Có khoá" lặp xuống mọi hàng từ xa, và
+                cái ổ khoá thì không lặp lại gì cả. */}
             <Show when={props.provider.hasKey}>
-              <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-muted">
-                <Icon name="key" size={10} />
-                Có khoá
+              <span
+                class="inline-flex shrink-0 items-center rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-muted"
+                title="Đã lưu khoá API cho provider này"
+                aria-label="Đã lưu khoá API"
+              >
+                <Icon name="key" size={11} />
               </span>
             </Show>
 
@@ -486,7 +644,15 @@ function ModelPicker(props: {
 
   return (
     <div class="flex flex-wrap items-center gap-sm border-t border-line pt-sm">
-      <span class="text-2xs text-faint">Mô hình hội thoại</span>
+      {/* Biểu tượng thay cho dòng chữ "Mô hình hội thoại".
+          Cái nhãn ấy không nói gì mà hàng chưa nói: hàng này đeo huy hiệu "Hội thoại", và
+          thứ nằm trong ô chọn là một tên mô hình. Nó chỉ có mặt ở đúng một hàng trong danh
+          sách, nên nó cũng không phải một tiêu đề cột — nó là mười lăm ký tự chiếm chỗ của
+          chính cái tên mô hình. Tên đầy đủ vẫn tới được trình đọc màn hình qua `aria-label`
+          của `<select>`. */}
+      <span class="shrink-0 text-faint" title="Mô hình dùng để trò chuyện">
+        <Icon name="model" size={13} />
+      </span>
 
       <Show
         when={!props.loading}
@@ -499,9 +665,12 @@ function ModelPicker(props: {
         <Show
           when={props.models.length > 0}
           fallback={
-            <span class="min-w-0 flex-1 text-xs text-warn">
-              Không đọc được danh sách mô hình từ máy chủ này. Mở "Sửa" — hộp thoại tự hỏi
-              lại máy chủ và nói ra nó trả lời gì.
+            <span class="flex min-w-0 flex-1 items-center gap-2xs text-xs text-warn">
+              Không đọc được danh sách mô hình từ máy chủ này.
+              <InfoDot
+                label="Xem thêm về danh sách mô hình"
+                text={'Mở "Sửa" — hộp thoại tự hỏi lại máy chủ và nói ra nó trả lời gì.'}
+              />
             </span>
           }
         >

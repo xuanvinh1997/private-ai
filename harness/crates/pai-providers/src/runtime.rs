@@ -16,6 +16,22 @@ use crate::presets;
 use crate::probe::{EmbeddingProbeResult, ProbeResult, probe, probe_embedding};
 use crate::store::{ProviderInput, ProviderStore, Role, StoredProvider};
 
+/// Một mô hình mà một provider đang có, kèm năng lực của nó.
+///
+/// Tách khỏi [`crate::probe::ProbeModel`] vì hai thứ trả lời hai câu hỏi khác nhau và
+/// mang hai mức chắc chắn khác nhau: `ProbeModel` là cái máy chủ *khai* trong một lần thử
+/// kết nối, còn đây là cái đã được hỏi tới nơi khi hỏi được.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelListing {
+    pub id: String,
+    pub chat: bool,
+    /// Nhúng được. Đây là trường mà màn hình mô hình nhúng đọc để khỏi phải đoán một cái
+    /// tên mặc định.
+    pub embedding: bool,
+    pub tools: bool,
+    pub context_window: Option<u64>,
+}
+
 pub struct ProviderRuntime {
     store: Arc<dyn ProviderStore>,
     registry: Arc<AdapterRegistry>,
@@ -59,18 +75,6 @@ impl ProviderRuntime {
     /// được hỏi câu "tài liệu của tôi được nhúng ở đâu", nên chưa ai trả lời.
     pub fn embedding(&self) -> Result<Option<StoredProvider>> {
         self.store.active(Role::Embedding)
-    }
-
-    /// Bộ nhúng đang có hiệu lực, hoặc `None` kèm lý do đọc được ở
-    /// [`crate::embed::embedding_reason`].
-    ///
-    /// Một lời gọi thay vì hai, vì chỗ dùng nó — `app/` lúc áp lại provider — không có
-    /// việc gì khác để làm với hàng `StoredProvider` ở giữa.
-    pub fn embedder(&self) -> Result<Option<Arc<dyn pai_rag::Embedder>>> {
-        Ok(self
-            .embedding()?
-            .as_ref()
-            .and_then(crate::embed::embedder_for))
     }
 
     /// Trao vai nhúng, kèm mô hình nhúng nếu người dùng vừa chọn.
@@ -140,6 +144,68 @@ impl ProviderRuntime {
     /// Thử một cấu hình chưa lưu.
     pub async fn probe(&self, config: &ProviderConfig) -> ProbeResult {
         probe(config, &self.http).await
+    }
+
+    /// Kho mô hình của **một provider đã lưu**, kèm năng lực từng cái.
+    ///
+    /// Khác [`ProviderRuntime::probe`] ở đúng chỗ giao diện cần: `probe` trả lời câu hỏi
+    /// "nối được không", nên nó cố ý không trả tiền hỏi năng lực từng mô hình. Hàm này
+    /// trả lời câu hỏi "máy chủ này có mô hình nào **nhúng được**", và câu đó không trả
+    /// lời nổi bằng một cái tên đoán sẵn: người dùng có thể đã kéo về `mxbai-embed-large`,
+    /// `bge-m3`, hay một bản fine-tune tự đặt tên.
+    ///
+    /// Hai nguồn, theo thứ tự của [`pai_llm::capabilities`]: hỏi máy chủ trước
+    /// ([`pai_llm::ModelAdmin::list`], thứ đọc `capabilities` từ chính tệp GGUF), đoán
+    /// theo tên sau — và nhánh đoán chỉ chạy cho provider từ xa, thứ không có nửa vòng
+    /// đời mô hình để mà hỏi.
+    ///
+    /// Danh sách rỗng nghĩa là **không hỏi được**, không phải "không có mô hình nào". Nơi
+    /// gọi phải giữ được lối nhập tay cho trường hợp đó, nếu không thì một máy chủ im
+    /// lặng biến thành một màn hình không cấu hình được.
+    ///
+    /// Chỉ nhận cấu hình **đã lưu**: nó đi qua cache adapter của registry, và nhét một URL
+    /// gõ dở vào đó là để lại rác sau khi người dùng đã bỏ hộp thoại đi. Cấu hình chưa lưu
+    /// thì dùng `probe`.
+    pub async fn models(&self, config: &ProviderConfig) -> Vec<ModelListing> {
+        if let Ok(admin) = self.registry.admin(config) {
+            match admin.list().await {
+                Ok(models) => {
+                    return models
+                        .into_iter()
+                        .map(|model| ModelListing {
+                            id: model.name,
+                            chat: model.capabilities.chat,
+                            embedding: model.capabilities.embedding,
+                            tools: model.capabilities.tools,
+                            context_window: model.capabilities.context_window,
+                        })
+                        .collect();
+                }
+                // Rơi xuống nhánh liệt kê thay vì trả rỗng: `/api/show` hỏng không có
+                // nghĩa là `/api/tags` cũng hỏng, và một danh sách đoán theo tên vẫn hơn
+                // hẳn một ô trống.
+                Err(err) => tracing::warn!(
+                    provider = %config.name,
+                    "không đọc được kho mô hình, quay sang liệt kê: {err}"
+                ),
+            }
+        }
+
+        probe(config, &self.http)
+            .await
+            .models
+            .into_iter()
+            // Mọi cờ giữ nguyên như `probe` đã tính, không đoán lại: luật "hỏi được thì
+            // dùng cái máy chủ khai, không thì đoán theo tên" nằm gọn trong `probe`, và
+            // một bản sao thứ hai của nó ở đây là một bản sao sẽ lệch.
+            .map(|model| ModelListing {
+                id: model.id,
+                chat: model.chat,
+                embedding: model.embedding,
+                tools: model.tools,
+                context_window: model.context_window,
+            })
+            .collect()
     }
 
     /// Thử **nhúng thật một câu** bằng một mô hình, trên một cấu hình có thể chưa lưu.

@@ -1,5 +1,5 @@
 import { createEffect, For, Show } from "solid-js";
-import Icon from "./Icon";
+import Icon, { type IconName } from "./Icon";
 
 /** Một dòng trong danh sách gợi ý. */
 export interface Suggestion {
@@ -7,6 +7,13 @@ export interface Suggestion {
   value: string;
   /** Chữ hiện đậm ở đầu dòng. Mặc định bằng `value`. */
   label?: string;
+  /**
+   * Biểu tượng đứng đầu dòng.
+   *
+   * Nó gánh phần nghĩa mà câu phụ một dòng phải bỏ lại: tên lệnh cộng một hình quen
+   * thuộc nhận ra nhanh hơn hẳn hai chữ đọc lướt trong lúc đang gõ.
+   */
+  icon?: IconName;
   /** Câu phụ bên phải. */
   hint?: string;
   /** Không chọn được, kèm lý do nói ra ở `hint`. */
@@ -81,6 +88,13 @@ export default function CompletionPopup(props: {
                     onMouseEnter={() => props.onHover(index())}
                     class="flex w-full items-center gap-xs rounded-btn px-md py-2xs text-left transition-colors hover:bg-surface-hover aria-[selected=true]:bg-accent-soft aria-[selected=true]:text-accent-ink aria-[disabled=true]:opacity-50"
                   >
+                    <Show when={item.icon}>
+                      {(icon) => (
+                        <span class="shrink-0 text-muted">
+                          <Icon name={icon()} size={14} />
+                        </span>
+                      )}
+                    </Show>
                     <span class="min-w-0 flex-1 truncate font-mono text-sm">
                       {item.label ?? item.value}
                     </span>

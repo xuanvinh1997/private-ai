@@ -50,6 +50,7 @@ pub async fn complete_paths(
     if let Some(docs) = harness.ctx.get::<Docs>() {
         let paths: Vec<String> = docs
             .documents()
+            .await
             .map_err(|err| err.to_string())?
             .into_iter()
             .map(|doc| doc.path.display().to_string())

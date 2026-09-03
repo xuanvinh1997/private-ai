@@ -23,7 +23,7 @@ source.zip
 build/
 packaging/PrivateAI.icns
 packaging/*.iconset/
-
+.private-ai
 # Harness (Rust + Tauri). Icon được sinh lại từ packaging/PrivateAI.iconset nên là đầu ra.
 harness/target/
 harness/ui/dist/

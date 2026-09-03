@@ -24,11 +24,11 @@ pub mod store;
 
 pub use embed::{
     DEFAULT_EMBEDDING_MODEL_OLLAMA, DEFAULT_EMBEDDING_MODEL_OPENAI, default_embedding_model,
-    embedder_for, embedding_reason,
+    embedding_reason,
 };
 pub use error::{ProviderError, Result};
 pub use presets::{PRESETS, Preset};
 pub use probe::{EmbeddingProbeResult, ProbeModel, ProbeResult, probe, probe_embedding};
-pub use runtime::ProviderRuntime;
+pub use runtime::{ModelListing, ProviderRuntime};
 pub use seam::Providers;
 pub use store::{DB_FILE, ProviderInput, ProviderStore, Role, SqliteProviderStore, StoredProvider};

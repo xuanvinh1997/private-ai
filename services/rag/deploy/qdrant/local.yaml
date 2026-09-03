@@ -1,0 +1,67 @@
+# Lớp cấu hình đè lên /qdrant/config/config.yaml của image.
+#
+# Qdrant nạp theo thứ tự: config mặc định biên dịch sẵn → config/config.yaml →
+# config/{RUN_MODE}.yaml → config/local.yaml → biến môi trường QDRANT__*. File này được
+# mount vào đúng nấc `config/local.yaml`, nên chỉ cần ghi những khoá muốn đổi; mọi thứ
+# khác giữ nguyên mặc định. Bí mật (api-key) không nằm ở đây mà đi bằng biến môi trường,
+# vì file này nằm trong git còn .env thì không.
+#
+# Bối cảnh cho mọi con số bên dưới: một người dùng, một máy, ~100k–1M vector, embedding
+# 768–2560 chiều (embeddinggemma → qwen3-embedding:8b), 96 GB RAM. Gần như lúc nào cũng
+# chỉ có đúng một truy vấn đang chạy.
+
+storage:
+  optimizers:
+    # Mặc định là 0 = tự chọn theo số CPU, tức trên máy 16–32 luồng sẽ có 16–32 segment.
+    # Cách chia đó hợp lý khi cần nuốt luồng ghi liên tục từ nhiều client, nhưng ở đây nó
+    # trả giá hai lần: mỗi segment mang một đồ thị HNSW riêng nên tổng RAM cho graph tăng,
+    # và mỗi lần tìm kiếm phải quét toàn bộ segment rồi hợp nhất kết quả — với 1M điểm
+    # chia làm 32 phần thì mỗi đồ thị chỉ còn ~31k điểm, recall trên mỗi đồ thị kém đi mà
+    # chi phí hợp nhất lại nhiều hơn. 2 segment cho đồ thị lớn, recall tốt, vẫn đủ để
+    # Qdrant chạy song song hai luồng cho một truy vấn và vẫn optimize nền được.
+    default_segment_number: 2
+
+  hnsw_index:
+    # m = 32 (mặc định 16): số cạnh mỗi node trong đồ thị HNSW. Đây là đánh đổi RAM lấy
+    # recall, và ở quy mô này vế RAM gần như miễn phí — 1M điểm × 32 cạnh × 2 hướng × 4 B
+    # ≈ 256 MB, không đáng kể trên 96 GB. Vế recall thì không miễn phí chút nào: RAG lấy
+    # top-k rồi nhồi vào context, nên một đoạn bị đồ thị bỏ sót là một đoạn không bao giờ
+    # tới được câu trả lời. Không có lần thứ hai để sửa.
+    m: 32
+    # ef_construct = 256 (mặc định 100): số hàng xóm ứng viên xét khi *dựng* đồ thị. Nó
+    # chỉ làm chậm lúc lập chỉ mục, mà lập chỉ mục ở đây là việc chạy nền một lần khi nạp
+    # tài liệu, không phải thứ người dùng ngồi đợi. Đồ thị dựng kỹ hơn thì mọi truy vấn về
+    # sau đều hưởng.
+    ef_construct: 256
+
+  collection:
+    # Mặc định cho collection tạo mới. Nếu pai-rag-service truyền quantization_config
+    # riêng lúc tạo collection thì giá trị đó thắng.
+    #
+    # BẬT scalar int8 — lý do là *tốc độ*, không phải thiếu RAM. Ở quy mô này 1M vector
+    # 2560 chiều float32 chỉ ~10 GB, thừa sức nằm RAM. Cái đáng lấy là: khoảng cách tính
+    # trên int8 chạy bằng lệnh SIMD nguyên, nhanh hơn float32 cỡ 2–4 lần, và bản nén 4 lần
+    # nhỏ hơn (~2.5 GB) nằm gọn trong cache CPU hơn nhiều — với đồ thị HNSW, thứ quyết
+    # định độ trễ là số lần nhảy bộ nhớ chứ không phải số phép nhân.
+    #
+    # Phần mất mát được mua lại bằng rescoring: Qdrant duyệt đồ thị bằng vector int8 rồi
+    # chấm điểm lại các ứng viên cuối bằng vector gốc. Vector gốc vẫn nằm RAM (không đặt
+    # vectors.on_disk) nên bước này không chạm đĩa, và recall thực tế còn ~99%.
+    quantization:
+      scalar:
+        type: int8
+        # Bỏ 1% giá trị ngoài cùng ở hai đầu khi tính khoảng biểu diễn. Vector embedding
+        # hay có vài chiều lệch hẳn; để chúng kéo giãn thang đo thì 99% chiều còn lại bị
+        # nén vào ít mức lượng tử hơn và mất chính xác oan.
+        quantile: 0.99
+        # Ghim bản int8 trong RAM. Đây chính là thứ đang mua; để nó rơi xuống mmap thì
+        # mọi lợi ích ở trên biến mất.
+        always_ram: true
+
+service:
+  # Dịch vụ chỉ nghe trên loopback (xem phần ports trong docker-compose.yml) và người
+  # dùng duy nhất của nó là một tiến trình Python, không phải trình duyệt. Tắt CORS để
+  # một trang web bất kỳ đang mở trong trình duyệt không thể đọc kết quả từ
+  # http://127.0.0.1:6333. Dashboard dựng sẵn của Qdrant vẫn dùng được bình thường vì nó
+  # được phục vụ từ chính origin đó.
+  enable_cors: false

@@ -1,14 +1,29 @@
-import { createSignal, onMount, Show } from "solid-js";
+import { createEffect, createSignal, on, onMount, Show } from "solid-js";
 import {
   embeddingSetting,
   listProviders,
   probeEmbedding,
+  providerModels,
   setEmbedding,
   suggestedEmbeddingModel,
 } from "../../lib/providers";
-import type { EmbeddingProbe, EmbeddingSetting, Provider } from "../../lib/protocol";
+import type {
+  EmbeddingProbe,
+  EmbeddingSetting,
+  ModelChoice,
+  Provider,
+} from "../../lib/protocol";
 import ConfirmDialog from "./ConfirmDialog";
-import { Banner, Button, Row, RowGroup, SectionHead, Select, TextField } from "../settings/FormKit";
+import ModelField, { embeddable, sameModel } from "./ModelField";
+import {
+  Banner,
+  Button,
+  InfoDot,
+  Row,
+  RowGroup,
+  SectionHead,
+  Select,
+} from "../settings/FormKit";
 
 const NONE: EmbeddingSetting = {
   providerId: null,
@@ -37,7 +52,13 @@ const NONE: EmbeddingSetting = {
  *   3. **Đổi mô hình là nhúng lại tất cả.** Hỏi xác nhận, và câu xác nhận nói đúng cái
  *      đó, chứ không dọa chung chung.
  */
-export default function EmbeddingView() {
+export default function EmbeddingView(props: {
+  /**
+   * Đổi giá trị này để bắt mục nhúng hỏi lại lõi. Nơi gọi tăng nó sau mỗi lần lưu, xoá
+   * hay bật/tắt một provider ở mục danh sách máy chủ ngay phía trên.
+   */
+  reloadKey?: number;
+}) {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [setting, setSetting] = createSignal<EmbeddingSetting>(NONE);
   const [ready, setReady] = createSignal(false);
@@ -55,35 +76,108 @@ export default function EmbeddingView() {
   const [probe, setProbe] = createSignal<EmbeddingProbe | null>(null);
   const [probeError, setProbeError] = createSignal<string | null>(null);
 
+  // Kho mô hình của provider đang chọn, hỏi thẳng máy chủ đó. Rỗng nghĩa là **không hỏi
+  // được** — chưa bật, hoặc một provider từ xa không chịu liệt kê — chứ không phải "không
+  // có mô hình nào", nên ô nhập tay không bao giờ được biến mất vì nó.
+  const [models, setModels] = createSignal<ModelChoice[]>([]);
+  const [listing, setListing] = createSignal(false);
+
   const chosen = () => providers().find((entry) => entry.id === providerId()) ?? null;
   const suggestion = () => {
     const entry = chosen();
     return entry === null ? "" : suggestedEmbeddingModel(entry.kind);
   };
 
-  /** Mô hình đã lưu của provider đó, hoặc gợi ý theo loại nó — luôn sửa được. */
-  const modelFor = (entry: Provider | null) =>
-    entry === null ? "" : (entry.embeddingModel ?? suggestedEmbeddingModel(entry.kind));
+  /** Mô hình nhúng **đã lưu** của provider đó. Không đoán thay: danh sách máy chủ tới sau. */
+  const modelFor = (entry: Provider | null) => entry?.embeddingModel ?? "";
 
-  onMount(() => {
-    void (async () => {
-      const [list, current] = await Promise.all([listProviders(), embeddingSetting()]);
-      setProviders(list);
-      setSetting(current);
+  /**
+   * Hai lần hỏi có thể đang bay cùng lúc khi người dùng đổi provider nhanh hơn mạng trả
+   * lời, và cái **về sau** không nhất thiết là cái hỏi **sau cùng**. Không có con số này
+   * thì kho mô hình của một máy chủ vừa bị bỏ chọn vẫn ghi đè lên kho của máy chủ đang chọn.
+   */
+  let ticket = 0;
 
-      // Chưa cấu hình gì thì trỏ sẵn vào provider chạy tại chỗ đầu tiên. Đó là lựa chọn
-      // giữ tài liệu trong máy, và mặc định của một màn hình về quyền riêng tư phải là
-      // lựa chọn an toàn — không phải cái đứng đầu danh sách một cách tình cờ.
-      const fallback =
-        list.find((entry) => entry.enabled && entry.onDevice) ??
-        list.find((entry) => entry.enabled) ??
-        null;
-      const start = list.find((entry) => entry.id === current.providerId) ?? fallback;
-      setProviderId(start?.id ?? "");
-      setModel(current.model ?? modelFor(start));
+  /**
+   * Hỏi máy chủ xem nó có mô hình nào, rồi tự điền nếu ô còn trống.
+   *
+   * Chọn hộ **chỉ khi chưa có gì**: một cấu hình đã lưu là một quyết định người dùng đã
+   * ra, và ghi đè nó bằng mục đầu danh sách là âm thầm đổi chỗ nhận toàn văn tài liệu.
+   */
+  const loadModels = async (id: string) => {
+    const mine = ++ticket;
+    if (id === "") {
+      setModels([]);
+      setListing(false);
+      return;
+    }
+    // Danh sách cũ **không** bị xoá trước khi hỏi: xoá nó thì ô chọn sập xuống thành ô gõ
+    // tay rồi mọc lại thành ô chọn, mỗi lần đổi provider một lần. Nó bị khoá trong lúc
+    // hỏi, nên không ai chọn nhầm được vào kho của máy chủ vừa bỏ.
+    setListing(true);
+    const list = await providerModels(id);
+    if (mine !== ticket) return;
+    setModels(list);
+    setListing(false);
+    if (model().trim() === "") {
+      const first = list.find(embeddable);
+      if (first !== undefined) setModel(first.id);
+    }
+  };
+
+  /**
+   * Nạp danh sách provider và cấu hình nhúng đang có hiệu lực.
+   *
+   * `keepDraft` là khác biệt giữa lần mở màn hình và lần chạy lại sau khi người dùng vừa
+   * lưu một provider ở mục trên. Lần sau **không được** ghi đè bản nháp đang gõ dở: họ có
+   * thể đang chọn dở mô hình nhúng thì một cú "Lưu" ở danh sách máy chủ bay qua, và một ô
+   * tự nhảy về giá trị cũ giữa lúc đang gõ là kiểu hỏng không ai đọc ra từ màn hình.
+   */
+  const reload = async (keepDraft: boolean) => {
+    const [list, current] = await Promise.all([listProviders(), embeddingSetting()]);
+    setProviders(list);
+    setSetting(current);
+
+    // Chưa cấu hình gì thì trỏ sẵn vào provider chạy tại chỗ đầu tiên. Đó là lựa chọn
+    // giữ tài liệu trong máy, và mặc định của một màn hình về quyền riêng tư phải là
+    // lựa chọn an toàn — không phải cái đứng đầu danh sách một cách tình cờ.
+    const fallback =
+      list.find((entry) => entry.enabled && entry.onDevice) ??
+      list.find((entry) => entry.enabled) ??
+      null;
+    const start = list.find((entry) => entry.id === current.providerId) ?? fallback;
+
+    // Đã trỏ vào một provider rồi thì giữ nguyên chỗ đang đứng; chỉ nhảy khi ô còn trống —
+    // đó đúng là trường hợp "vừa thêm máy chủ đầu tiên xong".
+    if (keepDraft && providerId() !== "") {
       setReady(true);
-    })();
-  });
+      return;
+    }
+    setProviderId(start?.id ?? "");
+    setModel(current.model ?? modelFor(start));
+    setReady(true);
+    // Sau `setReady`: danh sách mô hình là một chuyến đi mạng, và bắt cả màn hình đợi
+    // nó xong mới hiện ra là bắt người dùng nhìn một khung xám vì một thứ chỉ điền sẵn
+    // giúp họ một ô.
+    await loadModels(start?.id ?? "");
+  };
+
+  onMount(() => void reload(false));
+
+  /**
+   * Danh sách máy chủ ở mục trên vừa đổi.
+   *
+   * Không có nhịp này thì mục nhúng đọc một danh sách chụp lúc mở màn hình: người dùng
+   * thêm LM Studio ở ngay phía trên, cuộn xuống, và không thấy nó trong ô chọn — trong
+   * khi cả hai mục giờ nằm trên **cùng một trang** và họ vừa nhìn thấy nó xuất hiện.
+   */
+  createEffect(
+    on(
+      () => props.reloadKey ?? 0,
+      () => void reload(true),
+      { defer: true },
+    ),
+  );
 
   const pickProvider = (id: string) => {
     const entry = providers().find((item) => item.id === id) ?? null;
@@ -93,11 +187,19 @@ export default function EmbeddingView() {
     // nhận cho một cấu hình chưa ai thử.
     setProbe(null);
     setProbeError(null);
+    void loadModels(id);
+  };
+
+  /** Đổi mô hình từ ô chọn hoặc ô gõ tay — cùng một chỗ, vì cùng làm cũ kết quả thử. */
+  const pickModel = (value: string) => {
+    setModel(value);
+    setProbe(null);
+    setProbeError(null);
   };
 
   const complete = () => providerId() !== "" && model().trim() !== "";
   const dirty = () =>
-    providerId() !== (setting().providerId ?? "") || model().trim() !== (setting().model ?? "");
+    providerId() !== (setting().providerId ?? "") || !sameModel(model(), setting().model ?? "");
 
   /** Đã có vector trong thư viện thì đổi cấu hình là nhúng lại — phải hỏi trước. */
   const needsConfirm = () =>
@@ -149,7 +251,9 @@ export default function EmbeddingView() {
     <div class="flex flex-col gap-2xl">
       <SectionHead
         title="Máy chủ giữ vai nhúng"
-        desc="Mô hình biến tài liệu thành vector để tìm theo ý nghĩa. Nó tách hẳn khỏi mô hình trò chuyện, và chọn riêng ở đây."
+        icon="graph"
+        desc="Biến tài liệu thành vector để tìm theo ý nghĩa."
+        more="Mô hình biến tài liệu thành vector để tìm theo ý nghĩa. Nó tách hẳn khỏi mô hình trò chuyện, và chọn riêng ở đây."
       />
 
       <Show when={error()}>
@@ -165,10 +269,12 @@ export default function EmbeddingView() {
           when={providers().length > 0}
           fallback={
             <div class="rounded-card border border-dashed border-line bg-surface-soft px-(--card-pad-x) py-2xl">
-              <p class="m-0 max-w-[56ch] text-xs text-muted">
-                Chưa có nhà cung cấp nào để giao vai nhúng. Thêm một provider ở mục "Nhà
-                cung cấp mô hình" trước — một cái chạy tại chỗ là đủ, và nó giữ tài liệu
-                trong máy này.
+              <p class="m-0 flex max-w-[56ch] items-center gap-2xs text-xs text-muted">
+                Chưa có provider nào để giao vai nhúng.
+                <InfoDot
+                  label="Thêm provider ở đâu"
+                  text={'Thêm một provider ở mục "Nhà cung cấp mô hình" trước — một cái chạy tại chỗ là đủ, và nó giữ tài liệu trong máy này.'}
+                />
               </p>
             </div>
           }
@@ -178,7 +284,9 @@ export default function EmbeddingView() {
           <RowGroup>
             <Row
               label="Provider nhúng"
-              desc="Nơi toàn văn tài liệu được gửi tới để biến thành vector."
+              icon="upload"
+              desc="Nơi toàn văn tài liệu được gửi tới."
+              more="Nơi toàn văn tài liệu được gửi tới để biến thành vector."
               control={() => (
                 <Select
                   label="Provider dùng để nhúng tài liệu"
@@ -195,29 +303,34 @@ export default function EmbeddingView() {
 
             <Row
               label="Mô hình nhúng"
-              desc="Điền sẵn theo loại provider, nhưng sửa được — máy bạn có thể đang chạy một mô hình khác."
+              icon="model"
+              desc="Lấy từ chính máy chủ đã chọn."
+              more="Danh sách hỏi thẳng máy chủ đã chọn, mô hình nhúng xếp lên trước. Máy chủ không trả lời được thì ô này thành ô gõ tay — cấu hình vẫn đặt được, chỉ là không còn ai gợi ý."
               control={() => (
                 <div class="w-[280px] max-w-full">
-                  <TextField
-                    label="Tên mô hình nhúng"
-                    hideLabel
-                    mono
+                  <ModelField
+                    role="embedding"
+                    label="Mô hình dùng để nhúng"
+                    models={models()}
                     value={model()}
-                    disabled={busy() || providerId() === ""}
+                    disabled={busy() || listing() || providerId() === ""}
                     placeholder={suggestion()}
-                    onInput={(value) => {
-                      setModel(value);
-                      setProbe(null);
-                      setProbeError(null);
-                    }}
+                    onInput={pickModel}
                   />
                 </div>
+              )}
+              below={() => (
+                <Show when={providerId() !== ""}>
+                  <ModelSource busy={listing()} models={models()} />
+                </Show>
               )}
             />
 
             <Row
               label="Thử nhúng một câu"
-              desc="Phép thử này gửi thật một câu đi và báo lại số chiều của vector nhận về. Nó khác nút thử ở trang provider: danh sách mô hình của máy chủ liệt kê mọi mô hình và không có gì trong đó nói cái nào nhúng được."
+              icon="bolt"
+              desc="Gửi thật một câu đi và đo vector nhận về."
+              more="Phép thử này gửi thật một câu đi và báo lại số chiều của vector nhận về. Danh sách ở ô trên mới chỉ là cái máy chủ tự khai — chỉ khi một câu đi qua và một vector quay về thì mới biết chắc mô hình này nhúng được."
               control={() => (
                 <Button
                   label={probing() ? "Đang nhúng thử…" : "Thử ngay"}
@@ -238,8 +351,8 @@ export default function EmbeddingView() {
             <Show when={dirty() && complete()}>
               <span class="mr-auto text-2xs text-muted">
                 {needsConfirm()
-                  ? "Lưu thay đổi này sẽ nhúng lại toàn bộ thư viện tài liệu."
-                  : "Chưa có vector nào trong thư viện, nên lần lưu này không phải nhúng lại gì."}
+                  ? "Lưu thay đổi sẽ nhúng lại toàn bộ thư viện."
+                  : "Chưa có vector nào, nên không phải nhúng lại gì."}
               </span>
             </Show>
             <Button
@@ -259,7 +372,8 @@ export default function EmbeddingView() {
       <Show when={confirming()}>
         <ConfirmDialog
           title="Nhúng lại toàn bộ thư viện?"
-          body="Đổi mô hình nhúng làm lõi bỏ hết vector cũ và nhúng lại từng tài liệu bằng mô hình mới. Bắt buộc phải thế: vector của hai mô hình nằm ở hai không gian khác nhau, và đem so với nhau thì ra một con số vô nghĩa trông y hệt một con số có nghĩa — tức là kết quả tìm kiếm sai mà không có gì báo sai. Trong lúc nhúng lại, thư viện vẫn tìm được bằng từ khoá; chỉ phần tìm theo ý nghĩa là tạm thiếu."
+          body="Lõi bỏ vector cũ, nhúng lại từng tài liệu."
+          more="Đổi mô hình nhúng làm lõi bỏ hết vector cũ và nhúng lại từng tài liệu bằng mô hình mới. Bắt buộc phải thế: vector của hai mô hình nằm ở hai không gian khác nhau, và đem so với nhau thì ra một con số vô nghĩa trông y hệt một con số có nghĩa — tức là kết quả tìm kiếm sai mà không có gì báo sai. Trong lúc nhúng lại, thư viện vẫn tìm được bằng từ khoá; chỉ phần tìm theo ý nghĩa là tạm thiếu."
           detail={`Đang dùng:  ${setting().providerName ?? "?"} · ${setting().model ?? "?"}\nSẽ dùng:    ${chosen()?.name ?? "?"} · ${model().trim()}`}
           confirmLabel="Đổi và nhúng lại"
           busy={busy()}
@@ -283,31 +397,46 @@ function CurrentState(props: { setting: EmbeddingSetting }) {
     <>
       <Show when={props.setting.providerId === null}>
         <div class="flex flex-col gap-2xs rounded-card border border-dashed border-line bg-surface-soft px-(--card-pad-x) py-(--card-pad-y)">
-          <span class="text-xs font-medium text-ink">Chưa cấu hình nhúng</span>
+          <span class="flex items-center gap-2xs text-xs font-medium text-ink">
+            Chưa cấu hình nhúng
+            <InfoDot
+              label="Về trạng thái chưa cấu hình nhúng"
+              text="Thư viện tài liệu vẫn dùng được: nó tìm bằng từ khoá, nghĩa là bạn phải gõ đúng chữ có trong tài liệu chứ không hỏi được bằng ý. Đây là một trạng thái dùng được, không phải một lỗi — chọn mô hình nhúng bên dưới nếu bạn muốn hỏi bằng ý, và chọn một provider chạy tại chỗ nếu tài liệu không được rời khỏi máy."
+            />
+          </span>
           <p class="m-0 max-w-[62ch] text-2xs text-muted">
-            Thư viện tài liệu vẫn dùng được: nó tìm bằng <b>từ khoá</b>, nghĩa là bạn phải
-            gõ đúng chữ có trong tài liệu chứ không hỏi được bằng ý. Đây là một trạng thái
-            dùng được, không phải một lỗi — chọn mô hình nhúng bên dưới nếu bạn muốn hỏi
-            bằng ý, và chọn một provider chạy tại chỗ nếu tài liệu không được rời khỏi máy.
+            Thư viện tài liệu vẫn tìm được bằng <b>từ khoá</b>.
           </p>
         </div>
       </Show>
 
       <Show when={props.setting.providerId !== null && props.setting.reason}>
         {(reason) => (
-          <Banner tone="warn" icon="warn" title="Cấu hình nhúng chưa dùng được">
-            {reason()} Cho tới khi sửa xong, thư viện tài liệu chỉ tìm được bằng từ khoá.
+          <Banner
+            tone="warn"
+            icon="warn"
+            title="Cấu hình nhúng chưa dùng được"
+            more="Cho tới khi sửa xong, thư viện tài liệu chỉ tìm được bằng từ khoá."
+          >
+            {reason()}
           </Banner>
         )}
       </Show>
 
       <Show when={props.setting.providerId !== null && props.setting.reason === null}>
-        <Banner tone="accent" icon="check" title="Đang nhúng bằng mô hình này">
+        <Banner
+          tone="accent"
+          icon="check"
+          title="Đang nhúng bằng mô hình này"
+          more={
+            props.setting.onDevice
+              ? "Tài liệu không rời khỏi máy này."
+              : `Toàn văn mỗi tài liệu được gửi tới ${props.setting.providerName} để nhúng.`
+          }
+        >
           <code class="font-mono">{props.setting.model}</code> trên{" "}
-          {props.setting.providerName}.{" "}
-          {props.setting.onDevice
-            ? "Tài liệu không rời khỏi máy này."
-            : `Toàn văn mỗi tài liệu được gửi tới ${props.setting.providerName} để nhúng.`}
+          {props.setting.providerName}
+          {props.setting.onDevice ? " — không rời khỏi máy này." : " — toàn văn gửi tới đó."}
         </Banner>
       </Show>
     </>
@@ -327,18 +456,64 @@ function Privacy(props: { provider: Provider }) {
     <Show
       when={props.provider.onDevice}
       fallback={
-        <Banner tone="warn" icon="cloud" title="Tài liệu được gửi ra khỏi máy">
-          Nhúng bằng {props.provider.name} nghĩa là <b>toàn văn</b> mỗi tài liệu bạn nạp
-          vào được gửi tới <code class="font-mono">{props.provider.baseUrl}</code>. Nhúng
-          lại cả thư viện thì gửi lại tất cả một lần nữa.
+        <Banner
+          tone="warn"
+          icon="cloud"
+          title="Tài liệu được gửi ra khỏi máy"
+          more={`Nhúng bằng ${props.provider.name} nghĩa là toàn văn mỗi tài liệu bạn nạp vào được gửi tới ${props.provider.baseUrl}. Nhúng lại cả thư viện thì gửi lại tất cả một lần nữa.`}
+        >
+          <b>Toàn văn</b> mỗi tài liệu được gửi tới{" "}
+          <code class="font-mono">{props.provider.baseUrl}</code>.
         </Banner>
       }
     >
-      <Banner tone="accent" icon="plug" title="Chạy trên máy này">
-        Tài liệu bạn nạp vào — hợp đồng, hồ sơ, ghi chú riêng — được nhúng ngay tại đây và{" "}
-        <b>không rời khỏi máy này</b>. Không có yêu cầu mạng nào mang nội dung của chúng đi.
+      <Banner
+        tone="accent"
+        icon="plug"
+        title="Chạy trên máy này"
+        more="Tài liệu bạn nạp vào — hợp đồng, hồ sơ, ghi chú riêng — được nhúng ngay tại đây và không rời khỏi máy này. Không có yêu cầu mạng nào mang nội dung của chúng đi."
+      >
+        Tài liệu <b>không rời khỏi máy này</b>.
       </Banner>
     </Show>
+  );
+}
+
+/**
+ * Danh sách mô hình đến từ đâu, và nó nói được gì.
+ *
+ * Có mặt vì ô chọn ở trên **không tự giải thích được sự im lặng**: một ô chọn trống và
+ * một máy chủ chưa bật trông y hệt nhau, và người dùng gặp cái sau sẽ đi sửa cái trước.
+ * Câu ở đây nói ra cái đang thật sự xảy ra, và nói luôn việc phải làm tiếp.
+ *
+ * Không dùng `Banner` sắc lỗi: không hỏi được danh sách là một trạng thái **dùng được** —
+ * gõ tên vào là xong — chứ không phải một hỏng hóc.
+ *
+ * Câu "máy chủ không khai mô hình này" thì **không** ở đây: nó thuộc về [`ModelField`],
+ * ngay dưới ô vừa gõ, và cùng một câu vẽ ở hai chỗ là một câu người dùng đọc hai lần rồi
+ * thôi không đọc nữa.
+ */
+function ModelSource(props: { busy: boolean; models: ModelChoice[] }) {
+  const embed = () => props.models.filter(embeddable).length;
+  return (
+    <div role="status" aria-live="polite" class="flex flex-col gap-2xs">
+      <p class="m-0 max-w-[62ch] text-2xs text-muted">
+        <Show when={!props.busy} fallback="Đang hỏi máy chủ xem có mô hình nào…">
+          <Show
+            when={props.models.length > 0}
+            fallback="Không hỏi được danh sách mô hình từ máy chủ — gõ tên mô hình nhúng vào ô trên."
+          >
+            <Show
+              when={embed() > 0}
+              fallback={`Máy chủ khai ${props.models.length} mô hình, không cái nào khai là nhúng được. Kéo một mô hình nhúng về, hoặc gõ tên nếu bạn biết máy chủ có.`}
+            >
+              {`Máy chủ khai ${props.models.length} mô hình, ${embed()} cái nhúng được.`}
+            </Show>
+          </Show>
+        </Show>
+      </p>
+
+    </div>
   );
 }
 
@@ -372,6 +547,11 @@ function ProbeResult(props: { busy: boolean; probe: EmbeddingProbe | null; error
             tone={result().ok ? "accent" : "danger"}
             icon={result().ok ? "check" : "warn"}
             title={result().ok ? "Nhúng được" : "Không nhúng được"}
+            more={
+              result().dimensions === null
+                ? undefined
+                : "Đây là con số đo từ một vector thật, không phải từ một danh sách mô hình."
+            }
           >
             <p class="m-0">{result().message}</p>
             <Show when={result().dimensions}>
@@ -379,8 +559,7 @@ function ProbeResult(props: { busy: boolean; probe: EmbeddingProbe | null; error
                 <p class="m-0 mt-2xs">
                   Vector nhận về có{" "}
                   <b class="tabular-nums">{Intl.NumberFormat("vi-VN").format(dims())}</b>{" "}
-                  chiều. Đây là con số đo từ một vector thật, không phải từ một danh sách
-                  mô hình.
+                  chiều.
                 </p>
               )}
             </Show>

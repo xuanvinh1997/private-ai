@@ -4,6 +4,7 @@ import { searchDocuments } from "../../lib/docs";
 import { demoHits } from "../../lib/fixtures/docs";
 import type { DocumentHit } from "../../lib/protocol";
 import Icon from "../Icon";
+import { InfoDot } from "../settings/FormKit";
 import { Button } from "../projects/DialogShell";
 
 /**
@@ -41,10 +42,12 @@ export default function SearchProbe(props: { disabled?: boolean }) {
   return (
     <section class="flex flex-col gap-md">
       <div class="flex flex-col gap-3xs">
-        <h3 class="m-0 text-sm font-semibold text-ink">Thử tìm</h3>
+        <h3 class="m-0 flex items-center gap-2xs text-sm font-semibold text-ink">
+          Thử tìm
+          <InfoDot text="Đây chỉ là tìm kiếm — không có câu trả lời nào được sinh ra ở đây." />
+        </h3>
         <p class="m-0 text-xs text-muted">
-          Gõ một câu hỏi để xem thư viện tìm ra đoạn nào. Đây chỉ là tìm kiếm — không có
-          câu trả lời nào được sinh ra ở đây.
+          Gõ câu hỏi để xem thư viện tìm ra gì.
         </p>
       </div>
 
@@ -93,9 +96,9 @@ export default function SearchProbe(props: { disabled?: boolean }) {
             <Show
               when={list().length > 0}
               fallback={
-                <p class="m-0 rounded-card border border-dashed border-line px-(--card-pad-x) py-lg text-center text-xs text-muted">
-                  Không tìm thấy đoạn nào. Thư viện có thể chưa có tài liệu về chuyện này,
-                  hoặc câu hỏi dùng từ khác với tài liệu.
+                <p class="m-0 flex items-center justify-center gap-2xs rounded-card border border-dashed border-line px-(--card-pad-x) py-lg text-center text-xs text-muted">
+                  Không tìm thấy đoạn nào khớp.
+                  <InfoDot text="Thư viện có thể chưa có tài liệu về chuyện này, hoặc câu hỏi dùng từ khác với tài liệu." />
                 </p>
               }
             >

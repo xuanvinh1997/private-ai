@@ -228,7 +228,8 @@ export default function Sidebar(props: SidebarProps) {
             <Show
               when={groups().length > 0}
               fallback={
-                <p class="m-0 px-sm py-xs text-2xs text-faint">
+                <p class="m-0 flex items-center gap-2xs px-sm py-xs text-2xs text-faint">
+                  <Icon name={props.sessions.length === 0 ? "bubble" : "search"} size={12} />
                   {props.sessions.length === 0 ? "Chưa có phiên nào." : "Không có phiên nào khớp."}
                 </p>
               }

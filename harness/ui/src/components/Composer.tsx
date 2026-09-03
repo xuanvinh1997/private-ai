@@ -1,13 +1,35 @@
 import { createEffect, createMemo, createResource, createSignal, For, Show } from "solid-js";
 import { useDragDrop } from "../hooks/useDragDrop";
+import { type Attachment, pickFiles, resolveAttachments } from "../lib/attach";
 import { applyCompletion, completePaths, findTrigger, rankCommands } from "../lib/complete";
 import CompletionPopup, { type Suggestion } from "./CompletionPopup";
 import { displayMode } from "../lib/prefs";
+import { notify } from "../lib/toast";
 import type { ModelChoice, ProjectKind, ToolScope } from "../lib/protocol";
 import Icon, { type IconName } from "./Icon";
 import Menu from "./Menu";
 import ModelPicker from "./ModelPicker";
 import { IconButton } from "./primitives";
+
+/**
+ * Biểu tượng của từng lệnh `/`.
+ *
+ * Ở đây chứ không trong `lib/complete.ts`: bộ biểu tượng là chuyện của tầng vẽ, và danh
+ * sách lệnh phải kiểm chứng được mà không cần biết ứng dụng vẽ chúng bằng hình gì. Hình
+ * gánh phần nghĩa mà câu mô tả một dòng phải bỏ lại.
+ */
+const COMMAND_ICON: Record<string, IconName> = {
+  moi: "plus",
+  tim: "search",
+  duan: "folder",
+  thaydoi: "diff",
+  taplieu: "library",
+  mohinh: "model",
+  mcp: "plug",
+  quyen: "hand",
+  phimtat: "enter",
+  caidat: "settings",
+};
 
 const SCOPE_LABEL: Record<ToolScope, string> = {
   read: "Chỉ đọc",
@@ -122,7 +144,6 @@ export default function Composer(props: {
   let composing = false;
   let field: HTMLTextAreaElement | undefined;
   const [focused, setFocused] = createSignal(false);
-  const [hint, setHint] = createSignal(false);
 
   // ---- hoàn thành `@` và `/` ------------------------------------------------
   //
@@ -153,6 +174,7 @@ export default function Composer(props: {
       return rankCommands(found.query).map((command) => ({
         value: command.name,
         label: `/${command.name}`,
+        icon: COMMAND_ICON[command.name] ?? "terminal",
         hint:
           command.needsProject === true && !props.hasProject ? "cần một dự án" : command.hint,
         disabled: command.needsProject === true && !props.hasProject,
@@ -263,13 +285,86 @@ export default function Composer(props: {
     return rows;
   });
 
-  // Kéo thả lấy đường dẫn tuyệt đối — thứ HTML5 drag & drop cố ý không cho. Chèn vào
-  // cuối bản nháp thay vì thay thế: người dùng thường đã gõ dở câu hỏi rồi mới thả tệp.
-  useDragDrop((paths) => {
+  /**
+   * Chèn đường dẫn vào bản nháp, sau khi lõi đã nhìn vào đĩa và duyệt từng cái một.
+   *
+   * Chèn vào **cuối** thay vì thay thế: người dùng thường đã gõ dở câu hỏi rồi mới đi tìm
+   * tệp. Mỗi đường dẫn một dòng, vì đường dẫn có dấu cách trong đó và một danh sách ngăn
+   * bằng dấu cách thì không tách lại được — cả người đọc lẫn mô hình.
+   *
+   * Một tệp bị từ chối **không** chặn những tệp còn lại: thả năm tệp mà một cái nằm ngoài
+   * dự án thì bốn cái kia vẫn vào, và câu lỗi nói về đúng cái thứ năm. Bỏ cả lô vì một
+   * đường dẫn hỏng là bắt người dùng làm lại một việc đã gần xong.
+   */
+  const attach = async (paths: string[]) => {
+    if (paths.length === 0) return;
+
+    let resolved: Attachment[];
+    try {
+      resolved = await resolveAttachments(paths);
+    } catch (err) {
+      // Lõi từ chối cả lô — gần như luôn là "chưa mở dự án". Nguyên văn từ lõi: chỉ nó
+      // biết vì sao, và một câu ta tự viết ở đây sẽ đoán sai vào đúng lần nó đoán khác.
+      notify("error", String(err));
+      return;
+    }
+
+    const usable = resolved.filter((entry) => entry.error === null);
+    const refused = resolved.filter((entry) => entry.error !== null);
+    // Một thông báo cho cả lô, không phải một thông báo mỗi tệp: thả nhầm cả thư mục
+    // Downloads vào đây thì hai mươi thẻ giống hệt nhau không nói được gì mà một thẻ không
+    // nói được. Câu đầu là câu cụ thể — có tên tệp trong đó — rồi mới tới con số.
+    if (refused.length > 0) {
+      notify(
+        "error",
+        refused.length === 1
+          ? refused[0]!.error!
+          : `${refused[0]!.error} (và ${refused.length - 1} tệp nữa không đính kèm được)`,
+      );
+    }
+
+    if (usable.length === 0) return;
     const prefix = props.value.trim() === "" ? "" : `${props.value.replace(/\s*$/, "")}\n`;
-    props.onChange(`${prefix}${paths.join("\n")}\n`);
+    props.onChange(`${prefix}${usable.map((entry) => entry.path).join("\n")}\n`);
     field?.focus();
-  });
+  };
+
+  /**
+   * Kéo thả: cùng đường đi với nút đính kèm, không phải một đường riêng.
+   *
+   * `useDragDrop` phát cho **mọi** chỗ đang nghe, nên cú thả phải có đúng một chủ trên mỗi
+   * màn hình. Ở hội thoại chủ đó là ô soạn tin. Trước đây vỏ ứng dụng cũng nghe cú thả ở
+   * màn hình này và đem đường dẫn đi mở thành dự án, nên một cú thả làm hai việc: tệp thì
+   * vừa được đính kèm vừa nhận một câu lỗi "không phải một thư mục", còn thư mục thì vừa
+   * được đính kèm vừa âm thầm đổi cả dự án dưới chân phiên đang chạy.
+   */
+  useDragDrop((paths) => void attach(paths));
+
+  /**
+   * Lối vào thứ hai của cùng việc ấy: hộp thoại của hệ điều hành.
+   *
+   * Mỗi đường ra khỏi hàm này đều **nói một câu**, trừ đúng một đường: người dùng bấm Huỷ.
+   * Đó là luật của một nút — bấm vào mà không có gì xảy ra và không có gì được nói ra thì
+   * nút ấy hỏng, kể cả khi bên trong nó mọi thứ chạy đúng như đã viết.
+   */
+  const browse = async () => {
+    // Chưa có dự án thì trả lời ngay, không mở hộp thoại: bắt người dùng đi chọn tệp rồi
+    // mới nói là không nhận được nó là lấy công của họ để nói một câu đã biết trước.
+    if (!props.hasProject) {
+      notify("error", "Chưa mở dự án nên chưa đính kèm tệp được.");
+      return;
+    }
+    try {
+      const picked = await pickFiles();
+      if (picked === null) {
+        notify("error", "Hộp thoại chọn tệp chỉ có trong ứng dụng.");
+        return;
+      }
+      await attach(picked);
+    } catch (err) {
+      notify("error", `Không mở được hộp thoại chọn tệp: ${err}`);
+    }
+  };
 
   // Không chặn khi `busy`: App nhận câu này và xếp nó vào ô chờ. Chặn ở đây thì Enter
   // giữa lượt lại không làm gì cả, đúng cái im lặng vừa bỏ đi.
@@ -411,8 +506,8 @@ export default function Composer(props: {
           disabled={props.disabled}
           placeholder={
             props.busy
-              ? "Gõ câu tiếp theo…  (Enter để xếp hàng, gửi khi lượt này xong)"
-              : "Nhắn cho trợ lý…  (Enter để gửi, Shift+Enter xuống dòng)"
+              ? "Gõ câu tiếp theo…  (Enter để xếp hàng chờ)"
+              : "Nhập…  (Enter để gửi, Shift+Enter xuống dòng)"
           }
           aria-label="Nội dung tin nhắn"
           aria-keyshortcuts="Enter Meta+Enter Control+Enter"
@@ -447,20 +542,16 @@ export default function Composer(props: {
             một điều kiện bật tắt. Nằm cùng hàng thì hai câu ngắn ở chung một dòng, và chỉ
             khi cửa sổ hẹp chúng mới tự rơi xuống.
 
-            `role="status"` chứ không `alert` ở cả ba: đây là những điều kiện đang tồn tại,
-            không phải sự kiện vừa xảy ra — trình đọc màn hình nên đọc chúng khi tới lượt. */}
-        <Show when={hint() || !props.hasProject || props.modelWarning}>
-          <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-xs">
-            {/* Đính kèm đi qua kéo thả chứ không qua hộp thoại chọn tệp: chỉ có tầng hệ
-                điều hành mới đưa được **đường dẫn tuyệt đối**, mà đường dẫn mới là thứ trợ
-                lý cần. Câu này nói ra điều đó thay vì mở một hộp thoại trả về thứ vô dụng. */}
-            <Show when={hint()}>
-              <p class="m-0 flex items-center gap-2xs text-muted" role="status">
-                <Icon name="paperclip" size={12} />
-                Kéo tệp thả vào cửa sổ để chèn đường dẫn tuyệt đối vào tin nhắn.
-              </p>
-            </Show>
+            `role="status"` chứ không `alert` ở cả hai: đây là những điều kiện đang tồn tại,
+            không phải sự kiện vừa xảy ra — trình đọc màn hình nên đọc chúng khi tới lượt.
 
+            Và vì thế **không có câu lỗi nào** ở đây. Đó là luật chứ không phải chỗ còn
+            trống: một cú đính kèm hỏng là chuyện vừa xảy ra, nó chỉ đúng trong vài giây, và
+            nó phải tự đi — nên nó ra thông báo nổi (`lib/toast.ts`), nơi nó vẫn nói được cả
+            khi người dùng đã chuyển sang tab khác. Hàng này từng giữ một câu như thế, và
+            cái giá là một dải chữ nhấp nháy theo từng cú bấm ngay dưới chỗ đang gõ. */}
+        <Show when={!props.hasProject || props.modelWarning}>
+          <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-xs">
             {/* Câu chốt lại bằng "vẫn gửi được": đây là một giới hạn đang tồn tại, không
                 phải một thứ vừa hỏng, và người đọc phải rời câu này với niềm tin rằng ô
                 soạn tin bên dưới còn dùng được.
@@ -471,7 +562,7 @@ export default function Composer(props: {
             <Show when={!props.hasProject}>
               <p class="m-0 flex items-center gap-2xs text-muted" role="status">
                 <Icon name="tools" size={12} />
-                Chưa mở dự án — trợ lý chưa có tool nào. Tin nhắn vẫn gửi được.
+                Chưa có dự án: chưa có tool, vẫn gửi được.
               </p>
             </Show>
 
@@ -495,11 +586,27 @@ export default function Composer(props: {
             bằng ngón tay. Dự án/MCP/ngữ cảnh đã rời khỏi hình viên thuốc chính vì không đổi
             được gì cả: chúng chỉ báo cáo lại một lựa chọn đã làm ở nơi khác. */}
         <div class="flex flex-wrap items-center gap-2xs px-2xs pb-2xs">
+          {/* Nút này **mở hộp thoại chọn tệp**, không mở một câu giải thích.
+
+              Nó từng chỉ bật tắt một dòng chữ hướng dẫn kéo thả, với lý do rằng chỉ tầng
+              hệ điều hành mới đưa được đường dẫn tuyệt đối. Vế sau đúng, vế trước sai:
+              hộp thoại của Tauri *là* tầng hệ điều hành và trả về đúng đường dẫn ấy — thư
+              viện tài liệu đã dùng nó từ đầu. Cái không đưa được đường dẫn là
+              `<input type="file">` của trình duyệt, không phải mọi hộp thoại.
+
+              Kéo thả vẫn còn, và ở lại đúng vai của nó: một lối tắt cho người đang mở sẵn
+              một cửa sổ thư mục, chứ không phải cử chỉ duy nhất mở được đường vào. Nó được
+              nhắc trong `aria-label` và trong chú giải, tức ở chỗ người ta hỏi "nút này
+              làm gì", chứ không chiếm một dòng thường trực dưới ô soạn tin.
+
+              **Không** tắt khi chưa mở dự án, dù lúc ấy chẳng tệp nào đính kèm được. Một
+              nút xám không nói được vì sao nó xám; người dùng bấm, không thấy gì, và học
+              được đúng một điều — cái nút này hỏng. Nó ở lại bấm được và trả lời bằng chữ,
+              ngay trên đầu nó. Cùng luật với nút dừng trong bản demo (`lib/agent.ts`). */}
           <IconButton
             icon="paperclip"
-            label="Cách đính kèm tệp"
-            active={hint()}
-            onClick={() => setHint((v) => !v)}
+            label="Đính kèm tệp, hoặc kéo thả vào cửa sổ"
+            onClick={() => void browse()}
           />
 
           {/* Vô hiệu chứ không ẩn hẳn: chỗ ngồi của bộ chọn giữ nguyên qua hai trạng thái,
@@ -557,8 +664,6 @@ export default function Composer(props: {
             onManageProviders={props.onManageProviders}
           />
 
-          {/* Không còn nhãn "↵ gửi" cạnh nút: placeholder của ô nhập đã nói "Enter để gửi",
-              và nhắc lại nó ngay cạnh nút Gửi chỉ thêm một mẩu chữ vào một hàng đã chật. */}
           <Show
             when={props.busy}
             fallback={
@@ -568,7 +673,6 @@ export default function Composer(props: {
                 class="flex h-(--control-h) items-center gap-2xs rounded-pill bg-accent px-md text-sm font-medium text-on-accent transition-colors duration-[var(--dur-fast)] hover:bg-accent-hover disabled:opacity-40"
               >
                 <Icon name="send" size={14} />
-                Gửi
               </button>
             }
           >
@@ -578,7 +682,6 @@ export default function Composer(props: {
               class="flex h-(--control-h) items-center gap-2xs rounded-pill border border-line-strong px-md text-sm font-medium text-text transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
             >
               <Icon name="stop" size={14} />
-              Dừng
             </button>
           </Show>
         </div>

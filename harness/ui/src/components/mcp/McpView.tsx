@@ -12,7 +12,7 @@ import type { McpCatalogEntry, McpServer, McpServerInput, McpState } from "../..
 import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
 import ConfirmDialog from "./../providers/ConfirmDialog";
-import { Banner, Button, Row, RowGroup, SectionHead, Toggle } from "../settings/FormKit";
+import { Banner, Button, InfoDot, Row, RowGroup, SectionHead, Toggle } from "../settings/FormKit";
 import McpCatalog from "./McpCatalog";
 import McpForm from "./McpForm";
 
@@ -124,8 +124,9 @@ export default function McpView() {
   return (
     <div class="flex flex-col gap-2xl">
       <SectionHead
+        icon="plug"
         title="Server đang cắm"
-        desc="Cắm thêm công cụ từ bên ngoài: kho mã, cơ sở dữ liệu, hệ thống theo dõi lỗi."
+        desc="Cắm công cụ ngoài: kho mã, cơ sở dữ liệu."
         actions={() => (
           <>
             <Button
@@ -141,11 +142,13 @@ export default function McpView() {
       />
 
       {/* Không gập lại được, và không phải một chú giải. Đây là chính sách của lõi. */}
-      <Banner tone="warn" icon="warn" title="Tool của server MCP trả về nội dung không đáng tin">
-        Mọi thứ một server MCP trả về đều được lõi đóng khung là dữ liệu bên ngoài, và mọi
-        tool của nó luôn bị coi là <b>có thể thay đổi trạng thái</b> — nên chúng đi qua
-        bước hỏi duyệt, kể cả khi tên tool nghe như chỉ đọc. Cắm một server là cho tác giả
-        của nó nói vào cuộc hội thoại của bạn; chỉ cắm cái bạn tin.
+      <Banner
+        tone="warn"
+        icon="warn"
+        title="Server MCP trả về nội dung không đáng tin"
+        more="Mọi thứ một server MCP trả về đều được lõi đóng khung là dữ liệu bên ngoài, và mọi tool của nó luôn bị coi là có thể thay đổi trạng thái — nên chúng đi qua bước hỏi duyệt, kể cả khi tên tool nghe như chỉ đọc. Cắm một server là cho tác giả của nó nói vào cuộc hội thoại của bạn; chỉ cắm cái bạn tin."
+      >
+        Chỉ cắm server bạn tin.
       </Banner>
 
       <Show when={error()}>
@@ -162,8 +165,7 @@ export default function McpView() {
           fallback={
             <div class="flex flex-col items-start gap-md rounded-card border border-dashed border-line bg-surface-soft px-(--card-pad-x) py-2xl">
               <p class="m-0 max-w-[52ch] text-xs text-muted">
-                Chưa cắm server nào. Trợ lý vẫn đọc và sửa được tệp trong dự án — MCP chỉ
-                thêm những thứ nằm ngoài đó.
+                Chưa cắm server nào — MCP thêm tool ngoài dự án.
               </p>
               <Button label="Mở danh mục" icon="plug" onClick={() => setSheet({ kind: "catalog" })} />
             </div>
@@ -224,7 +226,8 @@ export default function McpView() {
         {(target) => (
           <ConfirmDialog
             title={`Xoá server ${target.name}?`}
-            body={`Cấu hình và mọi biến môi trường của nó bị xoá khỏi máy, và ${target.tools.length} tool biến mất khỏi trợ lý. Không hoàn tác được.`}
+            body={`Xoá hẳn cấu hình, biến môi trường và ${target.tools.length} tool.`}
+            more={`Cấu hình và mọi biến môi trường của nó bị xoá khỏi máy, và ${target.tools.length} tool biến mất khỏi trợ lý. Không hoàn tác được.`}
             detail={target.target}
             confirmLabel="Xoá server"
             busy={busy()}
@@ -350,9 +353,12 @@ function ServerRow(props: {
               lỗi, và tuyệt đối không thêm gì cho trợ lý. Nói ra, nếu không người dùng sẽ
               đi tìm lý do ở phía mô hình. */}
           <Show when={props.server.state === "connected" && count() === 0}>
-            <p class="m-0 text-2xs text-muted">
-              Server nối được nhưng không khai báo tool nào, nên nó chưa thêm gì cho trợ
-              lý. Kiểm tra lại tham số dòng lệnh hoặc quyền của token.
+            <p class="m-0 inline-flex items-center gap-2xs text-2xs text-muted">
+              Nối được nhưng không có tool nào.
+              <InfoDot
+                label="Vì sao server không có tool"
+                text="Server nối được nhưng không khai báo tool nào, nên nó chưa thêm gì cho trợ lý. Kiểm tra lại tham số dòng lệnh hoặc quyền của token."
+              />
             </p>
           </Show>
 
@@ -375,8 +381,7 @@ function ServerRow(props: {
               <Show when={props.open}>
                 <div class="overflow-x-auto rounded-panel border border-line bg-surface-soft p-sm">
                   <p class="m-0 mb-2xs text-2xs text-faint">
-                    Đây là tên mô hình nhìn thấy, và cũng là tên xuất hiện trong bản ghi
-                    khi một lượt gọi tới chúng.
+                    Đây là tên mô hình thấy, và tên trong bản ghi.
                   </p>
                   <ul class="m-0 flex list-none flex-col gap-3xs p-0">
                     <For each={props.server.tools}>

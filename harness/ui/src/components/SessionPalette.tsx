@@ -1,6 +1,7 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import { rankSessions, relativeTime } from "../lib/sessions";
+import Icon from "./Icon";
 
 import type { SessionSummary } from "../lib/protocol";
 
@@ -118,7 +119,12 @@ export default function SessionPalette(props: {
         />
         <Show
           when={matches().length > 0}
-          fallback={<p class="px-(--dialog-pad-x) py-md text-sm text-faint">Không có phiên nào khớp.</p>}
+          fallback={
+            <p class="flex items-center gap-2xs px-(--dialog-pad-x) py-md text-sm text-faint">
+              <Icon name="search" size={14} />
+              Không có phiên nào khớp.
+            </p>
+          }
         >
           <ul
             ref={list}

@@ -153,6 +153,15 @@ pub async fn set_provider_model(
 /// lưu trước rồi mới thử được nghĩa là một cấu hình sai vẫn phải nằm trong kho một lúc.
 /// `api_key: None` thì mượn khoá đã lưu của cùng id — nếu không, thử một provider đã có
 /// khoá sẽ luôn báo sai khoá.
+///
+/// Năng lực trả về mang **hai mức chắc chắn khác nhau**, và giao diện phải biết mức nào là
+/// mức nào: LM Studio khai thẳng loại mô hình trong danh sách nên `chat`/`embedding` ở đó
+/// là sự thật, còn Ollama và OpenAI-compatible chỉ cho một cái tên nên lõi đoán từ tên.
+/// Cờ `tools` thì gần như luôn là phỏng đoán — một lần thử cố ý không trả tiền hỏi năng
+/// lực từng mô hình — nên đừng treo cảnh báo "không gọi được tool" lên nó; giá trị có thẩm
+/// quyền đến sau từ `list_models`. Cờ `embedding` thì ngược lại, **đáng dùng ngay**: nó
+/// chỉ để xếp mô hình nhúng lên đầu một ô chọn, và xếp trượt thì tốn một cú cuộn, còn
+/// không xếp gì thì bắt người dùng nhớ tên mô hình nhúng của máy chủ mình.
 #[tauri::command]
 pub async fn probe_provider(
     input: ProviderInputWire,
@@ -195,15 +204,53 @@ pub async fn probe_provider(
             .map(|model| ModelChoice {
                 id: model.id,
                 tools: model.tools,
-                // Một lần thử cố ý không trả tiền hỏi năng lực từng mô hình, nên ở đây
-                // chưa biết gì: `chat` để `true` để không giấu nhầm, `embedding` để
-                // `false`. Giá trị có thẩm quyền đến sau từ `list_models`.
-                chat: true,
-                embedding: false,
+                chat: model.chat,
+                embedding: model.embedding,
                 context_window: model.context_window,
             })
             .collect(),
     })
+}
+
+/// Kho mô hình của **một provider bất kỳ đã lưu**, kèm năng lực từng cái.
+///
+/// Tồn tại riêng bên cạnh `list_models` vì `list_models` chỉ hỏi provider **đang giữ vai
+/// hội thoại**, mà provider giữ vai nhúng thường là một máy chủ khác — đó chính là cấu
+/// hình mà màn hình mô hình nhúng khuyến khích: nhúng tại chỗ, trò chuyện từ xa. Không có
+/// lệnh này thì màn hình ấy không còn cách nào biết máy chủ kia có gì, và chỗ trống đó
+/// trước nay được lấp bằng một cái tên đoán sẵn.
+///
+/// Danh sách rỗng nghĩa là **không hỏi được** — máy chủ chưa bật, hoặc provider từ xa
+/// không chịu liệt kê. Không phải lỗi: giao diện vẫn phải cho nhập tay.
+#[tauri::command]
+pub async fn provider_models(
+    provider_id: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<ModelChoice>, String> {
+    let harness = state.harness().await?;
+    let Some(provider) = harness
+        .providers
+        .list()
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .find(|item| item.id() == provider_id)
+    else {
+        return Ok(Vec::new());
+    };
+
+    Ok(harness
+        .providers
+        .models(&provider.config)
+        .await
+        .into_iter()
+        .map(|model| ModelChoice {
+            id: model.id,
+            tools: model.tools,
+            chat: model.chat,
+            embedding: model.embedding,
+            context_window: model.context_window,
+        })
+        .collect())
 }
 
 /// Cấu hình nhúng đang có hiệu lực.

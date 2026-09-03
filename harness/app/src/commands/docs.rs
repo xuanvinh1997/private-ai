@@ -73,6 +73,7 @@ async fn drain(
 
     Ok(library
         .documents()
+        .await
         .map_err(|err| err.to_string())?
         .into_iter()
         .map(view)
@@ -84,6 +85,7 @@ pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentVi
     let harness = state.harness().await?;
     Ok(library(&harness)?
         .documents()
+        .await
         .map_err(|err| err.to_string())?
         .into_iter()
         .map(view)
@@ -93,7 +95,7 @@ pub async fn list_documents(state: State<'_, AppState>) -> Result<Vec<DocumentVi
 #[tauri::command]
 pub async fn library_stats(state: State<'_, AppState>) -> Result<LibraryStats, String> {
     let harness = state.harness().await?;
-    let stats = library(&harness)?.stats().map_err(|err| err.to_string())?;
+    let stats = library(&harness)?.stats().await.map_err(|err| err.to_string())?;
     Ok(LibraryStats {
         documents: stats.documents,
         chunks: stats.chunks,
@@ -185,6 +187,7 @@ pub async fn remove_document(id: String, state: State<'_, AppState>) -> Result<(
     let harness = state.harness().await?;
     library(&harness)?
         .remove(&id)
+        .await
         .map_err(|err| err.to_string())
 }
 

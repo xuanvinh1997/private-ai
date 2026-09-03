@@ -71,8 +71,13 @@ export default function McpCatalog(props: {
       title={picked() === null ? "Danh mục server MCP" : `Cắm ${picked()?.name}`}
       desc={
         picked() === null
-          ? "Mỗi mục cắm thêm một bộ tool cho trợ lý. Tên tool sẽ mang tiền tố ext.<tên server>."
-          : "Điền các biến server cần, rồi cắm. Giá trị bí mật đi thẳng vào lõi và không hiện lại."
+          ? "Mỗi mục thêm một bộ tool có tiền tố ext.<server>."
+          : "Điền các biến server cần, rồi cắm."
+      }
+      more={
+        picked()?.env.some((variable) => variable.secret) === true
+          ? "Giá trị bí mật đi thẳng vào lõi và không hiện lại. Sau khi cắm, hộp thoại đóng và không có đường nào đọc ngược ra màn hình."
+          : undefined
       }
       wide
       onClose={props.onClose}
@@ -114,7 +119,7 @@ export default function McpCatalog(props: {
             when={props.entries.length > 0}
             fallback={
               <p class="m-0 text-xs text-faint">
-                Lõi chưa trả về mục dựng sẵn nào. Vẫn tự khai báo được bằng nút bên dưới.
+                Chưa có mục dựng sẵn nào; tự khai báo bên dưới.
               </p>
             }
           >
@@ -187,14 +192,18 @@ export default function McpCatalog(props: {
             <p class="m-0 text-xs text-muted">{entry().summary}</p>
 
             <Show when={entry().requires.length > 0}>
-              <Banner tone="warn" icon="warn" title="Máy này phải có sẵn">
+              <Banner
+                tone="warn"
+                icon="warn"
+                title="Máy này phải có sẵn"
+                more="Thiếu một trong số này thì server sẽ cắm hỏng, và thông điệp lỗi là một dòng của hệ điều hành chứ không phải một câu tiếng Việt."
+              >
                 <ul class="m-0 list-disc pl-lg">
                   <For each={entry().requires}>
                     {(need) => <li>{REQUIRES[need] ?? need}</li>}
                   </For>
                 </ul>
-                Thiếu một trong số này thì server sẽ cắm hỏng, và thông điệp lỗi là một
-                dòng của hệ điều hành chứ không phải một câu tiếng Việt.
+                Thiếu một thứ thì server cắm hỏng.
               </Banner>
             </Show>
 
@@ -253,8 +262,7 @@ export default function McpCatalog(props: {
                 cái nút xám mà không biết phải làm gì để nó sáng lên. */}
             <Show when={missing().length > 0}>
               <Banner tone="info" icon="warn" role="status">
-                Còn thiếu: <b>{missing().join(", ")}</b>. Điền xong thì nút "Cắm server"
-                sáng lên.
+                Còn thiếu: <b>{missing().join(", ")}</b> — điền xong thì nút sáng lên.
               </Banner>
             </Show>
 

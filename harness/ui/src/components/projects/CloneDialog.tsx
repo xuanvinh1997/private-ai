@@ -9,6 +9,7 @@ import {
 } from "../../lib/projects";
 import type { CloneProgress, Project } from "../../lib/protocol";
 import { Disclosure } from "../primitives";
+import { InfoDot } from "../settings/FormKit";
 import DialogShell, { Button } from "./DialogShell";
 
 /**
@@ -134,7 +135,7 @@ export default function CloneDialog(props: {
     <DialogShell
       icon="git-branch"
       title="Clone từ Git"
-      desc="Tải một repo về máy rồi mở nó làm dự án mã nguồn."
+      desc="Tải một repo về máy rồi mở làm dự án."
       busy={running()}
       width="lg"
       onClose={dismiss}
@@ -230,11 +231,14 @@ export default function CloneDialog(props: {
           class="mt-3xs size-4 shrink-0 accent-[var(--accent)]"
         />
         <span class="flex flex-col gap-3xs">
-          <span class="text-xs text-text">Chỉ lấy lịch sử gần nhất</span>
-          <span class="text-2xs text-faint">
-            Nhanh hơn nhiều và đủ để đọc mã. Đổi lại, không xem được lịch sử cũ và không
-            đẩy ngược lên nhánh khác — cần thì clone lại đầy đủ.
+          <span class="flex items-center gap-2xs text-xs text-text">
+            Chỉ lấy lịch sử gần nhất
+            <InfoDot
+              label="Về việc chỉ lấy lịch sử gần nhất"
+              text="Nhanh hơn nhiều và đủ để đọc mã. Đổi lại, không xem được lịch sử cũ và không đẩy ngược lên nhánh khác — cần thì clone lại đầy đủ."
+            />
           </span>
+          <span class="text-2xs text-faint">Nhanh hơn nhiều và đủ để đọc mã.</span>
         </span>
       </label>
 

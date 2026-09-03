@@ -143,7 +143,7 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
     {
       id: "github",
       name: "GitHub",
-      summary: "Đọc issue, pull request và nội dung tệp của kho trên GitHub.",
+      summary: "Đọc issue, pull request và tệp trong kho GitHub.",
       command: "",
       args: [],
       env: [
@@ -161,7 +161,7 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
     {
       id: "filesystem",
       name: "Hệ tệp",
-      summary: "Đọc và ghi tệp trong một thư mục nằm ngoài dự án đang mở.",
+      summary: "Đọc và ghi tệp ngoài thư mục dự án.",
       command: "npx",
       args: ["-y", "@modelcontextprotocol/server-filesystem", "."],
       env: [],
@@ -172,7 +172,7 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
     {
       id: "postgres",
       name: "PostgreSQL",
-      summary: "Truy vấn chỉ-đọc và mô tả lược đồ của một cơ sở dữ liệu Postgres.",
+      summary: "Truy vấn chỉ-đọc và xem lược đồ Postgres.",
       command: "docker",
       args: ["run", "-i", "--rm", "mcp/postgres"],
       env: [
@@ -185,7 +185,7 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
     {
       id: "sentry",
       name: "Sentry",
-      summary: "Kéo về chi tiết một sự cố và ngăn xếp lỗi đi kèm.",
+      summary: "Kéo về chi tiết sự cố và ngăn xếp lỗi.",
       command: "uvx",
       args: ["mcp-server-sentry"],
       env: [

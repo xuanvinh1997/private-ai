@@ -34,6 +34,12 @@ pub const DB_FILE: &str = "provider.db";
 pub enum Role {
     Chat,
     Embedding,
+    /// Đọc ảnh. Dùng cho OCR những trang PDF không có lớp chữ.
+    ///
+    /// Là một vai riêng chứ không mượn vai hội thoại, vì không phải mô hình trò chuyện
+    /// nào cũng nhìn được: gửi một tấm ảnh tới `qwen3:8b` cho ra một lỗi 400 ở đúng lúc
+    /// người dùng vừa thả một tập tài liệu quét vào.
+    Vision,
 }
 
 impl Role {
@@ -41,6 +47,7 @@ impl Role {
         match self {
             Role::Chat => "chat",
             Role::Embedding => "embedding",
+            Role::Vision => "vision",
         }
     }
 
@@ -50,6 +57,7 @@ impl Role {
         match value.trim().to_lowercase().as_str() {
             "chat" => Some(Role::Chat),
             "embedding" | "embed" => Some(Role::Embedding),
+            "vision" | "ocr" => Some(Role::Vision),
             _ => None,
         }
     }
@@ -77,6 +85,11 @@ pub struct StoredProvider {
     pub active_chat: bool,
     /// Đang giữ vai nhúng.
     pub active_embedding: bool,
+    /// Mô hình **đọc ảnh** của provider này. Rỗng là chưa chọn, và khi ấy tệp PDF quét
+    /// không đọc được — thư viện nói ra điều đó thay vì lặng lẽ nạp vào 0 đoạn.
+    pub vision_model: Option<String>,
+    /// Đang giữ vai đọc ảnh.
+    pub active_vision: bool,
 }
 
 impl std::fmt::Debug for StoredProvider {
@@ -87,6 +100,7 @@ impl std::fmt::Debug for StoredProvider {
             .field("signature", &self.config.signature())
             .field("model", &self.model)
             .field("embedding_model", &self.embedding_model)
+            .field("vision_model", &self.vision_model)
             .field("active_chat", &self.active_chat)
             .field("active_embedding", &self.active_embedding)
             .finish()
@@ -107,6 +121,7 @@ impl StoredProvider {
         match role {
             Role::Chat => self.active_chat,
             Role::Embedding => self.active_embedding,
+            Role::Vision => self.active_vision,
         }
     }
 }
@@ -134,6 +149,11 @@ pub struct ProviderInput {
     ///
     /// [`model`]: ProviderInput::model
     pub embedding_model: Option<String>,
+    /// Mô hình **đọc ảnh**, cho OCR những trang PDF không có lớp chữ. Cùng luật với
+    /// [`embedding_model`]: điền nó không tự trao vai đọc ảnh cho provider này.
+    ///
+    /// [`embedding_model`]: ProviderInput::embedding_model
+    pub vision_model: Option<String>,
 }
 
 impl ProviderInput {
@@ -152,6 +172,7 @@ impl ProviderInput {
             enabled: true,
             model: None,
             embedding_model: None,
+            vision_model: None,
         }
     }
 
@@ -167,6 +188,11 @@ impl ProviderInput {
 
     pub fn with_model(mut self, model: impl Into<String>) -> Self {
         self.model = Some(model.into());
+        self
+    }
+
+    pub fn with_vision_model(mut self, model: impl Into<String>) -> Self {
+        self.vision_model = Some(model.into());
         self
     }
 
@@ -208,13 +234,15 @@ CREATE TABLE IF NOT EXISTS providers (
   enabled         INTEGER NOT NULL,
   model           TEXT,
   embedding_model TEXT,
+  vision_model TEXT,
   created_at      INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE IF NOT EXISTS provider_state (
   id                  INTEGER PRIMARY KEY CHECK (id = 0),
   active_chat_id      TEXT REFERENCES providers (id) ON DELETE SET NULL,
-  active_embedding_id TEXT REFERENCES providers (id) ON DELETE SET NULL
+  active_embedding_id TEXT REFERENCES providers (id) ON DELETE SET NULL,
+  active_vision_id    TEXT REFERENCES providers (id) ON DELETE SET NULL
 ) STRICT;
 
 INSERT OR IGNORE INTO provider_state (id) VALUES (0);
@@ -284,6 +312,12 @@ fn migrate(conn: &Connection) -> Result<()> {
     if has_table(conn, "providers")? && !has_column(conn, "providers", "embedding_model")? {
         conn.execute_batch("ALTER TABLE providers ADD COLUMN embedding_model TEXT")?;
     }
+    // Vai đọc ảnh đến sau hai vai kia. Bắt đầu từ chỗ trống, đúng như vai nhúng từng
+    // làm: chọn mô hình vision là một quyết định người dùng chưa từng được hỏi, và đoán
+    // hộ họ sẽ gửi ảnh tới một mô hình không nhìn được.
+    if has_table(conn, "providers")? && !has_column(conn, "providers", "vision_model")? {
+        conn.execute_batch("ALTER TABLE providers ADD COLUMN vision_model TEXT")?;
+    }
     if !has_table(conn, "provider_state")? {
         return Ok(());
     }
@@ -296,6 +330,12 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch(
             "ALTER TABLE provider_state
              ADD COLUMN active_embedding_id TEXT REFERENCES providers (id) ON DELETE SET NULL",
+        )?;
+    }
+    if !has_column(conn, "provider_state", "active_vision_id")? {
+        conn.execute_batch(
+            "ALTER TABLE provider_state
+             ADD COLUMN active_vision_id TEXT REFERENCES providers (id) ON DELETE SET NULL",
         )?;
     }
     Ok(())
@@ -393,12 +433,15 @@ fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProvider> {
         config,
         model: row.get::<_, Option<String>>("model")?,
         embedding_model: row.get::<_, Option<String>>("embedding_model")?,
+        vision_model: row.get::<_, Option<String>>("vision_model")?,
         active_chat: false,
         active_embedding: false,
+        active_vision: false,
     })
 }
 
-const SELECT: &str = "SELECT id, name, kind, base_url, api_key, enabled, model, embedding_model
+const SELECT: &str = "SELECT id, name, kind, base_url, api_key, enabled, model,
+                             embedding_model, vision_model
                       FROM providers ORDER BY created_at";
 
 fn all(conn: &Connection) -> Result<Vec<StoredProvider>> {
@@ -411,23 +454,26 @@ fn all(conn: &Connection) -> Result<Vec<StoredProvider>> {
 struct Pointers {
     chat: Option<String>,
     embedding: Option<String>,
+    vision: Option<String>,
 }
 
 fn pointers(conn: &Connection) -> Result<Pointers> {
     let mut stmt = conn.prepare_cached(
-        "SELECT active_chat_id, active_embedding_id FROM provider_state WHERE id = 0",
+        "SELECT active_chat_id, active_embedding_id, active_vision_id          FROM provider_state WHERE id = 0",
     )?;
     let found = stmt
         .query_row([], |row| {
             Ok(Pointers {
                 chat: row.get(0)?,
                 embedding: row.get(1)?,
+                vision: row.get(2)?,
             })
         })
         .optional()?;
     Ok(found.unwrap_or(Pointers {
         chat: None,
         embedding: None,
+        vision: None,
     }))
 }
 
@@ -458,10 +504,19 @@ fn resolve_embedding(rows: &[StoredProvider], selected: Option<&str>) -> Option<
 fn decorate(mut rows: Vec<StoredProvider>, pointers: &Pointers) -> Vec<StoredProvider> {
     let chat = resolve_chat(&rows, pointers.chat.as_deref());
     let embedding = resolve_embedding(&rows, pointers.embedding.as_deref());
+    // Vai đọc ảnh **không** có luật kế nhiệm như vai hội thoại: con trỏ trỏ vào đâu thì
+    // là ở đó, trỏ vào chỗ trống thì không ai giữ. Đoán hộ một provider cho vai này là
+    // gửi ảnh tới một mô hình có thể không nhìn được.
+    let vision = pointers
+        .vision
+        .as_deref()
+        .filter(|want| rows.iter().any(|row| row.config.id == *want))
+        .map(str::to_string);
     for row in &mut rows {
         let id = Some(row.config.id.as_str());
         row.active_chat = id == chat.as_deref();
         row.active_embedding = id == embedding.as_deref();
+        row.active_vision = id == vision.as_deref();
     }
     rows
 }
@@ -505,7 +560,8 @@ impl ProviderStore for SqliteProviderStore {
                         "UPDATE providers
                          SET name = ?2, kind = ?3, base_url = ?4,
                              api_key = COALESCE(?5, api_key),
-                             enabled = ?6, model = ?7, embedding_model = ?8
+                             enabled = ?6, model = ?7, embedding_model = ?8,
+                             vision_model = ?9
                          WHERE id = ?1",
                         params![
                             id,
@@ -516,6 +572,7 @@ impl ProviderStore for SqliteProviderStore {
                             input.enabled as i64,
                             input.model,
                             input.embedding_model,
+                            input.vision_model,
                         ],
                     )?;
                     if touched == 0 {
@@ -528,8 +585,8 @@ impl ProviderStore for SqliteProviderStore {
                     conn.execute(
                         "INSERT INTO providers
                            (id, name, kind, base_url, api_key, enabled, model,
-                            embedding_model, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                            embedding_model, vision_model, created_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                         params![
                             id,
                             name,
@@ -539,6 +596,7 @@ impl ProviderStore for SqliteProviderStore {
                             input.enabled as i64,
                             input.model,
                             input.embedding_model,
+                            input.vision_model,
                             now_ms(),
                         ],
                     )?;
@@ -602,6 +660,7 @@ impl ProviderStore for SqliteProviderStore {
             let (column, pointer) = match role {
                 Role::Chat => ("model", "active_chat_id"),
                 Role::Embedding => ("embedding_model", "active_embedding_id"),
+                Role::Vision => ("vision_model", "active_vision_id"),
             };
             if let Some(model) = model {
                 conn.execute(

@@ -25,14 +25,15 @@ use pai_project::{Project, ProjectKind, ProjectStore, SqliteProjectStore};
 use pai_providers::{
     DB_FILE, ProviderInput, ProviderRuntime, ProviderStore, Providers, Role, SqliteProviderStore,
 };
-use pai_rag::{Embedder, RagPlugin};
+use pai_rag::{RagPlugin, SidecarConfig};
 use pai_sandbox::SandboxPlugin;
 use pai_session::{SessionService, SessionStore, SqliteSessionStore};
 use pai_shell::ShellPlugin;
 use pai_terminal::TerminalPlugin;
 use pai_tools::{ToolPipeline, ToolRegistry, Tools, ToolsPlugin};
 
-use crate::llm::{ActiveEmbedder, ActiveLlm};
+use crate::llm::ActiveLlm;
+use crate::rag_config::RagConfigFile;
 
 /// Lời tự giới thiệu đứng đầu mọi prompt.
 const IDENTITY: &str = "\
@@ -63,7 +64,9 @@ pub struct Harness {
     /// Con trỏ tới provider đang hoạt động. Mọi chỗ cần nói chuyện với mô hình đều cầm
     /// **cái này**, không cầm một bản sao — xem `crate::llm`.
     pub llm: Arc<ActiveLlm>,
-    pub embedder: Arc<ActiveEmbedder>,
+    /// Tệp cấu hình mà `pai-rag-service` đọc. Ghi lại mỗi lần vai provider đổi — xem
+    /// `crate::rag_config`.
+    pub rag_config: Arc<RagConfigFile>,
     pub providers: Arc<ProviderRuntime>,
     /// Server MCP khai trong **hàng cấu hình** (`patch.yaml`), giữ nguyên để mỗi lần nạp
     /// lại còn truyền vào được.
@@ -83,7 +86,7 @@ struct Rebuild {
     ctx: Context,
     config: Config,
     llm: Arc<ActiveLlm>,
-    embedder: Arc<ActiveEmbedder>,
+    rag_config: Arc<RagConfigFile>,
     sessions: SessionService,
     composed: Composed,
 }
@@ -131,7 +134,7 @@ impl Harness {
             .apply_active()
             .await
             .map_err(|err| err.to_string())?;
-        apply_llm(&self.providers, &self.llm, &self.embedder);
+        apply_llm(&self.providers, &self.llm, &self.rag_config, self.current.lock().as_ref());
         Ok(())
     }
 
@@ -218,6 +221,25 @@ impl Harness {
     /// "trỏ chỉ mục sang chỗ khác" — mỗi bước như thế là một chỗ để quên, và cái quên đó
     /// chỉ lộ ra khi một tool đọc nhầm repo. Cắm lại thì không quên được: plugin nào cũng
     /// đi qua đúng một đường khởi tạo, đường mà nó đã đi lúc khởi động.
+    /// Chiếu trạng thái provider và dự án đang mở xuống tệp mà `pai-rag-service` đọc.
+    ///
+    /// Gọi ở **mọi** chỗ một trong hai thứ ấy đổi: áp lại provider, mở dự án, đóng dự án.
+    /// Bỏ sót một chỗ nghĩa là service chạy bằng một bức ảnh cũ của cấu hình, và không có
+    /// gì báo — nó vẫn trả lời, chỉ là trả lời về sai thư mục hoặc bằng sai mô hình.
+    fn write_rag_config(&self, project: Option<&Project>) {
+        match self.providers.list() {
+            Ok(rows) => self.rag_config.write(
+                &rows,
+                project.map(|item| crate::rag_config::Project {
+                    id: project_slug(Path::new(&item.path)),
+                    name: item.name.clone(),
+                    root: PathBuf::from(&item.path),
+                }),
+            ),
+            Err(err) => tracing::warn!("không đọc được danh sách nhà cung cấp: {err}"),
+        }
+    }
+
     pub async fn open_project(&self, path: &Path) -> Result<Project, String> {
         let project = self.projects.touch(path).map_err(|err| err.to_string())?;
         // Giữ khoá suốt cả quá trình: hai lần đổi dự án chồng lên nhau sẽ để lại một nửa
@@ -228,11 +250,17 @@ impl Harness {
             scope.effects().dispose().await;
         }
 
+        // Ghi cấu hình RAG **trước** khi cắm plugin. Tiến trình service nối lười, nhưng
+        // lời gọi đầu tiên có thể tới ngay sau khi cửa sổ vẽ xong — và một service đọc
+        // được tệp còn khai dự án cũ sẽ trả về thư viện của dự án trước đó, trông y hệt
+        // một câu trả lời sai bình thường.
+        self.write_rag_config(Some(&project));
+
         let catalog = catalog(
             &self.rebuild.config,
             Some(Path::new(&project.path)),
             self.rebuild.llm.clone(),
-            self.rebuild.embedder.clone(),
+            self.rebuild.rag_config.clone(),
             self.rebuild.sessions.clone(),
         );
         for row in self
@@ -263,6 +291,9 @@ impl Harness {
         for scope in scopes.drain(..).rev() {
             scope.effects().dispose().await;
         }
+        // Xoá dự án khỏi cấu hình luôn. Để nguyên thì một service còn sống vẫn trả lời
+        // được về thư viện của dự án vừa đóng.
+        self.write_rag_config(None);
         *self.current.lock() = None;
         tracing::info!("đã đóng dự án; hội thoại chạy không có tool chạm đĩa");
     }
@@ -371,7 +402,12 @@ fn project_slug(workspace: &Path) -> String {
 /// provider nào, `driver.llm()` vẫn đang là chính [`ActiveLlm`] — và đặt nó làm cái mà
 /// `ActiveLlm` trỏ tới là dựng một vòng lặp vô hạn ngay trong đường gửi token. Kho thì
 /// không bao giờ trả về chính nó.
-fn apply_llm(runtime: &ProviderRuntime, llm: &ActiveLlm, embedder: &ActiveEmbedder) {
+fn apply_llm(
+    runtime: &ProviderRuntime,
+    llm: &ActiveLlm,
+    rag_config: &RagConfigFile,
+    project: Option<&Project>,
+) {
     // Hai vai, hai nhánh **độc lập**. Trước đây lỗi ở nhánh hội thoại `return` sớm và bộ
     // nhúng không bao giờ được đặt — đúng ở thời điểm hai vai còn là một, và sai ngay khi
     // chúng tách ra: một máy chủ hội thoại không nối được không nói gì về máy chủ nhúng.
@@ -384,13 +420,21 @@ fn apply_llm(runtime: &ProviderRuntime, llm: &ActiveLlm, embedder: &ActiveEmbedd
         Err(err) => tracing::warn!("không đọc được nhà cung cấp hội thoại: {err}"),
     }
 
-    match runtime.embedder() {
-        // `None` là hợp lệ và phải được **đặt thật**, không phải bỏ qua: gỡ vai nhúng mà
-        // không đặt lại nghĩa là bộ nhúng cũ còn nằm đó, và tài liệu tiếp tục được gửi tới
-        // đúng chỗ người dùng vừa gỡ. Thư viện lùi về FTS5 và `LibraryStats::reason` nói
-        // ra vì sao — đó là hành vi đúng, không phải một trạng thái hỏng.
-        Ok(next) => embedder.set(next),
-        Err(err) => tracing::warn!("không đọc được nhà cung cấp giữ vai nhúng: {err}"),
+    // Ghi lại cấu hình cho service tài liệu. Gỡ vai nhúng cũng **phải** được ghi, không
+    // được bỏ qua: không ghi nghĩa là tệp vẫn khai mô hình cũ, và tài liệu tiếp tục được
+    // gửi tới đúng chỗ người dùng vừa gỡ. Ghi một mô hình rỗng thì thư viện lùi về tìm
+    // theo từ khoá và `LibraryStats::reason` nói ra vì sao — đó là hành vi đúng, không
+    // phải một trạng thái hỏng.
+    match runtime.list() {
+        Ok(rows) => rag_config.write(
+            &rows,
+            project.map(|item| crate::rag_config::Project {
+                id: project_slug(Path::new(&item.path)),
+                name: item.name.clone(),
+                root: PathBuf::from(&item.path),
+            }),
+        ),
+        Err(err) => tracing::warn!("không đọc được danh sách nhà cung cấp: {err}"),
     }
 }
 
@@ -420,6 +464,31 @@ fn builtin_skills() -> Option<PathBuf> {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../skills"),
     ];
     candidates.into_iter().find(|path| path.is_dir())
+}
+
+/// Thư mục mã nguồn của `pai-rag-service`.
+///
+/// Cùng lối dò với [`builtin_skills`] và cùng lý do: [`boot`] chạy trước khi có
+/// `AppHandle` nào. Thứ tự:
+///
+/// 1. `PAI_RAG_SERVICE_DIR` — lối thoát cho người phát triển và cho bộ test.
+/// 2. `…/services/rag` cạnh tệp thực thi — chỗ nó nằm trong một bản cài đặt.
+/// 3. `<mã nguồn>/../services/rag` — khi chạy từ cây mã nguồn.
+///
+/// Không tìm thấy thì vẫn trả về ứng viên cuối: `Sidecar` sẽ hỏng lúc `spawn` với một
+/// câu nói rõ đường dẫn nào không chạy được, và đó là thông tin hữu ích hơn một
+/// `Option::None` phải xử lý ở bốn chỗ.
+fn rag_service_dir() -> PathBuf {
+    if let Ok(explicit) = std::env::var("PAI_RAG_SERVICE_DIR") {
+        return PathBuf::from(explicit);
+    }
+    let from_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../services/rag");
+    let candidates = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join("services/rag")))
+        .into_iter()
+        .chain(std::iter::once(from_source.clone()));
+    candidates.into_iter().find(|path| path.is_dir()).unwrap_or(from_source)
 }
 
 /// Cây plugin mặc định, viết bằng chính định dạng mà người dùng vá.
@@ -553,7 +622,7 @@ fn catalog(
     config: &Config,
     workspace: Option<&Path>,
     llm: Arc<ActiveLlm>,
-    embedder: Arc<ActiveEmbedder>,
+    rag_config: Arc<RagConfigFile>,
     sessions: SessionService,
 ) -> PluginCatalog {
     let mut catalog = PluginCatalog::new();
@@ -633,25 +702,21 @@ fn catalog(
     }
     {
         let workspace = workspace.clone();
-        let data_dir = data_dir.clone();
+        let rag_config = rag_config.clone();
         catalog.register("rag", move |_| {
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Hai đường dẫn, hai vai. `root` là **thư mục người dùng chọn** — đó là thư
-            // viện, và tệp trong đó là nguồn sự thật, đúng như thư mục mã nguồn là nguồn
-            // sự thật của `pai-index`. Cơ sở dữ liệu thì nằm trong kho của ứng dụng: nó
-            // là chỉ mục soi vào thư mục ấy, dựng lại được bất cứ lúc nào, và đổ nó vào
-            // thư mục người dùng chỉ tổ thêm một thư mục ẩn họ không hỏi xin.
-            let embedder: Option<Arc<dyn Embedder>> = Some(embedder.clone());
-            Ok(Box::new(RagPlugin::new(
-                data_dir
-                    .join("du-an")
-                    .join(project_slug(&workspace))
-                    .join("tai-lieu"),
-                workspace.clone(),
-                embedder,
-            )) as Box<dyn Plugin>)
+            // Thư mục người dùng chọn **là** thư viện, đúng như thư mục mã nguồn là nguồn
+            // sự thật của `pai-index`. Service đọc thẳng từ đó — không có bản sao nào
+            // trong kho của ứng dụng, nên không có gì để lệch với đĩa.
+            //
+            // Mã dự án đi kèm mọi lời gọi, và nó cũng là tên collection Qdrant. Dùng
+            // `project_slug` chứ không dùng tên thư mục: hai dự án cùng tên `tai-lieu` ở
+            // hai chỗ khác nhau phải là hai thư viện.
+            let sidecar = SidecarConfig::uv(rag_service_dir(), project_slug(&workspace))
+                .with_env("PAI_RAG_CONFIG", rag_config.path().display().to_string());
+            Ok(Box::new(RagPlugin::new(sidecar, workspace.clone())) as Box<dyn Plugin>)
         });
     }
     catalog.register("sandbox", |_| {
@@ -830,7 +895,7 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         http.clone(),
     ));
     let llm = Arc::new(ActiveLlm::new(boot_adapter));
-    let embedder = Arc::new(ActiveEmbedder::empty());
+    let rag_config = Arc::new(RagConfigFile::new(&config.data_dir, &rag_service_dir()));
 
     let projects: Arc<dyn ProjectStore> =
         Arc::new(SqliteProjectStore::open(config.data_dir.join("du-an.db"))?);
@@ -870,7 +935,7 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         &config,
         project.as_ref().map(|open| Path::new(open.path.as_str())),
         llm.clone(),
-        embedder.clone(),
+        rag_config.clone(),
         sessions.clone(),
     );
 
@@ -930,7 +995,13 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     if let Err(err) = runtime.apply_active().await {
         tracing::warn!("chưa dùng được nhà cung cấp nào: {err}");
     }
-    apply_llm(&runtime, &llm, &embedder);
+    // Truyền **dự án đã khôi phục**, không phải `None`.
+    //
+    // `boot` dựng tầng plugin của dự án gần nhất ngay tại đây chứ không đi qua
+    // `open_project`, nên đây là chỗ duy nhất ghi được cấu hình cho nó. Truyền `None` thì
+    // tệp ghi ra khai `projects: []`, và mọi lời gọi tới service hỏng với "chưa có dự án
+    // nào đang mở" — trong khi giao diện thì đang hiện một dự án đã mở.
+    apply_llm(&runtime, &llm, &rag_config, project.as_ref());
     Ok(Harness {
         ctx: ctx.clone(),
         context_window: config.context_window,
@@ -947,11 +1018,11 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
             ctx,
             config,
             llm: llm.clone(),
-            embedder: embedder.clone(),
+            rag_config: rag_config.clone(),
             sessions,
             composed,
         },
         llm,
-        embedder,
+        rag_config,
     })
 }

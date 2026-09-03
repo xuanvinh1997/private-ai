@@ -107,7 +107,7 @@ export default function BashCard(props: { call: ToolCall }) {
       <Show when={props.call.state === "running" && terminal()?.background}>
         <p class="text-2xs text-faint">
           Chạy nền{terminal()?.job_id ? ` · mã tiến trình ${terminal()?.job_id}` : ""} — dùng
-          <code class="mx-3xs font-mono">job_output</code> để xem thêm.
+          <code class="mx-3xs font-mono">job_output</code>.
         </p>
       </Show>
     </ToolShell>

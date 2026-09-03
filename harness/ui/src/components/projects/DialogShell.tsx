@@ -1,6 +1,7 @@
 import { createUniqueId, Show, type JSX } from "solid-js";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import Icon, { type IconName } from "../Icon";
+import { InfoDot } from "../settings/FormKit";
 
 /**
  * Vỏ chung cho các hộp thoại của màn hình dự án và màn hình thư viện.
@@ -18,6 +19,8 @@ export default function DialogShell(props: {
   icon: IconName;
   title: string;
   desc?: string;
+  /** Đoạn dài đằng sau tiêu đề — cất trong `InfoDot`, không trải ra hộp thoại. */
+  more?: string;
   tone?: "accent" | "danger";
   /** Có việc đang chạy trong hộp thoại; trình đọc màn hình cần biết để không đọc vội. */
   busy?: boolean;
@@ -64,8 +67,9 @@ export default function DialogShell(props: {
             <Icon name={props.icon} size={16} />
           </span>
           <div class="flex min-w-0 flex-col gap-3xs">
-            <h2 id={titleId} class="m-0 text-md font-semibold text-ink">
+            <h2 id={titleId} class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
               {props.title}
+              <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
             </h2>
             <Show when={props.desc}>
               {(text) => (

@@ -51,10 +51,12 @@ impl Tool for DocsList {
         let documents = self
             .docs
             .documents()
+            .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
         let stats = self
             .docs
             .stats()
+            .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
 
         if documents.is_empty() {

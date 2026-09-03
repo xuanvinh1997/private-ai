@@ -655,12 +655,20 @@ async fn doi_nha_cung_cap_hoi_thoai_khong_keo_bo_nhung_di_theo() {
     let harness = boot(config(&dir)).await.expect("dựng được cây");
 
     // Hàng gieo là Ollama trên máy này, giữ cả hai vai.
-    let truoc = harness
-        .embedder
-        .current()
-        .map(|item| item.id().to_string())
-        .expect("hàng gieo phải có bộ nhúng");
-    assert_eq!(truoc, "nomic-embed-text");
+    //
+    // Đọc **tệp cấu hình mà service đọc**, không đọc một bộ nhúng trong tiến trình: từ
+    // khi việc nhúng chuyển sang `services/rag/`, tệp này là thứ duy nhất quyết định
+    // tài liệu được gửi tới đâu. Kiểm nó là kiểm cả bất biến lẫn đường ống chở nó.
+    let doc_cau_hinh = || -> serde_json::Value {
+        let raw = std::fs::read_to_string(harness.rag_config.path())
+            .expect("app phải ghi cấu hình RAG ngay khi áp provider");
+        serde_json::from_str(&raw).expect("cấu hình RAG phải là JSON hợp lệ")
+    };
+    let truoc = doc_cau_hinh()["embedding"]["model"]
+        .as_str()
+        .expect("vai nhúng phải có mô hình")
+        .to_string();
+    assert_eq!(truoc, "qwen3-embedding:4b");
 
     // Thêm một provider từ xa và giao cho nó **vai hội thoại**.
     let xa = harness
@@ -693,13 +701,17 @@ async fn doi_nha_cung_cap_hoi_thoai_khong_keo_bo_nhung_di_theo() {
         Some(xa.id().to_string())
     );
 
-    // …còn bộ nhúng thì **không**. Tài liệu vẫn được nhúng tại chỗ.
-    let sau = harness
-        .embedder
-        .current()
-        .map(|item| item.id().to_string())
-        .expect("bộ nhúng không được biến mất");
-    assert_eq!(sau, truoc, "đổi provider hội thoại đã kéo bộ nhúng đi theo");
+    // …còn vai nhúng thì **không**. Tài liệu vẫn được nhúng tại chỗ.
+    let cau_hinh = doc_cau_hinh();
+    let sau = cau_hinh["embedding"]["model"].as_str().unwrap_or_default();
+    assert_eq!(sau, truoc, "đổi provider hội thoại đã kéo vai nhúng đi theo");
+    // Và vai hội thoại thì phải đổi thật — nếu không thì bài này xanh vì tệp không bao
+    // giờ được ghi lại, chứ không phải vì bất biến đúng.
+    assert_eq!(
+        cau_hinh["chat"]["base_url"].as_str().unwrap_or_default(),
+        xa.config.base_url,
+        "vai hội thoại chưa được ghi lại vào cấu hình RAG"
+    );
 
     harness.shutdown().await;
 }
@@ -799,71 +811,74 @@ async fn dong_du_an_thi_tool_cham_dia_bien_mat() {
     harness.shutdown().await;
 }
 
-/// Mở một thư mục làm dự án tài liệu thì **thấy ngay tệp đang nằm trong đó**.
+/// Dự án tài liệu được cắm `rag`, và thư viện soi vào **đúng thư mục người dùng chọn**.
 ///
-/// Đây là bài khoá lại đúng câu hỏi người dùng đã hỏi: *"tại sao chọn folder nhưng phần
-/// mềm không thấy file nào"*. Trước đây thư mục ấy không bao giờ được quét — thư viện chỉ
-/// chứa tệp thêm tay, và bản sao của chúng nằm trong một thư mục ẩn.
+/// Phần quét thư mục, rút chữ và nhúng nằm ở `services/rag/` và có bài kiểm chứng riêng
+/// bên đó — chạy nó ở đây sẽ đòi `uv`, một lần tải Python, và một máy chủ nhúng đang bật.
 ///
-/// Khẳng định đi qua **seam `Docs` thật** sau khi cây plugin đã cắm, chứ không gọi thẳng
-/// `pai-rag`: chỗ hỏng lần trước không nằm trong `pai-rag` mà nằm ở chỗ nối — nó không hề
+/// Cái còn lại, và cũng là **chỗ từng hỏng thật**, là chỗ nối: cây plugin có cắm `rag`
+/// cho đúng loại dự án không, seam `Docs` có được cấp không, ba tool đọc có vào sổ đăng
+/// ký với đúng siêu dữ liệu không, và thư mục truyền xuống có đúng thư mục người dùng
+/// chọn không. Lần hỏng trước không nằm trong `pai-rag` mà nằm ở chỗ nối — nó không hề
 /// biết thư mục người dùng chọn là thư mục nào.
 #[tokio::test]
-async fn mo_thu_muc_tai_lieu_thi_thay_ngay_tep_trong_do() {
-    use futures::StreamExt;
+async fn du_an_tai_lieu_duoc_cam_rag_va_soi_dung_thu_muc() {
     use pai_project::ProjectKind;
     use pai_rag::Docs;
 
     let dir = TempDir::new().expect("thư mục tạm");
     let harness = boot(config(&dir)).await.expect("dựng được cây");
 
-    // Một thư mục có sẵn tài liệu, y như thư mục người dùng đã chỉ vào.
     let thu_vien = TempDir::new().expect("thư mục tạm");
     let goc = thu_vien.path().canonicalize().expect("phân giải");
-    std::fs::write(
-        goc.join("ghi-chu.md"),
-        "# Ghi chú\n\nNội dung thử nghiệm.\n",
-    )
-    .expect("ghi");
-    std::fs::write(goc.join("bang.csv"), "ten,tuoi\nan,30\n").expect("ghi");
-    std::fs::write(goc.join("anh.png"), [0x89, 0x50, 0x4e, 0x47]).expect("ghi");
+    std::fs::write(goc.join("ghi-chu.md"), "# Ghi chú\n\nNội dung thử nghiệm.\n").expect("ghi");
 
     harness
         .create_project(&goc, ProjectKind::Docs, None)
         .expect("ghi nhận được dự án tài liệu");
     harness.open_project(&goc).await.expect("mở được");
 
-    let library = harness
+    assert!(
+        harness.ctx.get::<Docs>().is_some(),
+        "dự án tài liệu phải có seam thư viện"
+    );
+
+    // Ba tool đọc, và **chỉ** ba. Service phơi thêm bốn tool quản lý — sync, ingest,
+    // reprocess, remove — mà mô hình không được chạm tới: một tài liệu không đáng tin có
+    // thể bảo nó nạp thêm tệp hoặc xoá sạch thư viện.
+    let ten: Vec<String> = harness
         .ctx
-        .get::<Docs>()
-        .expect("dự án tài liệu phải có thư viện");
-
-    // Trước khi quét, thư viện trống — và `Library::open` cố ý không tự quét, vì một lần
-    // quét đồng bộ lúc cắm plugin là đóng băng cửa sổ không có thanh tiến trình nào.
-    assert_eq!(library.documents().expect("đọc được").len(), 0);
-
-    let mut stream = library.sync();
-    while stream.next().await.is_some() {}
-    drop(stream);
-
-    let docs = library.documents().expect("đọc được");
-    let ten: Vec<String> = docs
+        .require::<pai_tools::Tools>()
+        .expect("sổ tool")
+        .visible(None)
         .iter()
-        .map(|doc| {
-            doc.path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-                .unwrap_or_default()
-        })
+        .map(|tool| tool.schema().name.as_str().to_string())
+        .filter(|name| name.starts_with("docs."))
         .collect();
-    assert!(ten.iter().any(|n| n == "ghi-chu.md"), "{ten:?}");
-    assert!(ten.iter().any(|n| n == "bang.csv"), "{ten:?}");
-    assert!(!ten.iter().any(|n| n == "anh.png"), "nạp cả ảnh: {ten:?}");
+    for mong_doi in ["docs.search", "docs.read", "docs.list"] {
+        assert!(ten.iter().any(|name| name == mong_doi), "thiếu {mong_doi}: {ten:?}");
+    }
+    for cam in ["docs.sync", "docs.ingest", "docs.reprocess", "docs.remove"] {
+        assert!(
+            !ten.iter().any(|name| name == cam),
+            "`{cam}` không được lọt vào tầm với của mô hình: {ten:?}"
+        );
+    }
+
+    // Cấu hình ghi ra cho service phải trỏ đúng thư mục người dùng chọn.
+    let raw = std::fs::read_to_string(harness.rag_config.path()).expect("đọc cấu hình RAG");
+    let cau_hinh: serde_json::Value = serde_json::from_str(&raw).expect("JSON hợp lệ");
+    let root = cau_hinh["projects"][0]["root"]
+        .as_str()
+        .expect("phải khai thư mục dự án");
+    assert_eq!(
+        std::path::Path::new(root),
+        goc,
+        "thư viện đang soi vào nhầm thư mục"
+    );
 
     // Và tệp gốc **vẫn nằm nguyên chỗ cũ**, không bị chép đi đâu.
     assert!(goc.join("ghi-chu.md").is_file());
-    let stats = library.stats().expect("đọc được");
-    assert_eq!(stats.root, goc, "thư viện đang soi vào nhầm thư mục");
 
     harness.shutdown().await;
 }
@@ -1040,6 +1055,60 @@ async fn man_hinh_quyen_doc_duoc_muc_giam_that() {
     assert!(
         roots.iter().any(|dir| goc.starts_with(dir) || dir == &goc),
         "thư mục dự án không nằm trong vùng ghi được: {roots:?}"
+    );
+
+    harness.shutdown().await;
+}
+
+/// `boot` khôi phục dự án gần nhất, và cấu hình ghi ra cho service **phải** nói tên nó.
+///
+/// Bài này khoá một lỗi đã xảy ra thật. `boot` dựng tầng plugin của dự án được khôi phục
+/// ngay trong chính nó chứ không đi qua `open_project`, nên nó là chỗ **duy nhất** ghi
+/// được cấu hình cho dự án ấy. Bản đầu truyền `None` xuống, và tệp ghi ra khai
+/// `projects: []`: giao diện hiện một dự án đang mở, còn mọi lời gọi tới service trả về
+/// "chưa có dự án nào đang mở".
+///
+/// Kiểu hỏng này không lộ ra trong bài kiểm `open_project` — ở đó mọi thứ đúng — mà chỉ
+/// lộ khi mở lại ứng dụng, tức là ở lần chạy thứ hai của người dùng.
+#[tokio::test]
+async fn khoi_dong_lai_thi_cau_hinh_rag_van_biet_du_an_nao_dang_mo() {
+    use pai_project::ProjectKind;
+
+    let dir = TempDir::new().expect("thư mục tạm");
+    let thu_vien = TempDir::new().expect("thư mục tạm");
+    let goc = thu_vien.path().canonicalize().expect("phân giải");
+    std::fs::write(goc.join("ghi-chu.md"), "# Ghi chú\n").expect("ghi");
+
+    // Lần chạy thứ nhất: ghi nhận dự án rồi mở nó, y như người dùng làm.
+    let mut dau = config(&dir);
+    dau.workspace = None;
+    let harness = boot(dau).await.expect("dựng được cây");
+    harness
+        .create_project(&goc, ProjectKind::Docs, None)
+        .expect("ghi nhận dự án");
+    harness.open_project(&goc).await.expect("mở được");
+    harness.shutdown().await;
+
+    // Lần chạy thứ hai: cùng thư mục dữ liệu, `boot` tự khôi phục dự án gần nhất.
+    let mut lai = config(&dir);
+    lai.workspace = Some(goc.clone());
+    let harness = boot(lai).await.expect("dựng lại được cây");
+    assert!(
+        harness.current_project().is_some(),
+        "boot phải khôi phục dự án gần nhất"
+    );
+
+    let raw = std::fs::read_to_string(harness.rag_config.path())
+        .expect("boot phải ghi cấu hình RAG, kể cả khi không ai gọi open_project");
+    let cau_hinh: serde_json::Value = serde_json::from_str(&raw).expect("JSON hợp lệ");
+    assert_eq!(
+        std::path::Path::new(cau_hinh["projects"][0]["root"].as_str().unwrap_or_default()),
+        goc,
+        "cấu hình ghi lúc khởi động không biết dự án nào đang mở: {raw}"
+    );
+    assert!(
+        !cau_hinh["active_project"].as_str().unwrap_or_default().is_empty(),
+        "thiếu `active_project` thì service từ chối mọi lời gọi: {raw}"
     );
 
     harness.shutdown().await;

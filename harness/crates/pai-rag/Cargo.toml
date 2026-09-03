@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Thư viện tài liệu: nạp, cắt đoạn, nhúng vector, và tìm lai ghép"
+description = "Thư viện tài liệu: client MCP tới pai-rag-service"
 
 [dependencies]
 anyhow = { workspace = true }
@@ -16,27 +16,17 @@ tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 schemars = { workspace = true }
-rusqlite = { workspace = true }
-reqwest = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-uuid = { workspace = true }
-# Đi thư mục dự án đúng như `pai-index`: cùng một crate, cùng cách tôn trọng `.gitignore`.
-ignore = { workspace = true }
-pdf-extract = { workspace = true }
-zip = { workspace = true }
-quick-xml = { workspace = true }
+parking_lot = { workspace = true }
+# Nói MCP với tiến trình con. Chỉ cần nửa client và transport stdio: crate này không phơi
+# gì ra ngoài, nó chỉ gọi đi.
+rmcp = { workspace = true }
 
 [dev-dependencies]
-# Bài kiểm chứng là một crate riêng, nên nó không thấy `[dependencies]` của thư viện.
-# Bốn dòng dưới đây lặp lại những gì đã có ở trên chỉ vì lý do đó, không phải vì crate
-# cần thêm phụ thuộc nào.
 pai-core = { workspace = true }
 pai-tools = { workspace = true }
 futures = { workspace = true }
-# Chỉ để bài kiểm chứng hạ `user_version` xuống bản cũ và dựng lại đường lệch schema.
-rusqlite = { workspace = true }
 serde_json = { workspace = true }
-zip = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

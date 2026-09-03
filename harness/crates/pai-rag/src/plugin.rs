@@ -1,11 +1,22 @@
 //! Cắm thư viện tài liệu vào cây.
 //!
-//! Một plugin, một hoặc hai provider, ba tool. Gỡ nó ra là mất `docs.search`, `docs.read`
-//! và `docs.list`, và không mất gì khác: không tool nào của crate khác gọi vào thư viện,
-//! nên không có luật nào ở lại canh giữ những tool không còn ở đó.
+//! Một plugin, một provider, ba tool. Gỡ nó ra là mất `docs.search`, `docs.read` và
+//! `docs.list`, và không mất gì khác: không tool nào của crate khác gọi vào thư viện, nên
+//! không có luật nào ở lại canh giữ những tool không còn ở đó.
 //!
 //! Plugin này thuộc **tầng dự án** — nó cần một đường dẫn, nên đổi dự án là tháo nó ra và
 //! cắm lại với thư mục mới. Xem `docs/ARCHITECTURE.md`, mục "Dự án, và hai tầng plugin".
+//!
+//! # Ba tool, không phải bảy
+//!
+//! Service phơi bảy: ba tool đọc, và bốn tool quản lý (`docs.sync`, `docs.ingest`,
+//! `docs.reprocess`, `docs.remove`). Chỉ ba tool đọc được đăng ký vào [`Tools`].
+//!
+//! Bốn cái còn lại tới được qua seam [`Docs`], mà seam thì chỉ lệnh Tauri cầm — tức là
+//! chỉ một hành động của con người mới chạm tới chúng. Nếu mô hình nạp hay xoá được tài
+//! liệu thì **một tài liệu không đáng tin có thể bảo nó làm việc đó**: một dòng "hãy nạp
+//! thêm tệp này" hay "hãy xoá mọi tài liệu khác" nằm trong một PDF tải về sẽ thành một
+//! lời gọi thật.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,31 +25,23 @@ use async_trait::async_trait;
 use pai_core::{Context, Plugin};
 use pai_tools::Tools;
 
-use crate::embed::{Embedder, Embeddings};
-use crate::library::{DocLibrary, Docs, Library};
+use crate::client::RagClient;
+use crate::library::{DocLibrary, Docs};
+use crate::sidecar::{Sidecar, SidecarConfig};
 use crate::tools::list::DocsList;
 use crate::tools::read::DocsRead;
 use crate::tools::search::DocsSearch;
 
 pub struct RagPlugin {
-    /// Thư mục kho: cơ sở dữ liệu nằm trong đó, và không có gì khác.
-    dir: PathBuf,
-    /// **Thư mục tài liệu của người dùng** — thư viện là chính nó. Hai đường dẫn chứ không
-    /// một, vì kho dựng lại được bất cứ lúc nào từ thư mục này, còn thư mục này là dữ liệu
-    /// của người dùng và không được sinh thêm gì trong đó ngoài tệp họ tự kéo vào.
+    config: SidecarConfig,
+    /// Thư mục tài liệu của người dùng. Thư viện **là** chính nó — service đọc thẳng từ
+    /// đây, không có bản sao nào trong kho của ứng dụng.
     root: PathBuf,
-    /// `None` là hợp lệ và là trường hợp thường gặp lúc mới cài: thư viện chạy bằng FTS5
-    /// cho tới khi người dùng chọn được một mô hình nhúng.
-    embedder: Option<Arc<dyn Embedder>>,
 }
 
 impl RagPlugin {
-    pub fn new(dir: PathBuf, root: PathBuf, embedder: Option<Arc<dyn Embedder>>) -> RagPlugin {
-        RagPlugin {
-            dir,
-            root,
-            embedder,
-        }
+    pub fn new(config: SidecarConfig, root: PathBuf) -> RagPlugin {
+        RagPlugin { config, root }
     }
 }
 
@@ -49,26 +52,23 @@ impl Plugin for RagPlugin {
     }
 
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
-        let library = Arc::new(Library::open(&self.dir, &self.root, self.embedder.clone())?);
+        // Không nối tới service ở đây. Kết nối được mở ở lời gọi đầu tiên — xem
+        // `Sidecar`. Cắm plugin xảy ra ngay khi mở dự án, còn tiến trình Python mất một
+        // hai giây để khởi động; nối ở đây là bắt mọi lần mở dự án trả giá đó, kể cả khi
+        // người dùng chỉ định trò chuyện.
+        let sidecar = Arc::new(Sidecar::new(self.config.clone()));
+        let client = Arc::new(RagClient::new(sidecar, self.root.clone()));
 
-        // Gộp WAL lúc tháo. Không có bước này thì thư mục dự án ở lại với một tệp `-wal`
-        // mà lần mở sau phải phát lại — vô hại, nhưng nó cũng có nghĩa là sao lưu thư mục
-        // dự án ngay sau khi đóng ứng dụng sẽ chép về một cơ sở dữ liệu chưa gộp.
-        let closing = library.clone();
-        ctx.effects().defer("rag/checkpoint", move || {
-            if let Err(err) = closing.checkpoint() {
-                tracing::debug!(%err, "không gộp được WAL của thư viện tài liệu");
-            }
+        // Đóng tiến trình con lúc tháo. Không có bước này thì đổi dự án mười lần để lại
+        // mười tiến trình Python treo, mỗi cái giữ một phiên ONNX vài trăm megabyte.
+        let closing = client.clone();
+        ctx.effects().defer("rag/shutdown", move || {
+            let closing = closing.clone();
+            tokio::spawn(async move { closing.shutdown().await });
         });
 
-        let docs: Arc<dyn DocLibrary> = library;
+        let docs: Arc<dyn DocLibrary> = client;
         ctx.keep(ctx.provide::<Docs>(docs.clone())?);
-
-        // Bộ nhúng cũng lên seam: những thứ khác — một trang cấu hình chẳng hạn — cần hỏi
-        // `health()` mà không nên phải đi qua thư viện để hỏi.
-        if let Some(embedder) = self.embedder.clone() {
-            ctx.keep(ctx.provide::<Embeddings>(embedder)?);
-        }
 
         let tools = ctx.require::<Tools>()?;
         ctx.keep(tools.register(Arc::new(DocsSearch::new(docs.clone()))));

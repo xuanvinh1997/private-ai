@@ -74,6 +74,7 @@ impl Tool for DocsSearch {
         let stats = self
             .docs
             .stats()
+            .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
 
         if hits.is_empty() {

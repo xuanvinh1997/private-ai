@@ -16,13 +16,16 @@ export default function GeneralPage() {
     <div class="flex flex-col gap-2xl">
       <section class="flex flex-col gap-md">
         <SectionHead
+          icon="eye"
           title="Hiển thị"
-          desc="Đổi là thấy ngay, và được nhớ lại ở lần mở sau."
+          desc="Đổi là thấy ngay, và được nhớ cho lần sau."
         />
         <RowGroup>
           <Row
+            icon="palette"
             label="Bảng màu"
-            desc="Theo hệ thống thì cửa sổ đổi màu cùng lúc với macOS, kể cả khi đang mở."
+            desc="Sáng, tối, hoặc đi theo hệ thống."
+            more="Theo hệ thống thì cửa sổ đổi màu cùng lúc với macOS, kể cả khi đang mở."
             control={() => (
               <Select
                 label="Bảng màu"
@@ -37,8 +40,10 @@ export default function GeneralPage() {
             )}
           />
           <Row
+            icon="bubble"
             label="Cách hiển thị hội thoại"
-            desc="Chế độ tài liệu bỏ bong bóng và trải hết bề rộng — dễ đọc hơn với diff dài và bảng rộng."
+            desc="Bong bóng hai bên, hoặc tài liệu trải hết trang."
+            more="Chế độ tài liệu bỏ bong bóng và trải hết bề rộng — dễ đọc hơn với diff dài và bảng rộng."
             control={() => (
               <Select
                 label="Cách hiển thị hội thoại"

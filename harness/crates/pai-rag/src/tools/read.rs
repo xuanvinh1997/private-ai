@@ -69,6 +69,7 @@ impl Tool for DocsRead {
         let hits = self
             .docs
             .chunks(&args.document_id, offset, limit)
+            .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
 
         if hits.is_empty() {

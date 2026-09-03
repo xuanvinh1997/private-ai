@@ -4,7 +4,15 @@ import { parseMcpJson } from "../../lib/mcp";
 import type { McpServer, McpServerInput } from "../../lib/protocol";
 import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
-import { Banner, Button, DialogShell, PillChoice, TextArea, TextField } from "../settings/FormKit";
+import {
+  Banner,
+  Button,
+  DialogShell,
+  InfoDot,
+  PillChoice,
+  TextArea,
+  TextField,
+} from "../settings/FormKit";
 
 /** Một dòng danh sách có ô nhập. `id` chỉ tồn tại để `<Key>` giữ được tiêu điểm bàn phím. */
 interface Row {
@@ -101,8 +109,8 @@ export default function McpForm(props: {
       setHeaders(rowsFrom(input.headers));
       setJsonNote(
         parsed.rest.length === 0
-          ? `Đã điền từ mục "${parsed.name}". Xem lại các ô bên dưới rồi bấm Lưu.`
-          : `Đã điền từ mục "${parsed.name}". Bỏ qua ${parsed.rest.length} mục còn lại (${parsed.rest.join(", ")}) — thêm từng cái một.`,
+          ? `Đã điền từ mục "${parsed.name}" — xem lại rồi bấm Lưu.`
+          : `Đã điền "${parsed.name}", bỏ qua ${parsed.rest.length} mục còn lại (${parsed.rest.join(", ")}).`,
       );
     } catch (err) {
       setJsonError(err instanceof Error ? err.message : String(err));
@@ -113,7 +121,7 @@ export default function McpForm(props: {
     <DialogShell
       icon={props.server === null ? "plus" : "pencil"}
       title={props.server === null ? "Thêm server MCP" : `Sửa ${props.server.name}`}
-      desc="Tool của server này sẽ xuất hiện với mô hình dưới tên ext.<tên server>.<tool>."
+      desc="Tool hiện dưới tên ext.<tên>.<tool>."
       wide
       onClose={props.onClose}
       onSubmit={() => {
@@ -178,7 +186,12 @@ export default function McpForm(props: {
         disabled={props.server !== null}
         hint={
           props.server === null
-            ? "Tên này thành tiền tố của mọi tool: ext.<tên>.<tool>. Chữ thường, không dấu cách."
+            ? "Tiền tố của mọi tool; chữ thường, không dấu cách."
+            : "Tên là khoá định danh nên không sửa được."
+        }
+        more={
+          props.server === null
+            ? undefined
             : "Tên là khoá định danh của server nên không sửa được — xoá rồi thêm lại nếu cần đổi."
         }
       />
@@ -191,7 +204,7 @@ export default function McpForm(props: {
           { id: "stdio", label: "Tiến trình con (stdio)", icon: "terminal" },
           { id: "http", label: "HTTP", icon: "cloud" },
         ]}
-        hint="stdio chạy một lệnh ngay trên máy này; HTTP gọi tới một địa chỉ có sẵn."
+        hint="stdio chạy lệnh tại máy; HTTP gọi một địa chỉ."
       />
 
       <Show when={transport() === "stdio"}>
@@ -199,7 +212,8 @@ export default function McpForm(props: {
 
         <RowList
           label="Tham số"
-          hint="Mỗi dòng một tham số, đúng thứ tự. Đừng gộp cả dòng lệnh vào một ô — dấu cách trong một tham số là dấu cách thật."
+          hint="Mỗi dòng một tham số, đúng thứ tự."
+          more="Đừng gộp cả dòng lệnh vào một ô — dấu cách trong một tham số là dấu cách thật."
           rows={args()}
           onRows={setArgs}
           addLabel="Thêm tham số"
@@ -208,7 +222,7 @@ export default function McpForm(props: {
 
         <RowList
           label="Biến môi trường"
-          hint="Khoá và giá trị. Đây là chỗ đặt token của server."
+          hint="Khoá và giá trị — chỗ đặt token của server."
           rows={env()}
           onRows={setEnv}
           addLabel="Thêm biến"
@@ -252,7 +266,7 @@ export default function McpForm(props: {
           class="size-4 accent-[var(--accent)]"
         />
         Bật ngay sau khi lưu
-        <span class="text-2xs text-faint">Tắt thì server nằm trong danh sách nhưng tool của nó không đến tay mô hình.</span>
+        <span class="text-2xs text-faint">Tắt thì tool không đến tay mô hình.</span>
       </label>
 
       <Show when={props.error}>
@@ -276,6 +290,8 @@ export default function McpForm(props: {
 function RowList(props: {
   label: string;
   hint: string;
+  /** Đoạn giải thích dài, cất trong `InfoDot` cạnh câu gợi ý. */
+  more?: string;
   rows: Row[];
   onRows: (rows: Row[]) => void;
   addLabel: string;
@@ -338,7 +354,12 @@ function RowList(props: {
           icon="plus"
           onClick={() => props.onRows([...props.rows, row()])}
         />
-        <span class="min-w-0 flex-1 text-2xs text-faint">{props.hint}</span>
+        <span class="inline-flex min-w-0 flex-1 items-center gap-2xs text-2xs text-faint">
+          {props.hint}
+          <Show when={props.more}>
+            {(more) => <InfoDot text={more()} label={`Về ${props.label}`} />}
+          </Show>
+        </span>
       </div>
     </fieldset>
   );

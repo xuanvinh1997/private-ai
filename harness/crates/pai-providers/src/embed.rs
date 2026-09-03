@@ -1,19 +1,17 @@
-//! Bộ nhúng của provider đang giữ vai vai nhúng.
+//! Provider nào đang giữ vai nhúng, và tên mô hình nhúng của nó.
 //!
-//! Đây là nửa còn lại của việc tách hai vai. `pai-rag` biết nhúng nhưng cố ý không biết
-//! provider nào; kho thì biết provider nhưng không biết `Embedder`. Một hàm ở giữa, và
-//! **chỉ** ở giữa: không cache, không trạng thái, để chỗ gọi tự quyết định giữ kết quả bao
-//! lâu.
+//! Module này **không** nhúng gì cả — việc ấy nằm ở `services/rag/`, một tiến trình
+//! Python. Ở đây chỉ còn phần mà kho provider trả lời được: ai giữ vai, mô hình tên gì,
+//! gốc máy chủ ở đâu, và vì sao chưa sẵn sàng. Ba thứ đó được ghi vào tệp cấu hình mà
+//! service đọc.
 //!
-//! Luật quan trọng nhất ở đây là luật **không** làm: khi provider giữ vai nhúng chưa chọn
-//! mô hình nhúng, hàm trả `None` thay vì mượn tạm `model` của vai hội thoại. `qwen3:8b`
-//! không có endpoint embed; mượn nó là đổi một câu "chưa chọn mô hình nhúng" đọc được
-//! thành một lỗi 400 ở mọi lần nạp tài liệu.
+//! Luật quan trọng nhất vẫn là luật **không** làm: khi provider giữ vai nhúng chưa chọn
+//! mô hình nhúng, đừng mượn tạm `model` của vai hội thoại. `qwen3:8b` không có endpoint
+//! embed; mượn nó là đổi một câu "chưa chọn mô hình nhúng" đọc được thành một lỗi 400 ở
+//! mọi lần nạp tài liệu.
 
-use std::sync::Arc;
 
 use pai_llm::ProviderKind;
-use pai_rag::{Embedder, OllamaEmbedder, OpenAiEmbedder};
 
 use crate::store::StoredProvider;
 
@@ -22,7 +20,13 @@ use crate::store::StoredProvider;
 /// Hằng số công khai vì giao diện điền sẵn nó vào ô nhập còn tầng dưới dùng nó để nói ra
 /// gợi ý trong [`embedding_reason`]: hai chỗ hiện cùng một cái tên thì phải đọc cùng một
 /// giá trị, nếu không thì người dùng thấy một tên và ứng dụng chờ một tên khác.
-pub const DEFAULT_EMBEDDING_MODEL_OLLAMA: &str = "nomic-embed-text";
+/// `qwen3-embedding:4b` chứ không phải `nomic-embed-text`.
+///
+/// `nomic-embed-text` thiên về tiếng Anh, trong khi thư viện tài liệu ở đây là tiếng
+/// Việt. Đây là một trong hai bản vá về chất lượng truy hồi đi cùng việc chuyển tầng RAG
+/// sang `services/rag/` — cái còn lại là tiền tố bất đối xứng cho câu hỏi và cho đoạn
+/// (xem `pai_rag_service.embed.PREFIXES`). Giữ khớp với `DEFAULT_EMBED_MODEL` bên đó.
+pub const DEFAULT_EMBEDDING_MODEL_OLLAMA: &str = "qwen3-embedding:4b";
 
 /// Mô hình nhúng gợi ý cho mọi máy chủ nói giao thức OpenAI.
 pub const DEFAULT_EMBEDDING_MODEL_OPENAI: &str = "text-embedding-3-small";
@@ -45,57 +49,11 @@ pub fn default_embedding_model(kind: ProviderKind) -> &'static str {
     }
 }
 
-/// Gốc máy chủ cho một endpoint nhúng.
-///
-/// `pai-rag` tự nối `/api/embed` và `/v1/embeddings`, nên cái nó cần là **gốc**. Kho thì
-/// lưu URL theo dạng mà tầng hội thoại mong đợi, và phần lớn mục trong danh mục có đuôi
-/// `/v1`. Cắt đuôi ấy ở đây là chỗ duy nhất biết cả hai quy ước — để nguyên thì mọi request
-/// nhúng bay tới `/v1/v1/embeddings` và trả về 404 mà không ai đoán ra vì sao.
-fn embedding_root(base_url: &str) -> String {
-    let value = base_url.trim().trim_end_matches('/');
-    let tail = value.rsplit('/').next().unwrap_or_default();
-    let versioned =
-        tail.starts_with('v') && tail.len() > 1 && tail[1..].chars().all(|c| c.is_ascii_digit());
-    if versioned {
-        value[..value.len() - tail.len()]
-            .trim_end_matches('/')
-            .to_string()
-    } else {
-        value.to_string()
-    }
-}
-
-/// Bộ nhúng cho provider đang giữ vai nhúng. `None` khi chưa ai giữ vai đó.
-///
-/// Cũng `None` khi provider ấy đang tắt hoặc chưa chọn mô hình nhúng — ba lý do khác nhau
-/// cho cùng một câu trả lời, và [`embedding_reason`] là chỗ nói ra chúng khác nhau chỗ nào.
-pub fn embedder_for(provider: &StoredProvider) -> Option<Arc<dyn Embedder>> {
-    if !provider.config.enabled {
-        return None;
-    }
-    let model = provider
-        .embedding_model
-        .as_deref()
-        .map(str::trim)
-        .filter(|model| !model.is_empty())?;
-    let root = embedding_root(&provider.config.base_url);
-    Some(match provider.config.kind {
-        ProviderKind::Ollama => Arc::new(OllamaEmbedder::new(root, model)),
-        // LM Studio dùng chung bộ nhúng với nhánh OpenAI: `/v1/embeddings` của nó là
-        // đúng endpoint ấy, đúng hình dạng thân ấy. Khác biệt của LM Studio nằm ở kho mô
-        // hình, không nằm ở phép nhúng — nên ở đây không có gì phải viết thêm.
-        ProviderKind::LmStudio | ProviderKind::OpenAiCompatible => Arc::new(OpenAiEmbedder::new(
-            root,
-            model,
-            provider.config.api_key.clone(),
-        )),
-    })
-}
-
 /// Vì sao chưa nhúng được, khi chưa nhúng được. `None` nghĩa là đang sẵn sàng.
 ///
-/// Có mặt vì [`embedder_for`] cố ý im lặng: nó trả `None` cho ba tình huống, và một giao
-/// diện chỉ biết "không có bộ nhúng" thì không nói được cho người dùng phải bấm vào đâu.
+/// Có mặt vì ba tình huống khác nhau cùng dẫn tới "chưa nhúng được", và một giao diện
+/// chỉ biết chừng ấy thì không nói được cho người dùng phải bấm vào đâu. Chuỗi này đi
+/// vào tệp cấu hình của `pai-rag-service` và lên thẳng dải trạng thái thư viện.
 /// Nhận `Option` chứ không nhận `&StoredProvider` để trả lời được cả trường hợp thường gặp
 /// nhất — chưa ai giữ vai nhúng cả.
 pub fn embedding_reason(provider: Option<&StoredProvider>) -> Option<String> {

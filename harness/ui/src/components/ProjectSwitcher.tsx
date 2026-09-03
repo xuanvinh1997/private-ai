@@ -1,21 +1,15 @@
 import { Key } from "@solid-primitives/keyed";
-import { createSignal, For, Show } from "solid-js";
+import { createSignal, Show } from "solid-js";
 import type { Project, ProjectKind } from "../lib/protocol";
-import Icon, { type IconName } from "./Icon";
+import Icon from "./Icon";
 import Menu, { type MenuItem } from "./Menu";
-
-/** Mục con của dự án đang mở. `App` dựng chúng từ `projectTabs`, cột này không biết `TabId`. */
-export interface ProjectSubItem {
-  id: string;
-  label: string;
-  icon: IconName;
-  badge?: number;
-  active?: boolean;
-  onSelect: () => void;
-}
+import { InfoDot } from "./settings/FormKit";
 
 /** Bao nhiêu dự án hiện ra trước khi phải bấm "Xem thêm". */
 const HIEN_TRUOC = 5;
+
+/** Loại dự án bằng tiếng người — cho nhãn trợ năng, thứ mà biểu tượng không với tới. */
+const kindLabel = (kind: ProjectKind) => (kind === "docs" ? "thư viện tài liệu" : "dự án mã nguồn");
 
 /**
  * Nhóm "Dự án" trong thanh bên.
@@ -38,8 +32,6 @@ export default function ProjectSwitcher(props: {
   /** Hàng nào đang mở menu ngữ cảnh, theo id dự án. */
   menuFor: string | null;
   onMenuChange: (id: string | null) => void;
-  /** Màn hình chỉ mở được bên trong dự án đang mở, thụt vào dưới nó. */
-  subItems: ProjectSubItem[];
   onPick: (id: string) => void;
   /** Mở màn hình dự án — chỗ tạo mới, clone, và lọc theo loại. */
   onSeeAll: () => void;
@@ -79,15 +71,15 @@ export default function ProjectSwitcher(props: {
         icon: project.kind === "code" ? "library" : "code",
         hint:
           project.kind === "code"
-            ? "Trợ lý thôi sửa tệp và chạy lệnh; nó tìm và đọc tài liệu trong thư mục."
-            : "Trợ lý đọc, sửa được tệp và chạy được lệnh trong thư mục này.",
+            ? "Thôi sửa tệp và chạy lệnh, chỉ đọc tài liệu."
+            : "Trợ lý đọc, sửa tệp và chạy được lệnh.",
         onSelect: () => props.onSwapKind(project.kind === "code" ? "docs" : "code"),
       });
       items.push({
         id: "close",
         label: "Đóng dự án, chỉ trò chuyện",
         icon: "folder",
-        hint: "Vẫn giữ trong danh sách. Trợ lý thôi đọc và sửa tệp cho tới khi mở lại.",
+        hint: "Vẫn ở trong danh sách; trợ lý thôi đọc tệp.",
         onSelect: props.onClose,
       });
     } else {
@@ -108,7 +100,7 @@ export default function ProjectSwitcher(props: {
       disabled: project.isCurrent,
       hint: project.isCurrent
         ? "Đang mở — đóng dự án trước đã."
-        : "Thư mục trên đĩa vẫn nguyên, không tệp nào bị xoá.",
+        : "Thư mục trên đĩa vẫn nguyên, không tệp nào mất.",
       onSelect: () => props.onForget(project),
     });
     return items;
@@ -137,9 +129,12 @@ export default function ProjectSwitcher(props: {
                   <button
                     type="button"
                     disabled={props.switching}
-                    onClick={() => {
-                      if (!project().isCurrent) props.onPick(project().id);
-                    }}
+                    // Bấm một hàng dự án là mở **bảng chi tiết** của nó ở cột phải — kể cả
+                    // hàng đang mở, thứ trước đây bấm vào không có gì xảy ra. Màn hình của
+                    // dự án (Thay đổi, Thư viện tài liệu) từng thụt vào ngay dưới đây và
+                    // đọc ra như thể loại dự án là một chỗ để bấm; giờ chúng là một mục
+                    // trong bảng chi tiết, đứng cạnh đường dẫn và nguồn gốc.
+                    onClick={() => props.onPick(project().id)}
                     aria-current={project().isCurrent ? "true" : undefined}
                     // Đường dẫn không còn một dòng riêng trên mỗi hàng — cột 260px không đủ
                     // cho hai dòng nhân số dự án. Nó vào `title` và vào nhãn trợ năng, nên
@@ -147,8 +142,8 @@ export default function ProjectSwitcher(props: {
                     title={project().path}
                     aria-label={
                       project().isCurrent
-                        ? `${project().name} — dự án đang mở. ${project().path}`
-                        : `Mở dự án ${project().name}. ${project().path}`
+                        ? `${project().name} — ${kindLabel(project().kind)}, dự án đang mở. ${project().path}`
+                        : `Mở ${kindLabel(project().kind)} ${project().name}. ${project().path}`
                     }
                     class="flex min-w-0 flex-1 items-center gap-sm rounded-panel py-2xs pr-(--sp-2xl) pl-sm text-left text-sm transition-colors duration-[var(--dur-fast)] disabled:cursor-progress enabled:hover:bg-[var(--overlay-hover)] aria-[current]:bg-accent-soft aria-[current]:font-medium"
                   >
@@ -160,7 +155,19 @@ export default function ProjectSwitcher(props: {
                         "motion-safe:animate-pulse": props.switching && project().isCurrent,
                       }}
                     >
-                      <Icon name={project().isCurrent ? "folder-open" : "folder"} size={15} />
+                      {/* Biểu tượng nói **loại dự án**, không nói đóng/mở.
+                          Loại là thứ duy nhất của một dự án mà cột này chưa nói ra ở đâu
+                          cả, và nó lại là thứ quyết định trợ lý có sửa được tệp hay
+                          không. Trước đây người dùng chỉ suy ra được nó *gián tiếp*, qua
+                          việc mục con bên dưới tên là "Thay đổi" hay "Thư viện tài liệu"
+                          — tức là đọc một màn hình để đoán một thuộc tính. Đóng/mở thì đã
+                          có nền nhấn, chữ đậm và `aria-current` nói rồi, ba lần, nên ô
+                          biểu tượng đang rỗng nghĩa.
+
+                          Cùng cặp biểu tượng với màn hình Dự án: cùng một đối tượng thì
+                          hai chỗ phải vẽ giống nhau, nếu không người dùng phải học hai bộ
+                          ký hiệu cho một thứ. */}
+                      <Icon name={project().kind === "docs" ? "library" : "code"} size={15} />
                     </span>
                     <span
                       class="min-w-0 flex-1 truncate"
@@ -189,37 +196,6 @@ export default function ProjectSwitcher(props: {
                     />
                   </div>
                 </div>
-
-                {/* Mục con của dự án đang mở, thụt vào và có một đường kẻ dọc: thụt lề một
-                    mình đọc ra là "hàng bị lệch", còn đường kẻ nói rõ chúng treo vào hàng
-                    ngay trên. */}
-                <Show when={project().isCurrent && props.subItems.length > 0}>
-                  <ul class="m-0 mt-3xs ml-(--sp-lg) flex list-none flex-col gap-3xs border-l border-line py-3xs pl-2xs">
-                    <For each={props.subItems}>
-                      {(item) => (
-                        <li>
-                          <button
-                            type="button"
-                            onClick={item.onSelect}
-                            disabled={props.switching}
-                            aria-current={item.active ? "page" : undefined}
-                            class="flex w-full items-center gap-2xs rounded-panel px-2xs py-3xs text-left text-xs text-muted transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed enabled:hover:bg-[var(--overlay-hover)] enabled:hover:text-ink aria-[current=page]:bg-accent-soft aria-[current=page]:font-medium aria-[current=page]:text-accent-ink"
-                          >
-                            <span class="shrink-0">
-                              <Icon name={item.icon} size={14} />
-                            </span>
-                            <span class="min-w-0 flex-1 truncate">{item.label}</span>
-                            <Show when={(item.badge ?? 0) > 0}>
-                              <span class="shrink-0 rounded-pill bg-accent px-2xs text-[10px] leading-4 text-on-accent tabular-nums">
-                                {item.badge}
-                              </span>
-                            </Show>
-                          </button>
-                        </li>
-                      )}
-                    </For>
-                  </ul>
-                </Show>
               </li>
             )}
           </Key>
@@ -267,9 +243,12 @@ export default function ProjectSwitcher(props: {
           <span class="mt-3xs shrink-0 text-faint">
             <Icon name="chat" size={13} />
           </span>
-          <span>
-            Chưa mở dự án — trợ lý chỉ trò chuyện, không đọc tệp. Mở một dự án để có Thay đổi
-            và Thư viện tài liệu.
+          <span class="flex flex-wrap items-center gap-2xs">
+            Chưa mở dự án — trợ lý chỉ trò chuyện.
+            <InfoDot
+              label="Về trạng thái chưa có dự án"
+              text="Chưa mở dự án — trợ lý chỉ trò chuyện, không đọc tệp. Mở một dự án mã nguồn thì có thêm màn hình Thay đổi; mở một thư viện tài liệu thì có thêm màn hình Thư viện. Một dự án chỉ thuộc một loại, nên hai màn hình đó không bao giờ cùng xuất hiện."
+            />
           </span>
         </p>
       </Show>

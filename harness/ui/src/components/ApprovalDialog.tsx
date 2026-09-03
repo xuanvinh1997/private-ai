@@ -4,6 +4,7 @@ import type { PendingApproval } from "../lib/conversation";
 import { intendedDiffs } from "../lib/diff";
 import type { ApprovalDecision } from "../lib/protocol";
 import DiffBlock from "./DiffBlock";
+import Icon from "./Icon";
 import { prettyArgs, toolLabel } from "./tools/ToolCard";
 
 /**
@@ -84,9 +85,17 @@ export default function ApprovalDialog(props: {
         aria-describedby="approval-body"
         class="flex max-h-full w-full max-w-[560px] flex-col gap-(--dialog-gap) overflow-auto rounded-card border border-line bg-surface px-(--dialog-pad-x) py-(--dialog-pad-y) shadow-pop"
       >
-        <h2 id="approval-title" class="m-0 text-lg font-semibold text-ink">
-          Cho phép chạy {toolLabel(props.request.name)}?
-        </h2>
+        {/* Biểu tượng khiên đứng trước câu hỏi: cùng hình dạng đầu hộp thoại với mọi hộp
+            thoại khác của ứng dụng, và nó nói ngay rằng đây là một câu hỏi về quyền chứ
+            không phải một thông báo. */}
+        <div class="flex items-start gap-sm">
+          <span class="mt-3xs grid size-8 shrink-0 place-items-center rounded-panel bg-accent-soft text-accent-ink">
+            <Icon name="shield" size={16} />
+          </span>
+          <h2 id="approval-title" class="m-0 flex-1 text-lg font-semibold text-ink">
+            Cho phép chạy {toolLabel(props.request.name)}?
+          </h2>
+        </div>
 
         <div id="approval-body" class="flex flex-col gap-sm">
           <p class="m-0 text-sm text-muted">
@@ -105,7 +114,7 @@ export default function ApprovalDialog(props: {
           </pre>
 
           <p class="m-0 text-2xs text-faint" role="timer" aria-live="off">
-            Không trả lời trong {seconds()} giây nữa thì tự động từ chối.
+            Không trả lời trong {seconds()} giây thì tự từ chối.
           </p>
         </div>
 

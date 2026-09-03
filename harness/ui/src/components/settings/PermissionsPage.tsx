@@ -33,6 +33,13 @@ const NHAN: Record<ToolScope, string> = {
  * được thay vì chỉ đồng ý.
  */
 const HAU_QUA: Record<ToolScope, string> = {
+  read: "Đọc được tệp và tìm trong dự án, chỉ thế.",
+  write: "Đọc và sửa được tệp trong thư mục dự án.",
+  shell: "Chạy được lệnh trên máy này, dưới quyền của bạn.",
+};
+
+/** Cùng ba câu ấy, bản đầy đủ — nằm trong `InfoDot` chứ không trải ra trang. */
+const HAU_QUA_DAI: Record<ToolScope, string> = {
   read: "Trợ lý đọc được tệp và tìm trong dự án, và chỉ thế. Nó không sửa được tệp nào và không chạy được lệnh nào.",
   write:
     "Trợ lý đọc và sửa được tệp trong thư mục dự án. Nó vẫn không chạy được lệnh nào trên máy này.",
@@ -74,13 +81,16 @@ export default function PermissionsPage() {
     <div class="flex flex-col gap-2xl">
       <section class="flex flex-col gap-md">
         <SectionHead
+          icon="hand"
           title="Quyền mặc định"
-          desc="Mức mà một lượt mới bắt đầu ở đó. Từng lượt vẫn đổi được trong ô soạn tin."
+          desc="Mức mà một lượt mới bắt đầu ở đó."
         />
         <RowGroup>
           <Row
+            icon="shield"
             label="Phạm vi tool cho lượt mới"
             desc={HAU_QUA[defaultToolScope()]}
+            more={HAU_QUA_DAI[defaultToolScope()]}
             control={() => (
               <Select
                 label="Phạm vi tool cho lượt mới"
@@ -94,36 +104,41 @@ export default function PermissionsPage() {
             )}
             below={() => (
               <Show when={defaultToolScope() === "shell"}>
-                <Banner tone="warn" icon="warn" title="Mức này mở lệnh shell ngay từ lượt đầu">
-                  Vòng giam chỉ chặn phần <b>ghi ra ngoài thư mục dự án</b>. Nó không chặn
-                  mạng và không chặn việc đọc: một lệnh vẫn tải được mọi thứ về, vẫn đọc
-                  được khoá nằm trong <code class="font-mono">~/.ssh</code>, và vẫn gửi
-                  được mọi thứ đi. Thứ duy nhất còn đứng chắn là hộp thoại duyệt — nó hỏi
-                  trước mỗi lệnh, và nó nói luôn vòng giam trên máy này đang ở mức nào.
+                <Banner
+                  tone="warn"
+                  icon="warn"
+                  title="Mức này mở lệnh shell ngay từ lượt đầu"
+                  more="Vòng giam chỉ chặn phần ghi ra ngoài thư mục dự án. Nó không chặn mạng và không chặn việc đọc: một lệnh vẫn tải được mọi thứ về, vẫn đọc được khoá nằm trong ~/.ssh, và vẫn gửi được mọi thứ đi. Thứ duy nhất còn đứng chắn là hộp thoại duyệt — nó hỏi trước mỗi lệnh, và nó nói luôn vòng giam trên máy này đang ở mức nào."
+                >
+                  Vòng giam <b>không chặn mạng</b> và không chặn đọc{" "}
+                  <code class="font-mono">~/.ssh</code>.
                 </Banner>
               </Show>
             )}
           />
           <Row
+            icon="pencil"
             label="Bộ chọn trong ô soạn tin"
-            desc="Vẫn là của từng lượt. Thiết lập ở trên chỉ quyết định lượt mới mở ra ở mức nào; đổi trong ô soạn tin không ghi đè lại nó."
+            desc="Đổi ở đó chỉ áp cho lượt đang mở."
+            more="Vẫn là của từng lượt. Thiết lập ở trên chỉ quyết định lượt mới mở ra ở mức nào; đổi trong ô soạn tin không ghi đè lại nó."
           />
         </RowGroup>
       </section>
 
       <section class="flex flex-col gap-md">
         <SectionHead
+          icon="shield"
           title="Vòng giam tiến trình"
-          desc="Chỉ đọc. Vòng giam là sự thật về máy đang chạy, không phải một tuỳ chọn."
+          desc="Chỉ đọc: đây là sự thật về máy đang chạy."
+          more="Chỉ đọc. Vòng giam là sự thật về máy đang chạy, không phải một tuỳ chọn."
         />
 
         <RowGroup>
           <Row
+            icon="monitor"
             label="Mức giam trên máy này"
-            desc={
-              giam()?.reason ??
-              "Kernel thi hành đúng cái đã khai: ghi ra ngoài vùng cho phép là thất bại, không phải là “thường thì thất bại”."
-            }
+            desc={giam()?.reason ?? "Kernel thi hành đúng cái đã khai."}
+            more="Kernel thi hành đúng cái đã khai: ghi ra ngoài vùng cho phép là thất bại, không phải là “thường thì thất bại”."
             control={() => (
               <Show
                 when={giam()}
@@ -146,8 +161,10 @@ export default function PermissionsPage() {
           />
           <Show when={giam()?.writableRoots.length}>
             <Row
+              icon="folder"
               label="Thư mục ghi được"
-              desc="Lệnh chỉ ghi được vào đây. Mọi chỗ khác trên đĩa là chỉ đọc — nhưng đọc thì không bị chặn ở đâu cả."
+              desc="Lệnh chỉ ghi được vào những thư mục này."
+              more="Lệnh chỉ ghi được vào đây. Mọi chỗ khác trên đĩa là chỉ đọc — nhưng đọc thì không bị chặn ở đâu cả."
               below={() => (
                 <ul class="m-0 flex list-none flex-col gap-3xs p-0 pt-2xs">
                   <For each={giam()?.writableRoots ?? []}>
@@ -160,12 +177,16 @@ export default function PermissionsPage() {
             />
           </Show>
           <Row
+            icon="hand"
             label="Vòng giam chặn gì"
-            desc="Chỉ hiệu ứng ghi lên tệp, và chỉ phần nằm ngoài thư mục dự án. Không chế độ nào chặn mạng, và cả ba chế độ đều cho đọc toàn máy."
+            desc="Chỉ chặn ghi tệp ngoài thư mục dự án."
+            more="Chỉ hiệu ứng ghi lên tệp, và chỉ phần nằm ngoài thư mục dự án. Không chế độ nào chặn mạng, và cả ba chế độ đều cho đọc toàn máy."
           />
           <Row
+            icon="plug"
             label="Vòng giam đang được cắm"
-            desc="Hàng `sandbox` có trong cây plugin đang chạy hay không. Có mặt vẫn chưa chắc giam được: nơi chưa hỗ trợ thì nó cắm rồi tự khai là không giam."
+            desc="Hàng `sandbox` có trong cây plugin hay không."
+            more="Hàng `sandbox` có trong cây plugin đang chạy hay không. Có mặt vẫn chưa chắc giam được: nơi chưa hỗ trợ thì nó cắm rồi tự khai là không giam."
             control={() => (
               <span
                 class="text-2xs"

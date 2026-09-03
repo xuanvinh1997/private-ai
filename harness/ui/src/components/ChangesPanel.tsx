@@ -30,8 +30,11 @@ export default function ChangesPanel(props: {
       <Show
         when={props.files.length > 0}
         fallback={
-          <p class="px-md py-lg text-xs text-faint">
-            Chưa có tệp nào bị đụng vào trong phiên này.
+          <p class="flex items-start gap-2xs px-md py-lg text-xs text-faint">
+            <span class="mt-3xs shrink-0">
+              <Icon name="diff" size={13} />
+            </span>
+            Phiên này chưa đụng vào tệp nào.
           </p>
         }
       >
@@ -104,7 +107,12 @@ export function ChangesBoard(props: {
       <div class="mx-auto flex max-w-(--reading-measure) flex-col gap-md">
         <Show
           when={props.files.length > 0}
-          fallback={<p class="m-0 text-sm text-faint">Phiên này chưa đụng vào tệp nào.</p>}
+          fallback={
+            <p class="m-0 flex items-center gap-2xs text-sm text-faint">
+              <Icon name="diff" size={14} />
+              Phiên này chưa đụng vào tệp nào.
+            </p>
+          }
         >
           <Totals files={props.files} class="px-3xs" />
           <For each={props.files}>{(file) => <FileReview file={file} onReveal={props.onReveal} />}</For>

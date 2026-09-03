@@ -11,6 +11,7 @@ pub mod coalesce;
 mod commands;
 pub mod harness;
 mod llm;
+mod rag_config;
 pub mod protocol;
 pub mod scope;
 
@@ -527,6 +528,7 @@ pub fn run() {
             commands::providers::set_active_provider,
             commands::providers::set_provider_model,
             commands::providers::probe_provider,
+            commands::providers::provider_models,
             commands::providers::embedding_setting,
             commands::providers::set_embedding,
             commands::providers::probe_embedding,
@@ -537,6 +539,7 @@ pub fn run() {
             commands::mcp::set_mcp_enabled,
             commands::mcp::reload_mcp_servers,
             commands::complete::complete_paths,
+            commands::attach::resolve_attachments,
             commands::docs::list_documents,
             commands::docs::sync_library,
             commands::docs::reprocess_library,

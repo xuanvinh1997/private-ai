@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pai-rag-service"
+version = "0.1.0"
+description = "Tầng RAG của Private AI: nạp đa định dạng, OCR bằng VLM, truy hồi nhiều chiến lược, nói MCP"
+# Ghim 3.12: onnxruntime và markitdown chưa có wheel cho 3.13+, và PyInstaller cần đúng
+# một phiên bản để dựng bản đóng gói. Không phải một trần tuỳ tiện.
+requires-python = ">=3.12,<3.13"
+
+dependencies = [
+    # Nói MCP. Đây là toàn bộ giao diện ra ngoài của tiến trình này.
+    "mcp>=1.2",
+    # LangChain: chỉ phần lõi và phần cắt đoạn. Không kéo cả `langchain` vào — bản đóng
+    # gói phải nhỏ, và thứ cần ở đây là `Document`, `Embeddings` và `TextSplitter`.
+    "langchain-core>=0.3",
+    "langchain-text-splitters>=0.3",
+    # Rút chữ đa định dạng. `[all]` mang theo docx, xlsx, pptx, pdf, outlook, audio.
+    "markitdown[all]>=0.1.2",
+    "pypdf>=5.1",
+    # Dựng ảnh trang PDF để đưa cho VLM đọc, khi lớp chữ không đáng tin.
+    "pypdfium2>=4.30",
+    "httpx>=0.27",
+    "numpy>=2.1",
+    # Reranker chạy ONNX, không torch. `tokenizers` là bản Rust, đi kèm rất nhẹ.
+    "onnxruntime>=1.20",
+    "tokenizers>=0.21",
+    "huggingface-hub>=0.26",
+    # Vector store. Qdrant chạy ngoài tiến trình — xem `deploy/`.
+    "qdrant-client>=1.12",
+    # Graph.
+    "neo4j>=5.26",
+    "pydantic>=2.9",
+]
+
+[project.optional-dependencies]
+gpu = ["onnxruntime-gpu>=1.20"]
+# `python-docx` chỉ để **dựng** tệp .docx cho bài kiểm chứng. Đường đọc dùng
+# `mammoth` mà markitdown mang theo, nên nó không phải phụ thuộc lúc chạy.
+dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8", "python-docx>=1.1"]
+package = ["pyinstaller>=6.11"]
+
+[project.scripts]
+pai-rag = "pai_rag_service.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pai_rag_service"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"

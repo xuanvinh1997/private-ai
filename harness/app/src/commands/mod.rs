@@ -9,6 +9,7 @@
 //! nó ra, nên một `NotADirectory("/x")` lọt qua đây là một dòng tiếng Anh trong một ứng
 //! dụng tiếng Việt.
 
+pub mod attach;
 pub mod complete;
 pub mod docs;
 pub mod mcp;

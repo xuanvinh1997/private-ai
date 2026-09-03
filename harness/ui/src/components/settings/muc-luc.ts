@@ -13,7 +13,6 @@ export type SettingsPage =
   | "chung"
   | "phim-tat"
   | "provider"
-  | "nhung"
   | "mcp"
   | "hook"
   | "quyen";
@@ -33,42 +32,44 @@ export interface NavGroup {
 }
 
 /**
- * Bốn nhóm, xếp theo *tần suất mở* chứ không theo mức độ quan trọng.
+ * Ba nhóm, xếp theo *tần suất mở* chứ không theo mức độ quan trọng.
  *
- * Nhóm đầu không tên gồm hai trang ai cũng mở ít nhất một lần. "Mô hình" đứng riêng vì
- * hai trang ấy là hai máy chủ khác nhau cho hai việc khác nhau, và gộp chúng vào "Tích
- * hợp" sẽ làm mất mất điều đó. "Tích hợp" là những thứ **cắm thêm** vào lõi — MCP mang
- * tool từ ngoài vào, hook mang chính sách từ ngoài vào; cả hai đều là lệnh của người khác
- * chạy trên máy này, nên chúng thuộc về nhau. "Quyền" đứng một mình dưới "Nâng cao" vì
- * nó là trang duy nhất thay đổi *trợ lý được phép làm gì*, và một trang như thế không nên
- * nằm lẫn giữa những trang chỉ đổi màu chữ.
+ * "Mô hình" từng là một nhóm hai trang — hội thoại và nhúng — và đó là một chỗ chia sai.
+ * Hai vai đúng là hai máy chủ khác nhau cho hai việc khác nhau, nhưng chúng được **cấu
+ * hình từ cùng một danh sách provider**, và tách ra thành hai trang buộc người dùng thêm
+ * một provider ở trang này rồi đi sang trang kia mới giao được vai thứ hai cho nó — hai
+ * lần đi qua cùng một danh sách để trả lời một câu hỏi. Giờ là một trang: danh sách máy
+ * chủ, rồi hai ô chọn mô hình mặc định, cả hai đều hỏi thẳng máy chủ vừa cấu hình xong.
+ *
+ * Nó đứng **đầu** nhóm không tên vì đó là trang duy nhất mà không đi qua thì ứng dụng
+ * không trả lời được câu nào — "Chung" và "Phím tắt" chỉ đổi cách nhìn.
+ *
+ * "Tích hợp" là những thứ **cắm thêm** vào lõi — MCP mang tool từ ngoài vào, hook mang
+ * chính sách từ ngoài vào; cả hai đều là lệnh của người khác chạy trên máy này, nên chúng
+ * thuộc về nhau. "Quyền" đứng một mình dưới "Nâng cao" vì nó là trang duy nhất thay đổi
+ * *trợ lý được phép làm gì*, và một trang như thế không nên nằm lẫn giữa những trang chỉ
+ * đổi màu chữ.
  */
 export const NAV: NavGroup[] = [
   {
     pages: [
       {
+        id: "provider",
+        label: "Mô hình",
+        icon: "server",
+      },
+      {
         id: "chung",
         label: "Chung",
         icon: "monitor",
-        desc: "Bảng màu, và cách bản ghi hội thoại được vẽ ra.",
+        desc: "Bảng màu và cách hội thoại được vẽ ra.",
       },
       {
         id: "phim-tat",
         label: "Phím tắt",
         icon: "enter",
-        desc: "Một bảng tra cứu. Chưa gán lại được phím từ đây.",
+        desc: "Bảng tra cứu, chưa gán lại phím được.",
       },
-    ],
-  },
-  {
-    title: "Mô hình",
-    pages: [
-      { id: "provider", label: "Mô hình hội thoại", icon: "server" },
-      // Mô hình nhúng đứng riêng, không nằm trong trang provider. Gộp lại thì nó trông như
-      // một tuỳ chọn nâng cao của việc chọn mô hình hội thoại, trong khi nó là một lựa chọn
-      // độc lập và thường là một máy chủ khác hẳn — thường là máy chủ chạy tại chỗ, để tài
-      // liệu không rời khỏi máy.
-      { id: "nhung", label: "Mô hình nhúng", icon: "library" },
     ],
   },
   {
@@ -79,7 +80,7 @@ export const NAV: NavGroup[] = [
         id: "hook",
         label: "Hook",
         icon: "tools",
-        desc: "Lệnh của bạn chạy trước mỗi lời gọi tool, và được quyền chặn nó.",
+        desc: "Lệnh của bạn chạy trước mỗi lời gọi tool.",
       },
     ],
   },
@@ -90,7 +91,7 @@ export const NAV: NavGroup[] = [
         id: "quyen",
         label: "Quyền",
         icon: "hand",
-        desc: "Trợ lý được phép làm gì trên máy này, và cái gì đang giữ nó lại.",
+        desc: "Trợ lý được phép làm gì trên máy này.",
       },
     ],
   },
@@ -129,17 +130,17 @@ export const SEARCH_INDEX: SearchHit[] = [
   {
     page: "chung",
     label: "Bảng màu",
-    desc: "Sáng, tối, hoặc theo hệ thống. Đổi ngay không cần mở lại ứng dụng.",
+    desc: "Sáng, tối, hoặc theo hệ thống; đổi là thấy ngay.",
   },
   {
     page: "chung",
     label: "Cách hiển thị hội thoại",
-    desc: "Bong bóng hai bên như chat, hoặc trải hết bề rộng như một tài liệu.",
+    desc: "Bong bóng hai bên, hoặc tài liệu trải hết trang.",
   },
   {
     page: "phim-tat",
     label: "Tìm phiên",
-    desc: "⌘K hoặc Ctrl+K mở bảng chọn phiên từ bất cứ đâu.",
+    desc: "⌘K hoặc Ctrl+K mở bảng chọn phiên.",
   },
   {
     page: "phim-tat",
@@ -149,42 +150,47 @@ export const SEARCH_INDEX: SearchHit[] = [
   {
     page: "provider",
     label: "Nhà cung cấp mô hình",
-    desc: "Máy chủ giữ vai hội thoại: Ollama trên máy này, hoặc một API từ xa.",
+    desc: "Máy chủ hội thoại: Ollama, hoặc một API từ xa.",
   },
   {
     page: "provider",
     label: "Khoá API",
-    desc: "Khoá gửi kèm mỗi yêu cầu tới provider từ xa. Lõi không bao giờ trả khoá về giao diện, nên ô này chỉ nhận khoá mới chứ không hiện lại khoá cũ.",
+    desc: "Khoá gửi kèm mỗi yêu cầu tới provider từ xa.",
   },
   {
     page: "provider",
     label: "Base URL",
-    desc: "Địa chỉ máy chủ mô hình. Đổi nó là đổi nơi từng câu hỏi của bạn được gửi tới.",
+    desc: "Base URL của máy chủ mô hình, nơi câu hỏi tới.",
   },
   {
-    page: "nhung",
+    page: "provider",
     label: "Mô hình nhúng",
-    desc: "Mô hình biến tài liệu thành vector để tìm theo ý nghĩa. Đổi nó thì cả thư viện được nhúng lại từ đầu.",
+    desc: "Mô hình biến tài liệu thành vector để tìm nghĩa.",
+  },
+  {
+    page: "provider",
+    label: "Mô hình hội thoại",
+    desc: "Mô hình trả lời câu hỏi của bạn trong ô soạn tin.",
   },
   {
     page: "mcp",
     label: "Server MCP",
-    desc: "Cắm thêm công cụ từ bên ngoài: kho mã, cơ sở dữ liệu, hệ thống theo dõi lỗi.",
+    desc: "Cắm tool từ ngoài: kho mã, cơ sở dữ liệu.",
   },
   {
     page: "hook",
     label: "Hook trước lời gọi tool",
-    desc: "Lệnh ngoài chạy trước mỗi lời gọi tool và được quyền chặn nó. Hook chạy ngoài vòng giam, và hook hỏng thì cho qua.",
+    desc: "Lệnh ngoài chạy trước mỗi lời gọi tool và chặn được.",
   },
   {
     page: "quyen",
     label: "Phạm vi tool cho lượt mới",
-    desc: "Lượt mới bắt đầu ở mức chỉ đọc, đọc và ghi, hay được chạy lệnh trên máy này.",
+    desc: "Lượt mới bắt đầu ở mức đọc, ghi, hay chạy lệnh.",
   },
   {
     page: "quyen",
     label: "Vòng giam tiến trình",
-    desc: "Sandbox chặn lệnh ghi ra ngoài thư mục dự án. Nó không chặn mạng và không chặn việc đọc.",
+    desc: "Sandbox chặn lệnh ghi ra ngoài thư mục dự án.",
   },
 ];
 

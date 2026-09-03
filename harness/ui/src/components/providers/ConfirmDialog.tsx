@@ -1,6 +1,7 @@
 import { Show } from "solid-js";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import Icon from "./../Icon";
+import { InfoDot } from "../settings/FormKit";
 
 /**
  * Hộp thoại xác nhận một việc không hoàn tác được.
@@ -16,6 +17,8 @@ import Icon from "./../Icon";
 export default function ConfirmDialog(props: {
   title: string;
   body: string;
+  /** Đoạn giải thích dài đằng sau câu hỏi, cất trong `InfoDot` cạnh tiêu đề. */
+  more?: string;
   /** Dòng phụ mang chi tiết máy móc — đường dẫn, dòng lệnh, tên. Hiện bằng font mono. */
   detail?: string;
   confirmLabel: string;
@@ -50,8 +53,9 @@ export default function ConfirmDialog(props: {
             <Icon name="warn" size={16} />
           </span>
           <div class="flex min-w-0 flex-col gap-3xs">
-            <h2 id="confirm-title" class="m-0 text-md font-semibold text-ink">
+            <h2 id="confirm-title" class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
               {props.title}
+              <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
             </h2>
             <p id="confirm-body" class="m-0 text-xs text-muted">
               {props.body}

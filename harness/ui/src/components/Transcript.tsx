@@ -21,7 +21,18 @@ const STICK_PX = 80;
  * giữa lúc đang stream — đúng thứ làm giao diện giật. `ResizeObserver` chỉ nổ khi chiều
  * cao thật sự đổi, và nổ *sau* layout nên số đo đã đúng.
  */
-export default function Transcript(props: { nodes: ConversationNode[]; empty?: JSX.Element }) {
+export default function Transcript(props: {
+  nodes: ConversationNode[];
+  empty?: JSX.Element;
+  /**
+   * Dán vào cuối danh sách, **trong** vùng được `ResizeObserver` theo dõi.
+   *
+   * Chỉ báo "đang làm việc" đi đường này chứ không nằm ngoài bản ghi: nó cao thêm một
+   * hàng, và hàng đó phải tính vào phép bám đáy — treo nó bên ngoài thì mỗi lần nó hiện
+   * hay tắt là một lần dòng cuối bị đẩy khuất dưới mép.
+   */
+  footer?: JSX.Element;
+}) {
   let scroller: HTMLDivElement | undefined;
   let content: HTMLDivElement | undefined;
 
@@ -84,6 +95,8 @@ export default function Transcript(props: { nodes: ConversationNode[]; empty?: J
               {(node) => <NodeSeat node={node()} />}
             </Key>
           </Show>
+
+          {props.footer}
         </div>
       </div>
 

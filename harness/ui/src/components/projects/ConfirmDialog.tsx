@@ -23,6 +23,8 @@ export default function ConfirmDialog(props: {
   title: string;
   /** Câu nói rõ chuyện gì xảy ra và chuyện gì **không** xảy ra. */
   body: string;
+  /** Phần còn lại của lời trấn an, cất sau dấu chấm hỏi cạnh tiêu đề. */
+  more?: string;
   detail?: string;
   confirmLabel: string;
   icon?: IconName;
@@ -35,6 +37,7 @@ export default function ConfirmDialog(props: {
       icon={props.icon ?? "warn"}
       tone="danger"
       title={props.title}
+      more={props.more}
       busy={props.busy}
       onClose={props.onClose}
       footer={() => (

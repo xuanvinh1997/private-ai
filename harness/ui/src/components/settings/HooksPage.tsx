@@ -54,7 +54,12 @@ export default function HooksPage() {
    * `?:` lồng nhau thì hai chuỗi ấy sẽ lệch nhau ở lần sửa thứ hai — và lệch ở đây nghĩa
    * là nhãn nói "rỗng" trong khi câu dưới nói "đã bị vá".
    */
-  const trangThai = (): { nhan: string; moTa: string; tone: "faint" | "ok" | "muted" } => {
+  const trangThai = (): {
+    nhan: string;
+    moTa: string;
+    them?: string;
+    tone: "faint" | "ok" | "muted";
+  } => {
     if (!inTauri()) return { nhan: "—", moTa: "Bản demo không có lõi để hỏi.", tone: "faint" };
     if (cay.loading) return { nhan: "đang hỏi…", moTa: "Đang hỏi lõi…", tone: "faint" };
     if (cay.error !== undefined)
@@ -63,19 +68,21 @@ export default function HooksPage() {
     if (row === undefined)
       return {
         nhan: "vắng",
-        moTa: "Không có hàng `hooks` nào trong cây đang chạy, nên không hook nào chạy được.",
+        moTa: "Không có hàng `hooks` trong cây đang chạy.",
+        them: "Không có hàng `hooks` nào trong cây đang chạy, nên không hook nào chạy được.",
         tone: "muted",
       };
     if (!daVa(row))
       return {
         nhan: "rỗng",
-        moTa:
-          "Vẫn đúng như bản dựng sẵn, tức là danh sách hook rỗng. Chưa có hook nào chạy trên máy này.",
+        moTa: "Vẫn như bản dựng sẵn: danh sách hook rỗng.",
+        them: "Vẫn đúng như bản dựng sẵn, tức là danh sách hook rỗng. Chưa có hook nào chạy trên máy này.",
         tone: "muted",
       };
     return {
       nhan: "có vá",
-      moTa: `Đã bị một lớp cấu hình của bạn vá vào: ${row.origin}. Nghĩa là tệp vá có khai hook — nhưng khai những gì thì lệnh chẩn đoán không nói ra.`,
+      moTa: `Đã bị một lớp cấu hình vá vào: ${row.origin}.`,
+      them: `Đã bị một lớp cấu hình của bạn vá vào: ${row.origin}. Nghĩa là tệp vá có khai hook — nhưng khai những gì thì lệnh chẩn đoán không nói ra.`,
       tone: "ok",
     };
   };
@@ -84,24 +91,31 @@ export default function HooksPage() {
     <div class="flex flex-col gap-2xl">
       <section class="flex flex-col gap-md">
         <SectionHead
+          icon="warn"
           title="Ba điều phải biết trước"
-          desc="Cả ba đều ngược với thứ người ta suy ra từ chữ “hook bảo mật”."
+          desc="Cả ba đều ngược với chữ “hook bảo mật”."
         />
 
         <RowGroup>
           <Row
+            icon="warn"
             label="Hook hỏng thì cho qua"
-            desc="Hook lỗi cú pháp, hết giờ hay thiếu tệp đều là lỗi của chính sách, không phải bằng chứng rằng lời gọi nguy hiểm — nên lời gọi vẫn chạy. Hộp thoại duyệt thì ngược lại: không trả lời được là từ chối."
+            desc="Hook lỗi thì lời gọi vẫn chạy."
+            more="Hook lỗi cú pháp, hết giờ hay thiếu tệp đều là lỗi của chính sách, không phải bằng chứng rằng lời gọi nguy hiểm — nên lời gọi vẫn chạy. Hộp thoại duyệt thì ngược lại: không trả lời được là từ chối."
             control={() => <span class="text-2xs text-warn">fail-open</span>}
           />
           <Row
+            icon="shield"
             label="Hook chạy ngoài vòng giam"
-            desc="Hook được spawn thẳng, không qua seam Shell, nên nó chạy với đầy đủ quyền của bạn. Để vòng giam của trợ lý quyết định chính sách có được chạy hay không là lộn ngược quan hệ."
+            desc="Hook chạy với đầy đủ quyền của bạn."
+            more="Hook được spawn thẳng, không qua seam Shell, nên nó chạy với đầy đủ quyền của bạn. Để vòng giam của trợ lý quyết định chính sách có được chạy hay không là lộn ngược quan hệ."
             control={() => <span class="text-2xs text-warn">đầy đủ quyền</span>}
           />
           <Row
+            icon="hand"
             label="Hook không sửa được tham số"
-            desc="Chỉ allow hoặc deny. Viết lại tham số nghe tiện, nhưng nó tạo ra một lời gọi mà cả mô hình lẫn bạn đều không thấy, và bản ghi sẽ nói dối về thứ đã chạy."
+            desc="Chỉ allow hoặc deny, không viết lại tham số."
+            more="Chỉ allow hoặc deny. Viết lại tham số nghe tiện, nhưng nó tạo ra một lời gọi mà cả mô hình lẫn bạn đều không thấy, và bản ghi sẽ nói dối về thứ đã chạy."
             control={() => <span class="text-2xs text-faint">chỉ chặn</span>}
           />
         </RowGroup>
@@ -109,8 +123,10 @@ export default function HooksPage() {
 
       <section class="flex flex-col gap-md">
         <SectionHead
+          icon="list"
           title="Hook đang cài"
-          desc="Đọc từ hàng cấu hình đã áp lớp — lệnh, tool nó áp vào, và hạn giờ riêng nếu có."
+          desc="Đọc từ hàng cấu hình đã áp lớp."
+          more="Đọc từ hàng cấu hình đã áp lớp — lệnh, tool nó áp vào, và hạn giờ riêng nếu có."
         />
 
         <Show
@@ -118,8 +134,10 @@ export default function HooksPage() {
           fallback={
             <RowGroup>
               <Row
+                icon="check"
                 label="Chưa cài hook nào"
-                desc="Đây là mặc định. Mỗi hook là một lệnh chạy trước mỗi lời gọi tool, nên không có hook nghĩa là không có gì chen vào giữa."
+                desc="Đây là mặc định, không gì chen vào giữa."
+                more="Đây là mặc định. Mỗi hook là một lệnh chạy trước mỗi lời gọi tool, nên không có hook nghĩa là không có gì chen vào giữa."
               />
             </RowGroup>
           }
@@ -143,8 +161,10 @@ export default function HooksPage() {
 
         <RowGroup>
           <Row
+            icon="plug"
             label="Hàng `hooks` trong cây plugin"
             desc={trangThai().moTa}
+            more={trangThai().them}
             control={() => (
               <span
                 class="text-2xs"
@@ -160,30 +180,38 @@ export default function HooksPage() {
           />
         </RowGroup>
 
-        <Banner tone="info" icon="warn" title="Đọc được, chưa sửa được từ đây">
-          Lõi đã liệt kê được hook đang cài, nhưng chưa có lệnh nào thêm, sửa hay xoá —
-          nên màn hình này không dựng biểu mẫu. Một biểu mẫu gọi vào lệnh không tồn tại thì
-          mọi cú bấm đều ném lỗi. Cho tới lúc có lệnh ấy, hook cấu hình bằng cách sửa tay
-          tệp vá.
+        <Banner
+          tone="info"
+          icon="warn"
+          title="Đọc được, chưa sửa được từ đây"
+          more="Lõi đã liệt kê được hook đang cài, nhưng chưa có lệnh nào thêm, sửa hay xoá — nên màn hình này không dựng biểu mẫu. Một biểu mẫu gọi vào lệnh không tồn tại thì mọi cú bấm đều ném lỗi. Cho tới lúc có lệnh ấy, hook cấu hình bằng cách sửa tay tệp vá."
+        >
+          Cấu hình hook bằng cách sửa tay tệp vá.
         </Banner>
       </section>
 
       <section class="flex flex-col gap-md">
         <SectionHead
+          icon="pencil"
           title="Sửa bằng tay"
-          desc="Sửa xong phải mở lại ứng dụng: cây plugin được dựng một lần lúc khởi động."
+          desc="Sửa xong phải mở lại ứng dụng."
+          more="Sửa xong phải mở lại ứng dụng: cây plugin được dựng một lần lúc khởi động."
         />
 
         <RowGroup>
           <Row
+            icon="document"
             label={TEP_VA}
             labelMono
-            desc="Chỗ duy nhất khai được hook. Đây là đường dẫn mặc định — đặt biến môi trường PAI_DATA_DIR thì tệp nằm trong thư mục đó."
+            desc="Chỗ duy nhất khai được hook."
+            more="Chỗ duy nhất khai được hook. Đây là đường dẫn mặc định — đặt biến môi trường PAI_DATA_DIR thì tệp nằm trong thư mục đó."
             control={() => <CopyButton text={() => TEP_VA} label="Chép đường dẫn tệp vá" />}
           />
           <Row
+            icon="code"
             label="Trường của một hook"
-            desc="command chạy qua /bin/sh -c. tools là danh sách tool nó áp vào, rỗng nghĩa là mọi tool. timeout_secs là hạn giờ riêng, vắng thì lấy mặc định 10 giây."
+            desc="Ba trường: command, tools, timeout_secs."
+            more="command chạy qua /bin/sh -c. tools là danh sách tool nó áp vào, rỗng nghĩa là mọi tool. timeout_secs là hạn giờ riêng, vắng thì lấy mặc định 10 giây."
           />
         </RowGroup>
 
