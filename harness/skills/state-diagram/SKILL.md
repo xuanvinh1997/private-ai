@@ -1,5 +1,5 @@
 ---
-name: so-do-trang-thai
+name: state-diagram
 title: Sơ đồ trạng thái
 description: "Dùng khi một thứ chỉ ở một trong vài trạng thái tại mỗi thời điểm và câu hỏi là sự kiện nào đẩy nó từ trạng thái này sang trạng thái kia: vòng đời của đơn hàng, của hồ sơ, của một kết nối."
 keywords:

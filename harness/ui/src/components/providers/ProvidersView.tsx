@@ -356,8 +356,31 @@ function ProviderRow(props: {
             </Show>
 
             <span class="inline-flex shrink-0 items-center rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-muted">
-              {props.provider.kind === "ollama" ? "Ollama" : "Tương thích OpenAI"}
+              {props.provider.kind === "ollama"
+                ? "Ollama"
+                : props.provider.kind === "lmstudio"
+                  ? "LM Studio"
+                  : "Tương thích OpenAI"}
             </span>
+
+            {/* Chỉ ở hàng **không** giữ vai hội thoại: hàng đang hoạt động đã có cả một bộ
+                chọn mô hình bên dưới, và nhắc lại cùng một tên hai lần cách nhau một dòng
+                là mời người đọc đi tìm xem hai chỗ ấy có khác nhau không. */}
+            <Show when={!props.provider.activeChat}>
+              <span
+                class="inline-flex min-w-0 shrink items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs"
+                classList={{
+                  "text-muted": props.provider.model !== null,
+                  "text-faint": props.provider.model === null,
+                }}
+                title={props.provider.model ?? undefined}
+              >
+                <Icon name="model" size={10} />
+                <span class="min-w-0 truncate font-mono">
+                  {props.provider.model ?? "chưa chọn mô hình"}
+                </span>
+              </span>
+            </Show>
 
             <Show when={props.provider.hasKey}>
               <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-muted">
@@ -476,9 +499,9 @@ function ModelPicker(props: {
         <Show
           when={props.models.length > 0}
           fallback={
-            <span class="min-w-0 flex-1 text-2xs text-warn">
-              Không đọc được danh sách mô hình từ máy chủ này. Mở "Sửa" rồi bấm "Thử kết
-              nối" để xem máy chủ trả lời gì.
+            <span class="min-w-0 flex-1 text-xs text-warn">
+              Không đọc được danh sách mô hình từ máy chủ này. Mở "Sửa" — hộp thoại tự hỏi
+              lại máy chủ và nói ra nó trả lời gì.
             </span>
           }
         >

@@ -1,8 +1,9 @@
 ---
-name: so-do-hanh-trinh
+name: user-journey
 title: Sơ đồ hành trình người dùng
 description: "Dùng khi cần cho thấy trải nghiệm của một người đi qua các bước và cảm nhận của họ ở từng bước: chỗ nào trơn tru, chỗ nào bực bội, ai tham gia vào mỗi bước."
 keywords:
+  - "sơ đồ hành trình"
   - "hành trình người dùng"
   - "hành trình khách hàng"
   - "trải nghiệm người dùng"

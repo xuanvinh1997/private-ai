@@ -1,8 +1,9 @@
 ---
-name: so-do-kien-truc
+name: architecture-diagram
 title: Sơ đồ kiến trúc hệ thống
 description: "Dùng khi người dùng hỏi một hệ thống gồm những gì và các phần nối với nhau ra sao, thường sau khi nạp một chồng tài liệu thiết kế: các khối, các tầng, kho dữ liệu, và ranh giới giữa chúng."
 keywords:
+  - "sơ đồ kiến trúc"
   - "kiến trúc"
   - "kiến trúc hệ thống"
   - "thành phần hệ thống"

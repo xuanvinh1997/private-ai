@@ -34,11 +34,26 @@
   --danger-soft: #f8e5e3;
   --shadow: rgba(36, 58, 50, 0.12);
   --scrim: rgba(19, 31, 27, 0.42);
+  /* Vệt sáng một pixel ở mép trên của mọi bề mặt nổi.
+   *
+   * Bảng màu này gần như đơn sắc: nền, thanh bên và mặt thẻ chỉ cách nhau vài phần trăm
+   * độ sáng, nên bóng đổ thôi thì chưa đủ để mắt đọc ra cái nào nằm trên cái nào — nhất
+   * là ở chế độ tối, nơi một bóng đen đổ xuống nền đen là một bóng vô hình. Cái mắt thật
+   * sự bắt được là **mép bắt sáng**: vật nổi lên thì cạnh trên của nó hứng ánh sáng.
+   *
+   * Ở chế độ sáng mặt thẻ vốn đã trắng nên vệt này gần như không thấy — và đúng như vậy:
+   * chỗ cần nó là chế độ tối. Giữ cả hai bên cùng một tên biến để `--shadow-float` và
+   * `--shadow-pop` ở app.css chỉ có một công thức, không phải hai nhánh theo theme. */
+  --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.75);
 
   /* Tám màu dữ liệu — dành cho biểu đồ, không dùng cho giao diện (theme.py:120). */
   --data-1: #1c7a63; --data-2: #3d6fb4; --data-3: #a8672c; --data-4: #7d55ab;
   --data-5: #a8465c; --data-6: #2f8f8a; --data-7: #5c6f3a; --data-8: #8a5a86;
 
+  /* Hai tên đứng đầu được `styles/fonts.css` khai bằng tệp `.woff2` nằm trong repo, nên
+   * chúng có mặt ở mọi máy chứ không chỉ máy đã cài sẵn. Phần đuôi giữ nguyên: nó là lối
+   * thoát cho khoảnh khắc font chưa tải xong và cho những ký tự nằm ngoài các subset ta
+   * đóng gói (latin, latin-ext, vietnamese). */
   --font-ui: "Manrope", "Manrope Variable", "Segoe UI", "Helvetica Neue", sans-serif;
   --font-mono: "IBM Plex Mono", "SF Mono", "Cascadia Mono", Consolas, monospace;
 
@@ -118,6 +133,7 @@
   --danger-soft: #432725;
   --shadow: rgba(0, 0, 0, 0.28);
   --scrim: rgba(0, 0, 0, 0.58);
+  --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
   --data-1: #5fc4a8; --data-2: #7fb0e8; --data-3: #e0a86a; --data-4: #b79ae6;
   --data-5: #e58fa4; --data-6: #69c6c0; --data-7: #a6bd72; --data-8: #cf9ac9;
   color-scheme: dark;
@@ -149,6 +165,7 @@
     --danger-soft: #432725;
     --shadow: rgba(0, 0, 0, 0.28);
     --scrim: rgba(0, 0, 0, 0.58);
+    --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     --data-1: #5fc4a8; --data-2: #7fb0e8; --data-3: #e0a86a; --data-4: #b79ae6;
     --data-5: #e58fa4; --data-6: #69c6c0; --data-7: #a6bd72; --data-8: #cf9ac9;
     color-scheme: dark;

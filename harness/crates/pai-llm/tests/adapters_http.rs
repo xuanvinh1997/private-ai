@@ -1,4 +1,4 @@
-//! Hai adapter, chạy qua HTTP thật — nhưng với **một máy chủ dựng ngay trong bài test**.
+//! Ba adapter, chạy qua HTTP thật — nhưng với **một máy chủ dựng ngay trong bài test**.
 //!
 //! Không `wiremock`, không mạng: một `TcpListener` của tokio và vài chục dòng nói HTTP/1.1
 //! là đủ, và nó cho ta thứ mà thư viện giả lập nào cũng giấu — quyền quyết định **byte
@@ -7,13 +7,14 @@
 //! bài test đơn vị mô tả.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures::StreamExt;
 use pai_llm::assembler::BlockAssembler;
 use pai_llm::error::LlmErrorCode;
 use pai_llm::message::{ChatRequest, Message, ToolSchema};
 use pai_llm::model::ModelState;
+use pai_llm::lmstudio::LmStudioAdapter;
 use pai_llm::ollama::OllamaAdapter;
 use pai_llm::openai::OpenAiAdapter;
 use pai_llm::seam::LlmAdapter;
@@ -61,11 +62,18 @@ impl Route {
 
 /// Dựng một máy chủ HTTP tối giản, trả về base URL của nó.
 async fn serve(routes: Vec<(&str, Route)>) -> String {
+    serve_recording(routes).await.0
+}
+
+/// Như [`serve`], nhưng giữ lại mọi request đã tới.
+async fn serve_recording(routes: Vec<(&str, Route)>) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
     let table: HashMap<String, Route> = routes
         .into_iter()
         .map(|(path, route)| (path.to_string(), route))
         .collect();
     let table = Arc::new(table);
+    let log: Arc<Mutex<Vec<(String, String)>>> = Arc::new(Mutex::new(Vec::new()));
+    let sink = log.clone();
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind loopback");
@@ -76,10 +84,14 @@ async fn serve(routes: Vec<(&str, Route)>) -> String {
                 return;
             };
             let table = table.clone();
+            let sink = sink.clone();
             tokio::spawn(async move {
-                let Some(path) = read_request(&mut socket).await else {
+                let Some((path, body)) = read_request(&mut socket).await else {
                     return;
                 };
+                // Ghi lại **trước** khi trả lời: một bài kiểm chứng về thân request phải
+                // đọc được nó kể cả khi tuyến đường không tồn tại và máy chủ trả 404.
+                sink.lock().expect("khoá sổ").push((path.clone(), body));
                 let route = table
                     .get(&path)
                     .cloned()
@@ -88,11 +100,13 @@ async fn serve(routes: Vec<(&str, Route)>) -> String {
             });
         }
     });
-    format!("http://{addr}")
+    (format!("http://{addr}"), log)
 }
 
-/// Đọc trọn request, trả về đường dẫn. Thân được đọc hết để client không thấy reset.
-async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
+/// Đọc trọn request, trả về đường dẫn **và thân**. Thân phải được đọc hết dù bài kiểm
+/// chứng có cần tới nó hay không: bỏ dở thì client thấy một cú reset chứ không thấy phản
+/// hồi.
+async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, String)> {
     let mut buffer = Vec::new();
     let mut scratch = [0u8; 1024];
     let head_end = loop {
@@ -121,11 +135,9 @@ async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<String> {
         }
         buffer.extend_from_slice(&scratch[..read]);
     }
-    head.lines()
-        .next()?
-        .split_whitespace()
-        .nth(1)
-        .map(str::to_string)
+    let path = head.lines().next()?.split_whitespace().nth(1)?.to_string();
+    let body = String::from_utf8_lossy(&buffer[head_end..]).to_string();
+    Some((path, body))
 }
 
 async fn write_response(socket: &mut tokio::net::TcpStream, route: &Route) -> std::io::Result<()> {
@@ -489,4 +501,175 @@ async fn openai_liet_ke_mo_hinh_doan_nang_luc_theo_ten() {
     assert_eq!(models[0].capabilities.names(), vec!["chat", "vision"]);
     assert_eq!(models[1].capabilities.names(), vec!["embedding"]);
     assert_eq!(models[0].state, ModelState::Installed);
+}
+
+// --- LM Studio -----------------------------------------------------------------------
+
+#[tokio::test]
+async fn lmstudio_chat_sse_va_ttl_di_theo() {
+    // Đúng hình dạng SSE của OpenAI, vì LM Studio nói đúng giao thức ấy. Bài này khoá
+    // điều đó lại: nếu ai đó tách bộ giải mã ra thành một bản riêng cho LM Studio thì
+    // nó phải tiếp tục đi qua đây.
+    let body = concat!(
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Xin \"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"chào 👋\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],",
+        "\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4}}\n\n",
+        "data: [DONE]\n\n"
+    );
+    let (base, log) = serve_recording(vec![(
+        "/v1/chat/completions",
+        Route::streamed(body, 7),
+    )])
+    .await;
+    let adapter = LmStudioAdapter::new("lms", &base, "", client());
+
+    let (assembler, failure) = collect(
+        &adapter,
+        ChatRequest::new("qwen3-8b")
+            .with_messages(vec![Message::user("chào")])
+            // `keep_alive` là từ vựng Ollama. Adapter OpenAI bỏ qua nó; LM Studio thì
+            // hiểu cùng khái niệm ấy dưới tên `ttl`, đo bằng giây.
+            .with_keep_alive("5m"),
+    )
+    .await;
+
+    assert!(failure.is_none(), "không được hỏng: {failure:?}");
+    assert_eq!(assembler.text(), "Xin chào 👋");
+    assert_eq!(assembler.finish_reason(), Some(FinishReason::Stop));
+
+    let sent = log.lock().expect("khoá sổ");
+    let (path, body) = sent.first().expect("có đúng một request");
+    assert_eq!(path, "/v1/chat/completions");
+    let sent: serde_json::Value = serde_json::from_str(body).expect("thân là JSON");
+    assert_eq!(sent["ttl"], json!(300), "`5m` phải thành 300 giây");
+    // Và `keep_alive` **không** được lọt sang: LM Studio không biết trường ấy.
+    assert!(sent.get("keep_alive").is_none());
+}
+
+#[tokio::test]
+async fn lmstudio_nang_luc_doc_tu_api_v0_chu_khong_doan_theo_ten() {
+    // `nha-cua-toi-v3` là một bản fine-tune tự đặt tên: đoán theo tên không rút ra được
+    // gì từ nó. Đây đúng là chỗ `/v1/models` bó tay và `/api/v0/models` trả lời được.
+    let base = serve(vec![(
+        "/api/v0/models/nha-cua-toi-v3",
+        Route::ok(
+            r#"{"id":"nha-cua-toi-v3","type":"llm","arch":"qwen3","quantization":"Q4_K_M",
+                "state":"loaded","max_context_length":32768,"loaded_context_length":8192,
+                "capabilities":["tool_use","vision"]}"#,
+        ),
+    )])
+    .await;
+    let adapter = LmStudioAdapter::new("lms", &base, "", client());
+
+    let caps = adapter
+        .capabilities("nha-cua-toi-v3")
+        .await
+        .expect("hỏi được");
+    assert!(caps.tools, "máy chủ khai tool_use");
+    assert!(caps.vision);
+    assert!(caps.chat);
+    assert_eq!(caps.source, pai_llm::CapabilitySource::Reported);
+    // Cửa sổ **đang nạp** thắng cửa sổ tối đa: đó là con số thật của lượt sắp chạy.
+    assert_eq!(caps.context_window, Some(8192));
+}
+
+#[tokio::test]
+async fn lmstudio_khong_hoi_duoc_thi_doan_theo_ten_chu_khong_hong() {
+    // Máy chủ đời cũ, không có `/api/v0`. Một lượt vẫn phải chạy được.
+    let base = serve(vec![]).await;
+    let adapter = LmStudioAdapter::new("lms", &base, "", client());
+
+    let caps = adapter.capabilities("llava-7b").await.expect("không hỏng");
+    assert_eq!(caps.source, pai_llm::CapabilitySource::Inferred);
+    assert!(caps.vision, "`llava` đoán được là mô hình thị giác");
+}
+
+#[tokio::test]
+async fn lmstudio_danh_sach_biet_mo_hinh_nao_dang_nam_trong_vram() {
+    let base = serve(vec![(
+        "/api/v0/models",
+        Route::ok(
+            r#"{"object":"list","data":[
+                {"id":"qwen3-8b","type":"llm","state":"loaded","max_context_length":40960,
+                 "quantization":"Q4_K_M","arch":"qwen3"},
+                {"id":"nomic-embed-text-v1.5","type":"embeddings","state":"not-loaded",
+                 "max_context_length":2048},
+                {"id":"gemma-3-4b","type":"vlm","state":"not-loaded","max_context_length":8192}
+            ]}"#,
+        ),
+    )])
+    .await;
+    let adapter = LmStudioAdapter::new("lms", &base, "", client());
+    let admin = adapter.admin().expect("LM Studio có nửa vòng đời");
+
+    let models = admin.list().await.expect("liệt kê được");
+    let by_name = |name: &str| {
+        models
+            .iter()
+            .find(|model| model.name == name)
+            .unwrap_or_else(|| panic!("thiếu {name}"))
+            .clone()
+    };
+
+    assert_eq!(by_name("qwen3-8b").state, ModelState::Loaded);
+    assert_eq!(by_name("gemma-3-4b").state, ModelState::Unloaded);
+    // Phân loại mô hình nhúng là thứ `/v1/models` không làm được, và là chỗ người dùng
+    // chọn nhầm nhiều nhất.
+    let embed = by_name("nomic-embed-text-v1.5");
+    assert!(embed.capabilities.is_embedding_only());
+    assert!(by_name("gemma-3-4b").capabilities.vision, "`vlm` là thị giác");
+    assert_eq!(by_name("qwen3-8b").quantization.as_deref(), Some("Q4_K_M"));
+
+    let running = admin.running().await.expect("hỏi được");
+    assert_eq!(
+        running.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(),
+        vec!["qwen3-8b"]
+    );
+}
+
+#[tokio::test]
+async fn lmstudio_ba_dong_tu_khong_co_thi_noi_ra_cach_khac() {
+    use futures::StreamExt as _;
+
+    let base = serve(vec![]).await;
+    let adapter = LmStudioAdapter::new("lms", &base, "", client());
+    let admin = adapter.admin().expect("có nửa vòng đời");
+
+    let pulled = admin.pull("qwen3-8b").next().await.expect("có một dòng");
+    let err = pulled.expect_err("LM Studio không tải về qua API");
+    assert_eq!(err.code, LlmErrorCode::Unsupported);
+    // Câu chữ phải chỉ ra **việc phải làm**, không chỉ nói là không được.
+    assert!(err.message.contains("lms get"), "{}", err.message);
+
+    let err = admin.unload("qwen3-8b").await.expect_err("không nhả được");
+    assert_eq!(err.code, LlmErrorCode::Unsupported);
+    assert!(err.message.contains("lms unload"), "{}", err.message);
+
+    let err = admin.delete("qwen3-8b").await.expect_err("không xoá được");
+    assert_eq!(err.code, LlmErrorCode::Unsupported);
+}
+
+#[tokio::test]
+async fn lmstudio_nhan_ca_ba_dang_base_url_va_ma_hoa_ten_co_gach_cheo() {
+    let (base, log) = serve_recording(vec![(
+        // Tên mô hình của LM Studio mang dấu `/`. Không mã hoá thì nó tự mọc thêm một
+        // đoạn đường dẫn và máy chủ trả 404 — một lỗi không ai đoán ra từ triệu chứng.
+        "/api/v0/models/lmstudio-community%2Fqwen3-8b",
+        Route::ok(r#"{"id":"lmstudio-community/qwen3-8b","type":"llm","max_context_length":4096}"#),
+    )])
+    .await;
+
+    for suffix in ["", "/v1", "/api/v0"] {
+        let adapter = LmStudioAdapter::new("lms", format!("{base}{suffix}"), "", client());
+        assert_eq!(adapter.base_url(), base, "đuôi `{suffix}` phải bị cắt");
+        let details = adapter
+            .admin()
+            .expect("có nửa vòng đời")
+            .show("lmstudio-community/qwen3-8b")
+            .await
+            .expect("hỏi được");
+        assert_eq!(details.capabilities.context_window, Some(4096));
+    }
+    assert_eq!(log.lock().expect("khoá sổ").len(), 3);
 }

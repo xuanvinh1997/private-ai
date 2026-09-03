@@ -1,19 +1,32 @@
-import { createEffect, createMemo, createResource, createSignal, Show } from "solid-js";
+import { createEffect, createMemo, createResource, createSignal, For, Show } from "solid-js";
 import { useDragDrop } from "../hooks/useDragDrop";
 import { applyCompletion, completePaths, findTrigger, rankCommands } from "../lib/complete";
 import CompletionPopup, { type Suggestion } from "./CompletionPopup";
 import { displayMode } from "../lib/prefs";
 import type { ModelChoice, ProjectKind, ToolScope } from "../lib/protocol";
-import Icon from "./Icon";
+import Icon, { type IconName } from "./Icon";
 import Menu from "./Menu";
 import ModelPicker from "./ModelPicker";
-import { Chip, IconButton } from "./primitives";
+import { IconButton } from "./primitives";
 
 const SCOPE_LABEL: Record<ToolScope, string> = {
   read: "Chỉ đọc",
   write: "Đọc và ghi",
   shell: "Đọc, ghi và chạy lệnh",
 };
+
+/**
+ * Một mảnh của dòng trạng thái dưới ô soạn tin.
+ *
+ * Khai ở đây chứ không lôi vào `primitives.tsx`: hình dạng này chỉ đúng cho đúng một dòng
+ * trong toàn ứng dụng, và một primitive dùng chung mà chỉ có một chỗ gọi là một primitive
+ * chưa biết mình phải làm gì.
+ *
+ * `note` là phần phụ chìm hơn một bậc — loại dự án đứng sau tên dự án — chứ không phải một
+ * mảnh riêng: nó không tự đứng một mình mà có nghĩa. `warn` chỉ dành cho mảnh **đang** đáng
+ * lo, không phải cho mọi mảnh có con số.
+ */
+type MetaBit = { icon: IconName; text: string; note?: string; warn?: boolean };
 
 /**
  * Ô soạn tin: một khối bo tròn nằm giữa dưới, và **mọi** nút nằm trong viền của nó.
@@ -35,6 +48,21 @@ const SCOPE_LABEL: Record<ToolScope, string> = {
  * mỗi lần gửi, giá trị này đi thẳng vào `send_message` và lõi siết sổ đăng ký tool theo
  * nó cho đúng lượt ấy. Nhãn ở đây vì vậy đọc được như một lời hứa kiểm chứng được, chứ
  * không phải một cái công tắc trang trí.
+ *
+ * Mọi thứ quanh ô nhập xếp thành **ba tầng**, và tầng quyết định hình dạng chứ không phải
+ * chỗ ngồi:
+ *
+ *  1. Thứ *bấm được và đổi được lượt kế* — quyền, mô hình, nút Gửi — mang hình viên thuốc
+ *     có nền riêng. Chúng luôn có mặt, kể cả khi giá trị đang là mặc định.
+ *  2. Thứ *chỉ để đọc* — dự án, MCP, ngữ cảnh — là chữ thường màu `--muted` trên một hàng
+ *     duy nhất. Trước đây chúng cũng đeo viên thuốc, và một hàng sáu viên thuốc đồng hạng
+ *     dạy mắt rằng cái nào cũng bấm được, cái nào cũng quan trọng ngang nhau — nên rốt cuộc
+ *     không cái nào được đọc, kể cả cái quyền. Chữ vẫn nói đủ từng ấy thông tin.
+ *  3. Thứ *chỉ đúng khi có việc* — cảnh báo mô hình, gợi ý đính kèm, "chưa mở dự án" — nằm
+ *     trong một hàng biết xuống dòng và biến mất hẳn khi không có việc gì.
+ *
+ * Ba tầng ấy là cách hạ nhiễu **mà không giấu gì**: không có thông tin nào lui vào sau một
+ * nút phải bấm mới thấy, chỉ có thông tin bị hạ xuống đúng giọng của nó.
  */
 export default function Composer(props: {
   value: string;
@@ -70,10 +98,14 @@ export default function Composer(props: {
    * quyền hạn làm được — người dùng dựa vào nó để quyết định có gửi câu tiếp theo không.
    */
   hasProject: boolean;
-  /** Tên dự án đang mở, cho dải ngữ cảnh dưới ô soạn tin. */
+  /** Tên dự án đang mở, cho dòng trạng thái dưới ô soạn tin. */
   projectName?: string;
   projectKind?: ProjectKind;
-  /** Số server MCP **đang nối** — không phải số server đã khai báo. */
+  /**
+   * Số server MCP **đang nối** — không phải số server đã khai báo.
+   *
+   * `0` không được viết ra thành chữ: xem `meta` bên dưới, chỗ dựng dòng trạng thái.
+   */
   mcpConnected: number;
   /** Còn thứ khác nằm dưới ô soạn tin (mấy câu gợi ý), nên đáy thu lại một nấc. */
   moreBelow?: boolean;
@@ -179,6 +211,58 @@ export default function Composer(props: {
     return ratio >= 0.6 ? { ratio: Math.min(ratio, 1) } : null;
   });
 
+  /**
+   * Dòng trạng thái dưới ô soạn tin: **lượt sắp gửi sẽ chạy với những gì**.
+   *
+   * Dựng thành mảng chứ không viết thẳng ba khối JSX cạnh nhau, vì dấu `·` chỉ được đứng
+   * *giữa* hai mảnh có thật — viết tay thì mỗi lần một mảnh vắng mặt lại còn một dấu chấm
+   * treo lơ lửng ở đầu hoặc cuối dòng.
+   *
+   * Mảnh nào **chỉ có ý nghĩa khi khác mặc định** thì vắng mặt ở mặc định. "0 server MCP"
+   * và "chưa có dự án" là hai câu trả lời "không" mà sự vắng mặt cũng nói được, còn quyền
+   * và mô hình thì luôn hiện ở tầng trên — hai thứ ấy không có ngoại lệ nào cả. Riêng
+   * "chưa có dự án" còn được nói thành câu đầy đủ ở tầng cảnh báo, kèm cả hệ quả của nó,
+   * nên lặp lại ở đây chỉ là lặp.
+   */
+  const meta = createMemo<MetaBit[]>(() => {
+    const rows: MetaBit[] = [];
+
+    if (props.hasProject) {
+      rows.push({
+        icon: "folder-open",
+        text: props.projectName ?? "Dự án",
+        note: props.projectKind === "docs" ? "tài liệu" : "mã nguồn",
+      });
+    }
+
+    // Số server, không phải tên: dòng này chỉ cần trả lời "có thêm tool không". Ai muốn
+    // biết những tool nào thì đã có trang Server MCP, và nhét bốn cái tên vào đây là đẩy
+    // dòng trạng thái dài hơn cả câu người dùng sắp gõ.
+    if (props.mcpConnected > 0) {
+      rows.push({ icon: "plug", text: `${props.mcpConnected} server MCP` });
+    }
+
+    // Áp lực ngữ cảnh — **chỉ hiện khi đã đáng lo**.
+    //
+    // Ngưỡng 60% là có chủ ý: dưới mức đó con số không đổi được quyết định nào của người
+    // dùng, và một con số đứng đó suốt phiên chỉ dạy mắt bỏ qua đúng chỗ mà về sau nó cần
+    // nhìn. Trên mức đó thì nó trả lời một câu thật: còn bao nhiêu chỗ trước khi phần đầu
+    // cuộc trò chuyện bị rút gọn.
+    //
+    // Mẫu số là cửa sổ mà **plugin nén** dùng làm ngưỡng, không phải cửa sổ của mô hình —
+    // nên nó chạm mức cảnh báo đúng lúc nén sắp chạy, chứ không sau đó.
+    const pressure = contextPressure();
+    if (pressure) {
+      rows.push({
+        icon: "model",
+        text: `Ngữ cảnh ${Math.round(pressure.ratio * 100)}%`,
+        warn: pressure.ratio >= 0.85,
+      });
+    }
+
+    return rows;
+  });
+
   // Kéo thả lấy đường dẫn tuyệt đối — thứ HTML5 drag & drop cố ý không cho. Chèn vào
   // cuối bản nháp thay vì thay thế: người dùng thường đã gõ dở câu hỏi rồi mới thả tệp.
   useDragDrop((paths) => {
@@ -270,13 +354,15 @@ export default function Composer(props: {
           }}
         >
           <Icon name="clock" size={13} />
-          <span class="shrink-0 text-2xs text-faint">Gửi khi xong</span>
+          <span class="shrink-0 text-xs text-faint">Gửi khi xong</span>
           <span class="min-w-0 flex-1 truncate text-sm text-text">{props.queued}</span>
+          {/* Cao 28px chứ không co theo chữ: đây là lối thoát duy nhất khỏi hàng chờ, và
+              một lối thoát rộng bằng hai chữ là một lối thoát bấm trượt. */}
           <button
             type="button"
             onClick={() => props.onUnqueue?.()}
             aria-label="Bỏ câu đang chờ"
-            class="shrink-0 rounded-btn px-2xs py-3xs text-2xs text-muted transition-colors hover:bg-[var(--overlay-hover)] hover:text-text"
+            class="flex h-7 shrink-0 items-center rounded-btn px-2xs text-xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-text"
           >
             Bỏ
           </button>
@@ -286,10 +372,19 @@ export default function Composer(props: {
       <div
         // Ô soạn tin rộng đúng bằng cột chữ phía trên nó: lệch một chút thôi là mắt đọc
         // ra hai khối không thuộc về nhau.
-        class="relative mx-auto flex w-full flex-col rounded-composer border bg-surface shadow-float transition-colors duration-[var(--dur-base)]"
+        //
+        // Lúc có tiêu điểm, viền đổi sang màu nhấn **và** một quầng sáng rất mỏng nở ra
+        // quanh khung. Quầng ấy là chuyển động duy nhất của cả ô soạn tin, và nó có lý do:
+        // ô này nằm sát đáy một cửa sổ đầy chữ, nên "con trỏ đang ở đâu" phải đọc được từ
+        // khoé mắt chứ không phải bằng cách đi tìm cái nháy. Đổi mỗi màu viền là một pixel
+        // đổi màu — ngoại vi của mắt không bắt được. `transition` (không phải
+        // `transition-colors`) vì `box-shadow` phải trôi cùng nhịp với viền, nếu không
+        // quầng bật ra trước rồi viền đuổi theo sau. Người chọn giảm chuyển động vẫn có
+        // đủ hai tín hiệu — app.css cắt thời lượng chứ không cắt trạng thái cuối.
+        class="relative mx-auto flex w-full flex-col rounded-composer border bg-surface shadow-float transition duration-[var(--dur-base)] ease-[var(--ease-out)]"
         classList={{
-          "border-accent": focused(),
-          "border-line-strong": !focused(),
+          "border-accent ring-[3px] ring-accent/15": focused(),
+          "border-line-strong ring-0 ring-transparent": !focused(),
           "max-w-(--reading-measure)": displayMode() === "bubble",
           "max-w-[min(100%,980px)]": displayMode() === "document",
         }}
@@ -344,27 +439,35 @@ export default function Composer(props: {
           class="max-h-[220px] w-full resize-none bg-transparent px-md pt-md pb-2xs text-base text-text outline-none placeholder:text-faint"
         />
 
-        {/* Đính kèm đi qua kéo thả chứ không qua hộp thoại chọn tệp: chỉ có tầng hệ điều
-            hành mới đưa được **đường dẫn tuyệt đối**, mà đường dẫn mới là thứ trợ lý cần.
-            Nút này nói ra điều đó thay vì mở một hộp thoại trả về thứ vô dụng. */}
-        <Show when={hint()}>
-          <p class="flex items-center gap-2xs px-md pb-2xs text-2xs text-muted" role="status">
-            <Icon name="paperclip" size={12} />
-            Kéo tệp thả vào cửa sổ để chèn đường dẫn tuyệt đối vào tin nhắn.
-          </p>
-        </Show>
+        {/* Tầng ba: mọi câu **chỉ đúng khi có việc**, gom vào **một hàng biết xuống dòng**
+            chứ không xếp chồng thành ba dải.
 
-        {/* Hai câu trạng thái nằm **cùng một hàng biết xuống dòng** chứ không chồng lên nhau
-            thành hai dải: ô soạn tin chỉ cao vài chục pixel, và mỗi dòng chữ thêm vào đẩy
-            hàng nút xuống một nấc. Cửa sổ hẹp thì chúng tự rơi xuống dòng dưới.
+            Ô soạn tin chỉ cao vài chục pixel, và mỗi dải chữ thêm vào đẩy hàng nút xuống
+            một nấc — ba dải rời là ba nấc, và người dùng thấy đáy cửa sổ nhấp nhô mỗi lần
+            một điều kiện bật tắt. Nằm cùng hàng thì hai câu ngắn ở chung một dòng, và chỉ
+            khi cửa sổ hẹp chúng mới tự rơi xuống.
 
-            `role="status"` chứ không `alert` ở cả hai: đây là những điều kiện đang tồn tại,
+            `role="status"` chứ không `alert` ở cả ba: đây là những điều kiện đang tồn tại,
             không phải sự kiện vừa xảy ra — trình đọc màn hình nên đọc chúng khi tới lượt. */}
-        <Show when={!props.hasProject || props.modelWarning}>
-          <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-2xs">
+        <Show when={hint() || !props.hasProject || props.modelWarning}>
+          <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-xs">
+            {/* Đính kèm đi qua kéo thả chứ không qua hộp thoại chọn tệp: chỉ có tầng hệ
+                điều hành mới đưa được **đường dẫn tuyệt đối**, mà đường dẫn mới là thứ trợ
+                lý cần. Câu này nói ra điều đó thay vì mở một hộp thoại trả về thứ vô dụng. */}
+            <Show when={hint()}>
+              <p class="m-0 flex items-center gap-2xs text-muted" role="status">
+                <Icon name="paperclip" size={12} />
+                Kéo tệp thả vào cửa sổ để chèn đường dẫn tuyệt đối vào tin nhắn.
+              </p>
+            </Show>
+
             {/* Câu chốt lại bằng "vẫn gửi được": đây là một giới hạn đang tồn tại, không
                 phải một thứ vừa hỏng, và người đọc phải rời câu này với niềm tin rằng ô
-                soạn tin bên dưới còn dùng được. */}
+                soạn tin bên dưới còn dùng được.
+
+                Đây cũng là **chỗ duy nhất** nói "chưa có dự án" bằng chữ, kể từ khi dòng
+                trạng thái phía dưới thôi mang một viên thuốc "Chưa có dự án" chỉ để nói
+                đúng chừng ấy mà không nói được hệ quả. */}
             <Show when={!props.hasProject}>
               <p class="m-0 flex items-center gap-2xs text-muted" role="status">
                 <Icon name="tools" size={12} />
@@ -383,10 +486,14 @@ export default function Composer(props: {
           </div>
         </Show>
 
-        {/* Tầng dưới của ô soạn tin, xếp đúng theo hình mẫu: đính kèm ở mép trái, **quyền**
+        {/* Tầng một, và là hàng duy nhất còn đeo viên thuốc: đính kèm ở mép trái, **quyền**
             ngay cạnh nó, và mô hình dạt sang phải cạnh nút Gửi. Thứ tự này không tuỳ tiện —
             trái sang phải là "đưa gì vào → được làm gì với nó → ai làm", và cái đắt nhất
-            trong ba cái đó là quyền, nên nó đứng ở chỗ mắt chạm tới trước. */}
+            trong ba cái đó là quyền, nên nó đứng ở chỗ mắt chạm tới trước.
+
+            Bốn thứ ở đây đều **đổi được lượt kế**, và cả bốn đều cao 32px nên vẫn bấm trúng
+            bằng ngón tay. Dự án/MCP/ngữ cảnh đã rời khỏi hình viên thuốc chính vì không đổi
+            được gì cả: chúng chỉ báo cáo lại một lựa chọn đã làm ở nơi khác. */}
         <div class="flex flex-wrap items-center gap-2xs px-2xs pb-2xs">
           <IconButton
             icon="paperclip"
@@ -402,13 +509,18 @@ export default function Composer(props: {
 
               Nói "chưa dùng được" bằng chữ chứ **không gạch ngang** cái nhãn: chữ bị gạch
               đọc ra là một thứ vừa hỏng hoặc vừa bị bỏ đi, mà đây là một quyền đang tắt vì
-              chưa có gì để cấp. "Chưa xong" và "hỏng" là hai trạng thái. */}
+              chưa có gì để cấp. "Chưa xong" và "hỏng" là hai trạng thái.
+
+              Cỡ chữ ở đây bám `text-xs` để khớp *đúng từng pixel* với viên thuốc thật do
+              `Menu variant="pill"` vẽ ra — chỗ ngồi chỉ giữ nguyên nếu cả bề cao lẫn bề
+              ngang đều giữ nguyên, và bề ngang đi theo cỡ chữ. Đổi một bên là phải đổi
+              bên kia cùng lúc, kể cả bộ chọn mô hình đứng cạnh. */}
           <Show
             when={props.hasProject}
             fallback={
               <span
                 aria-hidden="true"
-                class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-2xs text-faint"
+                class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-xs text-faint"
               >
                 <Icon name="hand" size={13} />
                 {SCOPE_LABEL[props.scope]}
@@ -472,64 +584,63 @@ export default function Composer(props: {
         </div>
       </div>
 
-      {/* Dải ngữ cảnh: **lượt sắp gửi sẽ chạy với những gì**.
+      {/* Tầng hai — dòng trạng thái: **lượt sắp gửi sẽ chạy với những gì**.
 
           Nó ở ngoài viền ô soạn tin chứ không trong: mọi thứ trong viền đều bấm được và đổi
-          được, còn ba mảnh này chỉ báo cáo lại trạng thái đã chọn ở nơi khác. Trộn hai loại
-          vào một khung là mời người dùng bấm vào một cái nhãn.
+          được, còn mấy mảnh này chỉ báo cáo lại trạng thái đã chọn ở nơi khác. Trộn hai loại
+          vào một khung là mời người dùng bấm vào một cái nhãn — và đó chính là lời mời mà
+          hình viên thuốc cũ phát ra: nền riêng, góc bo tròn, đứng ngay dưới ba cái nút thật.
 
-          Ba mảnh, ba câu hỏi mà người ta thật sự hỏi trước khi bấm Gửi: nó đọc thư mục nào,
-          nó có thêm tool nào ngoài tool dựng sẵn, và ai trả lời. */}
-      <div
-        role="group"
-        aria-label="Lượt kế sẽ chạy với"
-        class="mx-auto mt-2xs flex w-full flex-wrap items-center gap-2xs px-2xs"
-        classList={{
-          "max-w-(--reading-measure)": displayMode() === "bubble",
-          "max-w-[min(100%,980px)]": displayMode() === "document",
-        }}
-      >
-        <Chip tone={props.hasProject ? "accent" : "neutral"}>
-          <Icon name={props.hasProject ? "folder-open" : "folder"} size={11} />
-          <Show when={props.hasProject} fallback="Chưa có dự án">
-            {props.projectName ?? "Dự án"}
-            <span class="opacity-70">
-              · {props.projectKind === "docs" ? "tài liệu" : "mã nguồn"}
-            </span>
-          </Show>
-        </Chip>
+          Nên bây giờ chúng là **chữ**: `--muted`, không nền, không viền, cách nhau bằng dấu
+          `·`, biểu tượng nhỏ giữ lại để nhận ra từng mảnh mà không phải đọc. Chữ vẫn nói đủ
+          những câu người ta thật sự hỏi trước khi bấm Gửi — nó đọc thư mục nào, có thêm tool
+          nào ngoài tool dựng sẵn — chỉ là nói bằng giọng của một dòng chân trang, đúng hạng
+          của nó.
 
-        {/* Số server, không phải tên: cột này chỉ cần trả lời "có thêm tool không". Ai muốn
-            biết những tool nào thì đã có trang Server MCP, và nhét bốn cái tên vào đây là
-            đẩy dòng ngữ cảnh dài hơn cả câu người dùng sắp gõ. */}
-        <Chip tone={props.mcpConnected > 0 ? "accent" : "neutral"}>
-          <Icon name="plug" size={11} />
-          {props.mcpConnected} server MCP
-        </Chip>
+          `text-xs` chứ không nhỏ hơn: hạ hạng không có nghĩa là hạ tới mức phải nheo mắt,
+          và đây là dòng duy nhất nói ra thư mục mà trợ lý sắp đọc.
 
-        {/* Áp lực ngữ cảnh — **chỉ hiện khi đã đáng lo**.
+          Cố ý **không** có mảnh mô hình ở đây. Tên mô hình đã nằm trong bộ chọn ngay phía
+          trên, cách chưa tới ba mươi pixel; lặp lại nó chỉ làm dài thêm một dòng vốn tồn tại
+          để trả lời những câu bộ chọn *không* trả lời được. */}
+      <Show when={meta().length > 0}>
+        <div
+          role="group"
+          aria-label="Lượt kế sẽ chạy với"
+          class="mx-auto mt-xs flex w-full flex-wrap items-center gap-x-2xs gap-y-3xs px-md text-xs text-muted"
+          classList={{
+            "max-w-(--reading-measure)": displayMode() === "bubble",
+            "max-w-[min(100%,980px)]": displayMode() === "document",
+          }}
+        >
+          <For each={meta()}>
+            {(item, index) => (
+              <span
+                class="inline-flex items-center gap-2xs"
+                classList={{ "text-warn": item.warn === true }}
+              >
+                {/* Dấu phân cách `aria-hidden`: mắt cần nó để tách hai mảnh, còn trình đọc
+                    màn hình đã có khoảng nghỉ giữa hai phần tử rồi — đọc thêm "chấm giữa"
+                    vào giữa mỗi mảnh là biến một dòng ngắn thành một câu lắp bắp.
 
-            Ngưỡng 60% là có chủ ý: dưới mức đó con số không đổi được quyết định nào của
-            người dùng, và một chip đứng đó suốt phiên chỉ dạy mắt bỏ qua đúng chỗ mà về
-            sau nó cần nhìn. Trên mức đó thì nó trả lời một câu thật: còn bao nhiêu chỗ
-            trước khi phần đầu cuộc trò chuyện bị rút gọn.
-
-            Mẫu số là cửa sổ mà **plugin nén** dùng làm ngưỡng, không phải cửa sổ của mô
-            hình — nên chip đầy đúng lúc nén sắp chạy, chứ không sau đó. */}
-        <Show when={contextPressure()}>
-          {(pressure) => (
-            <Chip tone={pressure().ratio >= 0.85 ? "warn" : "neutral"}>
-              <Icon name="model" size={11} />
-              Ngữ cảnh {Math.round(pressure().ratio * 100)}%
-            </Chip>
-          )}
-        </Show>
-
-        {/* Cố ý **không** có chip mô hình ở đây. Tên mô hình đã nằm trong bộ chọn ngay
-            phía trên, cách chưa tới ba mươi pixel; lặp lại nó chỉ làm dài thêm một dòng
-            vốn tồn tại để trả lời những câu bộ chọn *không* trả lời được — chạy trong thư
-            mục nào, và có tool nào từ ngoài cắm vào. */}
-      </div>
+                    Nó nằm *trong* mảnh chứ không đứng riêng để `flex-wrap` không bao giờ
+                    bỏ một dấu chấm trơ trọi ở cuối dòng trên. Màu `--faint` đè lên cả màu
+                    cảnh báo của mảnh: dấu ngăn cách không phải thứ đang cảnh báo. */}
+                <Show when={index() > 0}>
+                  <span aria-hidden="true" class="text-faint">
+                    ·
+                  </span>
+                </Show>
+                <Icon name={item.icon} size={12} />
+                {item.text}
+                <Show when={item.note}>
+                  {(note) => <span class="text-faint">{note()}</span>}
+                </Show>
+              </span>
+            )}
+          </For>
+        </div>
+      </Show>
     </form>
   );
 }

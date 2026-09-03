@@ -1,5 +1,9 @@
 @import "tailwindcss";
 @import "./tokens.css";
+/* Phải nằm ở đây chứ không phải index.html: `--font-ui`/`--font-mono` gọi tên hai họ chữ
+ * mà không máy nào chắc chắn có sẵn, nên tệp khai `@font-face` là thứ duy nhất giữ cho
+ * giao diện còn giữ được cá tính khi rời khỏi máy của người viết nó. */
+@import "./fonts.css";
 
 /* Tailwind đọc token từ CSS variable thay vì giữ bản sao riêng: đổi một chỗ ở
  * tokens.css là cả utility lẫn CSS viết tay cùng đổi. */
@@ -30,11 +34,32 @@
   --font-sans: var(--font-ui);
   --font-mono: var(--font-mono);
 
-  --text-2xs: 0.74rem;
-  --text-xs: 0.8rem;
-  --text-sm: 0.87rem;
-  --text-base: 0.93rem;
+  /* Bậc thấp nhất của thang là chỗ đau nhất. `--text-2xs` từng là 0.74rem — ở root 15px
+   * ra đúng 11px — mà `text-2xs` lại là lớp dùng cho gần như toàn bộ metadata: tên tệp
+   * trong bảng thay đổi, số dòng của diff, đường dẫn cwd, phím tắt, tên công cụ. Đó không
+   * phải chữ trang trí để liếc qua, đó là thứ người dùng phải **đọc** để biết trợ lý vừa
+   * đụng vào cái gì. 11px là cỡ của thanh trạng thái một IDE, và dùng nó ở đây là lý do
+   * app đọc ra như một console của lập trình viên chứ không như một ứng dụng.
+   *
+   * Bốn bậc dưới vì thế dồn lại trong khoảng 12-14.25px: chúng vốn không dùng để tạo tương
+   * phản với nhau — tương phản thật nằm ở khoảng cách tới `--text-md` trở lên — mà chỉ để
+   * hạ giọng dần cho thông tin phụ. Bước 0.05rem là đủ để mắt xếp được thứ bậc mà không
+   * bậc nào tụt xuống dưới ngưỡng đọc thoải mái.
+   *
+   * `--text-base` giữ dưới 1rem có chủ đích: nó là cỡ mặc định của `body`, và đẩy nó lên
+   * 1rem thì mọi lớp `text-md` trở lên phải giãn theo, tức là đổi cả bố cục chứ không chỉ
+   * đổi cỡ chữ. Ai muốn to hơn đã có `:root[data-scale="large"]` ở tokens.css. */
+  --text-2xs: 0.8rem;
+  --text-xs: 0.85rem;
+  --text-sm: 0.9rem;
+  --text-base: 0.95rem;
   --text-md: 1rem;
+
+  /* Manrope ở cỡ nhỏ khép chữ lại khá chặt; nới một chút tracking đúng ở hai bậc dày đặc
+   * nhất giúp tên tệp và đường dẫn không dính thành một khối. Các bậc lớn không cần —
+   * thêm tracking cho tiêu đề chỉ làm chúng loãng ra. */
+  --text-2xs--letter-spacing: 0.008em;
+  --text-xs--letter-spacing: 0.005em;
   --text-lg: 1.18rem;
   --text-xl: 1.42rem;
   --text-2xl: 1.73rem;
@@ -52,8 +77,10 @@
   --radius-menu: 12px; --radius-card: 14px; --radius-pill: 999px;
   --radius-bubble: 16px; --radius-composer: 18px;
 
-  --shadow-pop: 0 12px 32px var(--shadow);
-  --shadow-float: 0 4px 14px var(--shadow);
+  /* Hai bậc độ nổi, và cả hai đều mở đầu bằng `--edge-top` — xem tokens.css để biết vì
+     sao một vệt sáng ở mép trên lại làm được việc mà bóng đổ không làm nổi trên nền tối. */
+  --shadow-pop: var(--edge-top), 0 12px 32px var(--shadow);
+  --shadow-float: var(--edge-top), 0 4px 14px var(--shadow);
 }
 
 /* Nút đổi theme phải thắng cả media query, nên biến thể dark bám [data-theme]
@@ -69,6 +96,11 @@ body {
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
+  /* Chữ số của Manrope mặc định rộng hẹp khác nhau, mà nửa giao diện này là số **đang
+   * chạy**: bộ đếm token, thời lượng một lượt, số dòng thêm/bớt. Số tỉ lệ làm mỗi lần
+   * đếm nhảy một chữ số là cả hàng bên cạnh xê dịch theo — một cái rung liên tục ở đuôi
+   * mắt trong suốt lúc trợ lý trả lời. Số đều bề ngang thì con số đổi mà bố cục đứng yên. */
+  font-variant-numeric: tabular-nums;
 }
 
 /* Cửa sổ Tauri dùng titleBarStyle "Overlay": phần kéo cửa sổ là của chúng ta.

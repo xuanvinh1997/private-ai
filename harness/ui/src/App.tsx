@@ -54,7 +54,9 @@ import Composer from "./components/Composer";
 import { EmptyLead, PromptChips } from "./components/EmptyState";
 import { usableForChat } from "./components/ModelPicker";
 import ProjectSwitcher from "./components/ProjectSwitcher";
+import PromptDialog from "./components/PromptDialog";
 import Sidebar, { projectTabs, tabsFor, type TabId } from "./components/Sidebar";
+import ConfirmDialog from "./components/projects/ConfirmDialog";
 import ProjectsView from "./components/projects/ProjectsView";
 import DocsView from "./components/docs/DocsView";
 import SessionPalette from "./components/SessionPalette";
@@ -68,6 +70,22 @@ import "./components/nodes";
 
 /** Mô hình dùng khi chưa hỏi được máy chủ. Chỉ để ô chọn không trống. */
 const MODEL_CHUA_BIET = "(chưa hỏi được máy chủ)";
+
+/**
+ * Hộp thoại đang mở của vỏ ứng dụng — **một** ô cho cả ba việc, không phải ba cờ rời.
+ *
+ * Ba cờ độc lập cho phép hai hộp thoại cùng nằm trên màn hình, và lúc đó cái mở sau giam
+ * tiêu điểm còn cái mở trước vẫn nhận được cú bấm chuột. Kiểu này thì trạng thái ấy không
+ * phát biểu ra được, nên nó không cần ai canh.
+ *
+ * Ba việc này ở chung một chỗ vì cả ba đều sửa trạng thái do chính tệp này giữ: danh sách
+ * dự án và danh sách phiên. Màn hình dự án có hộp xác nhận riêng cho hàng của nó — cái ở
+ * đây phục vụ menu trong thanh bên, nơi không có màn hình nào đứng ra hỏi.
+ */
+type AppDialog =
+  | { kind: "forget-project"; project: Project }
+  | { kind: "rename-session"; id: string; title: string }
+  | { kind: "delete-session"; id: string; title: string };
 
 /**
  * Vỏ ứng dụng: một thanh bên trái, một cột hội thoại căn giữa, và một bảng thay đổi
@@ -99,6 +117,31 @@ export default function App() {
    */
   const [queued, setQueued] = createSignal("");
   const [paletteOpen, setPaletteOpen] = createSignal(false);
+  // Hộp thoại đang mở — xem `AppDialog` về lý do chỉ có một ô.
+  const [dialog, setDialog] = createSignal<AppDialog | null>(null);
+  // Việc sau nút xác nhận đang chạy. Chỉ xoá phiên dùng tới: nó là việc duy nhất phải chờ
+  // lõi trả lời xong mới được đổi màn hình, nên cũng là việc duy nhất mà đóng hộp thoại
+  // giữa chừng sẽ để lại một danh sách nói sai.
+  const [dialogBusy, setDialogBusy] = createSignal(false);
+  // Ba lối đọc hẹp lại từ `dialog()`. Viết ra thành hàm chứ không so `kind` ngay trong
+  // JSX: `<Show>` chỉ thu hẹp được kiểu qua đúng cái giá trị nó nhận vào.
+  const forgetting = () => {
+    const open = dialog();
+    return open?.kind === "forget-project" ? open.project : null;
+  };
+  const renaming = () => {
+    const open = dialog();
+    return open?.kind === "rename-session" ? open : null;
+  };
+  const deleting = () => {
+    const open = dialog();
+    return open?.kind === "delete-session" ? open : null;
+  };
+  // Esc và cú bấm ra ngoài đều đi qua đây, nên chốt bận nằm ở đây một lần: đóng hộp thoại
+  // trong lúc lõi đang xoá là để người dùng nhìn một danh sách chưa biết chuyện gì xảy ra.
+  const closeDialog = () => {
+    if (!dialogBusy()) setDialog(null);
+  };
   const [tab, setTab] = createSignal<TabId>("chat");
   // Trang cài đặt do đây giữ, không do `SettingsView` giữ: thanh bên có một hàng đi thẳng
   // tới trang MCP, và một trạng thái nằm trong màn hình con sẽ bỏ qua cú bấm ấy mỗi khi
@@ -231,6 +274,45 @@ export default function App() {
     // hiểu vì sao.
     setModel(chat.find((choice) => choice.tools)?.id ?? chat[0]?.id ?? MODEL_CHUA_BIET);
     setLoading(false);
+  });
+
+  /**
+   * Hỏi lại lõi xem provider đang hoạt động có những mô hình nào.
+   *
+   * Bản trước chỉ hỏi **một lần lúc mở ứng dụng**, và đó là chỗ luồng "cắm một máy chủ mới
+   * vào" gãy hẳn: người dùng vào Cài đặt, thêm LM Studio, chọn mô hình, quay ra ô soạn tin
+   * — và bộ chọn mô hình ở đó vẫn là danh sách của trước khi họ vào, thường là rỗng kèm
+   * câu "Không hỏi được máy chủ mô hình". Không có gì trên màn hình gợi ý rằng chỉ cần
+   * khởi động lại ứng dụng là xong, nên nó đọc ra là "cấu hình vừa nhập không ăn".
+   *
+   * Giữ nguyên mô hình đang chọn nếu nó vẫn còn trong danh sách mới: đổi một provider
+   * *khác* không được kéo theo mô hình của lượt sắp gửi. Chỉ khi cái đang chọn đã biến mất
+   * thì mới chọn lại, và chọn theo đúng thứ tự ưu tiên của lúc khởi động.
+   */
+  const refreshModels = async () => {
+    if (isDemo() || !inTauri()) return;
+    const available = await listModels();
+    setModels(available);
+    const chat = available.filter(usableForChat);
+    if (chat.some((choice) => choice.id === model())) return;
+    setModel(chat.find((choice) => choice.tools)?.id ?? chat[0]?.id ?? MODEL_CHUA_BIET);
+  };
+
+  /**
+   * Rời màn hình cài đặt là mốc hỏi lại.
+   *
+   * Mốc này thay cho việc bắt `SettingsView` báo ngược lên mỗi khi có gì đó đổi: nhà cung
+   * cấp, mô hình, công tắc bật/tắt và cả nút xoá đều đổi được danh sách ấy, và năm đường
+   * gọi ngược là năm chỗ để quên một đường. Một lần hỏi lúc đóng cửa thì đúng cho cả năm.
+   *
+   * Cờ nằm ngoài effect chứ không phải một signal: nó chỉ để nhớ lượt chạy trước, và một
+   * signal ở đây sẽ tự làm effect chạy lại chính nó.
+   */
+  let leftSettings = false;
+  createEffect(() => {
+    const at = tab();
+    if (leftSettings && at !== "settings") void refreshModels();
+    leftSettings = at === "settings";
   });
 
   /**
@@ -457,14 +539,13 @@ export default function App() {
    * Bỏ khỏi màn hình trước rồi mới báo cho lõi — ngược với xoá phiên, và ngược có lý do:
    * thao tác này không mất gì cả, nên hỏng thì hàng cũ quay lại là đủ. Bắt người dùng
    * chờ một vòng IPC để bỏ một dòng khỏi danh sách gần đây là trả giá sai chỗ.
+   *
+   * Câu hỏi lại **không** nằm ở đây: màn hình dự án đã có hộp xác nhận riêng ngay cạnh
+   * hàng bị bỏ, còn menu trong thanh bên thì mở hộp thoại ở cuối tệp này. Hỏi thêm một
+   * lần nữa ở giữa đường là dạy người dùng bấm cho xong hộp thoại thứ hai — và họ sẽ bấm
+   * cho xong cả những hộp đáng đọc.
    */
   function forgetProject(target: Project) {
-    const ok = window.confirm(
-      `Bỏ "${target.name}" khỏi danh sách dự án?\n\n` +
-        `Thư mục ${target.path} vẫn nguyên trên đĩa — không có tệp nào bị xoá. ` +
-        `Mở lại lúc nào cũng được.`,
-    );
-    if (!ok) return;
     setProjects((all) => all.filter((entry) => entry.id !== target.id));
     if (isDemo()) return;
     void removeProject(target.id).catch(async (err: unknown) => {
@@ -501,13 +582,29 @@ export default function App() {
     setTab("chat");
   }
 
-  /** Đổi tên: sửa trên màn hình trước, rồi báo cho lõi. Ghi hỏng thì chỉ mất cái tên. */
-  function rename(id: string) {
+  /**
+   * Mở hộp đổi tên với tên đang có sẵn trong ô: sửa một chữ là việc thường gặp hơn đặt
+   * lại tên từ đầu, và một ô trống bắt gõ lại cả câu chỉ để thêm một cái dấu.
+   */
+  function askRename(id: string) {
     const current = sessions().find((session) => session.id === id);
-    const next = window.prompt("Tên mới cho phiên", current?.title ?? "")?.trim();
-    if (!next) return;
+    setDialog({ kind: "rename-session", id, title: current?.title ?? "" });
+  }
+
+  /** Đổi tên: sửa trên màn hình trước, rồi báo cho lõi. Ghi hỏng thì chỉ mất cái tên. */
+  function rename(id: string, next: string) {
     setSessions((all) => all.map((s) => (s.id === id ? { ...s, title: next } : s)));
     void renameSession(id, next);
+  }
+
+  /**
+   * Mở hộp xác nhận xoá. Tên phiên chốt lại ngay lúc hỏi và đi theo hộp thoại: câu hỏi
+   * phải nói về *phiên nào*, còn "phiên này" thì trong một danh sách dài không đủ để
+   * người đọc biết mình sắp mất cái gì.
+   */
+  function askRemove(id: string) {
+    const current = sessions().find((session) => session.id === id);
+    setDialog({ kind: "delete-session", id, title: current?.title ?? id });
   }
 
   /**
@@ -517,13 +614,18 @@ export default function App() {
    * mới biết là lõi từ chối sẽ để người dùng tin một chuyện không xảy ra.
    */
   async function remove(id: string) {
-    const current = sessions().find((session) => session.id === id);
-    if (!window.confirm(`Xoá phiên "${current?.title ?? id}"? Không hoàn lại được.`)) return;
+    // Hộp thoại ở lại và khoá luôn nút của chính nó trong lúc chờ: bấm "Xoá" hai lần vào
+    // một vòng IPC chậm là gửi đi hai lệnh xoá, và lệnh thứ hai báo lỗi cho một phiên vừa
+    // biến mất — một câu lỗi nói về đúng việc người dùng vừa làm thành công.
+    setDialogBusy(true);
     try {
       await deleteSession(id);
     } catch (err) {
       setLoadError(`Không xoá được phiên: ${err}`);
       return;
+    } finally {
+      setDialogBusy(false);
+      setDialog(null);
     }
     parked.delete(id);
     const rest = sessions().filter((session) => session.id !== id);
@@ -795,15 +897,18 @@ export default function App() {
                 }))}
                 onPick={(id) => void switchProject(id)}
                 onSeeAll={() => setTab("projects")}
-                onForget={forgetProject}
+                // Menu trong thanh bên không có màn hình nào đứng ra hỏi hộ, nên nó mở
+                // hộp xác nhận của vỏ ứng dụng. Màn hình dự án bên dưới thì gọi thẳng
+                // `forgetProject` vì nó đã hỏi xong ngay tại hàng.
+                onForget={(target) => setDialog({ kind: "forget-project", project: target })}
                 onClose={() => void closeCurrentProject()}
                 onSwapKind={(kind) => void swapProjectKind(kind)}
               />
             )}
             onSelect={(id) => void switchTo(id)}
             onCreate={() => void newSession()}
-            onRename={rename}
-            onDelete={remove}
+            onRename={askRename}
+            onDelete={askRemove}
             onGo={(view) => {
               if (view === "settings") setSettingsPage("chung");
               setTab(view);
@@ -989,6 +1094,65 @@ export default function App() {
 
         <Show when={conversation.approval()}>
           {(request) => <ApprovalDialog request={request()} onDecide={decideApproval} />}
+        </Show>
+
+        {/* Ba hộp thoại của vỏ ứng dụng. Đứng cuối cây và cạnh nhau chứ không nằm rải
+            trong từng màn hình: chúng sửa danh sách dự án và danh sách phiên — hai thứ do
+            chính tệp này giữ — và một hộp thoại dựng bên trong hàng nó hỏi về sẽ bị gỡ
+            khỏi cây ngay khi hàng ấy biến mất, đúng vào nhịp nó cần trả tiêu điểm về.
+
+            `dialog()` chỉ mang được một giá trị, nên ba khối `<Show>` này loại trừ lẫn
+            nhau theo kiểu chứ không theo quy ước. */}
+        <Show when={forgetting()}>
+          {(target) => (
+            <ConfirmDialog
+              icon="trash"
+              title={`Bỏ "${target().name}" khỏi danh sách?`}
+              body="Chỉ danh sách dự án gần đây bị đổi. Thư mục và toàn bộ tệp bên trong vẫn nguyên trên đĩa — mở lại thư mục này bất cứ lúc nào là dự án trở lại."
+              detail={target().path}
+              confirmLabel="Bỏ khỏi danh sách"
+              onClose={closeDialog}
+              onConfirm={() => {
+                // Đọc giá trị **trước** khi đóng: đóng rồi thì `<Show>` tháo cả nhánh
+                // này, và `target()` không còn gì để trả về.
+                const picked = target();
+                setDialog(null);
+                forgetProject(picked);
+              }}
+            />
+          )}
+        </Show>
+
+        <Show when={renaming()}>
+          {(open) => (
+            <PromptDialog
+              icon="pencil"
+              title="Đổi tên phiên"
+              label="Tên phiên"
+              value={open().title}
+              placeholder="Phiên mới"
+              confirmLabel="Đổi tên"
+              onClose={closeDialog}
+              onConfirm={(next) => {
+                const id = open().id;
+                setDialog(null);
+                rename(id, next);
+              }}
+            />
+          )}
+        </Show>
+
+        <Show when={deleting()}>
+          {(open) => (
+            <ConfirmDialog
+              title={`Xoá phiên "${open().title}"?`}
+              body="Bản ghi của phiên này bị xoá khỏi sổ và không lấy lại được. Các phiên khác cùng mọi tệp trong dự án đều không bị đụng tới."
+              confirmLabel="Xoá phiên"
+              busy={dialogBusy()}
+              onClose={closeDialog}
+              onConfirm={() => void remove(open().id)}
+            />
+          )}
         </Show>
 
         <Show when={paletteOpen()}>

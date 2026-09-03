@@ -117,7 +117,7 @@ export function Menu(props: {
         classList={{
           "size-6 justify-center text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
             (props.variant ?? "icon") === "icon",
-          "h-(--control-h) px-sm text-2xs": props.variant === "pill",
+          "h-(--control-h) px-sm text-xs": props.variant === "pill",
           "bg-[var(--overlay-faint)] text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
             props.variant === "pill" && (props.tone ?? "neutral") === "neutral",
           "bg-warn-soft text-warn hover:bg-warn-soft": props.variant === "pill" && props.tone === "warn",
@@ -168,7 +168,12 @@ export function Menu(props: {
                 disabled={item.disabled}
                 onClick={(event) => {
                   event.stopPropagation();
-                  close(false);
+                  // `true`: trả tiêu điểm về nút mở menu **trước** khi chạy hành động.
+                  // Nhiều mục ở đây mở một hộp thoại, và hộp thoại đóng lại thì bẫy tiêu
+                  // điểm trả về chỗ nó đã ghi lúc mở — mà mục menu lúc ấy đã bị gỡ khỏi
+                  // DOM. Không trả về nút trước thì tiêu điểm rơi xuống `body`, và người
+                  // dùng bàn phím bắt đầu lại từ đầu trang sau mỗi lần xác nhận.
+                  close(true);
                   item.onSelect();
                 }}
                 class="flex w-full flex-col gap-3xs rounded-btn px-sm py-2xs text-left text-xs transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-60"
@@ -182,7 +187,7 @@ export function Menu(props: {
                   {item.label}
                 </span>
                 <Show when={item.hint}>
-                  {(hint) => <span class="text-2xs text-faint">{hint()}</span>}
+                  {(hint) => <span class="text-xs text-faint">{hint()}</span>}
                 </Show>
               </button>
             )}

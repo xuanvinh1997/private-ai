@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Private AI Harness — coding & working agent desktop"
+description = "Private AI — coding & working agent desktop"
 
 [lib]
 name = "pai_app_lib"

@@ -207,5 +207,15 @@ export function inputOf(provider: Provider): ProviderInput {
  * đây là một ô nói rằng máy của họ chỉ có hai mô hình.
  */
 export function suggestedEmbeddingModel(kind: Provider["kind"]): string {
-  return kind === "ollama" ? "nomic-embed-text" : "text-embedding-3-small";
+  switch (kind) {
+    case "ollama":
+      return "nomic-embed-text";
+    // Kho của LM Studio không có `text-embedding-3-small` — đó là mô hình của OpenAI. Gợi
+    // ý một cái tên không tồn tại tệ hơn không gợi ý gì: người dùng dán nó vào rồi đọc
+    // một lỗi 404 chẳng nói được vì sao.
+    case "lmstudio":
+      return "text-embedding-nomic-embed-text-v1.5";
+    default:
+      return "text-embedding-3-small";
+  }
 }

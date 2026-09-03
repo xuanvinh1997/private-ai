@@ -1,5 +1,5 @@
 ---
-name: so-do-tuan-tu
+name: sequence-diagram
 title: Sơ đồ tuần tự
 description: "Dùng khi cần cho thấy thứ tự các bước theo thời gian giữa nhiều bên: bên nào gửi gì cho bên nào, gọi rồi chờ trả lời ra sao, chỗ nào có nhánh hoặc lặp lại trong một lần trao đổi."
 keywords:

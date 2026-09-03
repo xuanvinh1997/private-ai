@@ -1,5 +1,5 @@
 ---
-name: so-do-thuc-the
+name: er-diagram
 title: Sơ đồ thực thể
 description: "Dùng khi cần cho thấy lược đồ dữ liệu: có những bảng hay thực thể nào, mỗi cái giữ trường gì, và một bản ghi bên này ứng với bao nhiêu bản ghi bên kia."
 keywords:

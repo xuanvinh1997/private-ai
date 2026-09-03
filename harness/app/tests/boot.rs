@@ -579,15 +579,15 @@ async fn bundled_skills_reach_the_prompt() {
     let prompt = harness.ctx.require::<Prompt>().expect("có prompt");
     let text = prompt.assemble();
     for ten in [
-        "so-do-luong",
-        "so-do-tuan-tu",
-        "so-do-lop",
-        "so-do-thuc-the",
-        "so-do-trang-thai",
-        "so-do-kien-truc",
-        "so-do-tu-duy",
-        "duong-thoi-gian",
-        "so-do-hanh-trinh",
+        "flowchart",
+        "sequence-diagram",
+        "class-diagram",
+        "er-diagram",
+        "state-diagram",
+        "architecture-diagram",
+        "mindmap",
+        "timeline",
+        "user-journey",
         "summarize-document",
         "synthesize-sources",
     ] {
@@ -596,13 +596,15 @@ async fn bundled_skills_reach_the_prompt() {
     harness.shutdown().await;
 }
 
-/// A Vietnamese question still selects the two English-bodied skills.
+/// A Vietnamese question still selects the skills, all of which are named in English.
 ///
-/// This is the one thing writing a skill in English can quietly break. Selection scores
-/// `name`, `title`, `keywords` and `description` against the user's text, and three of
-/// those four are English on these two skills — so an English question would match and a
-/// Vietnamese one would not, which is backwards for an app whose users write Vietnamese.
-/// The bilingual `keywords` list is what carries them, and nothing else does.
+/// This is the one thing an English `name` can quietly break. Selection scores `name`,
+/// `title`, `keywords` and `description` against the user's text with diacritics folded
+/// away — so `so-do-tuan-tu` used to *be* the phrase a Vietnamese user types, worth three
+/// points on its own. English names give that up: `sequence-diagram` matches nothing a
+/// Vietnamese question contains, and the same was already true of the two English-bodied
+/// skills. The Vietnamese `title` and `keywords` are what carry every one of them, and
+/// nothing else does — which is exactly what this test pins down.
 #[test]
 fn vietnamese_questions_still_select_the_english_skills() {
     use pai_agent::SkillRegistry;
@@ -617,6 +619,16 @@ fn vietnamese_questions_still_select_the_english_skills() {
         ("tổng hợp nhiều nguồn giúp tôi", "synthesize-sources"),
         ("so sánh tài liệu v1 với v3", "synthesize-sources"),
         ("hai bản này khác nhau chỗ nào", "synthesize-sources"),
+        // Chín gói sơ đồ, hỏi bằng đúng cụm người dùng gõ — kể cả khi họ gõ không dấu.
+        ("vẽ sơ đồ luồng cho quy trình duyệt", "flowchart"),
+        ("ve so do tuan tu giua hai ben", "sequence-diagram"),
+        ("vẽ sơ đồ lớp cho mấy kiểu này", "class-diagram"),
+        ("vẽ sơ đồ thực thể của cơ sở dữ liệu", "er-diagram"),
+        ("vẽ sơ đồ trạng thái của đơn hàng", "state-diagram"),
+        ("vẽ sơ đồ kiến trúc hệ thống", "architecture-diagram"),
+        ("vẽ sơ đồ tư duy từ tài liệu này", "mindmap"),
+        ("vẽ đường thời gian các đợt phát hành", "timeline"),
+        ("vẽ sơ đồ hành trình người dùng", "user-journey"),
     ] {
         let chosen = registry.select(question);
         assert!(

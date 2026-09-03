@@ -1,5 +1,5 @@
 ---
-name: so-do-luong
+name: flowchart
 title: Sơ đồ luồng
 description: "Dùng khi câu trả lời phải cho thấy một việc chạy qua những bước nào và rẽ nhánh ở đâu: một thủ tục nhiều bước, một quy trình duyệt, một cây quyết định có điều kiện, một luồng xử lý có vòng lặp."
 keywords:

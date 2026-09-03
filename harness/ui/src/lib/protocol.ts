@@ -368,7 +368,7 @@ export interface DocumentHit {
   matchedBy: "keyword" | "semantic" | "both";
 }
 
-export type ProviderKind = "ollama" | "openai";
+export type ProviderKind = "ollama" | "lmstudio" | "openai";
 
 /**
  * Một provider đã cấu hình. **Không bao giờ mang khoá API.**

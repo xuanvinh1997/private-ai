@@ -62,6 +62,13 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
             format!("{}/api/tags", config.base_url.trim_end_matches('/')),
             false,
         ),
+        // `/api/v0/models` chứ không phải `/v1/models`: cùng một máy chủ, nhưng bản kia
+        // chỉ trả về id. Người dùng bấm "thử kết nối" là để biết mình sắp dùng cái gì,
+        // và ở LM Studio thì câu trả lời đầy đủ nằm sau đúng một đường dẫn khác.
+        ProviderKind::LmStudio => (
+            format!("{}/api/v0/models", pai_llm::lmstudio::server_root(&config.base_url)),
+            !config.api_key.is_empty(),
+        ),
         ProviderKind::OpenAiCompatible => match openai_base_url(&config.base_url) {
             Ok(root) => (format!("{root}/models"), !config.api_key.is_empty()),
             Err(err) => return ProbeResult::fail(err.message),
@@ -123,6 +130,7 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
 
     let models = match config.kind {
         ProviderKind::Ollama => parse_names(&payload, "models", "name"),
+        ProviderKind::LmStudio => parse_lmstudio(&payload),
         ProviderKind::OpenAiCompatible => parse_names(&payload, "data", "id"),
     };
 
@@ -133,6 +141,10 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
             ProviderKind::Ollama => format!(
                 "Nối được tới {url}, nhưng máy chủ chưa có mô hình nào. Kéo một cái về bằng \
                  `ollama pull` trước đã."
+            ),
+            ProviderKind::LmStudio => format!(
+                "Nối được tới {url}, nhưng LM Studio chưa có mô hình nào. Tải một cái ở \
+                 tab Discover rồi thử lại."
             ),
             ProviderKind::OpenAiCompatible => format!(
                 "Nối được tới {url}, nhưng máy chủ không khai mô hình nào. Với một máy chủ \
@@ -150,6 +162,36 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
 
 fn status_ok(status: u16) -> bool {
     (200..300).contains(&status)
+}
+
+/// Đọc `/api/v0/models` của LM Studio.
+///
+/// Đây là chỗ duy nhất trong tệp này mà cờ `tools` **có** thẩm quyền: LM Studio khai loại
+/// mô hình và (ở bản đủ mới) cả năng lực tool, ngay trong danh sách, không tốn thêm một
+/// lời gọi nào cho mỗi mô hình như Ollama phải trả. Tài liệu của [`ProbeModel::tools`]
+/// vẫn đúng cho hai loại provider kia.
+fn parse_lmstudio(payload: &Value) -> Vec<ProbeModel> {
+    payload
+        .get("data")
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry.get("id").and_then(Value::as_str)?.trim();
+                    if id.is_empty() {
+                        return None;
+                    }
+                    let caps = pai_llm::lmstudio::admin::details_from_model(id, entry).capabilities;
+                    Some(ProbeModel {
+                        id: id.to_string(),
+                        tools: caps.tools,
+                        context_window: caps.context_window,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn parse_names(payload: &Value, array: &str, field: &str) -> Vec<ProbeModel> {
@@ -229,10 +271,13 @@ pub async fn probe_embedding(config: &ProviderConfig, model: &str) -> EmbeddingP
     }
     let (url, authorized) = match config.kind {
         ProviderKind::Ollama => (format!("{}/api/embed", embed_root(&config.base_url)), false),
-        ProviderKind::OpenAiCompatible => match openai_base_url(&config.base_url) {
-            Ok(root) => (format!("{root}/embeddings"), !config.api_key.is_empty()),
-            Err(err) => return EmbeddingProbeResult::fail(err.message),
-        },
+        // Nhúng thì LM Studio đúng là một máy chủ OpenAI: `/v1/embeddings`, thân y hệt.
+        ProviderKind::LmStudio | ProviderKind::OpenAiCompatible => {
+            match openai_base_url(&config.base_url) {
+                Ok(root) => (format!("{root}/embeddings"), !config.api_key.is_empty()),
+                Err(err) => return EmbeddingProbeResult::fail(err.message),
+            }
+        }
     };
 
     // Client dựng tại chỗ: cấu hình đang thử có thể chưa từng được lưu, và một lần bấm nút
@@ -337,6 +382,10 @@ fn explain(config: &ProviderConfig, model: &str, url: &str, status: u16, body: &
                 "Máy chủ ở {url} không có mô hình `{model}`. Kéo nó về bằng \
                  `ollama pull {model}` rồi thử lại."
             ),
+            ProviderKind::LmStudio => format!(
+                "LM Studio ở {url} không có mô hình `{model}`. Tải một mô hình nhúng ở tab \
+                 Discover — nó có tên riêng, không dùng chung với mô hình trò chuyện."
+            ),
             ProviderKind::OpenAiCompatible => format!(
                 "Máy chủ ở {url} không biết mô hình `{model}`. Kiểm tra lại tên — mô hình \
                  nhúng có tên riêng, không dùng chung với mô hình trò chuyện."
@@ -361,7 +410,7 @@ fn explain(config: &ProviderConfig, model: &str, url: &str, status: u16, body: &
 fn first_vector(kind: ProviderKind, payload: &Value) -> Option<usize> {
     let row = match kind {
         ProviderKind::Ollama => payload.get("embeddings")?.as_array()?.first()?,
-        ProviderKind::OpenAiCompatible => {
+        ProviderKind::LmStudio | ProviderKind::OpenAiCompatible => {
             payload.get("data")?.as_array()?.first()?.get("embedding")?
         }
     };

@@ -1,5 +1,5 @@
 ---
-name: so-do-lop
+name: class-diagram
 title: Sơ đồ lớp
 description: "Dùng khi cần cho thấy cấu trúc mã hướng đối tượng: có những lớp hay kiểu nào, lớp nào kế thừa hoặc hiện thực lớp nào, lớp nào chứa lớp nào, mỗi lớp có thuộc tính và phương thức gì."
 keywords:

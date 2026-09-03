@@ -1,5 +1,5 @@
 ---
-name: duong-thoi-gian
+name: timeline
 title: Dòng thời gian và Gantt
 description: "Dùng khi các mục cần xếp theo mốc thời gian: lịch sử một dự án theo năm, các đợt phát hành, hoặc một kế hoạch có ngày bắt đầu, thời lượng và việc nào phải xong trước việc nào."
 keywords:

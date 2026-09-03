@@ -9,15 +9,23 @@ dùng nạp lên một chồng tài liệu rồi hỏi "vẽ giúp tôi kiến t
 
 | Thư mục | Loại sơ đồ mermaid |
 |---|---|
-| `so-do-luong` | `flowchart` — quy trình, luồng quyết định |
-| `so-do-tuan-tu` | `sequenceDiagram` — ai gọi ai theo thời gian |
-| `so-do-lop` | `classDiagram` — cấu trúc mã, kế thừa |
-| `so-do-thuc-the` | `erDiagram` — lược đồ dữ liệu |
-| `so-do-trang-thai` | `stateDiagram-v2` — vòng đời, máy trạng thái |
-| `so-do-kien-truc` | `flowchart` + `subgraph` — kiến trúc hệ thống theo tầng |
-| `so-do-tu-duy` | `mindmap` — rút tài liệu dài thành cây ý |
-| `duong-thoi-gian` | `timeline` và `gantt` — mốc thời gian, kế hoạch |
-| `so-do-hanh-trinh` | `journey` — hành trình người dùng |
+| `flowchart` | `flowchart` — quy trình, luồng quyết định |
+| `sequence-diagram` | `sequenceDiagram` — ai gọi ai theo thời gian |
+| `class-diagram` | `classDiagram` — cấu trúc mã, kế thừa |
+| `er-diagram` | `erDiagram` — lược đồ dữ liệu |
+| `state-diagram` | `stateDiagram-v2` — vòng đời, máy trạng thái |
+| `architecture-diagram` | `flowchart` + `subgraph` — kiến trúc hệ thống theo tầng |
+| `mindmap` | `mindmap` — rút tài liệu dài thành cây ý |
+| `timeline` | `timeline` và `gantt` — mốc thời gian, kế hoạch |
+| `user-journey` | `journey` — hành trình người dùng |
+
+Tên thư mục và `name` viết bằng tiếng Anh, như mọi định danh khác trong cây mã này; chữ
+tiếng Việt sống ở `title`, `keywords` và phần thân. Đó **không** phải một chi tiết hình
+thức: `name` được chấm 3 điểm khi khớp câu hỏi, và một cái tên như `so-do-tuan-tu` sau khi
+gỡ dấu chính là cụm người dùng gõ ra — nên đổi nó sang tiếng Anh là bỏ đi 3 điểm ấy. Chỗ
+bù lại là `keywords`: mỗi skill ở bảng trên đều mang sẵn cụm tiếng Việt tương ứng, và một
+skill mới cũng phải mang, nếu không nó sẽ không bao giờ được chọn cho một câu hỏi tiếng
+Việt.
 
 Sơ đồ được vẽ bằng cách mô hình **xuất một khối mã ```mermaid trong câu trả lời**; giao
 diện tự dựng hình. Không có tool "tạo sơ đồ", và skill không được nhắc tới một tool không

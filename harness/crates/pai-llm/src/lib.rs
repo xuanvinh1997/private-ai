@@ -10,7 +10,9 @@
 //!   số tool đến từng mảnh dưới dạng chuỗi JSON bị cắt vụn.
 //! - [`wire`] — byte của socket thành khung giao thức. Tách ra để bộ test chạy được mà
 //!   không cần mạng.
-//! - [`ollama`] và [`openai`] — hai bản cài đặt. Chúng sở hữu phần dây; hợp đồng thì không.
+//! - [`ollama`], [`lmstudio`] và [`openai`] — ba bản cài đặt. Chúng sở hữu phần dây; hợp
+//!   đồng thì không. `lmstudio` mượn nguyên dây hội thoại của `openai` và chỉ thêm nửa
+//!   kho mô hình, vì đó đúng là chỗ LM Studio khác một máy chủ OpenAI-compatible bất kỳ.
 //! - [`seam`] — hai `ServiceKey`: nói chuyện với mô hình, và vòng đời mô hình cục bộ.
 //!
 //! Không dùng `async-openai`. Nửa quan trọng nhất của một ứng dụng chạy mô hình tại chỗ
@@ -21,6 +23,7 @@
 pub mod assembler;
 pub mod capabilities;
 pub mod error;
+pub mod lmstudio;
 pub mod message;
 pub mod model;
 pub mod ollama;
@@ -35,6 +38,7 @@ pub use capabilities::{Capabilities, CapabilitySource};
 pub use error::{LlmError, LlmErrorCode};
 pub use message::{ChatRequest, ContentBlock, Message, ToolCall, ToolCallId, ToolSchema};
 pub use model::{ModelDetails, ModelInfo, ModelState, PullProgress, RunningModel};
+pub use lmstudio::{LmStudioAdapter, LmStudioAdmin};
 pub use ollama::{OllamaAdapter, OllamaAdmin};
 pub use openai::{OpenAiAdapter, openai_base_url};
 pub use registry::{

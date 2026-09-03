@@ -14,6 +14,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use crate::error::{LlmError, LlmErrorCode};
+use crate::lmstudio::LmStudioAdapter;
 use crate::ollama::OllamaAdapter;
 use crate::openai::OpenAiAdapter;
 use crate::seam::{LlmAdapter, ModelAdmin};
@@ -23,7 +24,12 @@ use crate::seam::{LlmAdapter, ModelAdmin};
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Ollama,
-    /// Bất cứ thứ gì nói giao thức OpenAI: llama.cpp, vLLM, LM Studio, OpenAI thật.
+    /// LM Studio. Nói giao thức OpenAI ở phần hội thoại, nhưng có **kho mô hình riêng**
+    /// ở `/api/v0` — xem [`crate::lmstudio`]. Tách thành một loại riêng vì đó đúng là
+    /// khác biệt mà người dùng cảm thấy: cùng một máy chủ, một bên biết mô hình nào đang
+    /// nạp và làm được gì, một bên chỉ đọc được cái tên.
+    LmStudio,
+    /// Bất cứ thứ gì nói giao thức OpenAI: llama.cpp, vLLM, OpenAI thật.
     OpenAiCompatible,
 }
 
@@ -31,6 +37,7 @@ impl ProviderKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ollama => "ollama",
+            Self::LmStudio => "lmstudio",
             Self::OpenAiCompatible => "openai",
         }
     }
@@ -38,6 +45,7 @@ impl ProviderKind {
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_lowercase().as_str() {
             "ollama" => Some(Self::Ollama),
+            "lmstudio" | "lm_studio" | "lm-studio" | "lm studio" => Some(Self::LmStudio),
             "openai" | "openai_compatible" | "openai-compatible" => Some(Self::OpenAiCompatible),
             _ => None,
         }
@@ -191,6 +199,12 @@ impl AdapterRegistry {
             ProviderKind::Ollama => Arc::new(OllamaAdapter::new(
                 config.id.clone(),
                 &config.base_url,
+                self.http.clone(),
+            )),
+            ProviderKind::LmStudio => Arc::new(LmStudioAdapter::new(
+                config.id.clone(),
+                &config.base_url,
+                config.api_key.clone(),
                 self.http.clone(),
             )),
             ProviderKind::OpenAiCompatible => Arc::new(OpenAiAdapter::new(

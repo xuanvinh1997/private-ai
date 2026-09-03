@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!--
+    Nguồn duy nhất cho mọi icon hệ điều hành (.png/.icns/.ico/android/ios).
+
+    Trước đợt này icon hệ điều hành vẫn là biểu đồ cột xanh dương mà `tauri init` phát ra,
+    trong khi UI đã mang khiên xanh rêu. Người dùng gặp sản phẩm ở Dock và ở Start Menu
+    trước khi gặp nó trong cửa sổ, nên hai hình khác nhau ở hai chỗ đó không đọc ra là một
+    ứng dụng có bản sắc — nó đọc ra là một bản dựng thử ai đó quên thay icon.
+
+    **Đúng một path với `components/Brand.tsx` và favicon trong `ui/index.html`.** Ba nơi
+    này là ba lần cùng một dấu hiệu xuất hiện; sửa một mà quên hai nơi kia là cách chắc
+    chắn nhất để có ba logo.
+
+    Vì sao là nền bo góc đặc chứ không phải logo thả trên nền trắng: macOS và Windows đều
+    vẽ icon trên nền do người dùng chọn, nên một hình không có nền riêng sẽ mất viền khi
+    nền tối. Khối bo góc ~22% cạnh là tỉ lệ hai hệ đang dùng, và nó cho khiên một chỗ đứng
+    thay vì trôi lơ lửng.
+
+    Vì sao lệch tâm lên 2%: khiên nặng phần trên và nhọn phần dưới, canh giữa hình học sẽ
+    khiến mắt thấy nó tụt xuống. 2% là mức bù đủ để nó *trông* giữa.
+  -->
+  <defs>
+    <linearGradient id="nen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#176b59" />
+      <stop offset="1" stop-color="#0c4d3f" />
+    </linearGradient>
+    <!-- Vệt sáng góc trên: rất nhạt, chỉ đủ để khối không phẳng lì ở cỡ 512px trở lên;
+         ở cỡ 16px nó biến mất hoàn toàn và đó là chủ ý, cỡ đó chỉ còn cần bóng khiên. -->
+    <radialGradient id="loe" cx="0.3" cy="0.16" r="0.9">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.13" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+    </radialGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="225" ry="225" fill="url(#nen)" />
+  <rect width="1024" height="1024" rx="225" ry="225" fill="url(#loe)" />
+
+  <!-- `evenodd`: tia sáng là lỗ thủng, không phải hình màu thứ hai — nên nó luôn ăn đúng
+       gradient đứng sau, kể cả khi bảng màu nền đổi về sau. -->
+  <g transform="translate(105.651 87.344) scale(33.8624)">
+    <path
+      fill="#f3f6f4"
+      fill-rule="evenodd"
+      d="M12 2.5 4.5 5.4V11.5c0 4.5 3 8.6 7.5 9.9 4.5-1.3 7.5-5.4 7.5-9.9V5.4ZM12 6.8l1.15 3.05L16.2 11l-3.05 1.15L12 15.2l-1.15-3.05L7.8 11l3.05-1.15Z"
+    />
+  </g>
+</svg>

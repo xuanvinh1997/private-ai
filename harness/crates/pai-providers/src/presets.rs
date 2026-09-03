@@ -4,14 +4,21 @@
 //! của một chữ sai là một thông báo lỗi mạng không nói được nguyên nhân. Mỗi mục ở đây là
 //! một cặp URL + mô hình mặc định đã biết chắc đúng.
 //!
-//! **Chỉ có hai adapter, không phải mười.** Mọi mục dưới đây trừ Ollama đều nói giao thức
-//! OpenAI, kể cả Anthropic: họ chạy một tầng tương thích ngay trên `api.anthropic.com/v1`,
-//! nên `OpenAiAdapter` nói chuyện được với Claude mà không cần một bản cài đặt thứ ba —
-//! và không cần ta nuôi thêm một wire format nữa qua từng bản phát hành.
+//! **Chỉ có ba adapter, không phải mười.** Mọi mục dưới đây trừ Ollama và LM Studio đều
+//! nói giao thức OpenAI, kể cả Anthropic: họ chạy một tầng tương thích ngay trên
+//! `api.anthropic.com/v1`, nên `OpenAiAdapter` nói chuyện được với Claude mà không cần
+//! một bản cài đặt thứ ba — và không cần ta nuôi thêm một wire format nữa qua từng bản
+//! phát hành.
+//!
+//! LM Studio là adapter thứ ba, và nó **không** phải một wire format nữa: phần hội thoại
+//! của nó đúng là dây của OpenAI, dùng lại nguyên vẹn. Nó tách ra vì nửa còn lại — kho
+//! mô hình ở `/api/v0` — nói được điều mà `/v1/models` không nói được: mô hình nào đang
+//! nạp, mô hình nào gọi được tool, cửa sổ ngữ cảnh bao nhiêu.
 //!
 //! `base_url` viết đúng dạng mà [`pai_llm::openai_base_url`] mong đợi: đuôi `/v1` được
-//! giữ nguyên, thiếu thì nó tự thêm. Ollama là ngoại lệ — `OllamaAdapter` nhận **gốc máy
-//! chủ**, không phải `/api`.
+//! giữ nguyên, thiếu thì nó tự thêm. Ollama và LM Studio là ngoại lệ — hai adapter ấy
+//! nhận **gốc máy chủ** rồi tự nối đuôi, vì mỗi cái nói hai đường dẫn khác nhau trên
+//! cùng một host.
 
 use pai_llm::{ProviderConfig, ProviderKind};
 
@@ -73,8 +80,10 @@ pub const PRESETS: &[Preset] = &[
     Preset {
         id: "lmstudio",
         name: "LM Studio",
-        kind: ProviderKind::OpenAiCompatible,
-        base_url: "http://localhost:1234/v1",
+        kind: ProviderKind::LmStudio,
+        // Gốc máy chủ, không có `/v1`: `LmStudioAdapter` nói cả `/v1` lẫn `/api/v0` nên
+        // nó phải nhận gốc. Một cấu hình cũ còn đuôi `/v1` vẫn chạy — adapter cắt đuôi.
+        base_url: "http://localhost:1234",
         needs_key: false,
         on_device: true,
         default_model: None,

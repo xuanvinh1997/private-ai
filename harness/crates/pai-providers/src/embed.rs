@@ -27,12 +27,20 @@ pub const DEFAULT_EMBEDDING_MODEL_OLLAMA: &str = "nomic-embed-text";
 /// Mô hình nhúng gợi ý cho mọi máy chủ nói giao thức OpenAI.
 pub const DEFAULT_EMBEDDING_MODEL_OPENAI: &str = "text-embedding-3-small";
 
+/// Mô hình nhúng gợi ý cho LM Studio: tên trong kho của họ, không phải tên của OpenAI.
+pub const DEFAULT_EMBEDDING_MODEL_LMSTUDIO: &str = "text-embedding-nomic-embed-text-v1.5";
+
 /// Gợi ý theo loại provider. Chỉ là **gợi ý cho ô nhập**, cùng tinh thần với
 /// [`crate::presets::Preset::default_model`]: một máy chủ tự vận hành có thể chẳng có mô
 /// hình nào mang tên này.
 pub fn default_embedding_model(kind: ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Ollama => DEFAULT_EMBEDDING_MODEL_OLLAMA,
+        // LM Studio nhúng qua `/v1/embeddings` như mọi máy chủ OpenAI-compatible, nhưng
+        // gợi ý thì khác: kho của nó không có `text-embedding-3-small` — đó là mô hình
+        // của OpenAI — mà có bản GGUF của `nomic-embed-text`. Gợi ý sai còn tệ hơn không
+        // gợi ý: người dùng dán nó vào rồi ngồi đọc một lỗi 404 không nói được vì sao.
+        ProviderKind::LmStudio => DEFAULT_EMBEDDING_MODEL_LMSTUDIO,
         ProviderKind::OpenAiCompatible => DEFAULT_EMBEDDING_MODEL_OPENAI,
     }
 }
@@ -73,7 +81,10 @@ pub fn embedder_for(provider: &StoredProvider) -> Option<Arc<dyn Embedder>> {
     let root = embedding_root(&provider.config.base_url);
     Some(match provider.config.kind {
         ProviderKind::Ollama => Arc::new(OllamaEmbedder::new(root, model)),
-        ProviderKind::OpenAiCompatible => Arc::new(OpenAiEmbedder::new(
+        // LM Studio dùng chung bộ nhúng với nhánh OpenAI: `/v1/embeddings` của nó là
+        // đúng endpoint ấy, đúng hình dạng thân ấy. Khác biệt của LM Studio nằm ở kho mô
+        // hình, không nằm ở phép nhúng — nên ở đây không có gì phải viết thêm.
+        ProviderKind::LmStudio | ProviderKind::OpenAiCompatible => Arc::new(OpenAiEmbedder::new(
             root,
             model,
             provider.config.api_key.clone(),

@@ -1,5 +1,5 @@
 ---
-name: so-do-tu-duy
+name: mindmap
 title: Sơ đồ tư duy
 description: "Dùng khi cần rút một tài liệu dài thành cây ý phân cấp để nhìn hết một lượt: các chủ đề chính và các ý con của mỗi chủ đề, khi thứ tự và nhân quả không quan trọng bằng việc bao quát."
 keywords:
