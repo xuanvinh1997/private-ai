@@ -506,6 +506,31 @@ pub struct ScanProgress {
     pub total: u32,
 }
 
+/// Nguyên liệu để giao diện dựng gợi ý câu hỏi cho màn hình trống.
+///
+/// Chỉ **sự thật về dự án đang mở**, không một chữ nào của câu gợi ý. Ranh giới đó là có
+/// chủ ý: câu chữ tiếng Việt nằm cạnh những bộ gợi ý tĩnh trong `ui/src/lib/prompts.ts`, còn ở
+/// đây là thứ duy nhất lõi biết mà giao diện không biết — trong repo này có ký hiệu nào,
+/// thư mục nào, tài liệu nào. Trả về câu hoàn chỉnh từ Rust là để hai chỗ cùng viết một
+/// giọng, và một ngày nào đó chúng lệch nhau.
+///
+/// Rỗng cả ba trường là trạng thái **hợp lệ**, không phải lỗi: chưa mở dự án, chỉ mục
+/// chưa quét lần nào, hay thư viện chưa có tài liệu. Giao diện lùi về bộ gợi ý tĩnh.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptSeeds {
+    /// Ký hiệu nhiều quan hệ nhất, nhiều trước — cùng thứ tự `code.overview` dùng.
+    ///
+    /// Chỉ tên, không kèm đường dẫn: gợi ý là một con chip rộng vài chữ, và
+    /// `crates/pai-index/src/graph.rs:144 CentralSymbol` trong một con chip thì không đọc
+    /// được mà cũng không bấm được.
+    pub symbols: Vec<String>,
+    /// Thư mục nhiều ký hiệu nhất, nhiều trước.
+    pub directories: Vec<String>,
+    /// Tên tài liệu trong thư viện. Chỉ dự án tài liệu mới có.
+    pub documents: Vec<String>,
+}
+
 /// Một đoạn khớp, đủ để dựng thẻ trích dẫn.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -568,6 +593,39 @@ pub struct EmbeddingSetting {
     /// Tài liệu không rời khỏi máy này khi nhúng.
     pub on_device: bool,
     /// Câu tiếng Việt nói vì sao chưa dùng được, khi chưa dùng được.
+    pub reason: Option<String>,
+}
+
+/// Cấu hình xếp hạng lại.
+///
+/// # Vì sao nó không nằm trong sổ provider
+///
+/// Reranker mặc định **không phải một endpoint**: nó là một tệp `.onnx` tải từ
+/// HuggingFace và chạy trong tiến trình service. Không có base URL, không có khoá, không
+/// health check được bằng một request. Nhét nó vào bảng `providers` sẽ cho người dùng
+/// một ô "địa chỉ máy chủ" không có nghĩa gì.
+///
+/// Ngoại lệ là `backend: "http"` — khi ấy nó đúng là một endpoint, và `model` mang tên mô
+/// hình mà máy chủ ấy phục vụ.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RerankSetting {
+    /// Tắt thì truy hồi vẫn chạy — chỉ kém đi. Xem `reason`.
+    pub enabled: bool,
+    /// `onnx` chạy trong tiến trình service; `http` gọi ra một endpoint `/v1/rerank`.
+    pub backend: String,
+    /// Tên repo HuggingFace với `onnx`, hoặc tên mô hình với `http`.
+    pub model: String,
+    /// Lấy về bao nhiêu ứng viên để chấm lại.
+    ///
+    /// Đây là **nút chỉnh độ trễ**. Đo trên CPU với `bge-reranker-v2-m3`: khoảng 0,4 giây
+    /// mỗi đoạn, nên 30 ứng viên là hơn mười giây cho mỗi câu hỏi. Trên GPU thì con số ấy
+    /// nhỏ tới mức không cần nghĩ tới.
+    pub candidates: u32,
+    /// Giữ lại bao nhiêu sau khi chấm.
+    pub top_n: u32,
+    /// Câu tiếng Việt nói ra cái giá đang phải trả, khi có. Giao diện hiện nó cạnh công
+    /// tắc để người dùng biết tắt đi thì mất gì và bật lên thì chậm bao nhiêu.
     pub reason: Option<String>,
 }
 
@@ -774,4 +832,18 @@ pub struct HookRow {
     pub timeout_secs: Option<u64>,
     /// Lớp cấu hình đã khai nó — bản dựng sẵn hay tệp vá của người dùng.
     pub origin: String,
+}
+
+/// Một mục trong cây thư mục của dự án.
+///
+/// Không mang kích thước hay ngày sửa: cây này để **đi tới một tệp**, không phải để kiểm
+/// kê đĩa, và mỗi cột thêm vào là một cột phải cắt bớt trong một bảng rộng 300px.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirEntryView {
+    pub name: String,
+    /// Đường dẫn tuyệt đối. Giao diện gửi lại nguyên văn khi mở một thư mục con, nên nó
+    /// không được là đường dẫn tương đối với bất cứ cái gì.
+    pub path: String,
+    pub is_dir: bool,
 }

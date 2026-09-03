@@ -32,6 +32,8 @@ phải tự dựng — nhưng nó **không** phải đường mà mô hình đ�
 from __future__ import annotations
 
 import logging
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -281,6 +283,44 @@ def build_server(service: Service | None = None) -> MCPServer:
     return server
 
 
+def warm(service: Service) -> None:
+    """Nạp sẵn reranker ở nền, để lần tìm đầu tiên không phải chờ.
+
+    # Vì sao ở nền chứ không trước khi phục vụ
+
+    Dựng phiên ONNX cho ``bge-reranker-v2-m3`` mất vài giây, và lần đầu trên một máy mới
+    còn phải tải 2,27 GB. Làm việc đó **trước** khi bắt tay MCP nghĩa là mỗi lần mở một dự
+    án tài liệu, cửa sổ đứng im chừng ấy lâu — kể cả khi người dùng chỉ định trò chuyện.
+
+    Ở nền thì bắt tay xong ngay, và model gần như luôn sẵn sàng trước câu hỏi đầu tiên vì
+    người dùng còn phải gõ nó ra. Nếu họ gõ nhanh hơn, :func:`rerank` vẫn chạy đúng — nó
+    chờ cùng một khoá, chỉ là chờ.
+
+    Thread thường chứ không phải asyncio: phần nặng của ONNX Runtime và của
+    ``huggingface_hub`` đều là I/O và CPU đồng bộ, và đặt nó lên vòng lặp sự kiện là chặn
+    đúng vòng lặp đang phục vụ MCP.
+    """
+    started = time.monotonic()
+    try:
+        reranker = service.reranker()
+    except Exception as err:
+        log.warning("không dựng được reranker: %s", err)
+        return
+    if reranker is None:
+        log.info("xếp hạng lại đang tắt — bỏ qua bước nạp sẵn")
+        return
+    try:
+        # Chấm một cặp thật để ép `_ensure()` chạy: dựng phiên, nạp tokenizer, và tải
+        # model nếu chưa có. Không có bước này thì `build()` chỉ trả về một vỏ rỗng.
+        reranker.score("khởi động", ["một đoạn văn bản để nạp sẵn mô hình"])
+    except Exception as err:
+        # Nuốt: xếp hạng lại là bước làm tốt hơn. Hỏng ở đây thì truy hồi vẫn chạy, và
+        # `rerank()` sẽ log lại lý do ở lần tìm đầu tiên.
+        log.warning("nạp sẵn reranker không xong: %s", err)
+        return
+    log.info("reranker sẵn sàng sau %.1fs: %s", time.monotonic() - started, reranker.id)
+
+
 def run() -> None:
     """Điểm vào của ``pai-rag serve``."""
     # Log ra **stderr**: stdout là đường JSON-RPC của MCP, và một dòng log lạc vào đó sẽ
@@ -290,4 +330,8 @@ def run() -> None:
         format="%(levelname)s %(name)s: %(message)s",
         handlers=[logging.StreamHandler()],
     )
-    build_server().run(transport="stdio")
+    service = Service()
+    # `daemon=True`: một lần tải model đang dở không được giữ tiến trình sống sau khi
+    # client đã ngắt. Người dùng đóng dự án là tiến trình phải đi theo.
+    threading.Thread(target=warm, args=(service,), name="rerank-warmup", daemon=True).start()
+    build_server(service).run(transport="stdio")

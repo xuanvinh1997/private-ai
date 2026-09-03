@@ -220,8 +220,8 @@ export default function ProviderForm(props: {
         props.provider !== null
           ? `Sửa ${props.provider.name}`
           : props.preset !== null && props.preset !== undefined
-            ? `Nối tới ${props.preset.name}`
-            : "Tự khai báo nhà cung cấp"
+            ? `Kết nối tới ${props.preset.name}`
+            : "Khai báo máy chủ khác"
       }
       desc={props.preset?.hint ?? "Base URL quyết định dữ liệu đi tới đâu."}
       onClose={props.onClose}
@@ -363,14 +363,14 @@ export default function ProviderForm(props: {
           một thứ đang hiện trên màn hình. */}
       <ModelField
         role="embedding"
-        label="Mô hình nhúng của provider này"
+        label="Mô hình nhúng của nhà cung cấp này"
         showLabel
         models={probe()?.models ?? []}
         value={embeddingModel()}
         onInput={setEmbeddingModel}
         placeholder={suggestedEmbeddingModel(kind())}
-        hint="Để trống được; chỉ dùng khi provider giữ vai nhúng."
-        more="Chỉ có tác dụng nếu provider này được giao vai nhúng ở mục Mô hình nhúng. Để trống cũng được."
+        hint="Chỉ dùng khi nhà cung cấp này nhúng tài liệu."
+        more="Chỉ có tác dụng nếu nhà cung cấp này được chọn để nhúng tài liệu ở mục bên dưới. Để trống cũng được."
       />
 
       {/* Chỉ khi **sửa**. Không ai thêm một provider để nó nằm im, nên ở lối thêm mới thì
@@ -384,7 +384,7 @@ export default function ProviderForm(props: {
             onChange={(event) => setEnabled(event.currentTarget.checked)}
             class="size-4 accent-[var(--accent)]"
           />
-          Bật provider này
+          Bật nhà cung cấp này
           <span class="text-2xs text-faint">Tắt thì vẫn trong danh sách nhưng không được gọi.</span>
         </label>
       </Show>
@@ -482,7 +482,7 @@ function KeySection(props: {
             Lưu biểu mẫu này sẽ <b>giữ nguyên</b> khoá đã lưu.
             <InfoDot
               label="Khoá được giữ ở đâu"
-              text="Khoá đang nằm trong lõi và không được gửi ngược ra màn hình. Lưu biểu mẫu này sẽ giữ nguyên nó."
+              text="Khoá được lưu trong máy và không hiện lại ra màn hình. Lưu biểu mẫu này sẽ giữ nguyên nó."
             />
           </span>
           <Button label="Thay khoá" variant="outline" onClick={() => props.onMode("set")} />
@@ -518,9 +518,9 @@ function KeySection(props: {
             hint={
               props.hadKey
                 ? "Để trống là giữ khoá cũ, không phải xoá khoá."
-                : "Khoá đi thẳng vào lõi, không đọc ngược ra được."
+                : "Khoá được lưu trong máy, không đọc ngược ra được."
             }
-            more="Lõi không bao giờ trả khoá về giao diện, nên ô này chỉ nhận khoá mới chứ không hiện lại khoá cũ. Để trống rồi bấm Lưu thì khoá cũ được giữ nguyên — đây không phải cách xoá khoá."
+            more="Khoá đã lưu không bao giờ hiện lại ra màn hình, nên ô này chỉ nhận khoá mới. Để trống rồi bấm Lưu thì khoá cũ được giữ nguyên — đây không phải cách xoá khoá."
           />
           <Show when={props.hadKey}>
             <div class="flex gap-sm">
@@ -545,7 +545,7 @@ function KeySection(props: {
  * "Thử kết nối" rồi không nhìn thấy gì nếu nó chỉ được vẽ ra một cách im lặng.
  */
 function ProbeResult(props: { busy: boolean; probe: ProviderProbe | null; error: string | null }) {
-  // "Nối được nhưng không có mô hình nào" đi qua `ok: true`, nhưng với một coding agent
+  // "Kết nối được nhưng không có mô hình nào" đi qua `ok: true`, nhưng với một coding agent
   // thì nó chưa dùng được — nên nó mang sắc cảnh báo, không mang sắc thành công.
   const tone = () => {
     if (props.error !== null) return "danger" as const;
@@ -628,8 +628,8 @@ function ModelSection(props: {
         models={props.models}
         value={props.value ?? ""}
         onInput={(value) => props.onPick(value.trim() === "" ? null : value)}
-        placeholder="gõ tên mô hình, hoặc thử kết nối để chọn"
-        more="Để trống cũng lưu được — nhưng provider chưa chọn mô hình thì chưa trò chuyện được."
+        placeholder="nhập tên mô hình, hoặc thử kết nối để chọn"
+        more="Lưu được cả khi để trống, nhưng chưa chọn mô hình thì chưa trò chuyện được."
       />
 
       {/* Một dòng, ba trạng thái, theo thứ tự thời gian: đang hỏi → hỏi xong mà rỗng →
@@ -649,14 +649,14 @@ function ModelSection(props: {
               Máy chủ chưa khai mô hình nào để chọn.
               <InfoDot
                 label="Không có mô hình nào thì làm gì"
-                text="Máy chủ chưa khai mô hình nào, nên không có gì để chọn. Gõ thẳng tên mô hình vào ô trên nếu bạn biết máy chủ này nhận tên gì."
+                text="Máy chủ không trả về mô hình nào, nên không có gì để chọn. Nhập thẳng tên mô hình vào ô trên nếu bạn biết máy chủ này nhận tên gì."
               />
             </p>
           </Show>
         }
       >
         <p class="m-0 text-2xs text-muted" role="status" aria-busy="true">
-          Đang hỏi máy chủ xem có những mô hình nào…
+          Đang lấy danh sách mô hình…
         </p>
       </Show>
     </div>

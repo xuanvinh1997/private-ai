@@ -995,7 +995,7 @@ requires-dist = [
     { name = "neo4j", specifier = ">=5.26" },
     { name = "numpy", specifier = ">=2.1" },
     { name = "onnxruntime", specifier = ">=1.20" },
-    { name = "onnxruntime-gpu", marker = "extra == 'gpu'", specifier = ">=1.20" },
+    { name = "onnxruntime-gpu", marker = "extra == 'gpu'", specifier = ">=1.29" },
     { name = "pydantic", specifier = ">=2.9" },
     { name = "pyinstaller", marker = "extra == 'package'", specifier = ">=6.11" },
     { name = "pypdf", specifier = ">=5.1" },

@@ -15,6 +15,7 @@ import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
 import ConfirmDialog from "./ConfirmDialog";
 import EmbeddingView from "./EmbeddingView";
+import RerankView from "./RerankView";
 import { Banner, Button, InfoDot, Row, RowGroup, SectionHead, Select, Toggle } from "../settings/FormKit";
 import ProviderForm from "./ProviderForm";
 
@@ -139,8 +140,8 @@ export default function ProvidersView() {
       <SectionHead
         title="Nhà cung cấp mô hình"
         icon="server"
-        desc="Mỗi lúc chỉ một provider giữ vai hội thoại."
-        more="Một provider giữ vai hội thoại tại một thời điểm. Vai nhúng chọn riêng ở mục Mô hình nhúng."
+        desc="Mỗi lúc chỉ một nhà cung cấp được dùng để trò chuyện."
+        more="Mỗi lúc chỉ một nhà cung cấp được dùng để trò chuyện. Nhà cung cấp nhúng tài liệu chọn riêng ở mục bên dưới."
       />
 
       <Show when={error()}>
@@ -166,7 +167,7 @@ export default function ProvidersView() {
                   busy={busy()}
                   models={models() ?? []}
                   modelsLoading={models.loading}
-                  onActivate={() => void act("Không đặt được provider hoạt động", () => setActiveProvider(entry().id))}
+                  onActivate={() => void act("Không đổi được nhà cung cấp đang dùng", () => setActiveProvider(entry().id))}
                   onToggle={(next) =>
                     void act("Không đổi được trạng thái", () =>
                       saveProvider({ ...inputOf(entry()), enabled: next }).then(() => undefined),
@@ -215,6 +216,7 @@ export default function ProvidersView() {
         <Show when={providers().length > 0}>
           <div class="border-t border-line pt-2xl">
             <EmbeddingView reloadKey={stamp()} />
+            <RerankView />
           </div>
         </Show>
       </Show>
@@ -237,12 +239,12 @@ export default function ProvidersView() {
           <ConfirmDialog
             title={`Xoá ${target.name}?`}
             body="Xoá vĩnh viễn cấu hình và khoá API khỏi máy."
-            more="Cấu hình và khoá API của provider này bị xoá khỏi máy. Thao tác không hoàn tác được."
+            more="Cấu hình và khoá API của nhà cung cấp này bị xoá khỏi máy. Thao tác không hoàn tác được."
             detail={target.baseUrl}
-            confirmLabel="Xoá provider"
+            confirmLabel="Xoá nhà cung cấp"
             busy={busy()}
             onConfirm={() =>
-              void act("Không xoá được provider", async () => {
+              void act("Không xoá được nhà cung cấp", async () => {
                 await removeProvider(target.id);
                 setSheet({ kind: "none" });
               })
@@ -312,7 +314,7 @@ function Catalog(props: {
               đã thêm
             </span>
           </Show>
-          <Button label="Nối" variant="outline" icon="plus" onClick={() => props.onPick(preset)} />
+          <Button label="Kết nối" variant="outline" icon="plus" onClick={() => props.onPick(preset)} />
         </>
       )}
     />
@@ -324,7 +326,7 @@ function Catalog(props: {
         {props.empty ? "Chọn một nhà cung cấp để bắt đầu" : "Thêm nhà cung cấp"}
         <InfoDot
           label="Về danh mục nhà cung cấp"
-          text="Bốn mục đầu chạy ngay trên máy này: mã nguồn và câu hỏi của bạn không đi đâu cả. Các dịch vụ từ xa nằm sau nút xem thêm — chúng nhanh hơn và mạnh hơn, nhưng mọi thứ bạn gửi đều rời khỏi máy. Máy chủ không có trong danh mục thì dùng mục tự khai báo."
+          text="Những mục đầu chạy ngay trên máy này: mã nguồn và câu hỏi của bạn không đi đâu cả. Các dịch vụ từ xa nằm sau nút xem thêm — chúng nhanh và mạnh hơn, nhưng mọi thứ bạn gửi đều rời khỏi máy. Máy chủ không có trong danh sách thì dùng mục Máy chủ khác."
         />
       </h3>
 
@@ -335,9 +337,9 @@ function Catalog(props: {
             thoại: `llama-server`, một cổng nội bộ, một máy chủ tự dựng — đó là những thứ
             người dùng của ứng dụng này thật sự chạy, chứ không phải trường hợp ngoại lệ. */}
         <Row
-          label="Tự khai báo"
+          label="Máy chủ khác"
           icon="sparkle"
-          more="Dùng cho máy chủ không có trong danh mục: llama.cpp tự dựng, một cổng trung chuyển nội bộ, hay một dịch vụ tương thích OpenAI khác. Bạn tự điền tên, loại API và địa chỉ."
+          more="Dùng cho máy chủ không có trong danh sách: llama.cpp tự dựng, một cổng trung chuyển nội bộ, hay một dịch vụ tương thích OpenAI khác. Bạn tự điền tên, loại API và địa chỉ."
           control={() => (
             <>
               <span class="rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-faint">
@@ -381,7 +383,7 @@ function ActiveNotice(props: { provider: Provider | null; model: ModelChoice | n
         <Banner
           tone="warn"
           icon="warn"
-          title="Chưa provider nào giữ vai hội thoại"
+          title="Chưa chọn nhà cung cấp để trò chuyện"
           more={'Trợ lý chưa gọi được mô hình nào. Bấm "Dùng để trò chuyện" ở một hàng bên dưới.'}
         >
           Bấm "Dùng để trò chuyện" ở một hàng bên dưới.
@@ -389,7 +391,7 @@ function ActiveNotice(props: { provider: Provider | null; model: ModelChoice | n
       </Show>
 
       <Show when={props.provider !== null && props.provider?.enabled === false}>
-        <Banner tone="warn" icon="warn" title="Provider giữ vai hội thoại lại đang bị tắt">
+        <Banner tone="warn" icon="warn" title="Nhà cung cấp đang dùng để trò chuyện lại bị tắt">
           Bật nó lên, hoặc giao vai cho provider khác.
         </Banner>
       </Show>
@@ -540,7 +542,7 @@ function ProviderRow(props: {
             <Show when={props.provider.hasKey}>
               <span
                 class="inline-flex shrink-0 items-center rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-muted"
-                title="Đã lưu khoá API cho provider này"
+                title="Đã lưu khoá API cho nhà cung cấp này"
                 aria-label="Đã lưu khoá API"
               >
                 <Icon name="key" size={11} />
@@ -658,7 +660,7 @@ function ModelPicker(props: {
         when={!props.loading}
         fallback={
           <span class="text-2xs text-muted" role="status" aria-busy="true">
-            Đang hỏi máy chủ xem có những mô hình nào…
+            Đang lấy danh sách mô hình…
           </span>
         }
       >

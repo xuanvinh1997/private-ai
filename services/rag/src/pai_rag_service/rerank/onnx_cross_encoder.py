@@ -51,10 +51,20 @@ class OnnxReranker:
         self._session: Any = None
         self._tokenizer: Any = None
         self._inputs: set[str] = set()
+        self._provider: str = ""
 
     @property
     def id(self) -> str:
         return f"onnx:{self.config.model}"
+
+    @property
+    def provider(self) -> str:
+        """Execution provider thật sự đang chạy. Rỗng khi chưa nạp.
+
+        Là thứ **thật sự** dùng, không phải thứ đã xin — xem
+        :meth:`_canh_bao_neu_tut_ve_cpu`.
+        """
+        return self._provider
 
     # -- nạp ---------------------------------------------------------------------------
 
@@ -69,6 +79,22 @@ class OnnxReranker:
             import onnxruntime
             from huggingface_hub import hf_hub_download
             from tokenizers import Tokenizer
+
+            # Nạp DLL của CUDA từ các gói `nvidia-*-cu12` trong site-packages.
+            #
+            # Không có bước này thì `onnxruntime_providers_cuda.dll` không tìm thấy
+            # `cublasLt64_12.dll` và ONNX Runtime **lùi về CPU trong im lặng** — GPU vẫn
+            # rảnh, tìm kiếm vẫn chạy, chỉ là chậm gấp mấy chục lần. Thư viện CUDA của
+            # gói pip không nằm trên PATH của hệ thống, nên phải chỉ đường tường minh.
+            #
+            # `hasattr` vì hàm này chỉ có từ onnxruntime 1.21; bản CPU cũ hơn vẫn chạy
+            # được, chỉ là không có gì để nạp.
+            if hasattr(onnxruntime, "preload_dlls"):
+                try:
+                    onnxruntime.preload_dlls()
+                except Exception as err:
+                    # Không chặn: thiếu CUDA thì phiên vẫn dựng được trên CPU.
+                    log.debug("không nạp sẵn được DLL của CUDA: %s", err)
 
             repo = self.config.model
             try:
@@ -113,12 +139,47 @@ class OnnxReranker:
                     f"ONNX Runtime không dựng được phiên cho `{repo}`: {err}"
                 ) from err
             self._inputs = {item.name for item in self._session.get_inputs()}
+            self._provider = self._session.get_providers()[0]
             log.info(
                 "reranker sẵn sàng: %s (%s), đầu vào %s",
                 repo,
-                self._session.get_providers()[0],
+                self._provider,
                 sorted(self._inputs),
             )
+            self._canh_bao_neu_tut_ve_cpu(available, providers)
+
+    def _canh_bao_neu_tut_ve_cpu(self, available: list[str], asked: list[str]) -> None:
+        """Nói to khi phiên tụt về CPU dù CUDA có trong danh sách.
+
+        # Vì sao đây là một cảnh báo chứ không phải một dòng debug
+
+        ONNX Runtime **lùi về CPU trong im lặng** khi provider CUDA không nạp được — DLL
+        thiếu, sai đời CUDA, driver cũ. Phiên vẫn dựng, kết quả vẫn đúng, và không có gì
+        báo lỗi.
+
+        Cái mất là tốc độ, và nó lớn tới mức đổi hẳn tính dùng được: đo trên máy thật với
+        `bge-reranker-v2-m3` (XLM-RoBERTa large, 568M tham số), CPU chấm khoảng **0,4 giây
+        mỗi đoạn** — 30 ứng viên là hơn mười giây cho mỗi câu hỏi. Người dùng chỉ thấy tìm
+        kiếm chậm và không có cách nào đoán ra vì sao.
+        """
+        if self._provider != "CPUExecutionProvider":
+            return
+        if "CUDAExecutionProvider" not in available:
+            # Bản `onnxruntime` CPU. Đây là lựa chọn, không phải sự cố — nhưng vẫn nói ra
+            # cái giá, vì nó quyết định `candidates` nên đặt bao nhiêu.
+            log.info(
+                "reranker chạy trên CPU (~0,4s mỗi đoạn). Cài extra `gpu` và CUDA khớp "
+                "đời với onnxruntime để nhanh hơn nhiều lần."
+            )
+            return
+        log.warning(
+            "reranker TỤT VỀ CPU dù đã xin %s. ONNX Runtime lùi về CPU trong im lặng khi "
+            "thư viện CUDA không nạp được — thường là sai đời CUDA hoặc driver cũ; dòng "
+            "chẩn đoán của nó nằm ngay phía trên. Hậu quả: mỗi đoạn mất ~0,4s, nên %d ứng "
+            "viên là hơn mười giây cho mỗi câu hỏi.",
+            asked,
+            self.config.candidates,
+        )
 
     def _fetch_external_data(self, repo: str) -> None:
         """Lấy tệp trọng số ngoài, nếu repo có."""

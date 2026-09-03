@@ -1,7 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "./agent";
-import type { CloneProgress, Project, ProjectKind } from "./protocol";
+import type { CloneProgress, DirEntry, Project, ProjectKind } from "./protocol";
 
 /**
  * Lệnh dự án và lệnh clone.
@@ -15,6 +15,27 @@ import type { CloneProgress, Project, ProjectKind } from "./protocol";
  *     lúc người dùng vừa bấm một cú và đang chờ; im lặng ở đó không phân biệt được với
  *     "đang chậm".
  */
+
+/**
+ * Một tầng của cây thư mục dự án.
+ *
+ * **Một tầng, không đệ quy.** Bung một nhánh là một lời gọi; nhánh chưa bung thì chưa tốn
+ * gì — nếu không thì mở bảng dự án là đọc cả `node_modules` cho một người chỉ định xem
+ * thư mục `src`.
+ *
+ * Nuốt lỗi và trả rỗng: nó chạy khi người dùng bấm vào một hàng, và cách hỏng thường gặp
+ * nhất là thư mục vừa bị xoá hay không có quyền đọc — cả hai đều đọc đúng thành "nhánh
+ * này rỗng", chứ không đáng một hộp thoại chắn ngang.
+ */
+export async function listDir(path: string): Promise<DirEntry[]> {
+  if (!inTauri()) return [];
+  try {
+    return await invoke<DirEntry[]>("list_dir", { path });
+  } catch (err) {
+    console.error("không đọc được thư mục", path, err);
+    return [];
+  }
+}
 
 export async function listProjects(): Promise<Project[]> {
   if (!inTauri()) return [];

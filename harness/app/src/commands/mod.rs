@@ -12,7 +12,9 @@
 pub mod attach;
 pub mod complete;
 pub mod docs;
+pub mod rerank;
 pub mod mcp;
 pub mod projects;
 pub mod providers;
+pub mod suggest;
 pub mod system;

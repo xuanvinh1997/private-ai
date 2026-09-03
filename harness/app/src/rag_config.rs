@@ -73,6 +73,36 @@ impl RagConfigFile {
         &self.path
     }
 
+    /// Mục `rerank` đang nằm trong tệp, nếu người dùng đã đặt.
+    ///
+    /// `None` nghĩa là **chưa ai chạm vào** — và khi ấy service dùng mặc định của chính
+    /// nó. Đó là có chủ ý: mặc định hợp lý là chuyện của tầng RAG, không phải của một ứng
+    /// dụng desktop, và chép chúng lên đây là hai bộ số phải giữ khớp bằng tay.
+    pub fn rerank(&self) -> Option<Value> {
+        let raw = std::fs::read_to_string(&self.path).ok()?;
+        let parsed: Value = serde_json::from_str(&raw).ok()?;
+        parsed.get("rerank").cloned().filter(|found| found.is_object())
+    }
+
+    /// Ghi lại mục `rerank`, giữ nguyên mọi thứ khác.
+    ///
+    /// Đọc–sửa–ghi thay vì dựng lại cả tệp: phần còn lại suy từ kho provider, mà lúc này
+    /// ta không cầm kho ấy. Dựng lại từ một danh sách rỗng sẽ xoá sạch cấu hình provider
+    /// cho tới lần áp lại kế tiếp.
+    pub fn write_rerank(&self, rerank: Value) -> std::io::Result<()> {
+        let mut root: Value = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|_| json!({})),
+            // Chưa có tệp là chuyện bình thường lúc mới cài: người dùng có thể mở màn hình
+            // cài đặt trước khi bất cứ provider nào được áp.
+            Err(_) => json!({}),
+        };
+        if !root.is_object() {
+            root = json!({});
+        }
+        root["rerank"] = rerank;
+        self.atomic(&serde_json::to_vec_pretty(&root)?)
+    }
+
     /// Ghi lại tệp từ trạng thái provider hiện tại.
     ///
     /// Nuốt lỗi ghi thành một dòng log chứ không trả `Result` lên: chỗ gọi là đường áp
@@ -89,18 +119,38 @@ impl RagConfigFile {
         providers: &[StoredProvider],
         project: Option<Project>,
     ) -> std::io::Result<()> {
-        let body = serde_json::to_vec_pretty(&self.build(providers, project))?;
+        self.atomic(&serde_json::to_vec_pretty(&self.build(providers, project))?)
+    }
+
+    /// Ghi cả tệp bằng một phép đổi tên.
+    ///
+    /// Service soi `mtime` và có thể đọc đúng lúc ta đang ghi. Một lần đọc trúng nửa tệp
+    /// là một lỗi JSON khó hiểu ở phía bên kia, và nó xảy ra đúng vào lúc người dùng vừa
+    /// đổi một ô cài đặt — tức là lúc họ ít ngờ nhất.
+    fn atomic(&self, body: &[u8]) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        // Ghi ra tệp tạm rồi đổi tên: service soi `mtime` và có thể đọc đúng lúc ta đang
-        // ghi. Một lần đọc trúng nửa tệp là một lỗi JSON khó hiểu ở phía bên kia.
         let temp = self.path.with_extension("json.tmp");
         std::fs::write(&temp, body)?;
         std::fs::rename(&temp, &self.path)
     }
 
     fn build(&self, providers: &[StoredProvider], project: Option<Project>) -> Value {
+        let mut root = self.build_inner(providers, project);
+        // Giữ nguyên lựa chọn của người dùng qua mỗi lần ghi lại. Thiếu bước này thì công
+        // tắc xếp hạng lại tự bật lại mỗi khi họ đổi một provider — một cài đặt không ở
+        // yên là một cài đặt người dùng thôi không dùng nữa.
+        //
+        // Chèn khi **có**, không phải chèn `null`: vắng khoá là cách nói "chưa ai đặt,
+        // dùng mặc định của service", còn `null` là một giá trị sai kiểu mà service từ chối.
+        if let Some(rerank) = self.rerank() {
+            root["rerank"] = rerank;
+        }
+        root
+    }
+
+    fn build_inner(&self, providers: &[StoredProvider], project: Option<Project>) -> Value {
         let env = self.deploy_env();
         let get = |key: &str, fallback: &str| -> String {
             env.get(key).cloned().unwrap_or_else(|| fallback.to_string())
@@ -110,7 +160,7 @@ impl RagConfigFile {
             Some(Project { id, name, root }) => json!([{
                 "id": id,
                 "name": name,
-                "root": root.display().to_string(),
+                "root": strip_verbatim(root).display().to_string(),
             }]),
             None => json!([]),
         };
@@ -136,9 +186,6 @@ impl RagConfigFile {
                 "user": get("NEO4J_USER", "neo4j"),
                 "password": get("NEO4J_PASSWORD", ""),
             },
-            // Rerank và OCR để service tự quyết bằng mặc định của nó. Chúng không phải
-            // lựa chọn về *provider*, nên nhét chúng vào đây là đưa một quyết định của
-            // tầng RAG lên một tầng không biết gì về nó.
         })
     }
 
@@ -174,13 +221,36 @@ impl RagConfigFile {
 /// một số công cụ xử lý không đúng.
 fn absolute(path: &Path) -> PathBuf {
     if path.is_absolute() {
-        return path.to_path_buf();
+        return strip_verbatim(path);
     }
     match std::env::current_dir() {
-        Ok(cwd) => cwd.join(path),
+        Ok(cwd) => strip_verbatim(&cwd.join(path)),
         // Không đọc được thư mục hiện hành thì đường dẫn tương đối vẫn hơn không có gì:
         // lỗi phía service sẽ in ra chính nó, và đó là manh mối cần thiết.
         Err(_) => path.to_path_buf(),
+    }
+}
+
+/// Bỏ tiền tố đường dẫn "verbatim" của Windows.
+///
+/// `Path::canonicalize` trả về dạng ấy, và kho dự án dùng nó — nên đường dẫn đi qua đây
+/// thường mang tiền tố. Nó **chạy được** ở cả hai phía, nhưng nó lọt tới tận bảng tài
+/// liệu và dòng trích dẫn, nơi người dùng đọc một đường dẫn có bốn ký tự lạ ở đầu và
+/// không nhận ra thư mục của chính mình.
+///
+/// Cái mất là hỗ trợ đường dẫn dài hơn 260 ký tự trên những bản Windows chưa bật
+/// `LongPathsEnabled`. Với một thư viện tài liệu thì đó là đánh đổi đúng chiều: đường dẫn
+/// dài như vậy gần như không có, còn một đường dẫn không đọc được thì ở ngay trước mắt.
+fn strip_verbatim(path: &Path) -> PathBuf {
+    let text = path.to_string_lossy();
+    // Dạng UNC phải xử lý trước: nó cũng bắt đầu bằng cùng bốn ký tự ấy, và cắt theo
+    // nhánh dưới sẽ biến `\\server\share` thành `UNC\server\share`.
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return PathBuf::from(format!(r"\\{rest}"));
+    }
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => PathBuf::from(rest),
+        None => path.to_path_buf(),
     }
 }
 

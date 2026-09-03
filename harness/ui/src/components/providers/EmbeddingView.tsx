@@ -250,7 +250,7 @@ export default function EmbeddingView(props: {
   return (
     <div class="flex flex-col gap-2xl">
       <SectionHead
-        title="Máy chủ giữ vai nhúng"
+        title="Embedding"
         icon="graph"
         desc="Biến tài liệu thành vector để tìm theo ý nghĩa."
         more="Mô hình biến tài liệu thành vector để tìm theo ý nghĩa. Nó tách hẳn khỏi mô hình trò chuyện, và chọn riêng ở đây."
@@ -270,10 +270,10 @@ export default function EmbeddingView(props: {
           fallback={
             <div class="rounded-card border border-dashed border-line bg-surface-soft px-(--card-pad-x) py-2xl">
               <p class="m-0 flex max-w-[56ch] items-center gap-2xs text-xs text-muted">
-                Chưa có provider nào để giao vai nhúng.
+                Chưa có nhà cung cấp nào để nhúng tài liệu.
                 <InfoDot
-                  label="Thêm provider ở đâu"
-                  text={'Thêm một provider ở mục "Nhà cung cấp mô hình" trước — một cái chạy tại chỗ là đủ, và nó giữ tài liệu trong máy này.'}
+                  label="Thêm nhà cung cấp ở đâu"
+                  text={'Thêm một nhà cung cấp ở mục trên trước — một cái chạy tại chỗ là đủ, và nó giữ tài liệu trong máy này.'}
                 />
               </p>
             </div>
@@ -283,13 +283,13 @@ export default function EmbeddingView(props: {
 
           <RowGroup>
             <Row
-              label="Provider nhúng"
+              label="Nhà cung cấp"
               icon="upload"
               desc="Nơi toàn văn tài liệu được gửi tới."
               more="Nơi toàn văn tài liệu được gửi tới để biến thành vector."
               control={() => (
                 <Select
-                  label="Provider dùng để nhúng tài liệu"
+                  label="Nhà cung cấp dùng để nhúng tài liệu"
                   value={providerId()}
                   options={options()}
                   disabled={busy()}
@@ -304,8 +304,8 @@ export default function EmbeddingView(props: {
             <Row
               label="Mô hình nhúng"
               icon="model"
-              desc="Lấy từ chính máy chủ đã chọn."
-              more="Danh sách hỏi thẳng máy chủ đã chọn, mô hình nhúng xếp lên trước. Máy chủ không trả lời được thì ô này thành ô gõ tay — cấu hình vẫn đặt được, chỉ là không còn ai gợi ý."
+              desc="Lấy thẳng từ máy chủ đã chọn."
+              more="Danh sách lấy thẳng từ máy chủ đã chọn, mô hình nhúng xếp lên trước. Máy chủ không trả lời thì ô này thành ô nhập tay — vẫn đặt được, chỉ là không còn gợi ý."
               control={() => (
                 <div class="w-[280px] max-w-full">
                   <ModelField
@@ -330,10 +330,10 @@ export default function EmbeddingView(props: {
               label="Thử nhúng một câu"
               icon="bolt"
               desc="Gửi thật một câu đi và đo vector nhận về."
-              more="Phép thử này gửi thật một câu đi và báo lại số chiều của vector nhận về. Danh sách ở ô trên mới chỉ là cái máy chủ tự khai — chỉ khi một câu đi qua và một vector quay về thì mới biết chắc mô hình này nhúng được."
+              more="Phép thử này gửi thật một câu đi và báo lại số chiều của vector nhận về. Danh sách ở ô trên mới chỉ là những gì máy chủ trả về — chỉ khi một câu đi qua và một vector quay về thì mới chắc mô hình này nhúng được."
               control={() => (
                 <Button
-                  label={probing() ? "Đang nhúng thử…" : "Thử ngay"}
+                  label={probing() ? "Đang thử…" : "Thử ngay"}
                   variant="outline"
                   icon="plug"
                   busy={probing()}
@@ -352,7 +352,7 @@ export default function EmbeddingView(props: {
               <span class="mr-auto text-2xs text-muted">
                 {needsConfirm()
                   ? "Lưu thay đổi sẽ nhúng lại toàn bộ thư viện."
-                  : "Chưa có vector nào, nên không phải nhúng lại gì."}
+                  : "Chưa có vector nào nên không phải nhúng lại."}
               </span>
             </Show>
             <Button
@@ -372,8 +372,8 @@ export default function EmbeddingView(props: {
       <Show when={confirming()}>
         <ConfirmDialog
           title="Nhúng lại toàn bộ thư viện?"
-          body="Lõi bỏ vector cũ, nhúng lại từng tài liệu."
-          more="Đổi mô hình nhúng làm lõi bỏ hết vector cũ và nhúng lại từng tài liệu bằng mô hình mới. Bắt buộc phải thế: vector của hai mô hình nằm ở hai không gian khác nhau, và đem so với nhau thì ra một con số vô nghĩa trông y hệt một con số có nghĩa — tức là kết quả tìm kiếm sai mà không có gì báo sai. Trong lúc nhúng lại, thư viện vẫn tìm được bằng từ khoá; chỉ phần tìm theo ý nghĩa là tạm thiếu."
+          body="Ứng dụng bỏ vector cũ và nhúng lại từng tài liệu."
+          more="Đổi mô hình nhúng thì mọi vector cũ bị bỏ và từng tài liệu được nhúng lại bằng mô hình mới. Bắt buộc phải thế: vector của hai mô hình nằm ở hai không gian khác nhau, và đem so với nhau thì ra một con số vô nghĩa trông y hệt một con số có nghĩa — tức là kết quả tìm kiếm sai mà không có gì báo sai. Trong lúc nhúng lại, thư viện vẫn tìm được bằng từ khoá; chỉ phần tìm theo ý nghĩa là tạm thiếu."
           detail={`Đang dùng:  ${setting().providerName ?? "?"} · ${setting().model ?? "?"}\nSẽ dùng:    ${chosen()?.name ?? "?"} · ${model().trim()}`}
           confirmLabel="Đổi và nhúng lại"
           busy={busy()}
@@ -401,7 +401,7 @@ function CurrentState(props: { setting: EmbeddingSetting }) {
             Chưa cấu hình nhúng
             <InfoDot
               label="Về trạng thái chưa cấu hình nhúng"
-              text="Thư viện tài liệu vẫn dùng được: nó tìm bằng từ khoá, nghĩa là bạn phải gõ đúng chữ có trong tài liệu chứ không hỏi được bằng ý. Đây là một trạng thái dùng được, không phải một lỗi — chọn mô hình nhúng bên dưới nếu bạn muốn hỏi bằng ý, và chọn một provider chạy tại chỗ nếu tài liệu không được rời khỏi máy."
+              text="Thư viện tài liệu vẫn dùng được, chỉ là nó tìm theo từ khoá: bạn phải nhập đúng chữ có trong tài liệu chứ chưa hỏi được theo ý. Đây là trạng thái bình thường, không phải lỗi. Chọn mô hình nhúng bên dưới nếu bạn muốn hỏi theo ý, và chọn một nhà cung cấp chạy tại chỗ nếu tài liệu không được rời khỏi máy."
             />
           </span>
           <p class="m-0 max-w-[62ch] text-2xs text-muted">
@@ -416,7 +416,7 @@ function CurrentState(props: { setting: EmbeddingSetting }) {
             tone="warn"
             icon="warn"
             title="Cấu hình nhúng chưa dùng được"
-            more="Cho tới khi sửa xong, thư viện tài liệu chỉ tìm được bằng từ khoá."
+            more="Chưa sửa xong thì thư viện tài liệu chỉ tìm được theo từ khoá."
           >
             {reason()}
           </Banner>
@@ -498,16 +498,16 @@ function ModelSource(props: { busy: boolean; models: ModelChoice[] }) {
   return (
     <div role="status" aria-live="polite" class="flex flex-col gap-2xs">
       <p class="m-0 max-w-[62ch] text-2xs text-muted">
-        <Show when={!props.busy} fallback="Đang hỏi máy chủ xem có mô hình nào…">
+        <Show when={!props.busy} fallback="Đang lấy danh sách mô hình…">
           <Show
             when={props.models.length > 0}
-            fallback="Không hỏi được danh sách mô hình từ máy chủ — gõ tên mô hình nhúng vào ô trên."
+            fallback="Không lấy được danh sách mô hình từ máy chủ — nhập tên mô hình nhúng vào ô trên."
           >
             <Show
               when={embed() > 0}
-              fallback={`Máy chủ khai ${props.models.length} mô hình, không cái nào khai là nhúng được. Kéo một mô hình nhúng về, hoặc gõ tên nếu bạn biết máy chủ có.`}
+              fallback={`Máy chủ có ${props.models.length} mô hình, không mô hình nào nhúng được. Tải một mô hình nhúng về, hoặc nhập tên nếu bạn biết máy chủ có.`}
             >
-              {`Máy chủ khai ${props.models.length} mô hình, ${embed()} cái nhúng được.`}
+              {`Máy chủ có ${props.models.length} mô hình, trong đó ${embed()} mô hình nhúng được.`}
             </Show>
           </Show>
         </Show>

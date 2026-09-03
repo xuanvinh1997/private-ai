@@ -36,9 +36,34 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gpu = ["onnxruntime-gpu>=1.20"]
-# `python-docx` chỉ để **dựng** tệp .docx cho bài kiểm chứng. Đường đọc dùng
-# `mammoth` mà markitdown mang theo, nên nó không phải phụ thuộc lúc chạy.
+# Reranker trên GPU. Đo trên RTX PRO 6000, 30 đoạn mỗi câu hỏi:
+#
+#   CPU  11,06 s        <- không dùng được cho tìm kiếm tương tác
+#   GPU   1,03 s        <- nhanh gấp ~10,7 lần
+#
+# ĐỜI CUDA. `onnxruntime-gpu` ghim cứng một đời CUDA, và sai đời thì nó **lùi về CPU
+# trong im lặng** (xem `OnnxReranker._canh_bao_neu_tut_ve_cpu`).
+#
+# Ghim 1.22 = CUDA 12, **không** phải bản mới nhất, và đây là một lựa chọn có đo:
+# onnxruntime-gpu 1.29 đòi CUDA 13, nhưng cho CUDA 13 thì PyPI mới chỉ có wheel thật của
+# `nvidia-cudnn-cu13` — `nvidia-cublas-cu13` và phần còn lại vẫn là gói rỗng 0.0.1. Không
+# có `cublasLt64_13.dll` thì provider CUDA không nạp được, và cách duy nhất lấp chỗ ấy là
+# cài cả CUDA Toolkit lên máy. Bộ `-cu12` thì đầy đủ trên PyPI, và driver mới vẫn chạy
+# CUDA 12 (driver tương thích ngược).
+#
+# Thư viện CUDA của gói pip không nằm trên PATH hệ thống, nên phải gọi
+# `onnxruntime.preload_dlls()` trước khi dựng phiên — đã làm trong `OnnxReranker._ensure`.
+#
+# Cần: driver >= 525 (bản đo: 597.06). Không có đường nào lấy driver qua pip.
+gpu = [
+    "onnxruntime-gpu==1.22.0",
+    "nvidia-cublas-cu12",
+    "nvidia-cudnn-cu12",
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cuda-nvrtc-cu12",
+    "nvidia-cufft-cu12",
+    "nvidia-curand-cu12",
+]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.8", "python-docx>=1.1"]
 package = ["pyinstaller>=6.11"]
 

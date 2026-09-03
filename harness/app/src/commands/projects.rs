@@ -234,3 +234,75 @@ pub async fn set_project_kind(
     harness.set_project_kind(&id, kind.into()).await?;
     list_projects(state).await
 }
+
+/// Trần số mục trả về cho **một** thư mục.
+///
+/// Một thư mục `node_modules` có hàng chục nghìn mục, và vẽ hết chúng ra không giúp ai
+/// tìm được gì — nó chỉ làm treo cột bên phải. Cắt ở đây chứ không ở giao diện: một danh
+/// sách quá dài không nên đi qua cầu IPC ngay từ đầu.
+const MAX_ENTRIES: usize = 500;
+
+/// Một tầng của cây thư mục dự án.
+///
+/// **Chỉ một tầng.** Đọc đệ quy cả cây lúc mở bảng là đọc cả `node_modules` và `.git` cho
+/// một người dùng chỉ định mở một thư mục — nên mỗi lần bung một nhánh là một lời gọi, và
+/// nhánh chưa bung thì chưa tốn gì.
+///
+/// Không lọc bỏ tệp ẩn. `.gitignore`, `.env`, `.github` là những tệp người ta thật sự cần
+/// mở, và một cây tự giấu bớt là một cây khiến người dùng kết luận tệp của họ không có ở
+/// đó. `.git` cũng vẫn hiện, nhưng vì cây đọc theo từng tầng nên nó không tốn gì cho tới
+/// khi có người cố ý bung nó ra.
+#[tauri::command]
+pub async fn list_dir(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::protocol::DirEntryView>, String> {
+    use std::path::Path;
+
+    let harness = state.harness().await?;
+    // Không có dự án thì không có cây. Trả rỗng chứ không lỗi: đóng dự án trong lúc bảng
+    // còn mở là một thao tác hợp lệ, và một hộp lỗi ở đó là phạt người dùng vì đã đóng.
+    let Some(open) = harness.current_project() else {
+        return Ok(Vec::new());
+    };
+
+    // Chỉ đọc **trong** thư mục dự án. Giao diện gửi lên một chuỗi, và một chuỗi từ giao
+    // diện là thứ duy nhất ngăn lệnh này thành một đường đọc cả ổ đĩa. So sau khi
+    // `canonicalize` để `..` và symlink không lách qua được.
+    let root = Path::new(&open.path)
+        .canonicalize()
+        .map_err(|err| format!("không đọc được thư mục dự án: {err}"))?;
+    let target = Path::new(&path)
+        .canonicalize()
+        .map_err(|err| format!("không mở được {path}: {err}"))?;
+    if !target.starts_with(&root) {
+        return Err("đường dẫn nằm ngoài thư mục dự án".to_string());
+    }
+
+    let mut entries: Vec<crate::protocol::DirEntryView> = std::fs::read_dir(&target)
+        .map_err(|err| format!("không đọc được {}: {err}", target.display()))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            // `file_type` rẻ hơn `metadata` và không đi theo symlink — một symlink trỏ ra
+            // ngoài dự án vì thế hiện ra như một mục thường, và bung nó ra thì phép so
+            // `starts_with` ở trên chặn lại.
+            let is_dir = entry.file_type().ok()?.is_dir();
+            Some(crate::protocol::DirEntryView {
+                name,
+                path: entry.path().display().to_string(),
+                is_dir,
+            })
+        })
+        .collect();
+
+    // Thư mục trước, rồi xếp theo tên không phân biệt hoa thường. Thứ tự của `read_dir`
+    // là thứ tự của hệ tệp, tức là không có thứ tự nào cả với người đọc.
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+    });
+    entries.truncate(MAX_ENTRIES);
+    Ok(entries)
+}

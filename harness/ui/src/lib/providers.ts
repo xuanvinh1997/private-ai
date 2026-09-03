@@ -23,6 +23,7 @@ import type {
   ProviderInput,
   ProviderPreset,
   ProviderProbe,
+  RerankSetting,
 } from "./protocol";
 
 /**
@@ -172,6 +173,48 @@ export async function providerModels(providerId: string): Promise<ModelChoice[]>
  * Nuốt lỗi: chạy lúc mở màn hình, và "chưa cấu hình" là một trạng thái hợp lệ chứ không
  * phải một hỏng hóc — thư viện tài liệu khi đó vẫn tìm được bằng từ khoá.
  */
+/**
+ * Mặc định hiện khi chưa gọi được lõi.
+ *
+ * Bật sẵn, vì đó là mặc định của service — và một màn hình nói "đang tắt" trong khi thực
+ * tế đang bật là cách nhanh nhất khiến người dùng đi tắt một thứ vốn đã tắt.
+ */
+const RERANK_MAC_DINH: RerankSetting = {
+  enabled: true,
+  backend: "onnx",
+  model: "",
+  candidates: 30,
+  topN: 8,
+  reason: null,
+};
+
+export async function rerankSetting(): Promise<RerankSetting> {
+  if (!inTauri()) return RERANK_MAC_DINH;
+  try {
+    return await invoke<RerankSetting>("rerank_setting");
+  } catch (err) {
+    console.error("không đọc được cấu hình xếp hạng lại", err);
+    return RERANK_MAC_DINH;
+  }
+}
+
+/**
+ * Ghi lại cấu hình xếp hạng lại.
+ *
+ * **Không** nhúng lại gì cả, khác hẳn `setEmbedding`: bước này chấm lại thứ tự của những
+ * đoạn đã tìm được, nó không đụng tới vector nào. Đổi xong là câu hỏi kế tiếp đã theo
+ * cấu hình mới — tiến trình đọc tài liệu soi ngày sửa của tệp cấu hình và tự nạp lại.
+ */
+export function setRerank(next: Omit<RerankSetting, "reason">): Promise<RerankSetting> {
+  return invoke<RerankSetting>("set_rerank", {
+    enabled: next.enabled,
+    backend: next.backend,
+    model: next.model,
+    candidates: next.candidates,
+    topN: next.topN,
+  });
+}
+
 export async function embeddingSetting(): Promise<EmbeddingSetting> {
   const none: EmbeddingSetting = {
     providerId: null,

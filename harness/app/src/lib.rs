@@ -520,6 +520,7 @@ pub fn run() {
             commands::projects::clone_project,
             commands::projects::cancel_clone,
             commands::projects::close_project,
+            commands::projects::list_dir,
             commands::projects::set_project_kind,
             commands::providers::list_providers,
             commands::providers::provider_presets,
@@ -547,6 +548,9 @@ pub fn run() {
             commands::docs::add_documents,
             commands::docs::remove_document,
             commands::docs::search_documents,
+            commands::rerank::rerank_setting,
+            commands::rerank::set_rerank,
+            commands::suggest::prompt_seeds,
             commands::system::sandbox_status,
             commands::system::list_hooks,
             commands::system::hook_config_path

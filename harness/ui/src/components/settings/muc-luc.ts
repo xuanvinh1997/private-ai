@@ -155,7 +155,7 @@ export const SEARCH_INDEX: SearchHit[] = [
   {
     page: "provider",
     label: "Khoá API",
-    desc: "Khoá gửi kèm mỗi yêu cầu tới provider từ xa.",
+    desc: "Khoá gửi kèm mỗi yêu cầu tới dịch vụ từ xa.",
   },
   {
     page: "provider",
@@ -171,6 +171,16 @@ export const SEARCH_INDEX: SearchHit[] = [
     page: "provider",
     label: "Mô hình hội thoại",
     desc: "Mô hình trả lời câu hỏi của bạn trong ô soạn tin.",
+  },
+  {
+    page: "provider",
+    label: "Xếp hạng lại",
+    desc: "Chấm lại thứ tự đoạn tìm được; tắt được để tìm nhanh hơn.",
+  },
+  {
+    page: "provider",
+    label: "Số đoạn chấm lại",
+    desc: "Nút chỉnh độ trễ của tìm kiếm trong tài liệu.",
   },
   {
     page: "mcp",

@@ -24,6 +24,18 @@ fn config(dir: &TempDir) -> Config {
     }
 }
 
+/// Bỏ tiền tố đường dẫn dài của Windows, đúng như `rag_config` làm khi ghi tệp.
+///
+/// `TempDir::canonicalize` trả về dạng verbatim, còn cấu hình ghi ra thì cố ý cắt nó đi
+/// để người dùng đọc được đường dẫn của chính mình. Bài kiểm chứng phải so cùng một dạng.
+fn khong_verbatim(path: &std::path::Path) -> std::path::PathBuf {
+    let text = path.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) => std::path::PathBuf::from(rest),
+        None => path.to_path_buf(),
+    }
+}
+
 #[tokio::test]
 async fn cay_plugin_dung_len_va_moi_seam_deu_co_nguoi_cam() {
     let dir = TempDir::new().expect("thư mục tạm");
@@ -873,7 +885,7 @@ async fn du_an_tai_lieu_duoc_cam_rag_va_soi_dung_thu_muc() {
         .expect("phải khai thư mục dự án");
     assert_eq!(
         std::path::Path::new(root),
-        goc,
+        khong_verbatim(&goc),
         "thư viện đang soi vào nhầm thư mục"
     );
 
@@ -1103,7 +1115,7 @@ async fn khoi_dong_lai_thi_cau_hinh_rag_van_biet_du_an_nao_dang_mo() {
     let cau_hinh: serde_json::Value = serde_json::from_str(&raw).expect("JSON hợp lệ");
     assert_eq!(
         std::path::Path::new(cau_hinh["projects"][0]["root"].as_str().unwrap_or_default()),
-        goc,
+        khong_verbatim(&goc),
         "cấu hình ghi lúc khởi động không biết dự án nào đang mở: {raw}"
     );
     assert!(

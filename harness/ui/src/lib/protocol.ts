@@ -305,6 +305,26 @@ export interface CloneProgress {
 
 export type DocumentFormat = "pdf" | "docx" | "markdown" | "text" | "html" | "csv" | "code";
 
+/**
+ * Nguyên liệu để dựng gợi ý câu hỏi cho màn hình trống.
+ *
+ * Chỉ **sự thật về dự án đang mở** — tên ký hiệu, tên thư mục, tên tài liệu — không một
+ * chữ nào của câu gợi ý. Câu chữ nằm ở `lib/prompts.ts`, cạnh những bộ tĩnh mà nó phải
+ * hoà giọng cùng; để lõi trả về câu hoàn chỉnh là để hai chỗ cùng viết một giọng, rồi
+ * một ngày chúng lệch nhau.
+ *
+ * Rỗng cả ba là trạng thái hợp lệ, không phải lỗi: chưa mở dự án, chỉ mục chưa quét lần
+ * nào, hay thư viện chưa có tài liệu nào.
+ */
+export interface PromptSeeds {
+  /** Ký hiệu nhiều quan hệ nhất, nhiều trước. Chỉ tên, không kèm đường dẫn. */
+  symbols: string[];
+  /** Thư mục nhiều ký hiệu nhất, nhiều trước. */
+  directories: string[];
+  /** Tên tài liệu trong thư viện. Chỉ dự án tài liệu mới có. */
+  documents: string[];
+}
+
 /** Một tài liệu trong thư viện. */
 export interface DocumentView {
   id: string;
@@ -403,6 +423,26 @@ export interface Provider {
 }
 
 /** Cấu hình nhúng đang có hiệu lực. */
+/**
+ * Cấu hình bước xếp hạng lại.
+ *
+ * Không nằm trong danh sách provider vì reranker mặc định **không phải một máy chủ**: nó
+ * là một tệp mô hình chạy trong tiến trình đọc tài liệu. Không có địa chỉ, không có khoá.
+ */
+export interface RerankSetting {
+  enabled: boolean;
+  /** `onnx` chạy tại chỗ; `http` gọi ra một endpoint `/v1/rerank` bên ngoài. */
+  backend: "onnx" | "http";
+  /** Tên repo Hugging Face với `onnx`, hoặc tên mô hình của máy chủ với `http`. */
+  model: string;
+  /** Lấy về bao nhiêu đoạn để chấm lại. Đây là nút chỉnh độ trễ. */
+  candidates: number;
+  /** Giữ lại bao nhiêu sau khi chấm. */
+  topN: number;
+  /** Câu nói ra cái giá đang trả — chậm bao nhiêu, hoặc mất gì khi tắt. */
+  reason: string | null;
+}
+
 export interface EmbeddingSetting {
   providerId: string | null;
   providerName: string | null;
@@ -448,6 +488,14 @@ export interface ProviderInput {
   enabled: boolean;
   model: string | null;
   embeddingModel: string | null;
+}
+
+/** Một mục trong cây thư mục dự án. */
+export interface DirEntry {
+  name: string;
+  /** Đường dẫn tuyệt đối. Gửi lại nguyên văn khi bung một thư mục con. */
+  path: string;
+  isDir: boolean;
 }
 
 export interface ProviderProbe {

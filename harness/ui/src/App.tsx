@@ -219,6 +219,25 @@ export default function App() {
   const hasProject = () => project() !== null;
 
   /**
+   * Bấm một tệp trong cây thư mục: tên nó rơi vào ô soạn tin dưới dạng `@đường/dẫn`.
+   *
+   * Đường dẫn **tương đối** với thư mục dự án, vì đó là dạng mà bộ hoàn thành `@` và các
+   * tool của trợ lý đều nói. Dán đường dẫn tuyệt đối vào thì câu tin nhắn dài gấp ba và
+   * còn lộ cả tên người dùng trên máy.
+   *
+   * Nối thêm chứ không ghi đè: người ta thường gõ câu hỏi trước rồi mới đi tìm tệp, và
+   * xoá mất câu vừa gõ để nhét một đường dẫn vào là kiểu mất chữ không ai tha thứ.
+   */
+  function mentionFile(root: string, path: string) {
+    const bare = path.startsWith(root) ? path.slice(root.length) : path;
+    const rel = bare.replace(/^[\\/]+/, "").replace(/\\/g, "/");
+    setDraft((current) => {
+      const head = current === "" || current.endsWith(" ") ? current : `${current} `;
+      return `${head}@${rel} `;
+    });
+  }
+
+  /**
    * Bảng chi tiết dự án ở cột phải.
    *
    * Không lưu vào `prefs` như bảng thay đổi: đây là một lần **tra cứu** — mở ra xem dự án
@@ -1088,6 +1107,7 @@ export default function App() {
                         <PromptChips
                           disabled={conversation.busy()}
                           kind={project()?.kind ?? null}
+                          projectKey={projectKey()}
                           onPick={(text) => void send(text)}
                         />
                       </div>
@@ -1132,15 +1152,10 @@ export default function App() {
               {(open) => (
                 <ProjectPanel
                   project={open}
-                  changedCount={files().length}
                   onClose={() => setProjectPanelOpen(false)}
-                  onOpenScreen={() => setTab(open.kind === "docs" ? "library" : "diff")}
                   onOpenFolder={() => void openFolder(open.path)}
-                  onSwapKind={(kind) => void swapProjectKind(kind)}
-                  onCloseProject={() => {
-                    setProjectPanelOpen(false);
-                    void closeCurrentProject();
-                  }}
+                  onPickFile={(path) => mentionFile(open.path, path)}
+                  onOpenScreen={() => setTab(open.kind === "docs" ? "library" : "diff")}
                 />
               )}
             </Show>

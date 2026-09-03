@@ -77,7 +77,7 @@ async fn khong_noi_duoc_thi_dung_do_cho_cai_khoa() {
     let result = probe(&config, &reqwest::Client::new()).await;
     assert!(!result.ok, "không được coi là nối được: {result:?}");
     assert!(
-        result.message.contains("Không nối được"),
+        result.message.contains("Không kết nối được"),
         "phải thuộc nhóm không nối được: {}",
         result.message
     );
@@ -104,7 +104,7 @@ async fn ollama_chua_bat_cung_thuoc_nhom_khong_noi_duoc() {
     let result = probe(&config, &reqwest::Client::new()).await;
     assert!(!result.ok);
     assert!(
-        result.message.contains("Không nối được"),
+        result.message.contains("Không kết nối được"),
         "{}",
         result.message
     );

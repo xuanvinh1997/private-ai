@@ -1,61 +1,9 @@
-import { For, Show } from "solid-js";
+import { For, Show, createResource } from "solid-js";
 import { displayMode } from "../lib/prefs";
+import { NO_SEEDS, goiY, promptSeeds } from "../lib/prompts";
 import type { ProjectKind } from "../lib/protocol";
 import Icon from "./Icon";
 import { InfoDot } from "./settings/FormKit";
-
-/**
- * Gợi ý cho dự án **mã nguồn**.
- *
- * Chọn theo việc *một coding agent làm được*, không theo việc nghe hay: mỗi câu ở đây
- * chạm vào một tool khác nhau — đọc, tìm, sửa, chạy lệnh — nên bấm thử một câu là thấy
- * ngay agent này khác một hộp chat ở chỗ nào.
- *
- * Và không câu nào gọi tên một thứ **của repo này**. `pai-core` với `derive_messages` chỉ
- * tồn tại ở đây; người dùng mở dự án của họ ra và đọc được một cái tên không có trong mã
- * của mình thì gợi ý đó vừa nói rằng nó được viết cho máy của người khác.
- */
-const SUGGESTIONS = [
-  "Giải thích kiến trúc của dự án này",
-  "Chạy bộ test và tóm tắt chỗ hỏng",
-  "Có gì thay đổi so với commit gần nhất?",
-  "Viết test cho phần chưa được kiểm",
-  "Tìm chỗ xử lý lỗi cẩu thả",
-];
-
-/**
- * Gợi ý cho dự án **tài liệu**, và chúng phải khác hẳn bộ trên.
- *
- * Thư viện tài liệu chỉ được cắm `rag` — `docs.search`, `docs.read`, `docs.list`. Không
- * `fs`, không `shell`, không `index`; xem `DOCS_PLUGINS` phía lõi. Nên "chạy bộ test" ở
- * đây là một nút bấm vào sẽ thất bại, và một nút dựng sẵn mà thất bại dạy người dùng rằng
- * cả ứng dụng chưa dùng được.
- *
- * Cả bốn câu đều **không** giả định thư viện chứa gì: người dùng vừa chỉ vào một thư mục
- * mà ứng dụng chưa từng đọc, nên một gợi ý nhắc tên một chủ đề cụ thể là một lời đoán, và
- * đoán trượt thì câu trả lời rỗng.
- */
-const SUGGESTIONS_TAI_LIEU = [
-  "Thư viện này có những tài liệu gì?",
-  "Tóm tắt mỗi tài liệu trong một câu",
-  "Những chủ đề chính ở đây là gì?",
-  "Trích đoạn nói về chủ đề chính, kèm tên tệp",
-];
-
-/**
- * Gợi ý khi **chưa mở dự án nào**, và chúng phải khác hẳn bộ trên.
- *
- * Không có dự án thì lõi không cắm tool nào chạm tới đĩa. Một gợi ý kiểu "sửa lỗi biên
- * dịch trong tệp này" ở đây là một gợi ý bấm vào sẽ thất bại — và một nút dựng sẵn mà
- * thất bại dạy người dùng rằng cả ứng dụng chưa dùng được. Mỗi câu dưới đây trả lời được
- * bằng đúng thứ còn lại: kiến thức của mô hình.
- */
-const SUGGESTIONS_KHONG_DU_AN = [
-  "Khác nhau giữa async và luồng trong Rust là gì?",
-  "Viết regex khớp email rồi giải thích từng phần",
-  "SQLite hay Postgres cho một ứng dụng chạy tại chỗ?",
-  "Giải thích `git rebase` bằng một ví dụ ngắn",
-];
 
 /**
  * Nửa trên của màn hình trống: câu hỏi lớn, và những gì phải đọc **trước** khi gõ.
@@ -162,13 +110,23 @@ export function PromptChips(props: {
   onPick: (text: string) => void;
   disabled?: boolean;
   kind: ProjectKind | null;
+  /**
+   * Đổi khi người dùng sang dự án khác. Nguyên liệu gợi ý phải hỏi lại từ đầu — `kind`
+   * không đủ làm khoá vì hai dự án mã nguồn khác nhau vẫn cùng một `kind`, và bộ gợi ý
+   * của kho trước sẽ gọi tên những ký hiệu không có trong kho sau.
+   */
+  projectKey: string;
 }) {
-  const goi_y = () =>
-    props.kind === null
-      ? SUGGESTIONS_KHONG_DU_AN
-      : props.kind === "docs"
-        ? SUGGESTIONS_TAI_LIEU
-        : SUGGESTIONS;
+  const [seeds] = createResource(() => props.projectKey, promptSeeds, {
+    initialValue: NO_SEEDS,
+  });
+
+  // Trong lúc chờ lõi trả lời thì hiện bộ tĩnh chứ không hiện chỗ trống: lệnh này đi qua
+  // IPC nội bộ nên thường xong trong một nhịp, và một hàng chip hiện ra muộn ngay dưới ô
+  // soạn tin đẩy cả bố cục xuống đúng lúc người dùng bắt đầu gõ. Cái giá là mấy con chip
+  // đổi chữ một lần sau khi nguyên liệu về — chấp nhận được vì chúng nằm dưới ô nhập chứ
+  // không nằm dưới con trỏ.
+  const goi_y = () => goiY(props.kind, seeds());
 
   return (
     <ul

@@ -28,10 +28,10 @@ services:
       - "11434:11434"
     volumes:
       - "D:/ollama:/root/.ollama"
-      - "D:/Development/lmstudio/models/lmstudio-community:/models:ro"
+      # - "D:/Development/lmstudio/models/lmstudio-community:/models:ro"
     environment:
       - "OLLAMA_HOST=0.0.0.0:11434"
-      - "OLLAMA_KEEP_ALIVE=30m"
+      - "OLLAMA_KEEP_ALIVE=60m"
       # RTX PRO 6000 Blackwell co 96 GB VRAM -> giu 2 model cung luc
       - "OLLAMA_MAX_LOADED_MODELS=2"
     deploy:

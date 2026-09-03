@@ -102,7 +102,7 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
                 "không mở được kết nối"
             };
             return ProbeResult::fail(format!(
-                "Không nối được tới {url} ({detail}). Kiểm tra máy chủ đã chạy chưa và địa \
+                "Không kết nối được tới {url} ({detail}). Kiểm tra máy chủ đã chạy chưa và địa \
                  chỉ có đúng không."
             ));
         }
@@ -149,23 +149,23 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
         // là kéo một mô hình về, không phải sửa cấu hình — nên câu chữ phải nói ra điều đó.
         return ProbeResult::fail(match config.kind {
             ProviderKind::Ollama => format!(
-                "Nối được tới {url}, nhưng máy chủ chưa có mô hình nào. Kéo một cái về bằng \
-                 `ollama pull` trước đã."
+                "Kết nối được tới {url}, nhưng máy chủ chưa có mô hình nào. Tải một mô hình về \
+                 bằng `ollama pull` trước đã."
             ),
             ProviderKind::LmStudio => format!(
-                "Nối được tới {url}, nhưng LM Studio chưa có mô hình nào. Tải một cái ở \
+                "Kết nối được tới {url}, nhưng LM Studio chưa có mô hình nào. Tải một mô hình ở \
                  tab Discover rồi thử lại."
             ),
             ProviderKind::OpenAiCompatible => format!(
-                "Nối được tới {url}, nhưng máy chủ không khai mô hình nào. Với một máy chủ \
-                 tự vận hành thì đó thường là do chưa nạp mô hình lúc khởi động."
+                "Kết nối được tới {url}, nhưng máy chủ không trả về mô hình nào. Với một máy chủ \
+                 tự dựng thì đó thường là do chưa nạp mô hình lúc khởi động."
             ),
         });
     }
 
     ProbeResult {
         ok: true,
-        message: format!("Nối được, máy chủ khai {} mô hình.", models.len()),
+        message: format!("Kết nối được. Máy chủ có {} mô hình.", models.len()),
         models,
     }
 }
@@ -319,7 +319,7 @@ pub async fn probe_embedding(config: &ProviderConfig, model: &str) -> EmbeddingP
                 "không mở được kết nối"
             };
             return EmbeddingProbeResult::fail(format!(
-                "Không nối được tới {url} ({detail}). Kiểm tra máy chủ đã chạy chưa và địa \
+                "Không kết nối được tới {url} ({detail}). Kiểm tra máy chủ đã chạy chưa và địa \
                  chỉ có đúng không."
             ));
         }

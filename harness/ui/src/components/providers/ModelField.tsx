@@ -60,8 +60,8 @@ export type ModelRole = "chat" | "embedding";
 
 /** Mô hình nào hợp vai, và mô hình lạc vai thì mang chữ gì. */
 const SORT: Record<ModelRole, { fits: (model: ModelChoice) => boolean; otherwise: string }> = {
-  chat: { fits: usableForChat, otherwise: "chỉ nhúng được" },
-  embedding: { fits: embeddable, otherwise: "không khai là nhúng được" },
+  chat: { fits: usableForChat, otherwise: "chỉ dùng để nhúng" },
+  embedding: { fits: embeddable, otherwise: "không phải mô hình nhúng" },
 };
 
 export default function ModelField(props: {
@@ -120,7 +120,7 @@ export default function ModelField(props: {
       ...props.models
         .filter((entry) => !rule.fits(entry))
         .map((entry) => ({ id: entry.id, label: label(entry, false) })),
-      { id: CUSTOM, label: "Gõ tên khác…" },
+      { id: CUSTOM, label: "Nhập tên khác…" },
     ];
   };
 
@@ -184,7 +184,7 @@ export default function ModelField(props: {
           Máy chủ không khai mô hình này.
           <InfoDot
             label="Về tên mô hình không có trong danh sách"
-            text="Danh sách là cái máy chủ tự khai. Tên không nằm trong đó vẫn có thể chạy — một máy chủ tự vận hành thường phục vụ đúng một mô hình và chẳng buồn liệt kê — nên đây là một lời nhắc, không phải một cái chặn. Muốn biết chắc thì mở màn hình Mô hình nhúng và bấm “Thử ngay”: nó gửi thật một câu đi và đo vector nhận về."
+            text="Danh sách này do máy chủ trả về. Một cái tên không nằm trong đó vẫn có thể chạy — máy chủ tự dựng thường phục vụ đúng một mô hình và không liệt kê ra — nên đây là lời nhắc, không phải cái chặn. Muốn chắc thì bấm “Thử ngay” ở mục nhúng: nó gửi thật một câu đi và đo vector nhận về."
           />
         </p>
       </Show>

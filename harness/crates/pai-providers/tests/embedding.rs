@@ -73,7 +73,7 @@ async fn khong_noi_duoc_thi_dung_do_cho_cai_khoa() {
     let result = pai_providers::probe_embedding(&config, "text-embedding-3-small").await;
     assert!(!result.ok, "không được coi là nhúng được: {result:?}");
     assert!(
-        result.message.contains("Không nối được"),
+        result.message.contains("Không kết nối được"),
         "phải thuộc nhóm không nối được: {}",
         result.message
     );
