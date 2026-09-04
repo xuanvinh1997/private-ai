@@ -26,6 +26,10 @@ export default function ProjectsView(props: {
   /** Open a folder that is not in the list yet; drag and drop is its only entrance. */
   onOpenPath: (path: string) => void;
   onForget: (project: Project) => void;
+  /** Delete the project's conversations and library as well; the folder on disk stays. */
+  onDelete: (project: Project) => void;
+  /** A delete in flight: dropping a library starts the document service, so it is not instant. */
+  deleting?: boolean;
   /** The core finished creating or cloning; the caller reloads and switches to it. */
   onCreated: (project: Project) => void;
 }) {
@@ -249,10 +253,19 @@ export default function ProjectsView(props: {
           <ConfirmDialog
             icon="trash"
             title={t(S.projects.forgetTitle, { name: project().name })}
-            body={t(S.projects.forgetBody)}
+            body={t(S.projects.forgetOrDeleteBody)}
             more={t(S.projects.forgetMore)}
             detail={project().path}
             confirmLabel={t(S.projects.forgetConfirm)}
+            busy={props.deleting === true}
+            escalate={{
+              label: t(S.projects.deleteConfirm),
+              onClick: () => {
+                const target = project();
+                setForgetting(null);
+                props.onDelete(target);
+              },
+            }}
             onClose={() => setForgetting(null)}
             onConfirm={() => {
               const target = project();

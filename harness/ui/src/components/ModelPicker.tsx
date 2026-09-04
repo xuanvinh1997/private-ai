@@ -63,7 +63,7 @@ export default function ModelPicker(props: {
             queueMicrotask(() => move(1));
           }
         }}
-        class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-xs text-muted transition-colors duration-[var(--dur-fast)] disabled:opacity-40 enabled:hover:bg-[var(--overlay-hover)] enabled:hover:text-ink"
+        class="flex h-(--control-h) items-center gap-3xs rounded-pill border border-line bg-surface-soft px-sm text-xs text-muted shadow-control transition-colors duration-[var(--dur-fast)] disabled:opacity-40 enabled:hover:border-line-strong enabled:hover:bg-surface enabled:hover:text-ink"
       >
         <Icon name="model" size={13} />
         <span class="max-w-40 truncate">{props.value}</span>

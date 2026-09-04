@@ -19,8 +19,8 @@
   --muted: #57554f;
   --faint: #6a675f;
 
-  /* Without shadows, borders are the only separator, so the hairline is a step darker than DESIGN.md's, and
-   * `--line-strong` (input and secondary-button borders) holds 3:1 per WCAG 1.4.11. */
+  /* The hairline remains useful at rest, while `--line-strong` (input and secondary-button borders) holds
+   * 3:1 per WCAG 1.4.11. Elevation below is reserved for interactive or floating layers. */
   --line: #ddd2c2;
   --line-strong: #948468;
 
@@ -39,9 +39,12 @@
 
   --scrim: rgba(20, 20, 19, 0.44);
 
-  /* One-pixel top-edge highlight on raised surfaces: with shadows dropped, this is what still reads as depth on a
-   * dark ground. One variable name in both themes, so app.css keeps a single formula. */
+  /* A restrained three-level elevation system. Warm translucent blacks avoid a cold grey halo on cream; the
+   * inset highlight keeps the near edge crisp. Cards at rest still rely on surface colour plus their border. */
   --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  --elevation-control: inset 0 1px 0 rgba(255, 255, 255, 0.78), 0 1px 2px rgba(54, 42, 25, 0.12);
+  --elevation-float: inset 0 1px 0 rgba(255, 255, 255, 0.84), 0 2px 5px rgba(54, 42, 25, 0.1), 0 12px 28px rgba(54, 42, 25, 0.08);
+  --elevation-pop: inset 0 1px 0 rgba(255, 255, 255, 0.9), 0 3px 8px rgba(40, 30, 18, 0.1), 0 14px 34px rgba(40, 30, 18, 0.12);
 
   /* Eight data colours, for charts only, never for UI chrome; warm-leaning and darkened enough to read on cream. */
   --data-1: #b85c3c; --data-2: #3c6f9e; --data-3: #2f7d70; --data-4: #8a6114;
@@ -121,6 +124,9 @@
   --danger-soft: #42221f;
   --scrim: rgba(0, 0, 0, 0.62);
   --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  --elevation-control: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 1px 2px rgba(0, 0, 0, 0.46);
+  --elevation-float: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 3px 8px rgba(0, 0, 0, 0.4), 0 16px 34px rgba(0, 0, 0, 0.26);
+  --elevation-pop: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 4px 10px rgba(0, 0, 0, 0.42), 0 18px 42px rgba(0, 0, 0, 0.5);
   --data-1: #e08b6b; --data-2: #86b4e0; --data-3: #6bc4b2; --data-4: #dfb45c;
   --data-5: #d295c4; --data-6: #a8c46e; --data-7: #ea9098; --data-8: #a79ae0;
   color-scheme: dark;
@@ -152,6 +158,9 @@
     --danger-soft: #42221f;
     --scrim: rgba(0, 0, 0, 0.62);
     --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --elevation-control: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 1px 2px rgba(0, 0, 0, 0.46);
+    --elevation-float: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 3px 8px rgba(0, 0, 0, 0.4), 0 16px 34px rgba(0, 0, 0, 0.26);
+    --elevation-pop: inset 0 1px 0 rgba(255, 255, 255, 0.09), 0 4px 10px rgba(0, 0, 0, 0.42), 0 18px 42px rgba(0, 0, 0, 0.5);
     --data-1: #e08b6b; --data-2: #86b4e0; --data-3: #6bc4b2; --data-4: #dfb45c;
     --data-5: #d295c4; --data-6: #a8c46e; --data-7: #ea9098; --data-8: #a79ae0;
     color-scheme: dark;

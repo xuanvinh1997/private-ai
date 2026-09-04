@@ -32,9 +32,12 @@ pub async fn resolve_attachments(
         .ok_or_else(|| "Chưa mở dự án, nên chưa có thư mục nào để đính kèm tệp vào.".to_string())?;
     // Resolve the root once, and resolve both sides: comparing a followed symlink against an unfollowed path
     // is how an in-project file gets reported as outside.
-    let root = workspace
-        .canonicalize()
-        .map_err(|err| format!("Không đọc được thư mục dự án {}: {err}", workspace.display()))?;
+    let root = workspace.canonicalize().map_err(|err| {
+        format!(
+            "Không đọc được thư mục dự án {}: {err}",
+            workspace.display()
+        )
+    })?;
 
     Ok(paths
         .into_iter()

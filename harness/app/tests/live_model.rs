@@ -84,7 +84,10 @@ impl TurnSink for Recorder {
 /// Build the tree, then point it at the server the environment names, going through the provider store rather
 /// than injecting an adapter, because that is the path the UI takes. The trailing `apply_provider` is not
 /// redundant: without it the shared `ActiveLlm` keeps pointing at the startup server, silently.
-async fn dung_cay(dir: &TempDir, duoi: &Duoi) -> (Arc<pai_app_lib::harness::Harness>, std::path::PathBuf) {
+async fn dung_cay(
+    dir: &TempDir,
+    duoi: &Duoi,
+) -> (Arc<pai_app_lib::harness::Harness>, std::path::PathBuf) {
     let workspace = dir.path().canonicalize().expect("phân giải");
     let config = Config {
         data_dir: workspace.join("du-lieu"),

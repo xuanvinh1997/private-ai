@@ -72,6 +72,17 @@ describe("token CSS", () => {
     }
   });
 
+  it("ba cấp elevation đều có bóng ngoài thay vì chỉ có inset highlight", () => {
+    const css = readFileSync(join(SRC, "styles/tokens.css"), "utf8");
+    const light = css.slice(css.indexOf(":root {"), css.indexOf(':root[data-theme="dark"]'));
+
+    for (const token of ["--elevation-control", "--elevation-float", "--elevation-pop"]) {
+      const value = light.match(new RegExp(`${token}\\s*:\\s*([^;]+);`))?.[1] ?? "";
+      expect(value, `thiếu ${token}`).not.toBe("");
+      expect(value, `${token} đang chỉ có inset nên UI vẫn bẹt`).toMatch(/,\s*0\s+\d/);
+    }
+  });
+
   // Every colour must be declared on bare `:root` first; declaring it only in the dark block breaks light mode.
   it("token của khối tối đều đã có bản sáng", () => {
     const text = readFileSync(join(SRC, "styles/tokens.css"), "utf8");

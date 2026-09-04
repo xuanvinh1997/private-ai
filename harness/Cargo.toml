@@ -61,6 +61,7 @@ serde_norway = "0.9"
 pdf-extract = "0.9"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 quick-xml = "0.38"
+encoding_rs = "0.8"
 sha2 = "0.10"
 tempfile = "3"
 
@@ -80,6 +81,7 @@ pai-hooks = { path = "crates/pai-hooks" }
 pai-index = { path = "crates/pai-index" }
 pai-lsp = { path = "crates/pai-lsp" }
 pai-rag = { path = "crates/pai-rag" }
+pai-rag-core = { path = "crates/pai-rag-core" }
 pai-providers = { path = "crates/pai-providers" }
 
 [profile.dev]

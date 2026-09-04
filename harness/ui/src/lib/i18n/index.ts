@@ -1,4 +1,14 @@
-export { locale, setLocale, initLocale, t, tn, LOCALES, type Locale, type Msg } from "./core";
+export {
+  locale,
+  setLocale,
+  initLocale,
+  t,
+  tn,
+  LOCALES,
+  LOCALE_NAMES,
+  type Locale,
+  type Msg,
+} from "./core";
 export { TRich } from "./rich";
 
 import { common } from "./strings/common";

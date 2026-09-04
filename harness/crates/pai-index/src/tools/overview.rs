@@ -68,7 +68,7 @@ impl Tool for CodeOverview {
         if stats.files == 0 {
             return Ok(ToolOutcome::ok(
                 "Chỉ mục rỗng: không có tệp Rust, TypeScript, JavaScript hay Python nào \
-                 trong thư mục làm việc, hoặc `.gitignore` đã loại hết chúng."
+                 trong thư mục làm việc, hoặc các bộ lọc và trần an toàn đã loại hết chúng."
                     .to_string(),
             ));
         }

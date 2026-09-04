@@ -1,6 +1,6 @@
-//! `@` completion in the composer: file paths from the open project, served from the index rather than a
-//! directory walk, because the composer re-queries on every keystroke. The trade-off is that only scanned
-//! files appear. Code projects answer from the index, document projects from documents, no project from empty.
+//! `@` completion in the composer: every visible file path from the open project, served from the index's
+//! cheap path inventory rather than a directory walk on every keystroke. Code projects answer from that
+//! inventory, document projects from documents, no project from empty.
 
 use pai_index::Index;
 use pai_rag::Docs;

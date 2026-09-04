@@ -1,4 +1,4 @@
-# Lớp cấu hình đè lên /qdrant/config/config.yaml của image.
+# Cấu hình Qdrant dùng bởi docker-compose.yml ở root.
 #
 # Qdrant nạp theo thứ tự: config mặc định biên dịch sẵn → config/config.yaml →
 # config/{RUN_MODE}.yaml → config/local.yaml → biến môi trường QDRANT__*. File này được
@@ -35,7 +35,7 @@ storage:
     ef_construct: 256
 
   collection:
-    # Mặc định cho collection tạo mới. Nếu pai-rag-service truyền quantization_config
+    # Mặc định cho collection tạo mới. Nếu pai-rag truyền quantization_config
     # riêng lúc tạo collection thì giá trị đó thắng.
     #
     # BẬT scalar int8 — lý do là *tốc độ*, không phải thiếu RAM. Ở quy mô này 1M vector
@@ -60,7 +60,7 @@ storage:
 
 service:
   # Dịch vụ chỉ nghe trên loopback (xem phần ports trong docker-compose.yml) và người
-  # dùng duy nhất của nó là một tiến trình Python, không phải trình duyệt. Tắt CORS để
+  # dùng duy nhất của nó là ứng dụng Rust, không phải trình duyệt. Tắt CORS để
   # một trang web bất kỳ đang mở trong trình duyệt không thể đọc kết quả từ
   # http://127.0.0.1:6333. Dashboard dựng sẵn của Qdrant vẫn dùng được bình thường vì nó
   # được phục vụ từ chính origin đó.

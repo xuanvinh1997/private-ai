@@ -82,13 +82,29 @@ impl NewSession {
     }
 }
 
+/// Which sessions a listing is asking for.
+///
+/// A session records the directory it was opened in, so "the sessions of this project" is a real
+/// question the store can answer. Asking it here rather than filtering the answer afterwards is not
+/// tidiness: `list` takes a limit, and a limit applied before the filter silently hides a project's
+/// older sessions behind another project's newer ones.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionScope<'a> {
+    /// Every session, whatever directory it belongs to.
+    All,
+    /// Sessions opened in this directory.
+    Directory(&'a str),
+    /// Sessions bound to no directory - what plain conversation with no project open produces.
+    Unbound,
+}
+
 /// The session store. `append` takes a batch, not one event: chunks arrive densely and a transaction per chunk makes the disk the bottleneck.
 #[async_trait]
 pub trait SessionStore: Send + Sync + 'static {
     async fn create(&self, spec: NewSession) -> Result<SessionHeader>;
 
     /// Newest first.
-    async fn list(&self, limit: Option<u32>) -> Result<Vec<SessionHeader>>;
+    async fn list(&self, scope: SessionScope<'_>, limit: Option<u32>) -> Result<Vec<SessionHeader>>;
 
     async fn header(&self, id: &str) -> Result<SessionHeader>;
 

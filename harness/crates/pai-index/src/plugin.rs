@@ -74,15 +74,25 @@ impl Plugin for IndexPlugin {
             .first()
             .ok_or_else(|| anyhow::anyhow!("chỉ mục cần ít nhất một thư mục được cấp quyền"))?;
         let db = self.dir.join(db_name(root));
-        let index: Arc<dyn SymbolIndex> = Arc::new(CodeIndex::open(self.roots.clone(), &db)?);
-        ctx.keep(ctx.provide::<Index>(index.clone())?);
+        let index = Arc::new(CodeIndex::open(self.roots.clone(), &db)?);
+        let paths = index.refresh_paths().await?;
+        let service: Arc<dyn SymbolIndex> = index.clone();
+        ctx.keep(ctx.provide::<Index>(service.clone())?);
 
         let tools = ctx.require::<Tools>()?;
-        ctx.keep(tools.register(Arc::new(SymbolSearch::new(index.clone()))));
-        ctx.keep(tools.register(Arc::new(CodeGraph::new(index.clone()))));
-        ctx.keep(tools.register(Arc::new(CodeTrace::new(index.clone()))));
-        ctx.keep(tools.register(Arc::new(CodeOverview::new(index.clone()))));
-        ctx.keep(tools.register(Arc::new(Outline::new(index, self.roots.clone()))));
+        ctx.keep(tools.register(Arc::new(SymbolSearch::new(service.clone()))));
+        ctx.keep(tools.register(Arc::new(CodeGraph::new(service.clone()))));
+        ctx.keep(tools.register(Arc::new(CodeTrace::new(service.clone()))));
+        ctx.keep(tools.register(Arc::new(CodeOverview::new(service.clone()))));
+        ctx.keep(tools.register(Arc::new(Outline::new(service, self.roots.clone()))));
+
+        // Completion is ready after the cheap walk above; parsing and edge resolution warm in the background.
+        tokio::spawn(async move {
+            match index.sync().await {
+                Ok(report) => tracing::debug!(paths, ?report, "warmed the code index"),
+                Err(err) => tracing::warn!(error = %err, "could not warm the code index"),
+            }
+        });
         Ok(())
     }
 }

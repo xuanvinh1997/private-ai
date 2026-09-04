@@ -24,7 +24,7 @@ pub use plugin::SessionPlugin;
 pub use session::{Session, SessionService};
 pub use sqlite::SqliteSessionStore;
 pub use store::{
-    Boundary, NewSession, NoTitle, Origin, SessionHeader, SessionId, SessionStore, SessionTitle,
-    SessionTitler, Sessions, new_session_id,
+    Boundary, NewSession, NoTitle, Origin, SessionHeader, SessionId, SessionScope, SessionStore,
+    SessionTitle, SessionTitler, Sessions, new_session_id,
 };
 pub use surface::{Surface, SurfaceOp};

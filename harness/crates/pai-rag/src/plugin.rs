@@ -9,22 +9,26 @@ use async_trait::async_trait;
 use pai_core::{Context, Plugin};
 use pai_tools::Tools;
 
-use crate::client::RagClient;
 use crate::library::{DocLibrary, Docs};
-use crate::sidecar::{Sidecar, SidecarConfig};
+use crate::native::NativeLibrary;
 use crate::tools::list::DocsList;
 use crate::tools::read::DocsRead;
 use crate::tools::search::DocsSearch;
 
 pub struct RagPlugin {
-    config: SidecarConfig,
+    config_path: PathBuf,
+    project: String,
     /// The user's document folder. The library *is* that folder; nothing is copied.
     root: PathBuf,
 }
 
 impl RagPlugin {
-    pub fn new(config: SidecarConfig, root: PathBuf) -> RagPlugin {
-        RagPlugin { config, root }
+    pub fn new(config_path: PathBuf, project: String, root: PathBuf) -> RagPlugin {
+        RagPlugin {
+            config_path,
+            project,
+            root,
+        }
     }
 }
 
@@ -35,18 +39,12 @@ impl Plugin for RagPlugin {
     }
 
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
-        // Do not connect here: the connection opens on the first call, so opening a project does not pay the Python startup cost.
-        let sidecar = Arc::new(Sidecar::new(self.config.clone()));
-        let client = Arc::new(RagClient::new(sidecar, self.root.clone()));
-
-        // Close the child on teardown, or switching projects leaks a Python process per switch.
-        let closing = client.clone();
-        ctx.effects().defer("rag/shutdown", move || {
-            let closing = closing.clone();
-            tokio::spawn(async move { closing.shutdown().await });
-        });
-
-        let docs: Arc<dyn DocLibrary> = client;
+        let docs: Arc<dyn DocLibrary> = Arc::new(NativeLibrary::open(
+            self.config_path.clone(),
+            self.project.clone(),
+            self.root.clone(),
+        )?);
+        tracing::info!("document library backend: native Rust");
         ctx.keep(ctx.provide::<Docs>(docs.clone())?);
 
         let tools = ctx.require::<Tools>()?;

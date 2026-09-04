@@ -1,10 +1,8 @@
-//! Why a chunk showed up in the results.
-//! Fusion and cosine now live in `services/rag/.../retrieval/fusion.py`; only this label
-//! stays, because [`crate::library::Hit`] carries it and the UI draws it.
+//! Why a chunk showed up in the native retrieval results.
 
 use serde::{Deserialize, Serialize};
 
-/// Serde strings match `DocumentHit.matched_by` in `app/` and `matchedBy` on the Python side.
+/// Serde strings match `DocumentHit.matched_by` in `app/`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MatchedBy {

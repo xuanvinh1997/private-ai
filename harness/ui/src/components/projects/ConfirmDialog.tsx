@@ -12,6 +12,11 @@ export default function ConfirmDialog(props: {
   more?: string;
   detail?: string;
   confirmLabel: string;
+  /** A heavier second action, when the question really has two answers rather than one.
+   *
+   * Given one, the dialog demotes `confirm` to an outline button and paints this one as the destructive
+   * choice: the reader picks by weight, and the heavier-looking button must be the one that keeps less. */
+  escalate?: { label: string; onClick: () => void };
   icon?: IconName;
   busy?: boolean;
   onConfirm: () => void;
@@ -30,9 +35,20 @@ export default function ConfirmDialog(props: {
           <Button onClick={props.onClose} disabled={props.busy}>
             {t(S.common.cancel)}
           </Button>
-          <Button variant="danger" onClick={props.onConfirm} disabled={props.busy}>
+          <Button
+            variant={props.escalate ? "outline" : "danger"}
+            onClick={props.onConfirm}
+            disabled={props.busy}
+          >
             {props.confirmLabel}
           </Button>
+          <Show when={props.escalate}>
+            {(heavier) => (
+              <Button variant="danger" onClick={heavier().onClick} disabled={props.busy}>
+                {heavier().label}
+              </Button>
+            )}
+          </Show>
         </>
       )}
     >

@@ -2,7 +2,7 @@
 //! FTS5 keeps its own content (external-content needs triggers `trusted_schema = OFF` bans),
 //! schema drift rebuilds rather than refuses, and `refs`/`edges` are split by lifetime.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -20,12 +20,16 @@ type Result<T> = std::result::Result<T, IndexError>;
 
 /// `'PIDX'`. Opening someone else's SQLite file is caught before anything is written.
 const APPLICATION_ID: i32 = 0x50494458;
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 /// How many candidates are still worth writing; past the cap the reference is dropped, since a meaningless edge is worse than none.
 const MAX_CANDIDATES: usize = 4;
 
 const SCHEMA: &str = r#"
+CREATE TABLE paths (
+  path TEXT PRIMARY KEY
+) STRICT;
+
 CREATE TABLE files (
   id    INTEGER PRIMARY KEY,
   path  TEXT    NOT NULL UNIQUE,
@@ -59,6 +63,8 @@ CREATE TABLE refs (
 ) STRICT;
 
 CREATE INDEX refs_by_src ON refs (src);
+CREATE INDEX refs_by_dst ON refs (dst);
+CREATE INDEX refs_by_dst_name ON refs (dst_name);
 
 CREATE TABLE edges (
   src  INTEGER NOT NULL REFERENCES symbols(id) ON DELETE CASCADE,
@@ -76,6 +82,8 @@ CREATE TABLE meta (
   key   TEXT    PRIMARY KEY,
   value INTEGER NOT NULL
 ) STRICT;
+
+INSERT INTO meta (key, value) VALUES ('edge_count', 0);
 "#;
 
 /// Module nodes are not declarations anyone searches for, so `symbol_search` and `outline` exclude them.
@@ -149,16 +157,41 @@ impl Store {
         })
     }
 
-    /// Known file paths for `@` completion: `path` only, ordered for stability; scoring lives in [`crate::complete`].
+    /// Every visible file path for `@` completion, including languages this index cannot parse.
     pub fn paths(&self) -> Result<Vec<String>> {
         self.with(|conn| {
-            let mut stmt = conn.prepare("SELECT path FROM files ORDER BY path")?;
+            let mut stmt = conn.prepare("SELECT path FROM paths ORDER BY path")?;
             let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);
             }
             Ok(out)
+        })
+    }
+
+    /// Replace the cheap path inventory only when it changed; unchanged tool calls stay read-only at SQLite level.
+    pub fn sync_paths(&self, paths: &[String]) -> Result<()> {
+        self.with(|conn| {
+            let known = {
+                let mut stmt = conn.prepare("SELECT path FROM paths ORDER BY path")?;
+                let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            if known == paths {
+                return Ok(());
+            }
+
+            let tx = conn.transaction()?;
+            tx.execute("DELETE FROM paths", [])?;
+            {
+                let mut insert = tx.prepare("INSERT INTO paths (path) VALUES (?1)")?;
+                for path in paths {
+                    insert.execute(params![path])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
         })
     }
 
@@ -170,9 +203,10 @@ impl Store {
         mtime: i64,
         size: i64,
         found: &Extraction,
-    ) -> Result<()> {
+    ) -> Result<HashSet<String>> {
         self.with(|conn| {
             let tx = conn.transaction()?;
+            let mut affected = symbol_names_of(&tx, path)?;
             forget_symbols_of(&tx, path)?;
             tx.execute(
                 "INSERT INTO files (path, lang, mtime, size) VALUES (?1, ?2, ?3, ?4) \
@@ -186,6 +220,7 @@ impl Store {
 
             // The module node comes first as the default owner, and stays out of FTS: people search function names.
             let module = module_name(path);
+            affected.insert(module.clone());
             tx.execute(
                 "INSERT INTO symbols (file_id, name, kind, parent, start_line, end_line, signature) \
                  VALUES (?1, ?2, ?3, NULL, 1, 1, ?4)",
@@ -196,6 +231,7 @@ impl Store {
             let mut ids = Vec::with_capacity(found.symbols.len());
             let mut by_name: HashMap<&str, i64> = HashMap::new();
             for symbol in &found.symbols {
+                affected.insert(symbol.name.clone());
                 tx.execute(
                     "INSERT INTO symbols \
                      (file_id, name, kind, parent, start_line, end_line, signature) \
@@ -237,34 +273,91 @@ impl Store {
                 )?;
             }
             tx.commit()?;
-            Ok(())
+            Ok(affected)
         })
     }
 
     /// Forget a file entirely: its `files` row, its symbols, and its FTS entries.
-    pub fn forget_files(&self, paths: &[String]) -> Result<()> {
+    pub fn forget_files(&self, paths: &[String]) -> Result<HashSet<String>> {
         if paths.is_empty() {
-            return Ok(());
+            return Ok(HashSet::new());
         }
         self.with(|conn| {
             let tx = conn.transaction()?;
+            let mut affected = HashSet::new();
             for path in paths {
+                affected.extend(symbol_names_of(&tx, path)?);
                 forget_symbols_of(&tx, path)?;
                 tx.execute("DELETE FROM files WHERE path = ?1", params![path])?;
             }
             tx.commit()?;
-            Ok(())
+            Ok(affected)
         })
     }
 
-    /// Rebuild the whole edge table from `refs` — whole, not incremental, so a new target links immediately.
+    /// Re-resolve only owners affected by changed files or by target names whose candidate set changed.
     /// Tiers are same file, same directory, same language, whole store; the first tier with a hit wins.
-    /// Returns how many edges were written.
-    pub fn rebuild_edges(&self) -> Result<usize> {
+    /// Returns the total number of edges after the update.
+    pub fn rebuild_edges(
+        &self,
+        affected_names: &HashSet<String>,
+        changed_paths: &[String],
+    ) -> Result<usize> {
         self.with(|conn| {
             let tx = conn.transaction()?;
 
+            tx.execute_batch(
+                "CREATE TEMP TABLE IF NOT EXISTS edge_affected_names (
+                   name TEXT PRIMARY KEY
+                 ) WITHOUT ROWID;
+                 CREATE TEMP TABLE IF NOT EXISTS edge_changed_paths (
+                   path TEXT PRIMARY KEY
+                 ) WITHOUT ROWID;
+                 CREATE TEMP TABLE IF NOT EXISTS edge_sources (
+                   src INTEGER PRIMARY KEY
+                 ) WITHOUT ROWID;
+                 DELETE FROM edge_affected_names;
+                 DELETE FROM edge_changed_paths;
+                 DELETE FROM edge_sources;",
+            )?;
+            {
+                let mut insert_name =
+                    tx.prepare("INSERT OR IGNORE INTO edge_affected_names (name) VALUES (?1)")?;
+                for name in affected_names {
+                    insert_name.execute(params![name])?;
+                }
+                let mut insert_path =
+                    tx.prepare("INSERT OR IGNORE INTO edge_changed_paths (path) VALUES (?1)")?;
+                for path in changed_paths {
+                    insert_path.execute(params![path])?;
+                }
+            }
+
+            // A target-name change can redirect refs in untouched files. A changed file also needs all
+            // of its new refs resolved, even when none of their target names changed.
+            tx.execute(
+                "INSERT OR IGNORE INTO edge_sources (src)
+                 SELECT DISTINCT r.src FROM edge_affected_names n
+                 CROSS JOIN refs r INDEXED BY refs_by_dst_name
+                 WHERE r.dst_name = n.name",
+                [],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO edge_sources (src)
+                 SELECT DISTINCT r.src FROM refs r
+                 JOIN symbols s ON s.id = r.src
+                 JOIN files f ON f.id = s.file_id
+                 JOIN edge_changed_paths p ON p.path = f.path",
+                [],
+            )?;
+
+            let removed = tx.execute(
+                "DELETE FROM edges WHERE src IN (SELECT src FROM edge_sources)",
+                [],
+            )?;
+
             let mut files: HashMap<i64, FileRow> = HashMap::new();
+            let mut inserted = 0usize;
             {
                 let mut stmt = tx.prepare("SELECT id, path, lang FROM files")?;
                 let mut rows = stmt.query([])?;
@@ -288,7 +381,14 @@ impl Store {
 
             let mut by_name: HashMap<String, Vec<Candidate>> = HashMap::new();
             {
-                let mut stmt = tx.prepare("SELECT id, name, kind, file_id FROM symbols")?;
+                let mut stmt = tx.prepare(
+                    "SELECT s.id, s.name, s.kind, s.file_id FROM symbols s
+                     JOIN (
+                       SELECT DISTINCT r.dst_name AS name FROM edge_sources a
+                       CROSS JOIN refs r INDEXED BY refs_by_src
+                       WHERE r.src = a.src AND r.dst_name IS NOT NULL
+                     ) wanted ON wanted.name = s.name",
+                )?;
                 let mut rows = stmt.query([])?;
                 while let Some(row) = rows.next()? {
                     let kind: String = row.get(2)?;
@@ -301,8 +401,6 @@ impl Store {
                 }
             }
 
-            tx.execute("DELETE FROM edges", [])?;
-            let mut written = 0usize;
             {
                 let mut insert = tx.prepare(
                     "INSERT OR IGNORE INTO edges (src, dst, kind, path, line) \
@@ -310,7 +408,8 @@ impl Store {
                 )?;
                 let mut stmt = tx.prepare(
                     "SELECT r.src, r.kind, r.dst, r.dst_name, r.line, s.file_id \
-                     FROM refs r JOIN symbols s ON s.id = r.src",
+                     FROM edge_sources a CROSS JOIN refs r INDEXED BY refs_by_src \
+                     JOIN symbols s ON s.id = r.src WHERE r.src = a.src",
                 )?;
                 let mut rows = stmt.query([])?;
                 while let Some(row) = rows.next()? {
@@ -343,7 +442,7 @@ impl Store {
                         if dst == src {
                             continue;
                         }
-                        written += insert.execute(params![
+                        inserted += insert.execute(params![
                             src,
                             dst,
                             kind.as_str(),
@@ -353,8 +452,18 @@ impl Store {
                     }
                 }
             }
+            let before: usize = tx.query_row(
+                "SELECT value FROM meta WHERE key = 'edge_count'",
+                [],
+                |row| row.get(0),
+            )?;
+            let total = before.saturating_sub(removed) + inserted;
+            tx.execute(
+                "UPDATE meta SET value = ?1 WHERE key = 'edge_count'",
+                params![total],
+            )?;
             tx.commit()?;
-            Ok(written)
+            Ok(total)
         })
     }
 
@@ -440,7 +549,13 @@ impl Store {
     }
 
     pub fn edge_count(&self) -> Result<i64> {
-        self.with(|conn| Ok(conn.query_row("SELECT count(*) FROM edges", [], |r| r.get(0))?))
+        self.with(|conn| {
+            Ok(
+                conn.query_row("SELECT value FROM meta WHERE key = 'edge_count'", [], |r| {
+                    r.get(0)
+                })?,
+            )
+        })
     }
 
     /// Nodes with exactly this name; `Foo::bar` is split, because the model copies back the qualified name it was shown.
@@ -559,7 +674,11 @@ impl Store {
                     [],
                     |r| r.get(0),
                 )?,
-                edges: conn.query_row("SELECT count(*) FROM edges", [], |r| r.get(0))?,
+                edges: conn.query_row(
+                    "SELECT value FROM meta WHERE key = 'edge_count'",
+                    [],
+                    |r| r.get(0),
+                )?,
                 languages: languages(conn)?,
                 scanned_at,
             })
@@ -723,6 +842,20 @@ fn placeholders_from(count: usize, first: usize) -> String {
 }
 
 fn forget_symbols_of(tx: &rusqlite::Transaction<'_>, path: &str) -> Result<()> {
+    let removed_edges: i64 = tx.query_row(
+        "WITH doomed AS (
+           SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?1
+         )
+         SELECT count(*) FROM (
+           SELECT e.rowid FROM doomed d CROSS JOIN edges e INDEXED BY edges_by_src
+           WHERE e.src = d.id
+           UNION
+           SELECT e.rowid FROM doomed d CROSS JOIN edges e INDEXED BY edges_by_dst
+           WHERE e.dst = d.id
+         )",
+        params![path],
+        |row| row.get(0),
+    )?;
     // FTS first: once the `symbols` rows are gone, nothing says which FTS rowids to delete.
     tx.execute(
         "DELETE FROM symbols_fts WHERE rowid IN \
@@ -734,7 +867,21 @@ fn forget_symbols_of(tx: &rusqlite::Transaction<'_>, path: &str) -> Result<()> {
         "DELETE FROM symbols WHERE file_id IN (SELECT id FROM files WHERE path = ?1)",
         params![path],
     )?;
+    if removed_edges > 0 {
+        tx.execute(
+            "UPDATE meta SET value = max(0, value - ?1) WHERE key = 'edge_count'",
+            params![removed_edges],
+        )?;
+    }
     Ok(())
+}
+
+fn symbol_names_of(tx: &rusqlite::Transaction<'_>, path: &str) -> Result<HashSet<String>> {
+    let mut stmt = tx.prepare(
+        "SELECT s.name FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?1",
+    )?;
+    let rows = stmt.query_map(params![path], |row| row.get::<_, String>(0))?;
+    Ok(rows.collect::<rusqlite::Result<HashSet<_>>>()?)
 }
 
 fn read_symbol(row: &Row<'_>) -> rusqlite::Result<Symbol> {
@@ -831,7 +978,8 @@ fn ensure_schema(conn: &mut Connection) -> Result<()> {
         );
         let tx = conn.transaction()?;
         tx.execute_batch(
-            "DROP TABLE IF EXISTS meta; \
+            "DROP TABLE IF EXISTS paths; \
+             DROP TABLE IF EXISTS meta; \
              DROP TABLE IF EXISTS edges; \
              DROP TABLE IF EXISTS refs; \
              DROP TABLE IF EXISTS symbols_fts; \

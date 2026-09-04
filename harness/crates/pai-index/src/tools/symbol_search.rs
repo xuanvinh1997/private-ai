@@ -83,8 +83,9 @@ impl Tool for SymbolSearch {
         if hits.is_empty() {
             return Ok(ToolOutcome::ok(format!(
                 "Không có ký hiệu nào tên giống `{}`{}. Chỉ mục chỉ chứa Rust, \
-                 TypeScript, JavaScript và Python, và bỏ qua những gì `.gitignore` loại \
-                 trừ; `grep` tìm được ở chỗ chỉ mục không với tới.",
+                 TypeScript, JavaScript và Python, có trần kích thước/số tệp, và bỏ qua \
+                 mã sinh cùng những gì `.gitignore` loại trừ; `grep` tìm được ở chỗ chỉ \
+                 mục không với tới.",
                 args.query,
                 match args.kind {
                     Some(kind) => format!(" thuộc loại `{}`", kind.as_str()),

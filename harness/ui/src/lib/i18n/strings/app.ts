@@ -48,12 +48,21 @@ export const app = {
       vi: 'Không bỏ được "{name}" khỏi danh sách: {err}',
     },
     deleteSession: { en: "Could not delete the session: {err}", vi: "Không xoá được phiên: {err}" },
+    deleteProject: {
+      en: 'Could not delete "{name}": {err}',
+      vi: 'Không xoá được "{name}": {err}',
+    },
   },
 
   // Remove-project-from-list dialog
   forget: {
     title: { en: 'Remove "{name}" from the list?', vi: 'Bỏ "{name}" khỏi danh sách?' },
     body: { en: "Files on disk stay untouched.", vi: "Thư mục trên đĩa vẫn nguyên, không tệp nào mất." },
+    bodyWithDelete: {
+      en: 'Files on disk stay untouched either way. "Delete its data" also drops this project\'s conversations and its indexed library.',
+      vi: 'Thư mục trên đĩa vẫn nguyên, dù chọn cách nào. "Xoá cả dữ liệu" bỏ thêm phiên trò chuyện và thư viện đã lập chỉ mục của dự án này.',
+    },
+    delete: { en: "Delete its data", vi: "Xoá cả dữ liệu" },
     more: {
       en: "Only the recent projects list changes. The folder and every file inside stay on disk — open it again any time and the project comes back.",
       vi: "Chỉ danh sách dự án gần đây bị đổi. Thư mục và toàn bộ tệp bên trong vẫn nguyên trên đĩa — mở lại thư mục này bất cứ lúc nào là dự án trở lại.",

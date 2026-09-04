@@ -5,6 +5,8 @@ export interface MenuItem {
   id: string;
   label: string;
   icon: IconName;
+  /** A choice menu exposes its current value as radio state, not only as a differently coloured row. */
+  selected?: boolean;
   /** Secondary line naming this row's *consequence*; the two most confusable rows differ only by consequence. */
   hint?: string;
   danger?: boolean;
@@ -24,6 +26,8 @@ export function Menu(props: {
   onRequestClose?: () => void;
   /** `pill` shows the current value: a selection must be readable without opening the menu. */
   variant?: "icon" | "pill";
+  /** Match a standalone small icon button when an icon menu sits beside one in a toolbar. */
+  size?: "sm";
   icon?: IconName;
   text?: string;
   tone?: "neutral" | "warn";
@@ -92,17 +96,26 @@ export function Menu(props: {
             queueMicrotask(() => move(1));
           }
         }}
-        class="flex items-center gap-3xs rounded-pill transition-colors duration-[var(--dur-fast)]"
+        class="flex items-center gap-3xs transition-colors duration-[var(--dur-fast)]"
         classList={{
-          "size-6 justify-center text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
+          "justify-center rounded-icon text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
             (props.variant ?? "icon") === "icon",
-          "h-(--control-h) px-sm text-xs": props.variant === "pill",
-          "bg-[var(--overlay-faint)] text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
+          "bg-accent-soft text-accent-ink":
+            (props.variant ?? "icon") === "icon" && isOpen(),
+          "size-6": (props.variant ?? "icon") === "icon" && props.size !== "sm",
+          "size-(--icon-control-h)":
+            (props.variant ?? "icon") === "icon" && props.size === "sm",
+          "h-(--control-h) rounded-pill border px-sm text-xs shadow-control": props.variant === "pill",
+          "border-line bg-surface-soft text-muted hover:border-line-strong hover:bg-surface hover:text-ink":
             props.variant === "pill" && (props.tone ?? "neutral") === "neutral",
-          "bg-warn-soft text-warn hover:bg-warn-soft": props.variant === "pill" && props.tone === "warn",
+          "border-warn/40 bg-warn-soft text-warn hover:border-warn/70 hover:bg-warn-soft":
+            props.variant === "pill" && props.tone === "warn",
         }}
       >
-        <Show when={props.variant === "pill"} fallback={<Icon name="more" size={14} />}>
+        <Show
+          when={props.variant === "pill"}
+          fallback={<Icon name={props.icon ?? "more"} size={props.size === "sm" ? 13 : 14} />}
+        >
           <Show when={props.icon}>{(icon) => <Icon name={icon()} size={13} />}</Show>
           <span class="max-w-40 truncate">{props.text}</span>
           <Icon name="chevron-down" size={12} />
@@ -142,7 +155,8 @@ export function Menu(props: {
             {(item) => (
               <button
                 type="button"
-                role="menuitem"
+                role={item.selected === undefined ? "menuitem" : "menuitemradio"}
+                aria-checked={item.selected}
                 disabled={item.disabled}
                 onClick={(event) => {
                   event.stopPropagation();
@@ -153,8 +167,11 @@ export function Menu(props: {
                 }}
                 class="flex w-full flex-col gap-3xs rounded-btn px-sm py-2xs text-left text-xs transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-60"
                 classList={{
-                  "text-text enabled:hover:bg-[var(--overlay-hover)]": !item.danger,
+                  "text-text enabled:hover:bg-[var(--overlay-hover)]":
+                    !item.danger && item.selected !== true,
                   "text-danger enabled:hover:bg-danger-soft": item.danger === true,
+                  "bg-accent-soft text-accent-ink enabled:hover:bg-accent-soft":
+                    item.selected === true,
                 }}
               >
                 <span class="flex items-center gap-sm">

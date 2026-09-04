@@ -4,12 +4,13 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Thư viện tài liệu: client MCP tới pai-rag-service"
+description = "Thư viện tài liệu native Rust chạy trong tiến trình"
 
 [dependencies]
 anyhow = { workspace = true }
 pai-core = { workspace = true }
 pai-tools = { workspace = true }
+pai-rag-core = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
 tokio = { workspace = true }
@@ -19,8 +20,12 @@ schemars = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
-# Speaks MCP to a child process: only the client half and stdio transport are needed.
-rmcp = { workspace = true }
+reqwest = { workspace = true }
+quick-xml = { workspace = true }
+zip = { workspace = true }
+pdf-extract = { workspace = true }
+encoding_rs = { workspace = true }
+sha1 = "0.10"
 
 [dev-dependencies]
 pai-core = { workspace = true }
@@ -28,4 +33,4 @@ pai-tools = { workspace = true }
 futures = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }

@@ -5,10 +5,18 @@ import Icon from "../Icon";
 import { InfoDot } from "../settings/FormKit";
 import { Button } from "../projects/DialogShell";
 
+export interface DropZoneLabels {
+  title: string;
+  hint: string;
+  more: string;
+  pick: string;
+}
+
 /** Drop zone over Tauri's drag-drop, not HTML5, because the browser hides the real file path; it fills the screen while the library is empty and shrinks to a row afterwards. */
 export default function DropZone(props: {
   compact?: boolean;
   busy?: boolean;
+  labels?: DropZoneLabels;
   onPaths: (paths: string[]) => void;
   onPick: () => void;
 }) {
@@ -26,15 +34,15 @@ export default function DropZone(props: {
           </span>
           <div class="flex flex-col items-center gap-2xs">
             <p class="m-0 flex items-center gap-2xs text-sm font-medium text-ink">
-              {t(S.docs.drop.emptyTitle)}
-              <InfoDot text={t(S.docs.drop.emptyMore)} />
+              {props.labels?.title ?? t(S.docs.drop.emptyTitle)}
+              <InfoDot text={props.labels?.more ?? t(S.docs.drop.emptyMore)} />
             </p>
             <p class="m-0 max-w-[46ch] text-xs text-muted">
-              {t(S.docs.drop.emptyHint)}
+              {props.labels?.hint ?? t(S.docs.drop.emptyHint)}
             </p>
           </div>
           <Button variant="primary" icon="plus" disabled={props.busy} onClick={props.onPick}>
-            {t(S.docs.drop.pick)}
+            {props.labels?.pick ?? t(S.docs.drop.pick)}
           </Button>
         </div>
       }
@@ -43,9 +51,11 @@ export default function DropZone(props: {
         <span class="text-faint">
           <Icon name="upload" size={15} />
         </span>
-        <span class="flex-1 text-xs text-muted">{t(S.docs.drop.compactHint)}</span>
+        <span class="flex-1 text-xs text-muted">
+          {props.labels?.hint ?? t(S.docs.drop.compactHint)}
+        </span>
         <Button variant="outline" icon="plus" disabled={props.busy} onClick={props.onPick}>
-          {t(S.docs.drop.pick)}
+          {props.labels?.pick ?? t(S.docs.drop.pick)}
         </Button>
       </div>
     </Show>

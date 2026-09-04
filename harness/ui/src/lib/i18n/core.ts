@@ -10,6 +10,12 @@ export type Msg = Readonly<Record<Locale, string>>;
 
 export const LOCALES: readonly Locale[] = ["en", "vi"] as const;
 
+/** Each language names itself, so a user can always recognise the way back from an unfamiliar locale. */
+export const LOCALE_NAMES: Readonly<Record<Locale, string>> = {
+  en: "English",
+  vi: "Tiếng Việt",
+};
+
 const STORAGE_KEY = "pai-locale";
 
 const isLocale = (raw: string): raw is Locale => raw === "en" || raw === "vi";

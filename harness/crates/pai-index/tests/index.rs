@@ -183,6 +183,20 @@ async fn trich_dung_ky_hieu_tu_mot_tep_typescript() {
     );
 }
 
+#[tokio::test]
+async fn namespace_typescript_lam_cha_cua_ham_va_hang() {
+    let (dir, index) = bench(&[(
+        "namespace.ts",
+        "namespace N { export function f() {} export const HANG = 1; }\n",
+    )]);
+    index.sync().await.unwrap();
+    let path = dir.path().canonicalize().unwrap().join("namespace.ts");
+    let symbols = index.outline(&path).await.unwrap().unwrap();
+
+    assert_eq!(find(&symbols, "f").parent.as_deref(), Some("N"));
+    assert_eq!(find(&symbols, "HANG").parent.as_deref(), Some("N"));
+}
+
 /// The crate's central invariant: rescanning an unchanged tree parses nothing.
 #[tokio::test]
 async fn tep_khong_doi_thi_khong_parse_lai() {
@@ -314,6 +328,26 @@ async fn gitignore_duoc_ton_trong_ke_ca_khi_chua_git_init() {
     assert_eq!(index.search("that", None, 10).await.unwrap().len(), 1);
 }
 
+#[tokio::test]
+async fn completion_co_ca_tep_khong_thuoc_ngon_ngu_parse_duoc() {
+    let (_dir, index) = bench(&[
+        ("src/main.rs", "fn main() {}\n"),
+        ("README.md", "# Chao\n"),
+        ("Cargo.toml", "[package]\nname = \"demo\"\n"),
+        ("config/app.yaml", "enabled: true\n"),
+    ]);
+    index.sync().await.unwrap();
+
+    assert_eq!(index.paths("readme", 5).await.unwrap().len(), 1);
+    assert_eq!(index.paths("cargo", 5).await.unwrap().len(), 1);
+    assert_eq!(index.paths("yaml", 5).await.unwrap().len(), 1);
+    assert_eq!(
+        index.stats().await.unwrap().files,
+        1,
+        "chỉ tệp Rust được parse"
+    );
+}
+
 /// `outline` resolves then checks its path exactly as `read` does; otherwise the index bypasses the roots.
 #[tokio::test]
 async fn outline_khong_ra_khoi_goc_va_phat_dung_hinh_dang_meta() {
@@ -405,6 +439,18 @@ async fn trich_dung_ky_hieu_tu_mot_tep_python() {
     assert_eq!(find(&symbols, "tu_do").parent, None);
 }
 
+#[tokio::test]
+async fn hang_trong_class_python_co_ky_hieu_va_dung_cha() {
+    let (dir, index) = bench(&[("constant.py", "class A:\n    HANG = 1\n")]);
+    index.sync().await.unwrap();
+    let path = dir.path().canonicalize().unwrap().join("constant.py");
+    let symbols = index.outline(&path).await.unwrap().unwrap();
+
+    let constant = find(&symbols, "HANG");
+    assert_eq!(constant.kind, SymbolKind::Constant);
+    assert_eq!(constant.parent.as_deref(), Some("A"));
+}
+
 /// The index survives a restart; without this, "incremental" holds only within one session.
 #[tokio::test]
 async fn chi_muc_tren_dia_song_qua_lan_mo_lai() {
@@ -436,6 +482,7 @@ async fn plugin_cam_dung_nam_tool_va_mot_provider() {
     let dir = TempDir::new().unwrap();
     let root = dir.path().canonicalize().unwrap();
     std::fs::write(root.join("kho.rs"), RUST_SOURCE).unwrap();
+    std::fs::write(root.join("README.md"), "# du an\n").unwrap();
     let kho = TempDir::new().unwrap();
 
     let ctx = Context::root();
@@ -472,6 +519,19 @@ async fn plugin_cam_dung_nam_tool_va_mot_provider() {
 
     // The seam must also be usable from outside, not only by the two tools within.
     let index = ctx.require::<Index>().unwrap();
-    index.sync().await.unwrap();
-    assert!(!index.search("KhoLuu", None, 5).await.unwrap().is_empty());
+    assert_eq!(
+        index.paths("readme", 5).await.unwrap().len(),
+        1,
+        "path inventory phải sẵn ngay khi plugin vừa gắn"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if !index.search("KhoLuu", None, 5).await.unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("background sync phải làm ký hiệu sẵn sàng");
 }

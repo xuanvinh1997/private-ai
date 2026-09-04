@@ -7,15 +7,15 @@ pub mod coalesce;
 mod commands;
 pub mod harness;
 mod llm;
-mod rag_config;
 pub mod protocol;
+mod rag_config;
 pub mod scope;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use pai_agent::{Driver, Prompt, TurnSink};
-use pai_session::{NewSession, SessionEvent};
+use pai_session::{NewSession, SessionEvent, SessionScope};
 use pai_tools::{ToolPipeline, Tools};
 use parking_lot::Mutex;
 use serde::Deserialize;
@@ -404,9 +404,19 @@ async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelChoice>, Str
 #[tauri::command]
 async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
     let harness = state.harness().await?;
+    // Scoped to the open project, because a session belongs to the directory it was opened in. Listing
+    // every session would put the previous project's conversations in this project's sidebar - and since
+    // the screen selects the newest one after a switch, the user would land back in the session they just
+    // left, now labelled as the new project's.
+    let workspace = harness.workspace().map(|dir| dir.display().to_string());
+    let scope = match workspace.as_deref() {
+        Some(path) => SessionScope::Directory(path),
+        // No project open is plain conversation, and those sessions record no directory.
+        None => SessionScope::Unbound,
+    };
     let headers = harness
         .sessions
-        .list(Some(100))
+        .list(scope, Some(100))
         .await
         .map_err(|e| e.to_string())?;
     Ok(headers
@@ -469,11 +479,13 @@ pub fn run() {
             commands::projects::list_projects,
             commands::projects::open_project,
             commands::projects::remove_project,
+            commands::projects::delete_project,
             commands::projects::create_project,
             commands::projects::clone_project,
             commands::projects::cancel_clone,
             commands::projects::close_project,
             commands::projects::list_dir,
+            commands::projects::import_project_files,
             commands::projects::set_project_kind,
             commands::providers::list_providers,
             commands::providers::provider_presets,

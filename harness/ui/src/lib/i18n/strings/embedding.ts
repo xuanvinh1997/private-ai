@@ -204,8 +204,8 @@ export const embedding = {
       vi: "Sắp lại thứ tự đoạn tìm được: đúng hơn, đổi lại chậm hơn.",
     },
     more: {
-      en: "One model reads the question and each chunk together, so it orders them better than comparing vectors — which squeezes the two sides apart before comparing. Changing this does not re-embed the library: the next question already follows the new setting.",
-      vi: "Một mô hình đọc cả câu hỏi lẫn từng đoạn cùng một lúc, nên nó xếp đúng hơn phép so vector — vốn nén hai bên tách rời nhau rồi mới so. Đổi ở đây không nhúng lại thư viện: câu hỏi kế tiếp đã theo cấu hình mới.",
+      en: "An optional HTTP rerank server reads the question and each chunk together, then returns a better order than vector similarity alone. Changing this does not re-embed the library.",
+      vi: "Một máy chủ rerank HTTP tùy chọn đọc cả câu hỏi lẫn từng đoạn rồi trả về thứ tự tốt hơn so vector đơn thuần. Đổi ở đây không nhúng lại thư viện.",
     },
     saveFailed: { en: "Save failed", vi: "Không lưu được" },
 
@@ -226,8 +226,8 @@ export const embedding = {
       vi: "Càng nhiều đoạn thì thứ tự càng đúng và càng chờ lâu.",
     },
     candidatesMore: {
-      en: "On a machine without a GPU each chunk costs about 0.4 seconds — 30 chunks is over ten seconds per question. With a GPU it is near instant. Lowering this number is the fastest way to wait less.",
-      vi: "Trên máy không có GPU, mỗi đoạn tốn khoảng 0,4 giây — 30 đoạn là hơn mười giây mỗi câu hỏi. Có GPU thì gần như tức thì. Hạ số này xuống là cách nhanh nhất để bớt chờ.",
+      en: "Each candidate is sent to the configured HTTP rerank endpoint. Lowering this number reduces network and scoring latency.",
+      vi: "Mỗi ứng viên được gửi tới endpoint rerank HTTP đã cấu hình. Hạ số này để giảm độ trễ mạng và chấm điểm.",
     },
 
     topNLabel: { en: "Kept", vi: "Số đoạn giữ lại" },
@@ -236,31 +236,13 @@ export const embedding = {
       vi: "Mấy đoạn đứng đầu được đưa cho mô hình trả lời.",
     },
 
-    backendLabel: { en: "Runs on", vi: "Nơi chạy" },
-    backendDesc: {
-      en: "This machine or a server.",
-      vi: "Trong máy, hoặc trên một máy chủ ngoài.",
+    urlLabel: { en: "Server", vi: "Máy chủ" },
+    urlDesc: {
+      en: "Base URL or full /v1/rerank endpoint.",
+      vi: "URL gốc hoặc endpoint /v1/rerank đầy đủ.",
     },
-    backendMore: {
-      en: "On device: a model file runs inside the document process, nothing leaves the machine. Remote server: a /v1/rerank endpoint such as TEI or Infinity.",
-      vi: "Trong máy: một tệp mô hình chạy cùng tiến trình đọc tài liệu, không có gì rời khỏi máy. Máy chủ ngoài: một endpoint /v1/rerank như TEI hoặc Infinity.",
-    },
-    backendSelectLabel: {
-      en: "Where the rerank model runs",
-      vi: "Nơi chạy mô hình xếp hạng lại",
-    },
-    backendOnnx: { en: "On device", vi: "Trong máy" },
-    backendHttp: { en: "Remote server", vi: "Máy chủ ngoài" },
+    urlFieldLabel: { en: "Rerank server URL", vi: "URL máy chủ rerank" },
 
-    repoLabel: { en: "Repository", vi: "Kho mô hình" },
-    repoDesc: {
-      en: "Hugging Face repository name.",
-      vi: "Tên kho mô hình trên Hugging Face.",
-    },
-    repoMore: {
-      en: "Downloaded on the first run, about two gigabytes. Search keeps working while it downloads, just without the scoring pass.",
-      vi: "Tải về ở lần chạy đầu, khoảng hai gigabyte. Trong lúc chờ thì tìm kiếm vẫn chạy, chỉ là chưa có bước chấm lại.",
-    },
     remoteModelLabel: { en: "Model name", vi: "Tên mô hình" },
     remoteModelDesc: {
       en: "Model your server serves.",

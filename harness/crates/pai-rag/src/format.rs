@@ -1,6 +1,6 @@
 //! Document format.
-//! This list must match `Format::as_str`, the `format` labels from the Python extractor,
-//! and the `DocumentFormat` union in `ui/src/lib/protocol.ts`. Grouped by how it is read.
+//! This list must match `Format::as_str` and the `DocumentFormat` union in
+//! `ui/src/lib/protocol.ts`.
 
 use serde::{Deserialize, Serialize};
 
@@ -8,9 +8,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum Format {
     Pdf,
-    /// `.docx`, `.xlsx`, `.pptx` and relatives — read through markitdown.
+    /// `.docx` is supported natively. Other Office formats are currently rejected.
     Office,
-    /// Images, read by a vision model. Only present once a vision model is selected.
+    /// Retained for existing library rows; new images are currently rejected.
     Image,
     Html,
     /// `.csv`, `.tsv`, `.json`, `.xml`, `.yaml` — structured, but read out as text.
@@ -34,7 +34,7 @@ impl Format {
         }
     }
 
-    /// From the wire string; unknown formats fall back to [`Format::Text`] so a new Python label never blanks the list.
+    /// From persisted strings; unknown formats fall back to [`Format::Text`].
     pub fn parse(name: &str) -> Format {
         match name.trim().to_ascii_lowercase().as_str() {
             "pdf" => Format::Pdf,

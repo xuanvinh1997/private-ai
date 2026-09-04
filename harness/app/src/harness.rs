@@ -19,9 +19,9 @@ use pai_project::{Project, ProjectKind, ProjectStore, SqliteProjectStore};
 use pai_providers::{
     DB_FILE, ProviderInput, ProviderRuntime, ProviderStore, Providers, Role, SqliteProviderStore,
 };
-use pai_rag::{RagPlugin, SidecarConfig};
+use pai_rag::{RagPlugin, purge_library};
 use pai_sandbox::SandboxPlugin;
-use pai_session::{SessionService, SessionStore, SqliteSessionStore};
+use pai_session::{SessionScope, SessionService, SessionStore, SqliteSessionStore};
 use pai_shell::ShellPlugin;
 use pai_terminal::TerminalPlugin;
 use pai_tools::{ToolPipeline, ToolRegistry, Tools, ToolsPlugin};
@@ -54,7 +54,7 @@ pub struct Harness {
     current: parking_lot::Mutex<Option<Project>>,
     /// Pointer to the active provider; everything that talks to the model holds this, never a copy.
     pub llm: Arc<ActiveLlm>,
-    /// The configuration file `pai-rag-service` reads, rewritten whenever a provider role changes.
+    /// The configuration file the native RAG library reads whenever a provider role changes.
     pub rag_config: Arc<RagConfigFile>,
     pub providers: Arc<ProviderRuntime>,
     /// MCP servers declared in the config row (`patch.yaml`), kept so every reload can pass them back in:
@@ -109,7 +109,12 @@ impl Harness {
             .apply_active()
             .await
             .map_err(|err| err.to_string())?;
-        apply_llm(&self.providers, &self.llm, &self.rag_config, self.current.lock().as_ref());
+        apply_llm(
+            &self.providers,
+            &self.llm,
+            &self.rag_config,
+            self.current.lock().as_ref(),
+        );
         Ok(())
     }
 
@@ -166,6 +171,52 @@ impl Harness {
         Ok(project)
     }
 
+    /// Delete a project: its sessions, its document library, and its row. **The user's folder is never
+    /// touched** - the files are theirs, and a library is only an index of them.
+    ///
+    /// The library goes first. If dropping it fails the project stays, whole, and the user can retry;
+    /// forgetting the row first would leave a library nothing can name any more, since the id is the only
+    /// handle on it.
+    pub async fn delete_project(&self, id: &str) -> Result<(), String> {
+        if self
+            .current
+            .lock()
+            .as_ref()
+            .is_some_and(|open| open.id == id)
+        {
+            return Err("hãy chuyển sang dự án khác trước khi xoá dự án đang mở".into());
+        }
+        let project = self.projects.get(id).map_err(|err| err.to_string())?;
+
+        if project.kind == ProjectKind::Docs {
+            self.purge_library(&project).await?;
+        }
+
+        // Sessions are addressed by the directory they were opened in, which is exactly what the sidebar
+        // lists, so this removes precisely the conversations the user saw under this project.
+        let headers = self
+            .sessions
+            .list(SessionScope::Directory(&project.path), None)
+            .await
+            .map_err(|err| err.to_string())?;
+        for header in headers {
+            self.sessions
+                .delete(&header.id)
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+
+        self.projects.forget(id).map_err(|err| err.to_string())
+    }
+
+    /// Drop a closed project's native index. User documents live outside it and are never removed.
+    async fn purge_library(&self, project: &Project) -> Result<(), String> {
+        let slug = project_slug(Path::new(&project.path));
+        purge_library(self.rag_config.path(), &slug)
+            .await
+            .map_err(|err| err.to_string())
+    }
+
     pub fn forget_project(&self, id: &str) -> Result<(), String> {
         if self
             .current
@@ -179,18 +230,11 @@ impl Harness {
         self.projects.forget(id).map_err(|err| err.to_string())
     }
 
-    /// Project the provider state and open project into the file `pai-rag-service` reads; call it wherever
+    /// Project the provider state and open project into the file native RAG reads; call it wherever
     /// either changes, or the service answers from a stale snapshot with nothing to signal it.
     fn write_rag_config(&self, project: Option<&Project>) {
         match self.providers.list() {
-            Ok(rows) => self.rag_config.write(
-                &rows,
-                project.map(|item| crate::rag_config::Project {
-                    id: project_slug(Path::new(&item.path)),
-                    name: item.name.clone(),
-                    root: PathBuf::from(&item.path),
-                }),
-            ),
+            Ok(rows) => self.rag_config.write(&rows, rag_project(project)),
             Err(err) => tracing::warn!("could not read the provider list: {err}"),
         }
     }
@@ -344,19 +388,23 @@ fn apply_llm(
         Err(err) => tracing::warn!("could not read the chat provider: {err}"),
     }
 
-    // Rewrite the document service config. Revoking the embedding role must also be written, or documents keep
+    // Rewrite the document-library config. Revoking the embedding role must also be written, or documents keep
     // going to the server the user just detached; an empty model falls back to keyword search, which is correct.
     match runtime.list() {
-        Ok(rows) => rag_config.write(
-            &rows,
-            project.map(|item| crate::rag_config::Project {
-                id: project_slug(Path::new(&item.path)),
-                name: item.name.clone(),
-                root: PathBuf::from(&item.path),
-            }),
-        ),
+        Ok(rows) => rag_config.write(&rows, rag_project(project)),
         Err(err) => tracing::warn!("could not read the provider list: {err}"),
     }
+}
+
+/// The open project as native RAG needs it -- and `None` for a code project. Source code is
+/// indexed by `index` and `lsp`; only document projects are chunked as prose.
+fn rag_project(project: Option<&Project>) -> Option<crate::rag_config::Project> {
+    let item = project.filter(|item| item.kind == ProjectKind::Docs)?;
+    Some(crate::rag_config::Project {
+        id: project_slug(Path::new(&item.path)),
+        name: item.name.clone(),
+        root: PathBuf::from(&item.path),
+    })
 }
 
 /// The bundled skills directory, probed by path rather than via `AppHandle` because [`boot`] runs before any
@@ -377,20 +425,18 @@ fn builtin_skills() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_dir())
 }
 
-/// The `pai-rag-service` source directory, probed like [`builtin_skills`]: `PAI_RAG_SERVICE_DIR`, then next to
-/// the executable, then the source tree. If none exist it still returns the last candidate, so `Sidecar` fails
-/// at `spawn` naming the path that did not work.
-fn rag_service_dir() -> PathBuf {
-    if let Ok(explicit) = std::env::var("PAI_RAG_SERVICE_DIR") {
-        return PathBuf::from(explicit);
+/// Optional environment file shared with the root Docker Compose stack.
+fn rag_env_file() -> Option<PathBuf> {
+    if let Ok(explicit) = std::env::var("PAI_RAG_ENV_FILE") {
+        return Some(PathBuf::from(explicit));
     }
-    let from_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../services/rag");
+    let from_source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.env");
     let candidates = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("services/rag")))
+        .and_then(|exe| exe.parent().map(|dir| dir.join(".env")))
         .into_iter()
-        .chain(std::iter::once(from_source.clone()));
-    candidates.into_iter().find(|path| path.is_dir()).unwrap_or(from_source)
+        .chain(std::iter::once(from_source));
+    candidates.into_iter().find(|path| path.is_file())
 }
 
 /// The default plugin tree, written in the same format users patch; kept in code rather than beside the
@@ -563,12 +609,14 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // The chosen directory is the library, read directly by the service with no copy to drift from disk.
+            // The chosen directory is the library, read directly with no copy to drift from disk.
             // The project id travels with every call and names the Qdrant collection, so it uses `project_slug`
             // rather than the folder name.
-            let sidecar = SidecarConfig::uv(rag_service_dir(), project_slug(&workspace))
-                .with_env("PAI_RAG_CONFIG", rag_config.path().display().to_string());
-            Ok(Box::new(RagPlugin::new(sidecar, workspace.clone())) as Box<dyn Plugin>)
+            Ok(Box::new(RagPlugin::new(
+                rag_config.path().to_path_buf(),
+                project_slug(&workspace),
+                workspace.clone(),
+            )) as Box<dyn Plugin>)
         });
     }
     catalog.register("sandbox", |_| {
@@ -724,7 +772,8 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         http.clone(),
     ));
     let llm = Arc::new(ActiveLlm::new(boot_adapter));
-    let rag_config = Arc::new(RagConfigFile::new(&config.data_dir, &rag_service_dir()));
+    let rag_env = rag_env_file();
+    let rag_config = Arc::new(RagConfigFile::new(&config.data_dir, rag_env.as_deref()));
 
     let projects: Arc<dyn ProjectStore> =
         Arc::new(SqliteProjectStore::open(config.data_dir.join("du-an.db"))?);

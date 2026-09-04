@@ -1,7 +1,6 @@
-//! Which provider holds the embedding role, and under what model name. Embedding itself happens in
-//! `services/rag/`; this module only answers who, which model, which host, and why not ready.
+//! Which provider holds the embedding role, and under what model name. This module answers
+//! who, which model, which host, and why it is not ready.
 //! Never borrow the chat role's `model`: it has no embed endpoint, turning a clear message into a 400.
-
 
 use pai_llm::ProviderKind;
 
@@ -9,7 +8,7 @@ use crate::store::StoredProvider;
 
 /// Suggested embedding model for an Ollama host; public so the UI prefill and [`embedding_reason`] read
 /// one value. `qwen3-embedding:4b` rather than the English-leaning `nomic-embed-text`, since the document
-/// library is Vietnamese. Keep it matching `DEFAULT_EMBED_MODEL` in `services/rag/`.
+/// library is Vietnamese.
 pub const DEFAULT_EMBEDDING_MODEL_OLLAMA: &str = "qwen3-embedding:4b";
 
 /// Suggested embedding model for any OpenAI-protocol host.

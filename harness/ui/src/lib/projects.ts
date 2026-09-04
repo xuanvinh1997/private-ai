@@ -17,6 +17,19 @@ export async function listDir(path: string): Promise<DirEntry[]> {
   }
 }
 
+/** Copy user-selected files into the open project's root; the core rejects directories and collisions. */
+export function importProjectFiles(paths: string[]): Promise<string[]> {
+  return invoke<string[]>("import_project_files", { paths });
+}
+
+/** OS file dialog for project import; `null` is normalized to an empty batch. */
+export async function pickProjectFiles(title?: string): Promise<string[]> {
+  if (!inTauri()) return [];
+  const picked = await open({ directory: false, multiple: true, title });
+  if (picked === null) return [];
+  return Array.isArray(picked) ? picked : [picked];
+}
+
 export async function listProjects(): Promise<Project[]> {
   if (!inTauri()) return [];
   try {
@@ -35,6 +48,13 @@ export function openProject(path: string): Promise<Project> {
 /** Remove a project *from the list*; the directory on disk is untouched, and the wording must say so. */
 export function removeProject(id: string): Promise<void> {
   return invoke("remove_project", { id });
+}
+
+/** Delete a project for good: its conversations and its indexed library, then its row. The folder on disk is
+ * never touched. Slower than `removeProject` — dropping a library starts the document service — so callers
+ * must show a busy state rather than assume this returns at once. */
+export function deleteProject(id: string): Promise<void> {
+  return invoke("delete_project", { id });
 }
 
 /** Close the open project and drop its disk-touching plugins; no row leaves the list, and the list comes back. */

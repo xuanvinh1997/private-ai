@@ -101,10 +101,11 @@ export async function providerModels(providerId: string): Promise<ModelChoice[]>
 }
 
 /** The *effective* embedding config, read from the core rather than inferred, because only it knows `reason`. */
-/** Default shown when the core is unreachable; enabled, matching the service default, so the screen never lies. */
+/** Safe default when the core is unreachable: retrieval continues without optional reranking. */
 const RERANK_MAC_DINH: RerankSetting = {
-  enabled: true,
-  backend: "onnx",
+  enabled: false,
+  backend: "http",
+  url: "",
   model: "",
   candidates: 30,
   topN: 8,
@@ -126,6 +127,7 @@ export function setRerank(next: Omit<RerankSetting, "reason">): Promise<RerankSe
   return invoke<RerankSetting>("set_rerank", {
     enabled: next.enabled,
     backend: next.backend,
+    url: next.url,
     model: next.model,
     candidates: next.candidates,
     topN: next.topN,

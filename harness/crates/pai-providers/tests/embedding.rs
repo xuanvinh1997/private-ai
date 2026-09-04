@@ -1,5 +1,5 @@
-//! The embedding role: who holds it, and the explanation when it is not usable. Endpoint tests moved to
-//! `services/rag/`; what remains is the store's job -- holding the role, remembering the model, and saying
+//! The embedding role: who holds it, and the explanation when it is not usable. What remains here is
+//! the store's job -- holding the role, remembering the model, and saying
 //! why embedding is unavailable, since three causes need three different sentences. Nothing leaves the machine.
 
 use std::net::TcpListener;
@@ -14,7 +14,6 @@ fn cong_dong() -> u16 {
     drop(listener);
     port
 }
-
 
 fn hang(kind: ProviderKind, url: &str, embedding_model: Option<&str>) -> StoredProvider {
     let store = SqliteProviderStore::open_in_memory().expect("mở kho");

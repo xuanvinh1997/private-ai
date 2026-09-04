@@ -32,28 +32,29 @@
   --font-mono: var(--font-mono);
   --font-display: var(--font-display);
 
-  /* The lower steps stay in 12-15px: `text-2xs` carries metadata users must read, not decoration. */
+  /* Compact desktop scale: metadata stays at 12px, while body and display steps avoid the
+     oversized, poster-like jump that made dense application screens feel coarse. */
   --text-2xs: 0.8rem;
   --text-2xs--line-height: 1.45;
-  --text-xs: 0.875rem;
+  --text-xs: 0.84rem;
   --text-xs--line-height: 1.45;
-  --text-sm: 0.95rem;
+  --text-sm: 0.9rem;
   --text-sm--line-height: 1.5;
-  --text-base: 1rem;
+  --text-base: 0.95rem;
   --text-base--line-height: 1.55;
-  --text-md: 1.1rem;
+  --text-md: 1.02rem;
   --text-md--line-height: 1.45;
 
   /* Manrope sets tight at small sizes; a little tracking keeps filenames and paths from clumping. */
   --text-2xs--letter-spacing: 0.008em;
   --text-xs--letter-spacing: 0.005em;
-  --text-lg: 1.3rem;
+  --text-lg: 1.16rem;
   --text-lg--line-height: 1.3;
-  --text-xl: 1.62rem;
+  --text-xl: 1.38rem;
   --text-xl--line-height: 1.2;
-  --text-2xl: 2rem;
+  --text-2xl: 1.65rem;
   --text-2xl--line-height: 1.12;
-  --text-display: 2.35rem;
+  --text-display: 1.9rem;
   --text-display--line-height: 1.08;
 
   /* Point at `tokens.css` `--sp-*` instead of copying the numbers; two copies of a scale always drift apart. */
@@ -68,12 +69,11 @@
   --radius-menu: 12px; --radius-card: 12px; --radius-pill: 999px;
   --radius-bubble: 16px; --radius-composer: 16px;
 
-  /* No drop shadows: DESIGN.md builds depth colour-block first, shadow rare, and every raised
-     surface here already carries `border border-line` plus its own background step. What stays is
-     `--edge-top`, a highlight *inside* the top edge - see tokens.css for why only it reads on dark.
-     Both names still resolve to it; they are Tailwind theme keys, and renaming costs 15 files. */
-  --shadow-pop: var(--edge-top);
-  --shadow-float: var(--edge-top);
+  /* Depth stays semantic and scarce: controls sit one step above their parent, persistent floating
+     UI gets a wider soft falloff, and transient menus/dialogs get the strongest separation. */
+  --shadow-control: var(--elevation-control);
+  --shadow-float: var(--elevation-float);
+  --shadow-pop: var(--elevation-pop);
 }
 
 /* The theme toggle must beat the media query, so the dark variant keys off [data-theme]. */
@@ -164,7 +164,8 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
     white-space: nowrap;
     transition: background-color var(--dur-fast) var(--ease-out),
       border-color var(--dur-fast) var(--ease-out),
-      color var(--dur-fast) var(--ease-out);
+      color var(--dur-fast) var(--ease-out),
+      box-shadow var(--dur-fast) var(--ease-out);
   }
 
   /* The CTA size from DESIGN.md: 40px tall, 20px side padding. Dialog confirms and the composer's
@@ -183,6 +184,7 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
     border-color: var(--accent);
     background: var(--accent);
     color: var(--on-accent);
+    box-shadow: var(--elevation-control);
   }
   .pai-btn-primary:not(:disabled):hover {
     border-color: var(--accent-hover);
@@ -193,6 +195,7 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
     border-color: var(--line-strong);
     background: var(--surface);
     color: var(--text);
+    box-shadow: var(--elevation-control);
   }
   .pai-btn-secondary:not(:disabled):hover {
     background: var(--surface-hover);
@@ -214,9 +217,23 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
     border-color: var(--danger);
     background: var(--danger);
     color: var(--on-accent);
+    box-shadow: var(--elevation-control);
   }
   .pai-btn-danger:not(:disabled):hover {
     opacity: 0.9;
+  }
+
+  /* Stop is urgent but reversible, unlike Delete. A quiet danger treatment keeps the semantic
+     red cue without turning the composer's most frequently changing control into a solid alarm. */
+  .pai-btn-danger-quiet {
+    border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+    background: var(--danger-soft);
+    color: var(--danger);
+    box-shadow: var(--elevation-control);
+  }
+  .pai-btn-danger-quiet:not(:disabled):hover {
+    border-color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 14%, var(--surface));
   }
 }
 

@@ -102,6 +102,8 @@ const TYPESCRIPT: &str = r#"
 
 (interface_declaration name: (type_identifier) @name) @def.trait
 
+(internal_module name: (identifier) @name) @def.scope
+
 (program
   (lexical_declaration
     (variable_declarator
@@ -149,6 +151,10 @@ const PYTHON: &str = r#"
 (module
   (expression_statement
     (assignment left: (identifier) @name)) @def.const)
+(class_definition
+  body: (block
+    (expression_statement
+      (assignment left: (identifier) @name)) @def.const))
 "#;
 
 /// `use` is captured at the last name of the path only: the earlier segments resolve to nothing in the symbol table.
@@ -175,6 +181,29 @@ const RUST_EDGES: &str = r#"
 (function_item return_type: (type_identifier) @ref.references)
 (function_item return_type: (reference_type type: (type_identifier) @ref.references))
 (function_item return_type: (generic_type type: (type_identifier) @ref.references))
+
+; Every nested `type_arguments` node is queried independently, so these two patterns
+; recurse through Result<Vec<Hang>, Loi> without baking in a maximum nesting depth.
+(type_arguments (type_identifier) @ref.references)
+(type_arguments (generic_type type: (type_identifier) @ref.references))
+(type_arguments (scoped_type_identifier name: (type_identifier) @ref.references))
+
+(field_declaration type: (type_identifier) @ref.references)
+(field_declaration type: (generic_type type: (type_identifier) @ref.references))
+(ordered_field_declaration_list type: (type_identifier) @ref.references)
+(ordered_field_declaration_list type: (generic_type type: (type_identifier) @ref.references))
+
+(array_type element: (type_identifier) @ref.references)
+(array_type element: (generic_type type: (type_identifier) @ref.references))
+(dynamic_type trait: (type_identifier) @ref.references)
+(dynamic_type trait: (generic_type type: (type_identifier) @ref.references))
+(dynamic_type trait: (scoped_type_identifier name: (type_identifier) @ref.references))
+(abstract_type trait: (type_identifier) @ref.references)
+(abstract_type trait: (generic_type type: (type_identifier) @ref.references))
+(abstract_type trait: (scoped_type_identifier name: (type_identifier) @ref.references))
+(trait_bounds (type_identifier) @ref.references)
+(trait_bounds (generic_type type: (type_identifier) @ref.references))
+(trait_bounds (scoped_type_identifier name: (type_identifier) @ref.references))
 "#;
 
 /// `implements`/`extends` are separate patterns, not nested in `class_heritage`: an interface uses `extends_type_clause`.
@@ -193,6 +222,12 @@ const TYPESCRIPT_EDGES: &str = r#"
 
 (type_annotation (type_identifier) @ref.references)
 (type_annotation (generic_type name: (type_identifier) @ref.references))
+(type_arguments (type_identifier) @ref.references)
+(type_arguments (generic_type name: (type_identifier) @ref.references))
+(type_arguments (nested_type_identifier name: (type_identifier) @ref.references))
+(array_type (type_identifier) @ref.references)
+(array_type (generic_type name: (type_identifier) @ref.references))
+(array_type (nested_type_identifier name: (type_identifier) @ref.references))
 "#;
 
 /// JavaScript's `class_heritage` holds the expression directly, and `require` needs a text predicate or every call looks like an import.

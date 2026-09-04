@@ -7,12 +7,11 @@ import {
   Row,
   RowGroup,
   SectionHead,
-  Select,
   TextField,
   Toggle,
 } from "../settings/FormKit";
 
-/** The rerank section, last on the Models page: it is the third model on the retrieval path, it is a downloaded model file rather than a server, and changing anything here never re-embeds. */
+/** The optional HTTP rerank section. Changing it never re-embeds documents. */
 /** A `TextField` that commits on blur or Enter, since per-keystroke saves let the core clamp a half-typed number. */
 function CommitField(props: {
   label: string;
@@ -73,6 +72,7 @@ export default function RerankView() {
         await setRerank({
           enabled: next.enabled,
           backend: next.backend,
+          url: next.url,
           model: next.model,
           candidates: next.candidates,
           topN: next.topN,
@@ -170,43 +170,26 @@ export default function RerankView() {
                 />
 
                 <Row
-                  label={t(S.embedding.rerank.backendLabel)}
+                  label={t(S.embedding.rerank.urlLabel)}
                   icon="server"
-                  desc={t(S.embedding.rerank.backendDesc)}
-                  more={t(S.embedding.rerank.backendMore)}
+                  desc={t(S.embedding.rerank.urlDesc)}
                   control={() => (
-                    <Select
-                      label={t(S.embedding.rerank.backendSelectLabel)}
-                      value={value().backend}
-                      disabled={saving()}
-                      options={[
-                        { id: "onnx", label: t(S.embedding.rerank.backendOnnx) },
-                        { id: "http", label: t(S.embedding.rerank.backendHttp) },
-                      ]}
-                      onPick={(backend) =>
-                        void save({ backend: backend as RerankSetting["backend"] })
-                      }
-                    />
+                    <div class="w-[280px] max-w-full">
+                      <CommitField
+                        label={t(S.embedding.rerank.urlFieldLabel)}
+                        mono
+                        value={value().url}
+                        disabled={saving()}
+                        onCommit={(url) => void save({ url })}
+                      />
+                    </div>
                   )}
                 />
 
                 <Row
-                  label={t(
-                    value().backend === "onnx"
-                      ? S.embedding.rerank.repoLabel
-                      : S.embedding.rerank.remoteModelLabel,
-                  )}
+                  label={t(S.embedding.rerank.remoteModelLabel)}
                   icon="model"
-                  desc={
-                    value().backend === "onnx"
-                      ? t(S.embedding.rerank.repoDesc)
-                      : t(S.embedding.rerank.remoteModelDesc)
-                  }
-                  more={
-                    value().backend === "onnx"
-                      ? t(S.embedding.rerank.repoMore)
-                      : undefined
-                  }
+                  desc={t(S.embedding.rerank.remoteModelDesc)}
                   control={() => (
                     <div class="w-[280px] max-w-full">
                       <CommitField

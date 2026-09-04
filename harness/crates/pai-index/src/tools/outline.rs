@@ -90,8 +90,8 @@ impl Tool for Outline {
         let display = path.display().to_string();
         let Some(symbols) = found else {
             return Ok(ToolOutcome::ok(format!(
-                "{display} không nằm trong chỉ mục: hoặc ngôn ngữ của nó chưa được hỗ \
-                 trợ, hoặc `.gitignore` loại nó ra. Đọc thẳng bằng `read`."
+                "{display} không nằm trong chỉ mục: ngôn ngữ có thể chưa được hỗ trợ, \
+                 tệp có thể vượt trần, hoặc bộ lọc dự án đã loại nó ra. Đọc thẳng bằng `read`."
             )));
         };
         if symbols.is_empty() {

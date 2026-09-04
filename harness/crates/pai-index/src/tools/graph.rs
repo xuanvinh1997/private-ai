@@ -76,7 +76,8 @@ impl Tool for CodeGraph {
             return Ok(ToolOutcome::ok(format!(
                 "Không có ký hiệu nào tên `{}` trong chỉ mục. `symbol_search` tìm được \
                  theo một phần của tên; chỉ mục chỉ chứa Rust, TypeScript, JavaScript và \
-                 Python, và bỏ qua những gì `.gitignore` loại trừ.",
+                 Python, có trần kích thước/số tệp, và bỏ qua mã sinh cùng những gì \
+                 `.gitignore` loại trừ.",
                 args.symbol
             )));
         }

@@ -217,6 +217,100 @@ async fn canh_lien_tep_xuat_hien_khi_dich_cua_no_duoc_them_vao() {
     );
 }
 
+#[tokio::test]
+async fn them_va_xoa_dich_gan_chi_resolve_lai_refs_cung_ten() {
+    let (dir, index) = bench(&[
+        ("mot/goi.rs", "pub fn goi() { dich(); }\n"),
+        ("hai/xa.rs", "pub fn dich() {}\n"),
+        ("khac.rs", "pub fn khac() {}\n"),
+    ]);
+    let root = dir.path().canonicalize().unwrap();
+    let caller = root.join("mot/goi.rs");
+    index.sync().await.unwrap();
+
+    let before = index.edges_of_file(&caller).unwrap();
+    let (_, _, far) = before
+        .iter()
+        .find(|(src, kind, dst)| {
+            src.name == "goi" && *kind == EdgeKind::Calls && dst.name == "dich"
+        })
+        .expect("dích xa ban đầu");
+    assert!(far.path.ends_with("hai/xa.rs"), "{far:#?}");
+
+    let near = root.join("mot/gan.rs");
+    std::fs::write(&near, "pub fn dich() {}\n").unwrap();
+    index.sync().await.unwrap();
+    let with_near = index.edges_of_file(&caller).unwrap();
+    assert_eq!(count(&with_near, "goi", EdgeKind::Calls, "dich"), 1);
+    let (_, _, target) = with_near
+        .iter()
+        .find(|(src, kind, dst)| {
+            src.name == "goi" && *kind == EdgeKind::Calls && dst.name == "dich"
+        })
+        .unwrap();
+    assert!(target.path.ends_with("mot/gan.rs"), "{target:#?}");
+
+    std::fs::remove_file(near).unwrap();
+    index.sync().await.unwrap();
+    let after = index.edges_of_file(&caller).unwrap();
+    assert_eq!(count(&after, "goi", EdgeKind::Calls, "dich"), 1);
+    let (_, _, target) = after
+        .iter()
+        .find(|(src, kind, dst)| {
+            src.name == "goi" && *kind == EdgeKind::Calls && dst.name == "dich"
+        })
+        .unwrap();
+    assert!(target.path.ends_with("hai/xa.rs"), "{target:#?}");
+}
+
+#[tokio::test]
+async fn rust_references_di_sau_vao_generic_field_trait_bound_va_enum() {
+    let source = r#"
+pub struct Hang;
+pub struct Duong;
+pub trait Cong {}
+pub trait Doc {}
+pub trait Khac {}
+pub struct Kho { con: Duong }
+pub enum E { Mot(Hang) }
+pub fn f<T>(a: Vec<Hang>, b: &dyn Cong) -> impl Doc where T: Khac { todo!() }
+"#;
+    let (dir, index) = bench(&[("types.rs", source)]);
+    let path = dir.path().canonicalize().unwrap().join("types.rs");
+    index.sync().await.unwrap();
+    let edges = index.edges_of_file(&path).unwrap();
+
+    for (src, dst) in [
+        ("f", "Hang"),
+        ("f", "Cong"),
+        ("f", "Doc"),
+        ("f", "Khac"),
+        ("Kho", "Duong"),
+        ("E", "Hang"),
+    ] {
+        assert!(
+            has(&edges, src, EdgeKind::References, dst),
+            "thiếu `{src} —references→ {dst}`: {edges:#?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn typescript_references_di_qua_array_va_generic_return() {
+    let source = r#"
+export interface Hang {}
+export interface Kho {}
+export function f(a: Hang[]): Promise<Kho> { throw new Error(); }
+"#;
+    let (dir, index) = bench(&[("types.ts", source)]);
+    let path = dir.path().canonicalize().unwrap().join("types.ts");
+    index.sync().await.unwrap();
+    let edges = index.edges_of_file(&path).unwrap();
+
+    assert!(has(&edges, "f", EdgeKind::References, "Hang"), "{edges:#?}");
+    assert!(has(&edges, "f", EdgeKind::References, "Kho"), "{edges:#?}");
+}
+
 /// The name-resolution decision, locked down: same file always wins, ties write every candidate, over the cap writes none.
 #[tokio::test]
 async fn ten_trung_o_nhieu_tep_theo_dung_bac_uu_tien() {
@@ -487,4 +581,86 @@ async fn do_tren_chinh_kho_nay() {
         so.edges,
         mat.as_millis()
     );
+}
+
+/// Manual curve check: ignored so a normal test run does not create thousands of files.
+#[tokio::test]
+#[ignore]
+async fn do_chi_phi_sua_mot_tep_tren_kho_tong_hop() {
+    for total in [250usize, 1_000, 3_000] {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for index in 0..total {
+            std::fs::write(
+                root.join(format!("f{index}.rs")),
+                format!("pub fn goi_{index}() {{ dich_{index}(); }}\npub fn dich_{index}() {{}}\n"),
+            )
+            .unwrap();
+        }
+        let code = CodeIndex::in_memory(FileRoots::new([root.clone()], [])).unwrap();
+
+        let start = std::time::Instant::now();
+        let first = code.sync().await.unwrap();
+        let cold = start.elapsed();
+        let start = std::time::Instant::now();
+        code.sync().await.unwrap();
+        let unchanged = start.elapsed();
+
+        std::fs::write(
+            root.join("f0.rs"),
+            "pub fn goi_0() { dich_0(); }\npub fn dich_0() {}\npub fn moi() {}\n",
+        )
+        .unwrap();
+        let start = std::time::Instant::now();
+        let edited = code.sync().await.unwrap();
+        let one_file = start.elapsed();
+
+        println!(
+            "[đo incremental] {total} tệp, {} cạnh: nguội {:.1} ms, không đổi {:.1} ms, sửa {} tệp {:.1} ms",
+            first.edges,
+            cold.as_secs_f64() * 1_000.0,
+            unchanged.as_secs_f64() * 1_000.0,
+            edited.parsed,
+            one_file.as_secs_f64() * 1_000.0,
+        );
+        assert_eq!(edited.parsed, 1);
+    }
+
+    // Hold file count constant and multiply graph density: edit time should stay near the walk floor.
+    for calls_per_file in [1usize, 10] {
+        let total = 1_000usize;
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let source = |index: usize| {
+            // Keep the edited file equally small; only the untouched remainder gets denser.
+            let local_calls = if index == 0 { 1 } else { calls_per_file };
+            let calls = (0..local_calls)
+                .map(|target| format!("dich_{index}_{target}();"))
+                .collect::<String>();
+            let targets = (0..local_calls)
+                .map(|target| format!("pub fn dich_{index}_{target}() {{}}\n"))
+                .collect::<String>();
+            format!("pub fn goi_{index}() {{ {calls} }}\n{targets}")
+        };
+        for index in 0..total {
+            std::fs::write(root.join(format!("f{index}.rs")), source(index)).unwrap();
+        }
+        let code = CodeIndex::in_memory(FileRoots::new([root.clone()], [])).unwrap();
+        let first = code.sync().await.unwrap();
+        code.sync().await.unwrap();
+
+        std::fs::write(
+            root.join("f0.rs"),
+            format!("{}pub fn moi() {{}}\n", source(0)),
+        )
+        .unwrap();
+        let start = std::time::Instant::now();
+        let edited = code.sync().await.unwrap();
+        println!(
+            "[đo mật độ] {total} tệp, {} cạnh ({calls_per_file} call/tệp): sửa 1 tệp {:.1} ms",
+            first.edges,
+            start.elapsed().as_secs_f64() * 1_000.0,
+        );
+        assert_eq!(edited.parsed, 1);
+    }
 }

@@ -37,6 +37,13 @@ pub async fn remove_project(id: String, state: State<'_, AppState>) -> Result<()
     state.harness().await?.forget_project(&id)
 }
 
+/// Delete a project for good: its conversations and its document library, then its row. The user's folder
+/// stays; `remove_project` is the lighter neighbour that only drops the row.
+#[tauri::command]
+pub async fn delete_project(id: String, state: State<'_, AppState>) -> Result<(), String> {
+    state.harness().await?.delete_project(&id).await
+}
+
 /// Register an existing directory as a project with a user-declared type; this is the only path that sets the
 /// type, since `open_project` uses `touch` and preserves it, and the type decides which plugin layer loads.
 #[tauri::command]
@@ -213,6 +220,114 @@ pub async fn set_project_kind(
 /// should not cross the IPC bridge in the first place.
 const MAX_ENTRIES: usize = 500;
 
+/// Copy user-selected files into the open project's root without ever replacing a file that is already
+/// there. The destination is derived from `file_name` only: callers may pass absolute paths from anywhere,
+/// but they cannot smuggle `..` or another directory into the write side of the operation.
+fn copy_project_files(root: &std::path::Path, paths: &[String]) -> Result<Vec<String>, String> {
+    use std::collections::HashSet;
+    use std::fs::{File, OpenOptions};
+    use std::io;
+    use std::path::PathBuf;
+
+    let root = root
+        .canonicalize()
+        .map_err(|err| format!("không mở được thư mục dự án: {err}"))?;
+    let mut targets = HashSet::new();
+    let mut files: Vec<(PathBuf, PathBuf)> = Vec::with_capacity(paths.len());
+
+    // Validate the whole batch before writing the first byte. A duplicate name or existing target should
+    // not leave half of a multi-file upload in the project.
+    for raw in paths {
+        let source = PathBuf::from(raw)
+            .canonicalize()
+            .map_err(|err| format!("không đọc được {raw}: {err}"))?;
+        if !source.is_file() {
+            return Err(format!(
+                "chỉ có thể tải tệp lên, không thể tải thư mục {}",
+                source.display()
+            ));
+        }
+        let name = source
+            .file_name()
+            .ok_or_else(|| format!("đường dẫn không có tên tệp: {}", source.display()))?;
+        let target = root.join(name);
+        if source == target {
+            return Err(format!("{} đã nằm trong dự án", source.display()));
+        }
+        if !targets.insert(target.clone()) {
+            return Err(format!("nhiều tệp cùng có tên {}", name.to_string_lossy()));
+        }
+        if target.exists() {
+            return Err(format!("dự án đã có tệp {}", name.to_string_lossy()));
+        }
+        files.push((source, target));
+    }
+
+    let mut created: Vec<PathBuf> = Vec::with_capacity(files.len());
+    for (source, target) in files {
+        let mut target_created = false;
+        let copied = (|| -> Result<(), String> {
+            let mut input = File::open(&source)
+                .map_err(|err| format!("không đọc được {}: {err}", source.display()))?;
+            // `create_new` closes the race between the preflight above and this write; an existing project
+            // file is never truncated, even if another process creates it while the dialog is open.
+            let mut output = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)
+                .map_err(|err| format!("không tạo được {}: {err}", target.display()))?;
+            target_created = true;
+            io::copy(&mut input, &mut output)
+                .map_err(|err| format!("không chép được {}: {err}", source.display()))?;
+            if let Ok(metadata) = source.metadata() {
+                std::fs::set_permissions(&target, metadata.permissions()).map_err(|err| {
+                    format!("không giữ được quyền của {}: {err}", target.display())
+                })?;
+            }
+            Ok(())
+        })();
+
+        if let Err(message) = copied {
+            // Every path here was created by this call. Roll back the batch so an error never masquerades as
+            // a partial success; failures to remove are intentionally secondary to the copy error.
+            if target_created {
+                let _ = std::fs::remove_file(&target);
+            }
+            for path in created {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(message);
+        }
+        created.push(target);
+    }
+
+    Ok(created
+        .into_iter()
+        .map(|path| path.display().to_string())
+        .collect())
+}
+
+/// Import local files into the currently open project's root. This is separate from document ingest: code
+/// projects have no RAG library, while document projects can index the returned paths after the copy.
+#[tauri::command]
+pub async fn import_project_files(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let harness = state.harness().await?;
+    let root = harness
+        .current_project()
+        .map(|project| std::path::PathBuf::from(project.path))
+        .ok_or_else(|| "chưa mở dự án".to_string())?;
+
+    tokio::task::spawn_blocking(move || copy_project_files(&root, &paths))
+        .await
+        .map_err(|err| format!("tác vụ tải tệp bị dừng: {err}"))?
+}
+
 /// One level of the project tree. Only one: recursing on open would read `node_modules` and `.git` for someone
 /// who wanted a single folder, so each expansion is a call. Hidden files are not filtered -- `.gitignore`,
 /// `.env` and `.github` are files people actually open, and a self-hiding tree makes users doubt their own disk.
@@ -264,4 +379,67 @@ pub async fn list_dir(
     });
     entries.truncate(MAX_ENTRIES);
     Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::copy_project_files;
+
+    #[test]
+    fn import_copies_a_file_into_the_project_root() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("notes.md");
+        std::fs::write(&source, "private notes").unwrap();
+
+        let imported = copy_project_files(project.path(), &[source.display().to_string()]).unwrap();
+
+        let expected = project
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("notes.md")
+            .display()
+            .to_string();
+        assert_eq!(imported, vec![expected]);
+        assert_eq!(
+            std::fs::read_to_string(&imported[0]).unwrap(),
+            "private notes"
+        );
+    }
+
+    #[test]
+    fn import_never_overwrites_an_existing_project_file() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let source = source_dir.path().join("notes.md");
+        let target = project.path().join("notes.md");
+        std::fs::write(&source, "new").unwrap();
+        std::fs::write(&target, "keep").unwrap();
+
+        let error =
+            copy_project_files(project.path(), &[source.display().to_string()]).unwrap_err();
+
+        assert!(error.contains("đã có tệp notes.md"));
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "keep");
+    }
+
+    #[test]
+    fn import_validates_the_whole_batch_before_copying() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let first = source_dir.path().join("first.md");
+        let collision = source_dir.path().join("collision.md");
+        std::fs::write(&first, "first").unwrap();
+        std::fs::write(&collision, "new").unwrap();
+        std::fs::write(project.path().join("collision.md"), "existing").unwrap();
+
+        let result = copy_project_files(
+            project.path(),
+            &[first.display().to_string(), collision.display().to_string()],
+        );
+
+        assert!(result.is_err());
+        assert!(!project.path().join("first.md").exists());
+    }
 }

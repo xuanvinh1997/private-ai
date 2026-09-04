@@ -1,14 +1,7 @@
-# Private AI background stack: Ollama serves models, Qdrant holds vectors. The entity graph has
-# no container - it is embedded SurrealDB inside pai-rag-service, a directory per project.
-# `pai-rag-service` is deliberately not here - it runs on the host, started by the app over
-# MCP stdio, so it reads the user's document folder by real Windows paths with no bind mount.
+# Private AI background stack. The Rust application reads documents in-process;
+# Ollama serves models and Qdrant holds vectors.
 
 name: private-ai
-
-# Qdrant lives in services/rag/deploy/ next to its README and config; `include` keeps one `up -d` while its tuning stays beside the docs explaining it.
-include:
-  - path: services/rag/deploy/docker-compose.yml
-    env_file: services/rag/deploy/.env
 
 services:
   ollama:
@@ -33,3 +26,46 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  qdrant:
+    image: qdrant/qdrant:v1.19.0
+    container_name: pai-qdrant
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?chưa đặt QDRANT_API_KEY trong .env — xem .env.example}
+      QDRANT__TELEMETRY_DISABLED: "true"
+      QDRANT__LOG_LEVEL: INFO
+    volumes:
+      - pai-qdrant-storage:/qdrant/storage
+      - pai-qdrant-snapshots:/qdrant/snapshots
+      - ./qdrant/local.yaml:/qdrant/config/local.yaml:ro
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+    mem_limit: ${QDRANT_MEM_LIMIT:-16g}
+    healthcheck:
+      test:
+        - CMD
+        - bash
+        - -c
+        - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && head -n 1 <&3 | grep -q " 200 "'
+      interval: 10s
+      timeout: 5s
+      start_period: 30s
+      retries: 5
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  pai-qdrant-storage:
+    name: pai-qdrant-storage
+  pai-qdrant-snapshots:
+    name: pai-qdrant-snapshots

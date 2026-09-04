@@ -8,7 +8,7 @@ use crate::event::{Seq, SessionEvent, SessionEventEnvelope, TurnEnd, TurnEndReas
 use crate::log::SessionLog;
 use crate::message::Message;
 use crate::sqlite::now_ms;
-use crate::store::{NewSession, SessionHeader, SessionId, SessionStore};
+use crate::store::{NewSession, SessionHeader, SessionId, SessionScope, SessionStore};
 
 /// How many stream chunks may wait in memory before a forced write; this window is everything a crash
 /// mid-answer can lose, and a hundred token-sized chunks is under a line of text.
@@ -145,8 +145,12 @@ impl SessionService {
         })
     }
 
-    pub async fn list(&self, limit: Option<u32>) -> Result<Vec<SessionHeader>> {
-        self.store.list(limit).await
+    pub async fn list(
+        &self,
+        scope: SessionScope<'_>,
+        limit: Option<u32>,
+    ) -> Result<Vec<SessionHeader>> {
+        self.store.list(scope, limit).await
     }
 
     /// Reopen a session: reload the whole log and rebuild the projection from scratch.

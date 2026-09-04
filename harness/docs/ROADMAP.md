@@ -103,14 +103,13 @@ tốt hơn hẳn cho mã nguồn), MarkItDown và tầng OCR, ASR, `graph_view`,
 `artifacts.create_*`. Không cái nào phục vụ một coding agent, và chúng là toàn bộ lý do
 phải giữ một sidecar Python.
 
-> **Sửa lại ở v1.1:** thư viện tài liệu nằm trong danh sách "dừng lại" ở trên là một
-> quyết định đúng cho một coding agent và sai cho sản phẩm này. Nó quay lại, nhưng không
-> quay lại như cũ: `pai-rag` rút chữ bằng Rust thuần (`pdf-extract`, `zip` + `quick-xml`)
-> chứ không gọi MarkItDown, và nó là **một loại dự án riêng** chứ không phải một khả năng
-> luôn bật. Cái bị bỏ là sidecar Python, không phải tính năng.
+> **Sửa lại ở v1.1:** thư viện tài liệu quay lại bằng Rust thuần trong tiến trình
+> (`pdf-extract`, `zip` + `quick-xml`, SQLite/FTS, Qdrant HTTP và HTTP reranker).
+> Python sidecar đã bị loại bỏ. OCR, ảnh, bảng tính/slide, Office cũ và reranker ONNX
+> cục bộ tạm thời báo chưa hỗ trợ cho tới khi có bộ đọc Rust tương ứng.
 
-> Nói cách khác: **coding agent bằng Rust thuần là khả thi; port nguyên Private AI sang
-> Rust thuần thì không.** Việc thu hẹp phạm vi chính là thứ mở đường cho bản Rust thuần.
+> Nói cách khác: đường chạy RAG hiện tại không còn cần Python; phần còn thiếu được biểu
+> diễn thành lỗi khả năng rõ ràng thay vì một tiến trình fallback ẩn.
 
 ## Nợ còn lại của v1.1
 

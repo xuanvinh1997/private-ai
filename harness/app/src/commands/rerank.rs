@@ -1,6 +1,4 @@
-//! Toggling and tuning the reranking step. It gets its own screen because the default reranker is an `.onnx`
-//! file inside the service, with no host, key or health check -- half a provider form would be meaningless.
-//! It can be switched off because it is expensive on CPU, and the switch must say what that costs.
+//! Toggling and tuning the optional HTTP reranking step.
 
 use serde_json::json;
 use tauri::State;
@@ -8,14 +6,11 @@ use tauri::State;
 use crate::AppState;
 use crate::protocol::RerankSetting;
 
-/// Defaults shown before the user sets anything; they must match `RerankConfig` in
-/// `services/rag/src/pai_rag_service/config.py`, which a test enforces by reading that file.
-const DEFAULT_BACKEND: &str = "onnx";
-const DEFAULT_MODEL: &str = "viplao5/bge-reranker-v2-m3-onnx";
+/// Rust ships no local reranker model, so a fresh install keeps the optional HTTP step off.
+const DEFAULT_BACKEND: &str = "http";
+const DEFAULT_MODEL: &str = "";
 const DEFAULT_CANDIDATES: u32 = 30;
 const DEFAULT_TOP_N: u32 = 8;
-/// The ONNX file inside the default repo; BAAI's own repo puts it under `onnx/`, this export at the root.
-const DEFAULT_ONNX_FILE: &str = "model.onnx";
 
 #[tauri::command]
 pub async fn rerank_setting(state: State<'_, AppState>) -> Result<RerankSetting, String> {
@@ -38,17 +33,29 @@ pub async fn rerank_setting(state: State<'_, AppState>) -> Result<RerankSetting,
             .map(|value| value as u32)
             .unwrap_or(fallback)
     };
+    let backend = read_str("backend", DEFAULT_BACKEND);
+    let supported = backend == DEFAULT_BACKEND;
     let enabled = stored
         .as_ref()
         .and_then(|found| found.get("enabled"))
         .and_then(serde_json::Value::as_bool)
-        .unwrap_or(true);
+        .unwrap_or(false)
+        && supported;
 
     let candidates = read_u32("candidates", DEFAULT_CANDIDATES);
     Ok(RerankSetting {
         enabled,
-        backend: read_str("backend", DEFAULT_BACKEND),
-        model: read_str("model", DEFAULT_MODEL),
+        backend: DEFAULT_BACKEND.to_string(),
+        url: if supported {
+            read_str("url", "")
+        } else {
+            String::new()
+        },
+        model: if supported {
+            read_str("model", DEFAULT_MODEL)
+        } else {
+            DEFAULT_MODEL.to_string()
+        },
         candidates,
         top_n: read_u32("top_n", DEFAULT_TOP_N),
         reason: reason_for(enabled, candidates),
@@ -64,12 +71,9 @@ fn reason_for(enabled: bool, candidates: u32) -> Option<String> {
                 .to_string(),
         );
     }
-    // A CPU-measured estimate, hedged on purpose: the app cannot know what the service runs on until it loads the model.
-    let seconds = f64::from(candidates) * 0.4;
     Some(format!(
-        "Chấm lại {candidates} đoạn cho mỗi câu hỏi. Nếu service chạy trên CPU thì mất \
-         khoảng {seconds:.0} giây; trên GPU thì gần như tức thì. Hạ số ứng viên xuống là \
-         cách nhanh nhất để bớt chờ."
+        "Gửi {candidates} đoạn tới máy chủ rerank HTTP cho mỗi câu hỏi. Hạ số ứng viên \
+         xuống là cách nhanh nhất để giảm độ trễ."
     ))
 }
 
@@ -77,6 +81,7 @@ fn reason_for(enabled: bool, candidates: u32) -> Option<String> {
 pub async fn set_rerank(
     enabled: bool,
     backend: String,
+    url: String,
     model: String,
     candidates: u32,
     top_n: u32,
@@ -87,22 +92,28 @@ pub async fn set_rerank(
     // Clamp here rather than trusting the form: `candidates` of 0 empties every search, and `top_n` above it asks for more than was fetched.
     let candidates = candidates.clamp(1, 200);
     let top_n = top_n.clamp(1, candidates);
-    let backend = if backend == "http" { "http" } else { DEFAULT_BACKEND };
+    let _ = backend;
+    let backend = DEFAULT_BACKEND;
+    let url = url.trim().trim_end_matches('/').to_string();
+    if enabled && url.is_empty() {
+        return Err("hãy nhập URL máy chủ rerank trước khi bật".into());
+    }
     let model = model.trim().to_string();
-    let model = if model.is_empty() { DEFAULT_MODEL.to_string() } else { model };
+    let model = if model.is_empty() {
+        DEFAULT_MODEL.to_string()
+    } else {
+        model
+    };
 
-    // `onnx_file` has no form field: it is a HuggingFace repo layout detail. Anyone who needs a different one
-    // edits `rag-config.json`, and it is read back rather than hard-coded so later writes preserve it.
-    let onnx_file = harness
-        .rag_config
-        .rerank()
-        .and_then(|found| {
-            found
-                .get("onnx_file")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_string)
-        })
-        .unwrap_or_else(|| DEFAULT_ONNX_FILE.to_string());
+    let previous = harness.rag_config.rerank();
+    let preserved = |key: &str| {
+        previous
+            .as_ref()
+            .and_then(|found| found.get(key))
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
 
     harness
         .rag_config
@@ -110,17 +121,18 @@ pub async fn set_rerank(
             "enabled": enabled,
             "backend": backend,
             "model": model,
-            "onnx_file": onnx_file,
+            "url": url,
+            "api_key": preserved("api_key"),
             "candidates": candidates,
             "top_n": top_n,
         }))
         .map_err(|err| format!("không ghi được cấu hình xếp hạng lại: {err}"))?;
 
-    // Do not restart the service: it watches the config `mtime` and reloads itself, and killing it would
-    // discard the warm ONNX session -- exactly the cold start we were avoiding.
+    // Native RAG watches config `mtime`; the next search observes this write.
     Ok(RerankSetting {
         enabled,
         backend: backend.to_string(),
+        url,
         model,
         candidates,
         top_n,

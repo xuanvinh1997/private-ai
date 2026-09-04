@@ -1,6 +1,6 @@
 //! Document library seam: the types the layers above see, and their contract.
-//! The implementation moved to `services/rag/` (Python over MCP stdio), so every method
-//! is `async`: a sync one would have to `block_on` a runtime thread and deadlock Tauri.
+//! The default implementation is in-process Rust; expensive work and optional extractor
+//! fallbacks remain asynchronous so callers never block a Tauri runtime thread.
 
 use std::path::PathBuf;
 
@@ -13,7 +13,7 @@ use crate::error::RagError;
 use crate::format::Format;
 use crate::search::MatchedBy;
 
-/// How many files one scan will ingest; kept here because the UI names the number and Python reads it from config written by this side.
+/// How many files one scan will ingest; kept here because the UI names the number too.
 pub const MAX_FILES: usize = 5_000;
 
 /// A document as the layers above see it. Maps one-to-one onto `DocumentView` in `app/`.

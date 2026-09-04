@@ -1,6 +1,6 @@
 import { Key } from "@solid-primitives/keyed";
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
-import { S, t, type Msg } from "../lib/i18n";
+import { LOCALES, LOCALE_NAMES, locale, S, setLocale, t, type Msg } from "../lib/i18n";
 import type { ProjectKind, SessionSummary } from "../lib/protocol";
 import { groupSessions, relativeTime } from "../lib/sessions";
 import { setTheme, theme, type ThemeChoice } from "../lib/theme";
@@ -234,7 +234,8 @@ export default function Sidebar(props: SidebarProps) {
         </section>
       </div>
 
-      {/* Foot of the column, one row: settings plus the light/dark toggle, both touched a few times a week. */}
+      {/* Foot of the column: persistent preferences stay beside Settings, with language as a proper choice menu
+          while theme remains a quick three-state cycle. */}
       <footer class="flex shrink-0 items-center gap-2xs border-t border-line p-sm">
         <span class="min-w-0 flex-1">
           <NavRow
@@ -244,6 +245,20 @@ export default function Sidebar(props: SidebarProps) {
             onClick={() => props.onGo("settings")}
           />
         </span>
+        <Menu
+          icon="globe"
+          size="sm"
+          placement="up"
+          align="right"
+          label={`${t(S.settings.general.locale)}: ${LOCALE_NAMES[locale()]}`}
+          items={LOCALES.map((next) => ({
+            id: next,
+            label: LOCALE_NAMES[next],
+            icon: next === locale() ? "check" : "globe",
+            selected: next === locale(),
+            onSelect: () => setLocale(next),
+          }))}
+        />
         <IconButton
           icon={THEME_ICON[theme()]}
           label={t(S.chat.sidebar.themeToggle, { name: t(THEME_LABEL[theme()]) })}

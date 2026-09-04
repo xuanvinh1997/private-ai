@@ -461,7 +461,7 @@ export default function Composer(props: {
             fallback={
               <span
                 aria-hidden="true"
-                class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-xs text-faint"
+                class="flex h-(--control-h) items-center gap-3xs rounded-pill border border-line bg-surface-soft px-sm text-xs text-faint shadow-control"
               >
                 <Icon name="hand" size={13} />
                 {t(SCOPE_LABEL[props.scope])}
@@ -513,7 +513,7 @@ export default function Composer(props: {
               type="button"
               aria-label={t(S.chat.composer.stop)}
               onClick={props.onStop}
-              class="pai-btn pai-btn-secondary"
+              class="pai-btn pai-btn-danger-quiet"
             >
               <Icon name="stop" size={14} />
             </button>

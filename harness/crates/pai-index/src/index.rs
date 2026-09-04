@@ -1,11 +1,12 @@
 //! The index seam, and the on-disk implementation for this machine.
 //! One invariant: an unchanged file is never re-parsed, so the common scan is just `stat`.
-//! The three caps below are hard ceilings, not defaults; callers only learn they were cut.
+//! The caps below are hard ceilings, not defaults; truncating operations report when they were cut.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
 use std::time::UNIX_EPOCH;
 
 use async_trait::async_trait;
@@ -33,16 +34,55 @@ const TRACE_BUDGET: usize = 4_000;
 /// How many directories and central symbols an architecture map holds.
 const OVERVIEW_DIRS: usize = 40;
 const OVERVIEW_CENTRAL: usize = 20;
+/// A committed bundle or generated dump must not make tree-sitter allocate without bound.
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+/// Maximum source files parsed and kept in the symbol graph.
+pub const MAX_FILES: usize = 5_000;
+/// Enough parallelism to saturate parsing without reading eight 64 MiB files per hardware thread.
+const MAX_PARSE_THREADS: usize = 8;
+/// Machine output and vendored dependencies are noise even when a repository forgot to ignore them.
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "venv",
+    "env",
+    "node_modules",
+    "__pycache__",
+    ".mypy_cache",
+    ".pytest_cache",
+    ".ruff_cache",
+    "target",
+    "dist",
+    "build",
+    ".next",
+    ".nuxt",
+    ".cache",
+    ".idea",
+    ".vscode",
+    ".tox",
+    "site-packages",
+    ".gradle",
+    ".terraform",
+    "vendor",
+    ".DS_Store",
+    "$RECYCLE.BIN",
+];
 
 /// The result of one sync: numbers for reading logs, not for the model.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
-    /// Source files visible after `.gitignore` filtering.
+    /// Supported source files visible after ignore and generated-directory filtering, before hard caps.
     pub scanned: usize,
     /// Files actually re-parsed this time.
     pub parsed: usize,
     /// Files gone from disk and just forgotten.
     pub forgotten: usize,
+    /// Supported source files ignored because they exceed [`MAX_FILE_BYTES`].
+    pub oversized: usize,
+    /// Supported source files ignored after [`MAX_FILES`] was reached.
+    pub over_limit: usize,
     /// Edges in the graph after the scan.
     pub edges: usize,
 }
@@ -96,6 +136,7 @@ pub struct CodeIndex {
     store: Arc<Store>,
     extractor: Arc<Extractor>,
     parses: Arc<AtomicU64>,
+    syncing: tokio::sync::Mutex<()>,
 }
 
 impl CodeIndex {
@@ -119,6 +160,7 @@ impl CodeIndex {
             store: Arc::new(store),
             extractor: Arc::new(extractor),
             parses: Arc::new(AtomicU64::new(0)),
+            syncing: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -142,11 +184,25 @@ impl CodeIndex {
     ) -> Result<Vec<(GraphNode, EdgeKind, GraphNode)>, IndexError> {
         self.store.edges_of_file(&path.display().to_string())
     }
+
+    /// Populate completion paths before the slower symbol parse starts in the background.
+    pub(crate) async fn refresh_paths(&self) -> Result<usize, IndexError> {
+        let _guard = self.syncing.lock().await;
+        let roots = self.roots.clone();
+        let store = self.store.clone();
+        blocking(move || {
+            let walked = walk(&roots)?;
+            store.sync_paths(&walked.paths)?;
+            Ok(walked.paths.len())
+        })
+        .await
+    }
 }
 
 #[async_trait]
 impl SymbolIndex for CodeIndex {
     async fn sync(&self) -> Result<SyncReport, IndexError> {
+        let _guard = self.syncing.lock().await;
         let roots = self.roots.clone();
         let store = self.store.clone();
         let extractor = self.extractor.clone();
@@ -399,42 +455,70 @@ struct Fingerprint {
     size: i64,
 }
 
+struct Walked {
+    current: HashMap<String, Fingerprint>,
+    paths: Vec<String>,
+    scanned: usize,
+    oversized: usize,
+    over_limit: usize,
+}
+
+struct ParseJob {
+    path: String,
+    lang: &'static Lang,
+    mtime: i64,
+    size: i64,
+}
+
+struct ParsedFile {
+    job: ParseJob,
+    found: crate::extract::Extraction,
+    parsed: bool,
+}
+
 fn scan(
     roots: &FileRoots,
     store: &Store,
     extractor: &Extractor,
     parses: &AtomicU64,
 ) -> Result<SyncReport, IndexError> {
-    let current = walk(roots)?;
+    let walked = walk(roots)?;
+    store.sync_paths(&walked.paths)?;
+    let current = walked.current;
     let known = store.known_files()?;
 
-    let mut parsed = 0;
-    for (path, print) in &current {
-        if known
-            .get(path)
-            .is_some_and(|state| state.mtime == print.mtime && state.size == print.size)
-        {
-            continue;
+    let jobs: Vec<ParseJob> = current
+        .iter()
+        .filter(|(path, print)| {
+            !known
+                .get(*path)
+                .is_some_and(|state| state.mtime == print.mtime && state.size == print.size)
+        })
+        .map(|(path, print)| ParseJob {
+            path: path.clone(),
+            lang: print.lang,
+            mtime: print.mtime,
+            size: print.size,
+        })
+        .collect();
+
+    let results = parse_files(&jobs, extractor, parses)?;
+    let mut parsed = 0usize;
+    let mut affected_names = HashSet::new();
+    let mut changed_paths = Vec::with_capacity(results.len());
+    for result in results {
+        let job = result.job;
+        if result.parsed {
+            parsed += 1;
         }
-        match std::fs::read_to_string(path) {
-            Ok(source) => {
-                let found = extractor.extract(print.lang, path, &source);
-                parses.fetch_add(1, Ordering::Relaxed);
-                store.replace_file(path, print.lang.name, print.mtime, print.size, &found)?;
-                parsed += 1;
-            }
-            Err(err) => {
-                // Record an unreadable file with no symbols, or every later scan retries and fails on it again.
-                tracing::debug!(path, error = %err, "skipping unreadable file");
-                store.replace_file(
-                    path,
-                    print.lang.name,
-                    print.mtime,
-                    print.size,
-                    &Default::default(),
-                )?;
-            }
-        }
+        affected_names.extend(store.replace_file(
+            &job.path,
+            job.lang.name,
+            job.mtime,
+            job.size,
+            &result.found,
+        )?);
+        changed_paths.push(job.path);
     }
 
     let gone: Vec<String> = known
@@ -443,21 +527,88 @@ fn scan(
         .cloned()
         .collect();
     let forgotten = gone.len();
-    store.forget_files(&gone)?;
+    affected_names.extend(store.forget_files(&gone)?);
+    changed_paths.extend(gone);
 
-    // Re-resolve the whole store on any change: a new file can be the target of long-pending `refs`.
-    let edges = if parsed > 0 || forgotten > 0 {
-        store.rebuild_edges()?
-    } else {
+    let edges = if changed_paths.is_empty() {
         store.edge_count()? as usize
+    } else {
+        store.rebuild_edges(&affected_names, &changed_paths)?
     };
     store.mark_scanned(now_ms())?;
 
     Ok(SyncReport {
-        scanned: current.len(),
+        scanned: walked.scanned,
         parsed,
         forgotten,
+        oversized: walked.oversized,
+        over_limit: walked.over_limit,
         edges,
+    })
+}
+
+fn parse_files(
+    jobs: &[ParseJob],
+    extractor: &Extractor,
+    parses: &AtomicU64,
+) -> Result<Vec<ParsedFile>, IndexError> {
+    if jobs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let workers = thread::available_parallelism()
+        .map(usize::from)
+        .unwrap_or(1)
+        .min(MAX_PARSE_THREADS)
+        .min(jobs.len());
+    let chunk_size = jobs.len().div_ceil(workers);
+
+    thread::scope(|scope| {
+        let mut handles = Vec::with_capacity(workers);
+        for chunk in jobs.chunks(chunk_size) {
+            handles.push(scope.spawn(move || {
+                chunk
+                    .iter()
+                    .map(|job| match std::fs::read_to_string(&job.path) {
+                        Ok(source) => {
+                            let found = extractor.extract(job.lang, &job.path, &source);
+                            parses.fetch_add(1, Ordering::Relaxed);
+                            ParsedFile {
+                                job: ParseJob {
+                                    path: job.path.clone(),
+                                    lang: job.lang,
+                                    mtime: job.mtime,
+                                    size: job.size,
+                                },
+                                found,
+                                parsed: true,
+                            }
+                        }
+                        Err(err) => {
+                            tracing::debug!(path = job.path, error = %err, "skipping unreadable file");
+                            ParsedFile {
+                                job: ParseJob {
+                                    path: job.path.clone(),
+                                    lang: job.lang,
+                                    mtime: job.mtime,
+                                    size: job.size,
+                                },
+                                found: Default::default(),
+                                parsed: false,
+                            }
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            }));
+        }
+
+        let mut out = Vec::with_capacity(jobs.len());
+        for handle in handles {
+            let mut chunk = handle
+                .join()
+                .map_err(|_| IndexError::Unavailable("luồng parse chỉ mục bị panic".into()))?;
+            out.append(&mut chunk);
+        }
+        Ok(out)
     })
 }
 
@@ -468,37 +619,62 @@ fn now_ms() -> i64 {
         .unwrap_or_default()
 }
 
-fn walk(roots: &FileRoots) -> Result<HashMap<String, Fingerprint>, IndexError> {
-    let mut current = HashMap::new();
+fn walk(roots: &FileRoots) -> Result<Walked, IndexError> {
+    walk_with_limits(roots, MAX_FILES, MAX_FILE_BYTES)
+}
+
+fn walk_with_limits(
+    roots: &FileRoots,
+    max_files: usize,
+    max_file_bytes: u64,
+) -> Result<Walked, IndexError> {
+    let mut paths = HashSet::new();
+    let mut eligible = HashMap::new();
+    let mut oversized = HashSet::new();
     for root in roots.roots() {
         // Canonicalise first: stored paths must match `FileRoots::resolve_read` byte for byte (macOS `/var`).
         let base = canonical(root)?;
         let mut builder = WalkBuilder::new(&base);
         // `.gitignore` applies even without `git init`: it states intent, not a git detail.
         builder.require_git(false);
+        let filter_base = base.clone();
+        builder.filter_entry(move |entry| {
+            entry.path() == filter_base
+                || !entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| SKIP_DIRS.contains(&name))
+        });
         for entry in builder.build().flatten() {
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
                 continue;
             }
             let path = entry.path();
-            let Some(lang) = lang::for_path(path) else {
-                continue;
-            };
             // Hidden from the index, not merely unreadable: naming a protected file already leaks it.
             if roots.is_protected(path) {
                 continue;
             }
+            let stored = path.display().to_string();
+            paths.insert(stored.clone());
+
+            let Some(lang) = lang::for_path(path) else {
+                continue;
+            };
             let Ok(meta) = entry.metadata() else {
                 continue;
             };
+            if meta.len() > max_file_bytes {
+                oversized.insert(stored);
+                continue;
+            }
             let mtime = meta
                 .modified()
                 .ok()
                 .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
                 .map(|since| since.as_nanos() as i64)
                 .unwrap_or_default();
-            current.insert(
-                path.display().to_string(),
+            eligible.insert(
+                stored,
                 Fingerprint {
                     lang,
                     mtime,
@@ -507,10 +683,72 @@ fn walk(roots: &FileRoots) -> Result<HashMap<String, Fingerprint>, IndexError> {
             );
         }
     }
-    Ok(current)
+
+    let scanned = eligible.len() + oversized.len();
+    let mut files: Vec<(String, Fingerprint)> = eligible.into_iter().collect();
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let over_limit = files.len().saturating_sub(max_files);
+    files.truncate(max_files);
+
+    let mut paths: Vec<String> = paths.into_iter().collect();
+    paths.sort();
+    Ok(Walked {
+        current: files.into_iter().collect(),
+        paths,
+        scanned,
+        oversized: oversized.len(),
+        over_limit,
+    })
 }
 
 fn canonical(root: &Path) -> Result<PathBuf, IndexError> {
     root.canonicalize()
         .map_err(|err| IndexError::Scan(root.display().to_string(), err.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn walk_chan_kich_thuoc_va_so_tep_nhung_van_ghi_path_inventory() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.rs"), "a").unwrap();
+        std::fs::write(dir.path().join("b.rs"), "b").unwrap();
+        std::fs::write(dir.path().join("huge.rs"), "12345").unwrap();
+        std::fs::write(dir.path().join("README.md"), "docs").unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let roots = FileRoots::new([root], []);
+
+        let walked = walk_with_limits(&roots, 1, 4).unwrap();
+        assert_eq!(walked.current.len(), 1);
+        assert_eq!(walked.scanned, 3);
+        assert_eq!(walked.oversized, 1);
+        assert_eq!(walked.over_limit, 1);
+        assert_eq!(
+            walked.paths.len(),
+            4,
+            "mọi tệp thường vẫn hiện trong completion"
+        );
+    }
+
+    #[test]
+    fn walk_bo_thu_muc_may_sinh_du_khong_co_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("vendor/pkg")).unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("vendor/pkg/dep.rs"), "fn dep() {}\n").unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let roots = FileRoots::new([root], []);
+
+        let walked = walk(&roots).unwrap();
+        assert_eq!(walked.current.len(), 1);
+        assert_eq!(walked.paths.len(), 1);
+        assert!(
+            walked.paths[0].ends_with("src/main.rs"),
+            "{:?}",
+            walked.paths
+        );
+    }
 }

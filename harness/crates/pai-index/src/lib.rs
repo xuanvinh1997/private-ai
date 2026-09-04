@@ -19,7 +19,10 @@ pub use graph::{
     CentralSymbol, DirectorySummary, EdgeKind, GraphEdge, GraphNode, NAME_BASED_NOTICE,
     Neighborhood, Overview, Reference, Stats,
 };
-pub use index::{CodeIndex, Index, MAX_DEPTH, MAX_NODES, MAX_PATHS, SymbolIndex, SyncReport};
+pub use index::{
+    CodeIndex, Index, MAX_DEPTH, MAX_FILE_BYTES, MAX_FILES, MAX_NODES, MAX_PATHS, SymbolIndex,
+    SyncReport,
+};
 pub use lang::{LANGUAGES, Lang};
 pub use plugin::IndexPlugin;
 pub use store::Store;

@@ -299,12 +299,14 @@ export interface Provider {
 }
 
 /** The effective embedding configuration. */
-/** Rerank settings, kept out of the provider list because the default reranker is a model file, not a server. */
+/** Optional HTTP rerank settings. */
 export interface RerankSetting {
   enabled: boolean;
-  /** `onnx` runs locally; `http` calls an external `/v1/rerank` endpoint. */
-  backend: "onnx" | "http";
-  /** A Hugging Face repo name for `onnx`, or the server's model name for `http`. */
+  /** Currently only an external `/v1/rerank` endpoint is supported. */
+  backend: "http";
+  /** Base URL or full `/v1/rerank` endpoint. */
+  url: string;
+  /** Model name served by the HTTP endpoint. */
   model: string;
   /** How many chunks to fetch for rescoring; this is the latency dial. */
   candidates: number;

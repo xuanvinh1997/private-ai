@@ -67,6 +67,14 @@ export const projects = {
     vi: "Chỉ danh sách dự án gần đây bị đổi. Thư mục và toàn bộ tệp bên trong vẫn nguyên trên đĩa — mở lại thư mục này bất cứ lúc nào là dự án trở lại.",
   },
   forgetConfirm: { en: "Remove from list", vi: "Bỏ khỏi danh sách" },
+  // The heavier half of the same dialog: the two actions differ only in what is kept, so they are read side
+  // by side rather than hidden behind separate buttons in the row.
+  forgetOrDeleteBody: {
+    en: 'The folder on disk is left untouched either way. "Delete its data" also drops this project\'s conversations and its indexed library.',
+    vi: 'Thư mục trên đĩa không bị đụng tới, dù chọn cách nào. "Xoá cả dữ liệu" bỏ thêm phiên trò chuyện và thư viện đã lập chỉ mục của dự án này.',
+  },
+  deleteConfirm: { en: "Delete its data", vi: "Xoá cả dữ liệu" },
+  deleteBusy: { en: "Deleting…", vi: "Đang xoá…" },
   forgetLabel: {
     en: 'Remove "{name}" from the list',
     vi: 'Bỏ "{name}" khỏi danh sách',
@@ -92,6 +100,41 @@ export const projects = {
   pickFileTip: {
     en: "Put {name} into the composer",
     vi: "Đưa {name} vào ô soạn tin",
+  },
+  reindexFile: { en: "Re-index {name}", vi: "Lập chỉ mục lại {name}" },
+  reindexingFile: { en: "Re-indexing {name}", vi: "Đang lập chỉ mục lại {name}" },
+  reindexedFile: { en: "Re-indexed {name}", vi: "Đã lập chỉ mục lại {name}" },
+  retryReindexFile: {
+    en: "Retry re-indexing {name}",
+    vi: "Thử lập chỉ mục lại {name}",
+  },
+  reindexPreparing: common.preparing,
+  reindexError: {
+    en: "Could not re-index {name}: {err}",
+    vi: "Không lập chỉ mục lại được {name}: {err}",
+  },
+  uploadFiles: { en: "Upload files", vi: "Tải tệp lên" },
+  uploadTitle: { en: "Upload files", vi: "Tải tệp lên" },
+  uploadDesc: {
+    en: "Copy files into {name}",
+    vi: "Chép tệp vào {name}",
+  },
+  uploadMore: {
+    en: "Files are copied into the project root. Existing files are never replaced, and folders are not accepted.",
+    vi: "Tệp được chép vào thư mục gốc của dự án. Tệp đã có sẽ không bị ghi đè và không nhận cả thư mục.",
+  },
+  uploadDropTitle: { en: "Drop files here", vi: "Thả tệp vào đây" },
+  uploadDropHint: {
+    en: "Drop files or choose them from your device",
+    vi: "Thả tệp hoặc chọn từ máy của bạn",
+  },
+  uploadChoose: { en: "Choose files", vi: "Chọn tệp" },
+  uploading: { en: "Uploading files…", vi: "Đang tải tệp lên…" },
+  uploadDoneOne: { en: "Uploaded {n} file", vi: "Đã tải lên {n} tệp" },
+  uploadDoneMany: { en: "Uploaded {n} files", vi: "Đã tải lên {n} tệp" },
+  uploadError: {
+    en: "Could not upload files: {err}",
+    vi: "Không tải được tệp: {err}",
   },
 
   // New project dialog

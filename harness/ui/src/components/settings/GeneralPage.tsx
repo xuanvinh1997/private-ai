@@ -1,15 +1,9 @@
-import { LOCALES, locale, S, setLocale, t, type Locale } from "../../lib/i18n";
+import { LOCALES, LOCALE_NAMES, locale, S, setLocale, t, type Locale } from "../../lib/i18n";
 import { displayMode, setDisplayMode, type DisplayMode } from "../../lib/prefs";
 import { setTheme, theme, type ThemeChoice } from "../../lib/theme";
 import { Row, RowGroup, SectionHead, Select } from "./FormKit";
 
 /** The General page: the only three settings that do not touch the core, each a row with a select on the right, matching every other settings page. */
-
-/** Each language's name in its own language, never a `Msg`, so someone stuck in a language they cannot read still recognises the way back. */
-const TEN_NGON_NGU: Record<Locale, string> = {
-  en: "English",
-  vi: "Tiếng Việt",
-};
 
 export default function GeneralPage() {
   return (
@@ -49,7 +43,7 @@ export default function GeneralPage() {
                 label={t(S.settings.general.locale)}
                 value={locale()}
                 onPick={(value) => setLocale(value as Locale)}
-                options={LOCALES.map((ma) => ({ id: ma, label: TEN_NGON_NGU[ma] }))}
+                options={LOCALES.map((next) => ({ id: next, label: LOCALE_NAMES[next] }))}
               />
             )}
           />

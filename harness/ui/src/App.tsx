@@ -38,6 +38,7 @@ import {
   listProjects,
   openProject,
   removeProject,
+  deleteProject as deleteProjectOnCore,
   setProjectKind,
 } from "./lib/projects";
 import { titleFromMessage } from "./lib/sessions";
@@ -149,6 +150,7 @@ export default function App() {
   const [projects, setProjects] = createSignal<Project[]>([]);
   // Switching projects makes the core swap a whole plugin layer; this flag locks interaction while it does.
   const [switching, setSwitching] = createSignal(false);
+  const [deletingProject, setDeletingProject] = createSignal(false);
   // Which project row has its context menu open; an id, since one shared flag would open all of them.
   const [projectMenu, setProjectMenu] = createSignal<string | null>(null);
 
@@ -483,6 +485,24 @@ export default function App() {
     });
   }
 
+  /** Delete a project outright: its conversations and its indexed library go with it, the folder on disk does
+   * not. Unlike `forgetProject` the screen waits for the answer, because this one can fail with half the work
+   * done and a row removed early would hide a project whose data is still there. */
+  async function deleteProject(target: Project) {
+    if (deletingProject()) return;
+    setDeletingProject(true);
+    setLoadError(null);
+    try {
+      if (!isDemo()) await deleteProjectOnCore(target.id);
+      setProjects((all) => all.filter((entry) => entry.id !== target.id));
+    } catch (err) {
+      setLoadError(t(S.app.error.deleteProject, { name: target.name, err: String(err) }));
+      if (!isDemo()) setProjects(await listProjects());
+    } finally {
+      setDeletingProject(false);
+    }
+  }
+
   /** Build a blank session in the open workspace and adopt it. Every route to "no sessions left" comes through here,
    * since a real session is cheaper than teaching the composer about a "cannot send yet" state. The core attaches
    * `cwd` from the open project; with none, it is a plain chat session, which is still valid. */
@@ -668,7 +688,10 @@ export default function App() {
         setWorkspacePanelOpen(true);
         break;
       case "taplieu":
-        setTab("library");
+        // Only where that screen exists. In a code project it would mount `DocsView`, which scans the folder
+        // as a library on mount, and the effect above would reset the tab a frame later anyway - so the whole
+        // visible result was three failing calls against a service this project was never handed.
+        if (tabsFor(project()?.kind).includes("library")) setTab("library");
         break;
       case "mohinh":
         setSettingsPage("provider");
@@ -940,6 +963,8 @@ export default function App() {
                     onOpen={(picked) => void switchProject(picked.id)}
                     onOpenPath={(path) => void openFolder(path)}
                     onForget={forgetProject}
+                    onDelete={(target) => void deleteProject(target)}
+                    deleting={deletingProject()}
                     onCreated={async () => {
                       setProjects(await listProjects());
                       await adoptProject();
@@ -1006,10 +1031,19 @@ export default function App() {
             <ConfirmDialog
               icon="trash"
               title={t(S.app.forget.title, { name: target().name })}
-              body={t(S.app.forget.body)}
+              body={t(S.app.forget.bodyWithDelete)}
               more={t(S.app.forget.more)}
               detail={target().path}
               confirmLabel={t(S.app.forget.confirm)}
+              busy={deletingProject()}
+              escalate={{
+                label: t(S.app.forget.delete),
+                onClick: () => {
+                  const picked = target();
+                  setDialog(null);
+                  void deleteProject(picked);
+                },
+              }}
               onClose={closeDialog}
               onConfirm={() => {
                 // Read the value *before* closing: closing unmounts this branch and `target()` has nothing left.

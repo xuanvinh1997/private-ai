@@ -13,7 +13,7 @@ use serde_json::Value;
 use crate::error::{Result, SessionError};
 use crate::event::{AssistantMessage, Seq, SessionEvent, SessionEventEnvelope};
 use crate::message::{ContentBlock, Message};
-use crate::store::{NewSession, Origin, SessionHeader, SessionStore, new_session_id};
+use crate::store::{NewSession, Origin, SessionHeader, SessionScope, SessionStore, new_session_id};
 use crate::surface::SurfaceOp;
 
 /// `'AGNT'`: opening the wrong SQLite file fails immediately instead of after writing to it.
@@ -494,11 +494,27 @@ impl SessionStore for SqliteSessionStore {
         Ok(header)
     }
 
-    async fn list(&self, limit: Option<u32>) -> Result<Vec<SessionHeader>> {
+    async fn list(&self, scope: SessionScope<'_>, limit: Option<u32>) -> Result<Vec<SessionHeader>> {
+        // The directory is bound, never interpolated: it comes from a project path, and a path is user
+        // input the moment someone names a folder with a quote in it.
+        let directory = match scope {
+            SessionScope::Directory(path) => Some(path.to_owned()),
+            _ => None,
+        };
+        let filter = match scope {
+            SessionScope::All => "",
+            // `sessions_by_cwd` covers this, which is why the limit can stay in SQL.
+            SessionScope::Directory(_) => " WHERE cwd = ?2",
+            SessionScope::Unbound => " WHERE cwd IS NULL",
+        };
         self.with_conn(move |conn| {
-            let sql = format!("{SELECT_HEADER} ORDER BY created_at DESC LIMIT ?1");
+            let sql = format!("{SELECT_HEADER}{filter} ORDER BY created_at DESC LIMIT ?1");
             let mut stmt = conn.prepare_cached(&sql)?;
-            let rows = stmt.query_map(params![limit.map_or(-1, i64::from)], header_from_row)?;
+            let limit = limit.map_or(-1, i64::from);
+            let rows = match directory.as_deref() {
+                Some(path) => stmt.query_map(params![limit, path], header_from_row)?,
+                None => stmt.query_map(params![limit], header_from_row)?,
+            };
             let mut out = Vec::new();
             for row in rows {
                 out.push(row?);

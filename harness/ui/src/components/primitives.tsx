@@ -50,6 +50,7 @@ export function IconButton(props: {
   active?: boolean;
   danger?: boolean;
   disabled?: boolean;
+  busy?: boolean;
   expanded?: boolean;
   controls?: string;
   keys?: string;
@@ -69,21 +70,28 @@ export function IconButton(props: {
         ref={props.ref}
         type="button"
         onClick={(event) => props.onClick?.(event)}
-        disabled={props.disabled}
+        disabled={props.disabled || props.busy}
         aria-label={props.label}
+        aria-busy={props.busy || undefined}
         aria-pressed={props.active}
         aria-expanded={props.expanded}
         aria-controls={props.controls}
         aria-keyshortcuts={props.keys}
-        class={`grid ${box()} place-items-center rounded-icon border border-transparent transition duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-40`}
+        class={`grid ${box()} place-items-center rounded-icon border border-transparent transition duration-[var(--dur-fast)]`}
         classList={{
           "text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
             !props.active && !props.danger,
           "bg-accent-soft text-accent-ink": props.active === true,
           "text-danger hover:bg-danger-soft": props.danger === true,
+          "cursor-wait opacity-70": props.busy === true,
+          "disabled:cursor-not-allowed disabled:opacity-40": props.busy !== true,
         }}
       >
-        <Icon name={props.icon} size={glyph()} />
+        <Icon
+          name={props.icon}
+          size={glyph()}
+          class={props.busy ? "motion-safe:animate-spin" : undefined}
+        />
       </button>
       <Tip side={props.tip ?? "bottom"}>{props.label}</Tip>
     </span>

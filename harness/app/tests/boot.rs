@@ -5,6 +5,7 @@
 //! dịch, và đều làm ứng dụng chết lúc mở.
 
 use pai_app_lib::harness::{Config, boot};
+use pai_session::SessionScope;
 use pai_tools::{ToolName, Tools};
 use tempfile::TempDir;
 
@@ -127,7 +128,11 @@ async fn phien_moi_ghi_duoc_va_doc_lai_duoc() {
     let id = created.id().to_string();
     drop(created);
 
-    let listed = harness.sessions.list(Some(10)).await.expect("liệt kê");
+    let listed = harness
+        .sessions
+        .list(SessionScope::All, Some(10))
+        .await
+        .expect("liệt kê");
     assert!(listed.iter().any(|header| header.id == id));
     harness.sessions.open(&id).await.expect("mở lại được");
 }
@@ -352,7 +357,11 @@ async fn xoa_phien_thi_no_bien_khoi_danh_sach() {
         .rename(&id, "đặt tên rồi")
         .await
         .expect("đổi tên được");
-    let listed = harness.sessions.list(Some(10)).await.expect("liệt kê");
+    let listed = harness
+        .sessions
+        .list(SessionScope::All, Some(10))
+        .await
+        .expect("liệt kê");
     assert!(
         listed
             .iter()
@@ -360,7 +369,11 @@ async fn xoa_phien_thi_no_bien_khoi_danh_sach() {
     );
 
     harness.sessions.delete(&id).await.expect("xoá được");
-    let after = harness.sessions.list(Some(10)).await.expect("liệt kê");
+    let after = harness
+        .sessions
+        .list(SessionScope::All, Some(10))
+        .await
+        .expect("liệt kê");
     assert!(!after.iter().any(|h| h.id == id));
 }
 
@@ -475,7 +488,7 @@ async fn danh_sach_phien_chi_co_phien_cua_du_an_dang_mo() {
     assert_eq!(
         harness
             .sessions
-            .list(Some(10))
+            .list(SessionScope::All, Some(10))
             .await
             .expect("liệt kê")
             .len(),
@@ -483,7 +496,7 @@ async fn danh_sach_phien_chi_co_phien_cua_du_an_dang_mo() {
     );
     let mine: Vec<_> = harness
         .sessions
-        .list(Some(10))
+        .list(SessionScope::All, Some(10))
         .await
         .expect("liệt kê")
         .into_iter()
@@ -668,8 +681,8 @@ async fn doi_nha_cung_cap_hoi_thoai_khong_keo_bo_nhung_di_theo() {
 
     // Hàng gieo là Ollama trên máy này, giữ cả hai vai.
     //
-    // Đọc **tệp cấu hình mà service đọc**, không đọc một bộ nhúng trong tiến trình: từ
-    // khi việc nhúng chuyển sang `services/rag/`, tệp này là thứ duy nhất quyết định
+    // Đọc **tệp cấu hình mà thư viện native đọc**, không suy ra từ provider store: tệp
+    // này là thứ duy nhất quyết định
     // tài liệu được gửi tới đâu. Kiểm nó là kiểm cả bất biến lẫn đường ống chở nó.
     let doc_cau_hinh = || -> serde_json::Value {
         let raw = std::fs::read_to_string(harness.rag_config.path())
@@ -716,7 +729,10 @@ async fn doi_nha_cung_cap_hoi_thoai_khong_keo_bo_nhung_di_theo() {
     // …còn vai nhúng thì **không**. Tài liệu vẫn được nhúng tại chỗ.
     let cau_hinh = doc_cau_hinh();
     let sau = cau_hinh["embedding"]["model"].as_str().unwrap_or_default();
-    assert_eq!(sau, truoc, "đổi provider hội thoại đã kéo vai nhúng đi theo");
+    assert_eq!(
+        sau, truoc,
+        "đổi provider hội thoại đã kéo vai nhúng đi theo"
+    );
     // Và vai hội thoại thì phải đổi thật — nếu không thì bài này xanh vì tệp không bao
     // giờ được ghi lại, chứ không phải vì bất biến đúng.
     assert_eq!(
@@ -825,8 +841,7 @@ async fn dong_du_an_thi_tool_cham_dia_bien_mat() {
 
 /// Dự án tài liệu được cắm `rag`, và thư viện soi vào **đúng thư mục người dùng chọn**.
 ///
-/// Phần quét thư mục, rút chữ và nhúng nằm ở `services/rag/` và có bài kiểm chứng riêng
-/// bên đó — chạy nó ở đây sẽ đòi `uv`, một lần tải Python, và một máy chủ nhúng đang bật.
+/// Phần quét thư mục, rút chữ và nhúng nằm trong `pai-rag` và có bài kiểm chứng riêng.
 ///
 /// Cái còn lại, và cũng là **chỗ từng hỏng thật**, là chỗ nối: cây plugin có cắm `rag`
 /// cho đúng loại dự án không, seam `Docs` có được cấp không, ba tool đọc có vào sổ đăng
@@ -843,7 +858,11 @@ async fn du_an_tai_lieu_duoc_cam_rag_va_soi_dung_thu_muc() {
 
     let thu_vien = TempDir::new().expect("thư mục tạm");
     let goc = thu_vien.path().canonicalize().expect("phân giải");
-    std::fs::write(goc.join("ghi-chu.md"), "# Ghi chú\n\nNội dung thử nghiệm.\n").expect("ghi");
+    std::fs::write(
+        goc.join("ghi-chu.md"),
+        "# Ghi chú\n\nNội dung thử nghiệm.\n",
+    )
+    .expect("ghi");
 
     harness
         .create_project(&goc, ProjectKind::Docs, None)
@@ -868,7 +887,10 @@ async fn du_an_tai_lieu_duoc_cam_rag_va_soi_dung_thu_muc() {
         .filter(|name| name.starts_with("docs."))
         .collect();
     for mong_doi in ["docs.search", "docs.read", "docs.list"] {
-        assert!(ten.iter().any(|name| name == mong_doi), "thiếu {mong_doi}: {ten:?}");
+        assert!(
+            ten.iter().any(|name| name == mong_doi),
+            "thiếu {mong_doi}: {ten:?}"
+        );
     }
     for cam in ["docs.sync", "docs.ingest", "docs.reprocess", "docs.remove"] {
         assert!(
@@ -967,6 +989,84 @@ async fn doi_tu_du_an_tai_lieu_sang_ma_nguon_thi_tool_quay_lai() {
         .await;
     assert!(!doc.is_error, "không đọc được: {}", doc.content);
     assert!(doc.content.contains("fn main"));
+
+    harness.shutdown().await;
+}
+
+/// Dự án **mã nguồn** không được có tên trong tệp cấu hình của RAG native.
+///
+/// Bộ tool đã lọc đúng từ lâu — `rag` chỉ nạp cho dự án tài liệu — nên nhìn từ trong ứng
+/// dụng thì mọi thứ ổn. Nhưng tệp cấu hình lại được ghi cho **mọi loại** dự án: mở một
+/// repo là ghi luôn đường dẫn repo ấy vào `projects` và `active_project`. Nếu `rag` bị
+/// cắm nhầm, lần `docs.sync` kế tiếp sẽ quét cả cây mã nguồn và cắt đoạn như văn xuôi.
+///
+/// Bài này khoá cả hai chiều: mở dự án mã nguồn thì tệp trống, và đổi từ tài liệu sang
+/// mã nguồn thì tên thư viện cũ **đi hẳn**, không nằm lại.
+#[tokio::test]
+async fn du_an_ma_nguon_khong_lot_vao_cau_hinh_rag() {
+    use pai_project::ProjectKind;
+
+    let dir = TempDir::new().expect("thư mục tạm");
+    let mut dau = config(&dir);
+    dau.workspace = None;
+    let harness = boot(dau).await.expect("dựng được cây");
+
+    let cau_hinh = || -> serde_json::Value {
+        let raw = std::fs::read_to_string(harness.rag_config.path()).expect("đọc cấu hình RAG");
+        serde_json::from_str(&raw).expect("cấu hình RAG phải là JSON hợp lệ")
+    };
+
+    let repo = TempDir::new().expect("thư mục tạm");
+    let goc_code = repo.path().canonicalize().expect("phân giải");
+    std::fs::write(goc_code.join("a.rs"), "fn main() {}\n").expect("ghi");
+    harness
+        .create_project(&goc_code, ProjectKind::Code, None)
+        .expect("ghi nhận");
+    harness.open_project(&goc_code).await.expect("mở được");
+
+    let sau = cau_hinh();
+    assert_eq!(
+        sau["projects"].as_array().map(Vec::len),
+        Some(0),
+        "cây mã nguồn bị khai làm thư viện tài liệu: {sau}"
+    );
+    assert!(
+        sau["active_project"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "`docs.sync` không tham số sẽ quét đúng cây mã nguồn này: {sau}"
+    );
+
+    // Mở một thư viện thật thì tệp lại có tên nó — nếu không, bài trên xanh vì lý do sai.
+    let thu_vien = TempDir::new().expect("thư mục tạm");
+    let goc_docs = thu_vien.path().canonicalize().expect("phân giải");
+    std::fs::write(goc_docs.join("ghi-chu.md"), "# Ghi chú\n").expect("ghi");
+    harness
+        .create_project(&goc_docs, ProjectKind::Docs, None)
+        .expect("ghi nhận");
+    harness.open_project(&goc_docs).await.expect("mở được");
+    let giua = cau_hinh();
+    assert_eq!(
+        std::path::Path::new(giua["projects"][0]["root"].as_str().unwrap_or_default()),
+        khong_verbatim(&goc_docs),
+        "mở thư viện mà cấu hình không biết: {giua}"
+    );
+
+    // Rồi đổi chính thư viện ấy sang mã nguồn: tên cũ phải biến mất, không được nằm lại.
+    let id = harness.current_project().expect("có dự án").id;
+    harness
+        .set_project_kind(&id, ProjectKind::Code)
+        .await
+        .expect("đổi được loại");
+    let cuoi = cau_hinh();
+    assert!(
+        cuoi["active_project"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "đổi sang mã nguồn mà thư viện cũ còn nằm lại trong cấu hình: {cuoi}"
+    );
 
     harness.shutdown().await;
 }
@@ -1119,7 +1219,10 @@ async fn khoi_dong_lai_thi_cau_hinh_rag_van_biet_du_an_nao_dang_mo() {
         "cấu hình ghi lúc khởi động không biết dự án nào đang mở: {raw}"
     );
     assert!(
-        !cau_hinh["active_project"].as_str().unwrap_or_default().is_empty(),
+        !cau_hinh["active_project"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
         "thiếu `active_project` thì service từ chối mọi lời gọi: {raw}"
     );
 

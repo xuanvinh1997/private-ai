@@ -90,12 +90,12 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
         return ProbeResult::fail(match err.code {
             // Bad-key group: the server is there, talking, and refusing us.
             LlmErrorCode::Auth if config.api_key.is_empty() => {
-                format!("Máy chủ ở {url} đòi khoá API mà cấu hình này chưa có khoá.")
+                format!("API Key invalid!")
             }
             LlmErrorCode::Auth => {
-                format!("Máy chủ ở {url} từ chối khoá API này (HTTP {status}). Kiểm tra lại khoá.")
+                format!("API Key invalid! Check your key and try again.")
             }
-            _ => format!("Máy chủ ở {url} trả về lỗi: {}", err.message),
+            _ => format!("Máy chủ ở {url} trả về lỗi HTTP {status}: {}", err.message),
         });
     }
 

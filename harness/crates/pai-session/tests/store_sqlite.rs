@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use pai_session::{
     AssistantChunk, AssistantMessage, Message, NewSession, SessionError, SessionEvent,
-    SessionService, SessionStore, SessionTitler, SqliteSessionStore, StepEnd, StepStart, TurnEnd,
+    SessionScope, SessionService, SessionStore, SessionTitler, SqliteSessionStore, StepEnd,
+    StepStart, TurnEnd,
     TurnEndReason, TurnStart,
 };
 
@@ -63,6 +64,59 @@ async fn mot_luot(session: &mut pai_session::Session, turn: u64, hoi: &str, dap:
 }
 
 #[tokio::test]
+async fn liet_ke_theo_thu_muc() {
+    // A session belongs to the directory it was opened in. Without this filter the app's sidebar shows
+    // every project's sessions, and switching project lands the user back in the session they just left.
+    let sessions = service();
+    for path in ["/tmp/du-an-a", "/tmp/du-an-a", "/tmp/du-an-b"] {
+        sessions
+            .create(NewSession::in_dir(path))
+            .await
+            .expect("tạo có thư mục");
+    }
+    sessions
+        .create(NewSession::default())
+        .await
+        .expect("tạo không thư mục");
+
+    let a = sessions
+        .list(SessionScope::Directory("/tmp/du-an-a"), None)
+        .await
+        .expect("liệt kê A");
+    assert_eq!(a.len(), 2);
+    assert!(a.iter().all(|row| row.cwd.as_deref() == Some("/tmp/du-an-a")));
+
+    let b = sessions
+        .list(SessionScope::Directory("/tmp/du-an-b"), None)
+        .await
+        .expect("liệt kê B");
+    assert_eq!(b.len(), 1);
+
+    // No project open is its own scope, not "everything": those sessions record no directory.
+    let unbound = sessions
+        .list(SessionScope::Unbound, None)
+        .await
+        .expect("liệt kê rời");
+    assert_eq!(unbound.len(), 1);
+    assert!(unbound[0].cwd.is_none());
+
+    assert_eq!(
+        sessions.list(SessionScope::All, None).await.expect("tất cả").len(),
+        4
+    );
+
+    // A directory nobody used is empty, not everything: a filter that silently falls back to the whole
+    // table is worse than no filter, because it looks like it works.
+    assert!(
+        sessions
+            .list(SessionScope::Directory("/tmp/chua-ai-mo"), None)
+            .await
+            .expect("liệt kê rỗng")
+            .is_empty()
+    );
+}
+
+#[tokio::test]
 async fn tao_liet_ke_mo_lai() {
     let sessions = service();
     let mut session = sessions
@@ -73,7 +127,7 @@ async fn tao_liet_ke_mo_lai() {
     mot_luot(&mut session, 0, "chào", "chào bạn").await;
     session.flush().await.expect("ghi");
 
-    let listed = sessions.list(None).await.expect("liệt kê");
+    let listed = sessions.list(SessionScope::All, None).await.expect("liệt kê");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, id);
     assert_eq!(listed[0].cwd.as_deref(), Some("/tmp/repo"));
@@ -188,7 +242,7 @@ async fn fork_cam_cat_giua_mot_luot_dang_mo() {
         other => panic!("phải là OpenTurn, gặp {:?}", other.err()),
     }
     // No rounding back to the nearest `turn/end`: only one session ever exists.
-    assert_eq!(sessions.list(None).await.expect("liệt kê").len(), 1);
+    assert_eq!(sessions.list(SessionScope::All, None).await.expect("liệt kê").len(), 1);
 }
 
 #[tokio::test]
@@ -457,7 +511,7 @@ async fn doi_ten_phien_thi_danh_sach_thay_ngay() {
         .rename(&id, "Sửa bộ nạp cấu hình")
         .await
         .expect("đổi tên được");
-    let listed = service.list(Some(10)).await.expect("liệt kê");
+    let listed = service.list(SessionScope::All, Some(10)).await.expect("liệt kê");
     let found = listed
         .iter()
         .find(|header| header.id == id)

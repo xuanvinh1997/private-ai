@@ -12,7 +12,7 @@ use pai_llm::{
     BlockKind, Capabilities, CapabilitySource, ChatRequest, FinishReason, LlmAdapter, LlmError,
     StreamChunk,
 };
-use pai_session::{SessionService, SqliteSessionStore};
+use pai_session::{SessionScope, SessionService, SqliteSessionStore};
 use pai_tools::{Invocation, Tool, ToolName, Tools, ToolsPlugin};
 use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
@@ -167,6 +167,6 @@ async fn moi_lan_giao_viec_la_mot_phien_rieng() {
     let second = provider.delegate("việc hai", 0).await.expect("giao được");
     assert_ne!(first.session_id, second.session_id);
 
-    let listed = sessions.list(Some(10)).await.expect("liệt kê");
+    let listed = sessions.list(SessionScope::All, Some(10)).await.expect("liệt kê");
     assert!(listed.len() >= 2);
 }

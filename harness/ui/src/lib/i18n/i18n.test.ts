@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { S, type Msg } from "./index";
+import { LOCALES, LOCALE_NAMES, S, type Msg } from "./index";
 import { split } from "./rich";
 
 /** Types catch a *missing* translation; what they cannot catch is two translations drifting apart in slots or marks. */
@@ -45,6 +45,11 @@ describe("catalog i18n", () => {
         expect((raw.match(/`/g) ?? []).length % 2, `${path}: ${raw}`).toBe(0);
       }
     }
+  });
+
+  it("mọi locale có tên tự nhận diện để dùng trong bộ chuyển ngôn ngữ", () => {
+    for (const locale of LOCALES) expect(LOCALE_NAMES[locale].trim()).not.toBe("");
+    expect(new Set(Object.values(LOCALE_NAMES)).size).toBe(LOCALES.length);
   });
 });
 

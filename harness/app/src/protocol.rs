@@ -497,20 +497,19 @@ pub struct EmbeddingSetting {
     pub reason: Option<String>,
 }
 
-/// Reranking configuration, kept out of the provider list because the default reranker is an `.onnx` file
-/// running inside the service, with no base URL, key or health check. The exception is `backend: "http"`,
-/// where it really is an endpoint and `model` names what that server serves.
+/// Optional HTTP reranking configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RerankSetting {
     /// Off still retrieves, just less well. See `reason`.
     pub enabled: bool,
-    /// `onnx` runs inside the service; `http` calls out to a `/v1/rerank` endpoint.
+    /// Currently always `http`.
     pub backend: String,
-    /// A HuggingFace repo name for `onnx`, or a model name for `http`.
+    /// Base URL or full `/v1/rerank` endpoint.
+    pub url: String,
+    /// Model name served by the HTTP endpoint.
     pub model: String,
-    /// How many candidates to fetch for rescoring -- the latency dial: roughly 0.4 s per passage on CPU with
-    /// `bge-reranker-v2-m3`, negligible on GPU.
+    /// How many candidates to fetch for rescoring -- the latency dial.
     pub candidates: u32,
     /// How many to keep after scoring.
     pub top_n: u32,
