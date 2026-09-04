@@ -11,19 +11,19 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::library::DocLibrary;
+use crate::tools::Vocab;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DocsListArgs {}
 
 pub struct DocsList {
     docs: Arc<dyn DocLibrary>,
+    ten: Vocab,
 }
 
 impl DocsList {
-    pub const NAME: &'static str = "docs.list";
-
-    pub fn new(docs: Arc<dyn DocLibrary>) -> DocsList {
-        DocsList { docs }
+    pub fn new(docs: Arc<dyn DocLibrary>, ten: Vocab) -> DocsList {
+        DocsList { docs, ten }
     }
 }
 
@@ -31,10 +31,12 @@ impl DocsList {
 impl Tool for DocsList {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
-            DocsList::NAME,
-            "Liệt kê tài liệu trong thư viện của dự án: mã, tên, định dạng và số đoạn. \
-             Dùng mã ở đây cho `docs.read`. Kết quả cũng nói phần tìm theo ý nghĩa đã sẵn \
-             sàng chưa — khi chưa, hãy hỏi `docs.search` bằng từ khoá cụ thể.",
+            self.ten.list,
+            format!(
+                "Liệt kê {}: mã, tên, định dạng và số đoạn. Dùng mã ở đây cho `{}`. Kết quả cũng nói phần tìm \
+                 theo ý nghĩa đã sẵn sàng chưa — khi chưa, hãy hỏi `{}` bằng từ khoá cụ thể.",
+                self.ten.what, self.ten.read, self.ten.search
+            ),
             json_schema_for::<DocsListArgs>(),
         )
     }

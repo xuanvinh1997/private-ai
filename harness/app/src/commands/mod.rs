@@ -3,6 +3,7 @@
 //! never the `Debug` of an error type.
 
 pub mod attach;
+pub mod chunk;
 pub mod complete;
 pub mod docs;
 pub mod mcp;

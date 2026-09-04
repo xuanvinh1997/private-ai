@@ -59,6 +59,16 @@ export const chat = {
       en: "{err} (and {n} more files were not attached)",
       vi: "{err} (và {n} tệp nữa không đính kèm được)",
     },
+    // Attachment chips, and the block they turn into in the sent message.
+    attachedRemove: { en: "Remove {name}", vi: "Bỏ {name}" },
+    attachedExtracted: { en: "extracted", vi: "đã trích xuất" },
+    attachedHeading: { en: "Attached files:", vi: "Tệp đính kèm:" },
+    attachedByLibrary: {
+      en: "extracted, open with attachment.read",
+      vi: "đã trích xuất, mở bằng attachment.read",
+    },
+    attachedByRead: { en: "open with read", vi: "mở bằng read" },
+
   },
 
   // ---- Sidebar --------------------------------------------------------------

@@ -22,6 +22,7 @@ import {
   demoVisionSetting,
 } from "./fixtures/providers";
 import type {
+  ChunkSetting,
   EmbeddingProbe,
   EmbeddingSetting,
   ModelChoice,
@@ -142,6 +143,25 @@ const RERANK_MAC_DINH: RerankSetting = {
   topN: 8,
   reason: null,
 };
+
+/** Safe default when the core is unreachable: the same numbers `pai-rag` falls back to. */
+const CHUNK_MAC_DINH: ChunkSetting = { size: 1400, overlap: 180, reason: null };
+
+/** How documents are cut. Read from the core, not assumed, since an absent key means the service's own default. */
+export async function chunkSetting(): Promise<ChunkSetting> {
+  if (!inTauri()) return CHUNK_MAC_DINH;
+  try {
+    return await invoke<ChunkSetting>("chunk_setting");
+  } catch (err) {
+    console.error("failed to read chunk setting", err);
+    return CHUNK_MAC_DINH;
+  }
+}
+
+/** Persist both numbers; the core clamps them and returns what it stored, so the form redraws from the answer. */
+export function setChunk(size: number, overlap: number): Promise<ChunkSetting> {
+  return invoke<ChunkSetting>("set_chunk", { size, overlap });
+}
 
 export async function rerankSetting(): Promise<RerankSetting> {
   if (!inTauri()) return RERANK_MAC_DINH;

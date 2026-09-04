@@ -14,6 +14,6 @@ pub use format::Format;
 pub use library::{
     DocLibrary, Docs, Document, Hit, IngestEvent, IngestStage, MAX_FILES, Scanning, Stats,
 };
-pub use native::{NativeLibrary, purge_library};
+pub use native::{NativeLibrary, needs_extraction, purge_library};
 pub use plugin::RagPlugin;
 pub use search::MatchedBy;

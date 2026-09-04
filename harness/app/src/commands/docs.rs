@@ -187,6 +187,13 @@ pub async fn reprocess_library(
     drain(&library, stream, on_progress).await
 }
 
+/// Stop the current document ingest without rolling back files that were already committed.
+#[tauri::command]
+pub async fn stop_document_indexing(state: State<'_, AppState>) -> Result<bool, String> {
+    let harness = state.harness().await?;
+    Ok(library(&harness)?.cancel_ingest())
+}
+
 #[tauri::command]
 pub async fn remove_document(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let harness = state.harness().await?;

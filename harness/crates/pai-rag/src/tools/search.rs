@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::library::DocLibrary;
+use crate::tools::Vocab;
 use crate::tools::render;
 
 /// Default chunk count. Eight ~1000-character chunks is about 2500 tokens: enough to answer, not enough to evict the conversation.
@@ -28,13 +29,12 @@ pub struct DocsSearchArgs {
 
 pub struct DocsSearch {
     docs: Arc<dyn DocLibrary>,
+    ten: Vocab,
 }
 
 impl DocsSearch {
-    pub const NAME: &'static str = "docs.search";
-
-    pub fn new(docs: Arc<dyn DocLibrary>) -> DocsSearch {
-        DocsSearch { docs }
+    pub fn new(docs: Arc<dyn DocLibrary>, ten: Vocab) -> DocsSearch {
+        DocsSearch { docs, ten }
     }
 }
 
@@ -42,11 +42,13 @@ impl DocsSearch {
 impl Tool for DocsSearch {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
-            DocsSearch::NAME,
-            "Tìm những đoạn liên quan trong thư viện tài liệu của dự án. Kết hợp tìm theo \
-             từ khoá với tìm theo ý nghĩa, nên hỏi bằng cả một câu cũng được. Mỗi kết quả \
-             mang tên tài liệu và số thứ tự đoạn — hãy trích dẫn chúng khi trả lời, và \
-             dùng `docs.read` để đọc thêm phần trước sau của một đoạn.",
+            self.ten.search,
+            format!(
+                "Tìm những đoạn liên quan trong {}. Kết hợp tìm theo từ khoá với tìm theo ý nghĩa, nên hỏi \
+                 bằng cả một câu cũng được. Mỗi kết quả mang tên {} và số thứ tự đoạn — hãy trích dẫn chúng \
+                 khi trả lời, và dùng `{}` để đọc thêm phần trước sau của một đoạn.",
+                self.ten.what, self.ten.item, self.ten.read
+            ),
             json_schema_for::<DocsSearchArgs>(),
         )
     }

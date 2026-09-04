@@ -8,13 +8,14 @@ mod vision;
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use futures::{
     channel::mpsc,
-    future,
+    future::{self, AbortHandle, Abortable},
     stream::{self, BoxStream, StreamExt},
 };
 use pai_rag_core::{
@@ -40,6 +41,19 @@ use crate::{
 
 const MAX_FILES: usize = 5_000;
 
+/// Whether a file only becomes text by going through the library. `read` handles plain text, markup, data and
+/// source code itself; a PDF, an image or a DOCX is bytes until something extracts it, and that something --
+/// pdfium, the DOCX reader, OCR through the vision role -- already lives here.
+///
+/// Public because attaching a file to a conversation asks exactly this question before deciding whether the
+/// path alone is enough.
+pub fn needs_extraction(path: &Path) -> bool {
+    matches!(
+        extract::reader_for(path),
+        Some(ReaderKind::Pdf | ReaderKind::Image | ReaderKind::Native(Format::Office))
+    )
+}
+
 /// In-process Rust document library.
 pub struct NativeLibrary {
     root: PathBuf,
@@ -49,6 +63,8 @@ pub struct NativeLibrary {
     runtime: Mutex<RuntimeState>,
     last_embed_error: Mutex<Option<String>>,
     scanning: Mutex<Option<Scanning>>,
+    ingest_generation: AtomicU64,
+    active_ingest: Mutex<Option<(u64, AbortHandle)>>,
 }
 
 struct RuntimeState {
@@ -138,6 +154,8 @@ impl NativeLibrary {
             runtime: Mutex::new(runtime),
             last_embed_error: Mutex::new(None),
             scanning: Mutex::new(None),
+            ingest_generation: AtomicU64::new(0),
+            active_ingest: Mutex::new(None),
         })
     }
 
@@ -333,12 +351,47 @@ impl NativeLibrary {
 
     fn run(&self, source: Source) -> BoxStream<'_, IngestEvent> {
         let root = self.root.display().to_string();
-        let started = event(IngestStage::Reading, root, None, 0, 0);
+        let started = event(IngestStage::Reading, root.clone(), None, 0, 0);
         let (progress, events) = mpsc::unbounded();
+        let (abort, registration) = AbortHandle::new_pair();
+        let generation = self.ingest_generation.fetch_add(1, Ordering::Relaxed);
+        if let Some((_, previous)) = self.active_ingest.lock().replace((generation, abort)) {
+            // There is one mutable document store per project. Starting a second pass supersedes the first
+            // instead of allowing two extract/embed pipelines to race over it.
+            previous.abort();
+        }
         // Poll the worker and receiver as one stream. This makes each milestone observable while
         // extraction/OCR/embedding is still running instead of buffering every event until the end.
-        let worker = stream::once(async move { self.process(source, progress).await })
-            .filter_map(|_| future::ready(None::<IngestEvent>));
+        let worker = stream::once(async move {
+            let cancelled = Abortable::new(self.process(source, progress.clone()), registration)
+                .await
+                .is_err();
+            let current = {
+                let mut active = self.active_ingest.lock();
+                if active
+                    .as_ref()
+                    .is_some_and(|(active_generation, _)| *active_generation == generation)
+                {
+                    active.take();
+                    true
+                } else {
+                    false
+                }
+            };
+            let scan = if current {
+                self.scanning.lock().take()
+            } else {
+                None
+            };
+            if cancelled {
+                let (done, total) = scan.map(|item| (item.done, item.total)).unwrap_or((0, 0));
+                send_progress(
+                    &progress,
+                    event(IngestStage::Cancelled, root, None, done, total),
+                );
+            }
+        })
+        .filter_map(|_| future::ready(None::<IngestEvent>));
         stream::once(async move { started })
             .chain(stream::select(events, worker))
             .boxed()
@@ -346,9 +399,6 @@ impl NativeLibrary {
 
     async fn process(&self, source: Source, progress: mpsc::UnboundedSender<IngestEvent>) {
         let result = self.process_inner(source, &progress).await;
-        // Clear even when SQLite/config/extraction aborts the whole pass; otherwise the
-        // UI would keep reporting a scan that can never make progress.
-        *self.scanning.lock() = None;
         match result {
             Ok(report) => send_progress(
                 &progress,
@@ -1055,6 +1105,15 @@ impl DocLibrary for NativeLibrary {
         self.run(Source::Reprocess)
     }
 
+    fn cancel_ingest(&self) -> bool {
+        let active = self.active_ingest.lock();
+        let Some((_, handle)) = active.as_ref() else {
+            return false;
+        };
+        handle.abort();
+        true
+    }
+
     async fn remove(&self, id: &str) -> Result<(), RagError> {
         let found = self.store.lock().document(id).map_err(store_error)?;
         let Some(found) = found else {
@@ -1174,7 +1233,7 @@ fn event(
         stage,
         done,
         total,
-        finished: stage == IngestStage::Finished,
+        finished: matches!(stage, IngestStage::Finished | IngestStage::Cancelled),
         error,
         document: None,
     }

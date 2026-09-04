@@ -541,6 +541,19 @@ pub struct VisionProbe {
     pub text: Option<String>,
 }
 
+/// How documents are cut into chunks before embedding. Changing either number invalidates every stored
+/// chunk, so the screen showing this must say so before saving.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChunkSetting {
+    /// Target characters per chunk.
+    pub size: u32,
+    /// Characters repeated from the previous chunk, so a sentence split across the seam is still findable.
+    pub overlap: u32,
+    /// The sentence naming the trade-off being made at these numbers.
+    pub reason: Option<String>,
+}
+
 /// Local ONNX reranking configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

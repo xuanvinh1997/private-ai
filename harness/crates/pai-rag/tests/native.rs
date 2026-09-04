@@ -86,6 +86,27 @@ async fn native_path_ingests_searches_reads_and_removes() {
 }
 
 #[tokio::test]
+async fn active_ingest_can_be_cancelled_without_recording_a_failure() {
+    let (_temp, library) = library();
+    let mut stream = library.sync();
+
+    assert_eq!(stream.next().await.unwrap().stage, IngestStage::Reading);
+    assert!(library.cancel_ingest());
+    let remaining: Vec<_> = stream.collect().await;
+
+    let cancelled = remaining.last().expect("a cancelled terminal event");
+    assert_eq!(cancelled.stage, IngestStage::Cancelled);
+    assert!(cancelled.finished);
+    assert!(cancelled.error.is_none());
+    assert!(
+        !library.cancel_ingest(),
+        "the completed stream clears its handle"
+    );
+    assert!(library.stats().await.unwrap().scanning.is_none());
+    assert!(library.documents().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn sync_fingerprints_unchanged_extraction_errors() {
     let (temp, library) = library();
     let root = temp.path().join("documents");

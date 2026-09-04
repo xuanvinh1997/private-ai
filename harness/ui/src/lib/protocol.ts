@@ -320,6 +320,16 @@ export interface Provider {
   visionModel: string | null;
 }
 
+/** How documents are cut before embedding; changing either number re-cuts and re-embeds the whole library. */
+export interface ChunkSetting {
+  /** Target characters per chunk. */
+  size: number;
+  /** Characters repeated from the previous chunk, so a sentence split across the seam stays findable. */
+  overlap: number;
+  /** The sentence naming the trade-off at these numbers. */
+  reason: string | null;
+}
+
 /** Local ONNX rerank settings. */
 export interface RerankSetting {
   enabled: boolean;

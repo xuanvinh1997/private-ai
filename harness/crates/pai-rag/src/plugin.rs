@@ -1,6 +1,10 @@
 //! Plugs the document library into the tree: one plugin, one provider, three read tools.
 //! Project-layer plugin, so switching projects unplugs and replugs it with a new root.
 //! The four management tools stay unregistered — only a human action may reach them.
+//!
+//! Mounted twice over the application, never at once: over the user's document folder in a document project,
+//! and over a code project's attachment folder, where the same extractors turn an attached PDF, image or DOCX
+//! into something the model can read. Two plugin names for one plugin, since the tree keys scopes by name.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,20 +18,38 @@ use crate::native::NativeLibrary;
 use crate::tools::list::DocsList;
 use crate::tools::read::DocsRead;
 use crate::tools::search::DocsSearch;
+use crate::tools::{ATTACHMENTS, DOCS, Vocab};
 
 pub struct RagPlugin {
+    /// Which mount this is; returned by [`Plugin::name`], which the tree uses to key the scope.
+    name: &'static str,
+    /// What the three tools are called at this mount.
+    ten: Vocab,
     config_path: PathBuf,
     project: String,
-    /// The user's document folder. The library *is* that folder; nothing is copied.
+    /// The folder the library reads. The library *is* that folder; nothing is copied.
     root: PathBuf,
 }
 
 impl RagPlugin {
+    /// The document project's own library: the folder the user chose.
     pub fn new(config_path: PathBuf, project: String, root: PathBuf) -> RagPlugin {
         RagPlugin {
+            name: "rag",
+            ten: DOCS,
             config_path,
             project,
             root,
+        }
+    }
+
+    /// The same library over a code project's attachment folder. A separate `project` id, so its store and its
+    /// vector collection never share a name with a document library.
+    pub fn attachments(config_path: PathBuf, project: String, root: PathBuf) -> RagPlugin {
+        RagPlugin {
+            name: "attachments",
+            ten: ATTACHMENTS,
+            ..RagPlugin::new(config_path, project, root)
         }
     }
 }
@@ -35,7 +57,7 @@ impl RagPlugin {
 #[async_trait]
 impl Plugin for RagPlugin {
     fn name(&self) -> &'static str {
-        "rag"
+        self.name
     }
 
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
@@ -48,9 +70,9 @@ impl Plugin for RagPlugin {
         ctx.keep(ctx.provide::<Docs>(docs.clone())?);
 
         let tools = ctx.require::<Tools>()?;
-        ctx.keep(tools.register(Arc::new(DocsSearch::new(docs.clone()))));
-        ctx.keep(tools.register(Arc::new(DocsRead::new(docs.clone()))));
-        ctx.keep(tools.register(Arc::new(DocsList::new(docs))));
+        ctx.keep(tools.register(Arc::new(DocsSearch::new(docs.clone(), self.ten))));
+        ctx.keep(tools.register(Arc::new(DocsRead::new(docs.clone(), self.ten))));
+        ctx.keep(tools.register(Arc::new(DocsList::new(docs, self.ten))));
         Ok(())
     }
 }

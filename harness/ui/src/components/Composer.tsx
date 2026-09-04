@@ -1,6 +1,12 @@
 import { createEffect, createMemo, createResource, createSignal, For, Show } from "solid-js";
 import { useDragDrop } from "../hooks/useDragDrop";
-import { type Attachment, pickFiles, resolveAttachments } from "../lib/attach";
+import {
+  type Attached,
+  type Attachment,
+  attached,
+  pickFiles,
+  resolveAttachments,
+} from "../lib/attach";
 import { applyCompletion, completePaths, findTrigger, rankCommands } from "../lib/complete";
 import CompletionPopup, { type Suggestion } from "./CompletionPopup";
 import { S, t, tn, type Msg } from "../lib/i18n";
@@ -65,6 +71,13 @@ export default function Composer(props: {
   /** Whether a project is open; without one no project tools are plugged in, so the scope picker must say so
    * rather than looking enabled, which is the worst lie a permissions UI can tell. */
   hasProject: boolean;
+  /** The conversation an attachment belongs to: a file from outside the project is copied into this session's
+   * own folder, and goes away with it. */
+  sessionId: string;
+  /** Files attached to the message being written, shown as chips above the field. Owned above the composer,
+   * because the message that carries them is assembled there. */
+  attachments: Attached[];
+  onAttachmentsChange: (files: Attached[]) => void;
   /** Name of the open project, for the status line under the composer. */
   projectName?: string;
   projectKind?: ProjectKind;
@@ -206,14 +219,15 @@ export default function Composer(props: {
     return rows;
   });
 
-  /** Append resolved paths to the draft, one per line because paths contain spaces; a rejected file never blocks
-   * the rest of the batch, and the error names exactly the one that failed. */
+  /** Turn placed paths into chips. A rejected file never blocks the rest of the batch, and the error names
+   * exactly the one that failed. A file from outside the project comes back as the core's copy of it, so the
+   * path kept is not always the path dropped. */
   const attach = async (paths: string[]) => {
     if (paths.length === 0) return;
 
     let resolved: Attachment[];
     try {
-      resolved = await resolveAttachments(paths);
+      resolved = await resolveAttachments(paths, props.sessionId);
     } catch (err) {
       // The core rejected the whole batch, almost always "no project"; quote it verbatim, since only it knows why.
       notify("error", String(err));
@@ -236,8 +250,16 @@ export default function Composer(props: {
     }
 
     if (usable.length === 0) return;
-    const prefix = props.value.trim() === "" ? "" : `${props.value.replace(/\s*$/, "")}\n`;
-    props.onChange(`${prefix}${usable.map((entry) => entry.path).join("\n")}\n`);
+    // The same file twice is one chip: dropping a batch that overlaps the last one is ordinary, and two
+    // identical chips would send the model the same path twice.
+    const co = new Set(props.attachments.map((file) => file.path));
+    const them = usable.filter((entry) => !co.has(entry.path)).map(attached);
+    if (them.length > 0) props.onAttachmentsChange([...props.attachments, ...them]);
+    field?.focus();
+  };
+
+  const detach = (path: string) => {
+    props.onAttachmentsChange(props.attachments.filter((file) => file.path !== path));
     field?.focus();
   };
 
@@ -265,8 +287,10 @@ export default function Composer(props: {
   };
 
   // Not blocked while `busy`: App queues the message, and blocking here would make Enter do nothing mid-turn.
+  // A message of attachments and no words is a real message -- "read this" is what the chips already say.
   const submit = () => {
-    if (props.disabled || props.value.trim() === "") return;
+    if (props.disabled) return;
+    if (props.value.trim() === "" && props.attachments.length === 0) return;
     props.onSubmit();
   };
 
@@ -378,6 +402,36 @@ export default function Composer(props: {
               : undefined
           }
         />
+
+        {/* Chips, above the field: what is attached must be visible as objects that can be removed one by one.
+            They used to be lines of text in the draft, which meant reading a path to know what was attached and
+            editing text to drop one. The path itself moves to the `title`, where it is available but not loud. */}
+        <Show when={props.attachments.length > 0}>
+          <ul class="m-0 flex list-none flex-wrap gap-2xs px-md pt-md pb-0">
+            <For each={props.attachments}>
+              {(file) => (
+                <li
+                  title={file.path}
+                  class="flex max-w-full items-center gap-2xs rounded-btn border border-line bg-[var(--overlay-hover)] py-3xs pr-3xs pl-2xs text-xs text-text"
+                >
+                  <Icon name={file.extracted ? "document" : "paperclip"} size={12} />
+                  <span class="min-w-0 max-w-[220px] truncate">{file.name}</span>
+                  <Show when={file.extracted}>
+                    <span class="shrink-0 text-faint">{t(S.chat.composer.attachedExtracted)}</span>
+                  </Show>
+                  <button
+                    type="button"
+                    onClick={() => detach(file.path)}
+                    aria-label={t(S.chat.composer.attachedRemove, { name: file.name })}
+                    class="flex h-5 w-5 shrink-0 items-center justify-center rounded-btn text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-text"
+                  >
+                    <Icon name="x" size={12} />
+                  </button>
+                </li>
+              )}
+            </For>
+          </ul>
+        </Show>
 
         <textarea
           ref={(el) => {
@@ -503,7 +557,10 @@ export default function Composer(props: {
               <button
                 type="submit"
                 aria-label={t(S.chat.composer.send)}
-                disabled={props.disabled || props.value.trim() === ""}
+                disabled={
+                  props.disabled ||
+                  (props.value.trim() === "" && props.attachments.length === 0)
+                }
                 class="pai-btn pai-btn-primary"
               >
                 <Icon name="send" size={14} />

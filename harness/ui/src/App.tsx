@@ -11,6 +11,7 @@ import {
   renameSession,
   sendMessage,
 } from "./lib/agent";
+import { type Attached, withAttachments } from "./lib/attach";
 import { changedFiles } from "./lib/changes";
 import { createConversation, nodesFromHistory } from "./lib/conversation";
 import {
@@ -114,6 +115,9 @@ export default function App() {
   const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
   const [currentId, setCurrentId] = createSignal(PHIEN_CHUA_MO);
   const [draft, setDraft] = createSignal("");
+  /** Files attached to the message being written. They live here rather than in the composer because the
+   * message that carries them is assembled here, and because a queued message must take them with it. */
+  const [attachments, setAttachments] = createSignal<Attached[]>([]);
   /** A message typed *while the previous turn was running*, waiting its turn. Exactly one slot, not a queue:
    * three questions against context the author has not read is three questions they would have written differently. */
   const [queued, setQueued] = createSignal("");
@@ -636,9 +640,18 @@ export default function App() {
     void renameSession(id, title);
   }
 
+  /** Compose the message from what was typed and what was attached, then hand it over. Composition happens
+   * exactly here, so a message that waits in the queue keeps the files that were attached when it was written
+   * rather than collecting whatever was attached while it waited. */
   async function send(text: string) {
-    const trimmed = text.trim();
-    if (trimmed === "") return;
+    const message = withAttachments(text, attachments());
+    if (message === "") return;
+    setAttachments([]);
+    await deliver(message);
+  }
+
+  /** Everything after composition: queue it if a turn is running, otherwise run the turn. */
+  async function deliver(trimmed: string) {
     // The previous turn is still running: keep this message, do not swallow it.
     if (conversation.busy()) {
       setQueued(trimmed);
@@ -692,7 +705,7 @@ export default function App() {
       const cho = queued();
       if (cho !== "") {
         setQueued("");
-        if (currentId() === cuaLuot) void send(cho);
+        if (currentId() === cuaLuot) void deliver(cho);
         else setDraft((hien) => (hien.trim() === "" ? cho : hien));
       }
     }
@@ -959,6 +972,9 @@ export default function App() {
                       scope={scope()}
                       onPickScope={setScope}
                       hasProject={hasProject()}
+                      sessionId={currentId()}
+                      attachments={attachments()}
+                      onAttachmentsChange={setAttachments}
                       projectName={project()?.name}
                       projectKind={project()?.kind}
                       mcpConnected={mcpConnected()}

@@ -16,6 +16,7 @@ import type { ModelChoice, Provider, ProviderInput, ProviderPreset } from "../..
 import Icon, { type IconName } from "./../Icon";
 import { IconButton } from "./../primitives";
 import ConfirmDialog from "./ConfirmDialog";
+import ChunkView from "./ChunkView";
 import EmbeddingView from "./EmbeddingView";
 import RerankView from "./RerankView";
 import VisionView from "./VisionView";
@@ -258,7 +259,12 @@ export default function ProvidersView() {
         aria-labelledby={tabId("embedding")}
         hidden={tab() !== "embedding"}
       >
-        <EmbeddingView reloadKey={stamp()} />
+        <div class="flex flex-col gap-2xl">
+          <EmbeddingView reloadKey={stamp()} />
+          {/* Under the model on purpose: chunking is the step immediately before embedding, and the two
+              settings share one consequence -- changing either re-embeds the library. */}
+          <ChunkView />
+        </div>
       </section>
 
       <section

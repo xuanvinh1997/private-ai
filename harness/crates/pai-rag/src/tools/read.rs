@@ -11,7 +11,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::library::DocLibrary;
-use crate::tools::render;
+use crate::tools::{Vocab, render};
 
 /// Six ~1000-character chunks per read; a whole hundred-page document would fall out of the context window.
 const DEFAULT_LIMIT: usize = 6;
@@ -29,13 +29,12 @@ pub struct DocsReadArgs {
 
 pub struct DocsRead {
     docs: Arc<dyn DocLibrary>,
+    ten: Vocab,
 }
 
 impl DocsRead {
-    pub const NAME: &'static str = "docs.read";
-
-    pub fn new(docs: Arc<dyn DocLibrary>) -> DocsRead {
-        DocsRead { docs }
+    pub fn new(docs: Arc<dyn DocLibrary>, ten: Vocab) -> DocsRead {
+        DocsRead { docs, ten }
     }
 }
 
@@ -43,10 +42,12 @@ impl DocsRead {
 impl Tool for DocsRead {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
-            DocsRead::NAME,
-            "Đọc một tài liệu trong thư viện theo thứ tự, từng đoạn một. Dùng nó sau \
-             `docs.search` để xem phần trước và sau của một đoạn đã tìm được; `offset` \
-             đếm theo số thứ tự đoạn mà `docs.search` đã in ra.",
+            self.ten.read,
+            format!(
+                "Đọc một {} theo thứ tự, từng đoạn một. Dùng nó sau `{}` để xem phần trước và sau của một \
+                 đoạn đã tìm được; `offset` đếm theo số thứ tự đoạn mà `{}` đã in ra.",
+                self.ten.item, self.ten.search, self.ten.search
+            ),
             json_schema_for::<DocsReadArgs>(),
         )
     }
@@ -70,9 +71,8 @@ impl Tool for DocsRead {
 
         if hits.is_empty() {
             return Ok(ToolOutcome::ok(format!(
-                "Tài liệu `{}` không có đoạn nào từ vị trí {offset}. Dùng `docs.list` để \
-                 xem tài liệu có bao nhiêu đoạn.",
-                args.document_id
+                "`{}` không có đoạn nào từ vị trí {offset}. Dùng `{}` để xem nó có bao nhiêu đoạn.",
+                args.document_id, self.ten.list
             )));
         }
 

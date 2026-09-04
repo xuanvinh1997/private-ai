@@ -3,6 +3,45 @@ import { common } from "./common";
 
 /** Strings for the `embedding` area (embedding plus reranking). See lib/i18n/README.md. */
 export const embedding = {
+  // How documents are cut before embedding
+  chunk: {
+    title: { en: "Chunking", vi: "Cắt đoạn" },
+    desc: { en: "How documents are cut up.", vi: "Cách cắt tài liệu thành đoạn." },
+    more: {
+      en: "Documents are stored and searched one chunk at a time, not one file at a time. Chunk size decides how much context arrives with a hit; overlap repeats a little of the previous chunk so a sentence cut across the seam is still findable. Both numbers change what is stored, so changing them re-cuts and re-embeds the whole library.",
+      vi: "Tài liệu được lưu và tìm theo từng đoạn, không phải theo từng tệp. Cỡ đoạn quyết định một kết quả mang theo bao nhiêu ngữ cảnh; phần lặp chép lại một ít của đoạn trước để câu bị cắt ngang vẫn tìm ra được. Cả hai số đều đổi thứ được lưu, nên đổi chúng là cắt và nhúng lại toàn bộ thư viện.",
+    },
+    sizeLabel: { en: "Chunk size", vi: "Cỡ đoạn" },
+    sizeDesc: { en: "Characters per chunk.", vi: "Số ký tự mỗi đoạn." },
+    sizeMore: {
+      en: "Between 200 and 8000; anything outside is clamped. Larger chunks answer questions that span a whole section, at the cost of citations that point at a page rather than a sentence. Smaller ones cite precisely and lose the thread.",
+      vi: "Từ 200 tới 8000, ngoài khoảng đó sẽ bị siết lại. Đoạn lớn trả lời được câu hỏi trải dài cả mục, đổi lại trích dẫn chỉ tới được cỡ một trang chứ không tới câu. Đoạn nhỏ trích dẫn sát nhưng dễ mất mạch.",
+    },
+    overlapLabel: { en: "Overlap", vi: "Phần lặp" },
+    overlapDesc: { en: "Characters repeated.", vi: "Số ký tự lặp lại." },
+    overlapMore: {
+      en: "Capped at half the chunk size. Zero is fine for lists and tables, where nothing runs across a boundary; prose wants some, or the one sentence holding the answer can end up split in two and match neither half.",
+      vi: "Tối đa bằng nửa cỡ đoạn. Để 0 vẫn ổn với danh sách và bảng, nơi không có câu nào chạy vắt qua ranh giới; văn xuôi thì nên có, không thì đúng câu chứa câu trả lời bị cắt đôi và không nửa nào khớp.",
+    },
+    saveFailed: {
+      en: "Could not save the chunking setting: {detail}",
+      vi: "Không lưu được cấu hình cắt đoạn: {detail}",
+    },
+    unsaved: { en: "Not saved yet", vi: "Chưa lưu" },
+    confirmTitle: { en: "Re-cut the library?", vi: "Cắt lại cả thư viện?" },
+    confirmBody: {
+      en: "Every document is read, cut and embedded again on the next sync. Nothing is lost, but it takes as long as the first import did.",
+      vi: "Mọi tài liệu sẽ được đọc, cắt và nhúng lại ở lần đồng bộ sau. Không mất gì cả, nhưng lâu ngang lần nạp đầu tiên.",
+    },
+    confirmMore: {
+      en: "Chunks are what gets embedded, so different boundaries mean different vectors: the stored ones no longer describe anything the library would produce now.",
+      vi: "Thứ được nhúng chính là các đoạn, nên cắt khác đi là vector khác đi: vector đang lưu không còn mô tả thứ mà thư viện tạo ra bây giờ nữa.",
+    },
+    confirmNow: { en: "Now: {size} characters, {overlap} overlap", vi: "Hiện tại: {size} ký tự, lặp {overlap}" },
+    confirmNext: { en: "After: {size} characters, {overlap} overlap", vi: "Sau khi đổi: {size} ký tự, lặp {overlap}" },
+    confirmLabel: { en: "Re-cut", vi: "Cắt lại" },
+  },
+
   // "Embedding" section header
   section: {
     title: common.embedding,

@@ -14,6 +14,7 @@ import {
   runDocumentTask,
   setOcrEnabled,
   stageLabel,
+  stopDocumentTask,
   type DocumentTask,
 } from "../../lib/docs";
 import { demoDocuments, demoIngestFrames, demoLibraryStats } from "../../lib/fixtures/docs";
@@ -253,6 +254,7 @@ export default function DocsView(props: {
               <DocumentTaskCard
                 task={current()}
                 onDismiss={() => dismissDocumentTask(props.resetKey)}
+                onStop={() => stopDocumentTask(props.resetKey)}
               />
             )}
           </Show>
@@ -316,8 +318,14 @@ function progress(path: string, total: number): IngestProgress {
 }
 
 /** Persistent task card: determinate for known work, indeterminate while scanning or probing a model. */
-function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) {
+function DocumentTaskCard(props: {
+  task: DocumentTask;
+  onDismiss: () => void;
+  onStop: () => Promise<boolean>;
+}) {
   const [clock, setClock] = createSignal(Date.now());
+  const [stopping, setStopping] = createSignal(false);
+  const [stopError, setStopError] = createSignal<string | null>(null);
   const timer = window.setInterval(() => setClock(Date.now()), 1_000);
   onCleanup(() => window.clearInterval(timer));
 
@@ -338,6 +346,8 @@ function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) 
   const stateLabel = () =>
     props.task.state === "completed"
       ? t(S.docs.ingest.statusCompleted)
+      : props.task.state === "cancelled"
+        ? t(S.docs.ingest.statusCancelled)
       : props.task.state === "failed"
         ? t(S.docs.ingest.statusFailed)
         : stageLabel(frame().stage);
@@ -348,7 +358,32 @@ function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) 
         ? t(S.docs.ingest.kindAdd)
         : t(S.docs.ingest.kindReprocess);
   const icon = () =>
-    props.task.state === "completed" ? "check" : props.task.state === "failed" ? "warn" : "clock";
+    props.task.state === "completed"
+      ? "check"
+      : props.task.state === "cancelled"
+        ? "stop"
+        : props.task.state === "failed"
+          ? "warn"
+          : "clock";
+
+  createEffect(() => {
+    if (!running()) {
+      setStopping(false);
+      setStopError(null);
+    }
+  });
+
+  const stop = async () => {
+    if (!running() || stopping()) return;
+    setStopping(true);
+    setStopError(null);
+    try {
+      if (!(await props.onStop())) setStopping(false);
+    } catch (err) {
+      setStopping(false);
+      setStopError(t(S.docs.ingest.stopError, { err: String(err) }));
+    }
+  };
 
   return (
     <div class="flex flex-col gap-sm rounded-card border border-line bg-surface-soft px-(--card-pad-x) py-(--card-pad-y)">
@@ -363,6 +398,8 @@ function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) 
               ? "bg-danger-soft text-danger"
               : props.task.state === "completed"
                 ? "bg-success-soft text-success"
+                : props.task.state === "cancelled"
+                  ? "bg-[var(--overlay-faint)] text-muted"
                 : "bg-accent-soft text-accent-ink"
           }`}
         >
@@ -422,6 +459,27 @@ function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) 
             />
           </div>
         </div>
+      </Show>
+
+      <Show when={running()}>
+        <div class="flex justify-end">
+          <Button
+            variant="danger"
+            icon="stop"
+            disabled={stopping()}
+            onClick={() => void stop()}
+          >
+            {stopping() ? t(S.docs.ingest.stopping) : t(S.docs.ingest.stop)}
+          </Button>
+        </div>
+      </Show>
+
+      <Show when={stopError()}>
+        {(message) => (
+          <p class="m-0 rounded-panel bg-danger-soft px-sm py-2xs text-2xs break-words text-danger" role="alert">
+            {message()}
+          </p>
+        )}
       </Show>
 
       <Show when={!running()}>

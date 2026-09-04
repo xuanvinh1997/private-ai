@@ -400,7 +400,11 @@ async fn delete_session(session_id: String, state: State<'_, AppState>) -> Resul
         .sessions
         .delete(&session_id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // The copies the conversation caused go with it; leaving them would keep files the user attached long
+    // after the only thing that named them is gone.
+    harness.forget_attachments(&session_id);
+    Ok(())
 }
 
 /// Models the server offers; an empty list means the server did not answer.
@@ -539,6 +543,7 @@ pub fn run() {
             commands::docs::list_documents,
             commands::docs::sync_library,
             commands::docs::reprocess_library,
+            commands::docs::stop_document_indexing,
             commands::docs::library_stats,
             commands::docs::ocr_setting,
             commands::docs::set_ocr_enabled,
@@ -546,6 +551,8 @@ pub fn run() {
             commands::docs::remove_document,
             commands::docs::delete_project_document,
             commands::docs::search_documents,
+            commands::chunk::chunk_setting,
+            commands::chunk::set_chunk,
             commands::rerank::rerank_setting,
             commands::rerank::set_rerank,
             commands::suggest::prompt_seeds,

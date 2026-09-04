@@ -141,6 +141,53 @@ impl Harness {
         self.projects.list().map_err(|err| err.to_string())
     }
 
+    /// Where a conversation keeps copies of the files attached to it: one folder per session, inside one folder
+    /// per project. Per session, so deleting the conversation deletes exactly the copies it caused and two
+    /// sessions never overwrite each other's same-named files. Per project, because the folder above is what
+    /// `fs` is granted, and a single shared folder would let a turn in one project read what was attached to
+    /// another one.
+    ///
+    /// The id names a directory, so it must be a single path segment; the UI generates it, but a check here is
+    /// what keeps a future caller from turning an id into a way out of the data store.
+    pub fn session_attachments(&self, session_id: &str) -> Result<PathBuf, String> {
+        let mot_doan = !session_id.is_empty()
+            && session_id != "."
+            && session_id != ".."
+            && !session_id.contains(['/', '\\']);
+        if !mot_doan {
+            return Err(format!("Mã phiên không hợp lệ: {session_id}"));
+        }
+        let workspace = self
+            .workspace()
+            .ok_or_else(|| "Chưa mở dự án, nên chưa có nơi để giữ tệp đính kèm.".to_string())?;
+        // The canonical form, the same one `fs` was granted: handing the composer a path that resolves
+        // elsewhere is how an attachment the app just wrote gets refused by the read tool.
+        Ok(attachments_root(&self.rebuild.config.data_dir, &workspace).join(session_id))
+    }
+
+    /// Drop a session's attachment copies. Every project folder is checked rather than the open one, since a
+    /// session is deleted from wherever the user happens to be, and its id is unique across all of them.
+    /// Failing to remove the copies is never worth failing the deletion over, so this only logs.
+    pub fn forget_attachments(&self, session_id: &str) {
+        if session_id.is_empty() || session_id.contains(['/', '\\']) || session_id.starts_with('.')
+        {
+            return;
+        }
+        let goc = attachments_dir(&self.rebuild.config.data_dir);
+        let Ok(du_ans) = std::fs::read_dir(&goc) else {
+            return;
+        };
+        for du_an in du_ans.flatten() {
+            let dir = du_an.path().join(session_id);
+            if !dir.is_dir() {
+                continue;
+            }
+            if let Err(err) = std::fs::remove_dir_all(&dir) {
+                tracing::warn!("could not remove {}: {err}", dir.display());
+            }
+        }
+    }
+
     /// Register a directory as a project with an explicit type, without opening it; separate from
     /// [`Harness::open_project`], which preserves an existing type instead of setting one.
     pub fn create_project(
@@ -205,6 +252,21 @@ impl Harness {
                 .delete(&header.id)
                 .await
                 .map_err(|err| err.to_string())?;
+            self.forget_attachments(&header.id);
+        }
+        // What the conversations attached goes with them: the extracted text and vectors first, then the
+        // folder of copies. Neither failure is worth keeping the project row alive over, so both only log.
+        let workspace = Path::new(&project.path);
+        if let Err(err) =
+            purge_library(self.rag_config.path(), &attachments_project(workspace)).await
+        {
+            tracing::warn!("could not drop the attachment library: {err}");
+        }
+        let copies = attachments_dir(&self.rebuild.config.data_dir).join(project_slug(workspace));
+        if let Err(err) = std::fs::remove_dir_all(&copies)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!("could not remove {}: {err}", copies.display());
         }
 
         self.projects.forget(id).map_err(|err| err.to_string())
@@ -370,6 +432,32 @@ fn project_slug(workspace: &Path) -> String {
     format!("{safe}-{hash:016x}")
 }
 
+/// The folder holding every session's attachment copies, under the application data store rather than in the
+/// user's project: attaching a file to a conversation must not add a file to their repository.
+fn attachments_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join("dinh-kem")
+}
+
+/// The library id for a project's attachments: its own store and its own vector collection, never the ones a
+/// document library at the same path would use.
+fn attachments_project(workspace: &Path) -> String {
+    format!("{}-dinh-kem", project_slug(workspace))
+}
+
+/// The open project's own attachment folder, and the only one `fs` is granted: sessions of other projects keep
+/// their copies beside it, where a turn in this project cannot reach them.
+///
+/// Created and canonicalised first, because [`pai_fs::FileRoots`] compares a canonical path against the root it
+/// was given, and on macOS the data store sits behind a symlink often enough that an unresolved root would
+/// refuse every attachment.
+fn attachments_root(data_dir: &Path, workspace: &Path) -> PathBuf {
+    let dir = attachments_dir(data_dir).join(project_slug(workspace));
+    if let Err(err) = std::fs::create_dir_all(&dir) {
+        tracing::warn!("could not create {}: {err}", dir.display());
+    }
+    dir.canonicalize().unwrap_or(dir)
+}
+
 /// The other half of switching providers, read from the store rather than `Driver`: with nothing configured,
 /// `driver.llm()` is [`ActiveLlm`] itself, and pointing it at itself would loop forever in the token path.
 fn apply_llm(
@@ -481,6 +569,9 @@ patches:
     id: rag
     plugin: rag
   - op: insert
+    id: attachments
+    plugin: attachments
+  - op: insert
     id: index
     plugin: index
   - op: insert
@@ -497,7 +588,14 @@ patches:
 /// Code projects: read, edit, run, look up. Project-layer plugins each capture a path when built, so switching
 /// projects means rebuilding them; the layer is chosen by plugin name, and there is no second reconfigure path.
 const CODE_PLUGINS: &[&str] = &[
-    "skills", "fs", "subagent", "index", "lsp", "shell", "terminal",
+    "skills",
+    "fs",
+    "attachments",
+    "subagent",
+    "index",
+    "lsp",
+    "shell",
+    "terminal",
 ];
 
 /// Document projects: search and read only. Every omission is a decision -- a library is files other people
@@ -574,13 +672,15 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Only the workspace is granted; the app's own data store is not, since a convenience grant is how
-            // a settings file gets edited by a sentence inside a freshly ingested document. The path comes from
-            // `pai-mcp` itself so two crates cannot drift apart on it.
-            Ok(
-                Box::new(FsPlugin::new([workspace.clone()], [token_path(&data_dir)]))
-                    as Box<dyn Plugin>,
-            )
+            // The workspace, plus the one folder inside the data store that holds files the user attached to a
+            // conversation -- a file attached from outside the project is copied there, and a copy nothing may
+            // read is not an attachment. The rest of the data store stays out, since a convenience grant is how
+            // a settings file gets edited by a sentence inside a freshly ingested document. The token path comes
+            // from `pai-mcp` itself so two crates cannot drift apart on it.
+            Ok(Box::new(FsPlugin::new(
+                [workspace.clone(), attachments_root(&data_dir, &workspace)],
+                [token_path(&data_dir)],
+            )) as Box<dyn Plugin>)
         });
     }
     catalog.register("hooks", |value| {
@@ -617,6 +717,25 @@ fn catalog(
                 rag_config.path().to_path_buf(),
                 project_slug(&workspace),
                 workspace.clone(),
+            )) as Box<dyn Plugin>)
+        });
+    }
+    {
+        let (data_dir, workspace) = (data_dir.clone(), workspace.clone());
+        let rag_config = rag_config.clone();
+        catalog.register("attachments", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
+            // The same library a document project runs, mounted over the folder holding what was attached to
+            // this project's conversations. That is what makes an attached PDF, image or DOCX readable at all:
+            // `read` refuses bytes, while this side already has pdfium, the DOCX reader and OCR through the
+            // vision role. A distinct project id, so its store and vector collection never collide with the
+            // document library of a project at the same path.
+            Ok(Box::new(RagPlugin::attachments(
+                rag_config.path().to_path_buf(),
+                attachments_project(&workspace),
+                attachments_root(&data_dir, &workspace),
             )) as Box<dyn Plugin>)
         });
     }
@@ -806,6 +925,14 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         .map(|row| row.servers)
         .unwrap_or_default();
     tracing::debug!("plugin tree:\n{}", composed.dump());
+    // The RAG configuration file is read by every library as it loads -- the document library, and the
+    // attachment library every code project now carries. The provider pass that normally writes it runs after
+    // the plugins, so write it once here, or a first launch fails on a file nobody has produced yet.
+    match providers.list() {
+        Ok(rows) => rag_config.write(&rows, rag_project(project.as_ref())),
+        Err(err) => tracing::warn!("could not read the provider list: {err}"),
+    }
+
     let catalog = catalog(
         &config,
         project.as_ref().map(|open| Path::new(open.path.as_str())),

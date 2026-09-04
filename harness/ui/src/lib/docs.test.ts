@@ -3,6 +3,7 @@ import {
   dismissDocumentTask,
   documentTasks,
   runDocumentTask,
+  stopDocumentTask,
 } from "./docs";
 import type { IngestProgress } from "./protocol";
 
@@ -58,6 +59,36 @@ describe("document task lifecycle", () => {
 
     finish?.([]);
     await first;
+    dismissDocumentTask(scope);
+  });
+
+  it("keeps cancellation separate from failure and ignores later progress", async () => {
+    const scope = "task-cancel";
+    let finish: ((documents: []) => void) | undefined;
+    let noteProgress: ((progress: IngestProgress) => void) | undefined;
+    const running = runDocumentTask(
+      scope,
+      "add",
+      initial("large.pdf"),
+      (note) => {
+        noteProgress = note;
+        return new Promise<[]>((resolve) => {
+          finish = resolve;
+        });
+      },
+    );
+
+    expect(await stopDocumentTask(scope)).toBe(true);
+    noteProgress?.({ ...initial("large.pdf"), stage: "stored", done: 1, total: 1 });
+    finish?.([]);
+    await running;
+
+    expect(documentTasks()[scope]).toMatchObject({
+      state: "cancelled",
+      stored: 0,
+      error: null,
+      documents: [],
+    });
     dismissDocumentTask(scope);
   });
 });

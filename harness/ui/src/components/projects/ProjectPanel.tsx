@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, Show, Suspense } from "solid-js";
-import { addDocuments, stageLabel } from "../../lib/docs";
+import { addDocuments, stageLabel, stopDocumentIndexing } from "../../lib/docs";
 import { S, t } from "../../lib/i18n";
 import { deleteProjectDocument, listDir, originHost } from "../../lib/projects";
 import { relativeTime } from "../../lib/sessions";
@@ -184,28 +184,51 @@ function Node(props: {
 }) {
   const [open, setOpen] = createSignal(false);
   const [reindexState, setReindexState] = createSignal<
-    "idle" | "busy" | "success" | "error"
+    "idle" | "busy" | "success" | "cancelled" | "error"
   >("idle");
   const [reindexDetail, setReindexDetail] = createSignal<string | null>(null);
   const [reindexProgress, setReindexProgress] = createSignal<IngestProgress | null>(null);
+  const [stopping, setStopping] = createSignal(false);
+  const [stopError, setStopError] = createSignal<string | null>(null);
 
   const reindexLabel = () => {
     const name = props.entry.name;
-    if (reindexState() === "busy") return t(S.projects.reindexingFile, { name });
+    if (reindexState() === "busy") {
+      return t(
+        stopping() ? S.projects.stoppingReindexFile : S.projects.stopReindexFile,
+        { name },
+      );
+    }
     if (reindexState() === "success") return t(S.projects.reindexedFile, { name });
     if (reindexState() === "error") return t(S.projects.retryReindexFile, { name });
     return t(S.projects.reindexFile, { name });
   };
 
   const reindexIcon = () => {
+    if (reindexState() === "busy") return "stop" as const;
     if (reindexState() === "success") return "check" as const;
-    if (reindexState() === "error") return "retry" as const;
+    if (reindexState() === "error" || reindexState() === "cancelled") return "retry" as const;
     return "refresh" as const;
+  };
+
+  const stopReindex = async () => {
+    if (reindexState() !== "busy" || stopping()) return;
+    setStopping(true);
+    setStopError(null);
+    try {
+      if (!(await stopDocumentIndexing())) setStopping(false);
+    } catch (err) {
+      setStopping(false);
+      setStopError(t(S.projects.stopReindexError, { err: String(err) }));
+    }
   };
 
   const reindex = async () => {
     if (props.entry.isDir || reindexState() === "busy") return;
     let failure: string | null = null;
+    let cancelled = false;
+    setStopping(false);
+    setStopError(null);
     setReindexState("busy");
     setReindexDetail(t(S.projects.reindexPreparing));
     setReindexProgress({
@@ -220,9 +243,15 @@ function Node(props: {
       await addDocuments([props.entry.path], (frame) => {
         setReindexProgress(frame);
         setReindexDetail(stageLabel(frame.stage));
+        if (frame.stage === "cancelled") cancelled = true;
         if (frame.error !== null) failure = frame.error;
       });
-      if (failure === null) {
+      setStopError(null);
+      if (cancelled) {
+        setReindexState("cancelled");
+        setReindexDetail(t(S.projects.reindexCancelled, { name: props.entry.name }));
+        setReindexProgress(null);
+      } else if (failure === null) {
         setReindexState("success");
         setReindexDetail(null);
         setReindexProgress(null);
@@ -234,11 +263,14 @@ function Node(props: {
         );
       }
     } catch (err) {
+      setStopError(null);
       setReindexState("error");
       setReindexProgress(null);
       setReindexDetail(
         t(S.projects.reindexError, { name: props.entry.name, err: String(err) }),
       );
+    } finally {
+      setStopping(false);
     }
   };
 
@@ -284,8 +316,11 @@ function Node(props: {
               label={reindexLabel()}
               size="sm"
               tip="left"
-              busy={reindexState() === "busy"}
-              onClick={() => void reindex()}
+              danger={reindexState() === "busy"}
+              disabled={stopping()}
+              onClick={() =>
+                reindexState() === "busy" ? void stopReindex() : void reindex()
+              }
             />
             <IconButton
               icon="trash"
@@ -310,12 +345,32 @@ function Node(props: {
         )}
       </Show>
 
-      <Show when={reindexState() === "error" && reindexDetail()}>
+      <Show when={stopError()}>
         {(detail) => (
           <p
             class="m-0 py-3xs pr-sm text-2xs break-words text-danger"
             style={{ "padding-left": `${props.depth * 12 + 24}px` }}
             role="alert"
+          >
+            {detail()}
+          </p>
+        )}
+      </Show>
+
+      <Show
+        when={
+          (reindexState() === "error" || reindexState() === "cancelled") && reindexDetail()
+        }
+      >
+        {(detail) => (
+          <p
+            class="m-0 py-3xs pr-sm text-2xs break-words"
+            classList={{
+              "text-danger": reindexState() === "error",
+              "text-muted": reindexState() === "cancelled",
+            }}
+            style={{ "padding-left": `${props.depth * 12 + 24}px` }}
+            role={reindexState() === "error" ? "alert" : "status"}
           >
             {detail()}
           </p>

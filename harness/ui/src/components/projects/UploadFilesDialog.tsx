@@ -1,5 +1,5 @@
 import { createSignal, Show } from "solid-js";
-import { addDocuments, stageLabel } from "../../lib/docs";
+import { addDocuments, stageLabel, stopDocumentIndexing } from "../../lib/docs";
 import { S, t, tn } from "../../lib/i18n";
 import { importProjectFiles, pickProjectFiles } from "../../lib/projects";
 import type { Project } from "../../lib/protocol";
@@ -18,6 +18,9 @@ export default function UploadFilesDialog(props: {
   const [error, setError] = createSignal<string | null>(null);
   const [indexing, setIndexing] = createSignal<string | null>(null);
   const [indexError, setIndexError] = createSignal<string | null>(null);
+  const [indexCancelled, setIndexCancelled] = createSignal(false);
+  const [stopping, setStopping] = createSignal(false);
+  const [stopError, setStopError] = createSignal<string | null>(null);
 
   const close = () => {
     if (!busy()) props.onClose();
@@ -29,6 +32,9 @@ export default function UploadFilesDialog(props: {
     setUploaded(0);
     setError(null);
     setIndexError(null);
+    setIndexCancelled(false);
+    setStopping(false);
+    setStopError(null);
     setIndexing(null);
     try {
       const imported = await importProjectFiles(paths);
@@ -37,18 +43,34 @@ export default function UploadFilesDialog(props: {
       props.onImported(imported);
       if (props.project.kind === "docs") {
         let failure: string | null = null;
+        setIndexing(stageLabel("preparing"));
         await addDocuments(imported, (frame) => {
           setIndexing(`${stageLabel(frame.stage)} · ${frame.done}/${frame.total}`);
+          if (frame.stage === "cancelled") setIndexCancelled(true);
           if (frame.error !== null) failure = frame.error;
         });
         setIndexing(null);
-        if (failure !== null) setIndexError(failure);
+        if (failure !== null && !indexCancelled()) setIndexError(failure);
       }
     } catch (err) {
       setError(t(S.projects.uploadError, { err: String(err) }));
     } finally {
       setIndexing(null);
+      setStopping(false);
+      setStopError(null);
       setBusy(false);
+    }
+  };
+
+  const stopIndexing = async () => {
+    if (indexing() === null || stopping()) return;
+    setStopping(true);
+    setStopError(null);
+    try {
+      if (!(await stopDocumentIndexing())) setStopping(false);
+    } catch (err) {
+      setStopping(false);
+      setStopError(t(S.projects.uploadStopError, { err: String(err) }));
     }
   };
 
@@ -70,9 +92,21 @@ export default function UploadFilesDialog(props: {
       busy={busy()}
       onClose={close}
       footer={() => (
-        <Button variant="outline" disabled={busy()} onClick={close}>
-          {uploaded() > 0 ? t(S.common.done) : t(S.common.close)}
-        </Button>
+        <>
+          <Show when={indexing() !== null}>
+            <Button
+              variant="danger"
+              icon="stop"
+              disabled={stopping()}
+              onClick={() => void stopIndexing()}
+            >
+              {stopping() ? t(S.docs.ingest.stopping) : t(S.docs.ingest.stop)}
+            </Button>
+          </Show>
+          <Button variant="outline" disabled={busy()} onClick={close}>
+            {uploaded() > 0 ? t(S.common.done) : t(S.common.close)}
+          </Button>
+        </>
       )}
     >
       <DropZone
@@ -101,6 +135,20 @@ export default function UploadFilesDialog(props: {
         >
           {tn(uploaded(), S.projects.uploadDoneOne, S.projects.uploadDoneMany)}
         </p>
+      </Show>
+
+      <Show when={indexCancelled()}>
+        <p class="m-0 rounded-panel bg-[var(--overlay-faint)] px-sm py-2xs text-xs text-muted" role="status">
+          {t(S.projects.uploadIndexCancelled)}
+        </p>
+      </Show>
+
+      <Show when={stopError()}>
+        {(message) => (
+          <p class="m-0 rounded-panel bg-danger-soft px-sm py-2xs text-xs break-words text-danger" role="alert">
+            {message()}
+          </p>
+        )}
       </Show>
 
       <Show when={indexError()}>

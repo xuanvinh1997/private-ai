@@ -52,6 +52,30 @@ impl RagConfigFile {
             .filter(|found| found.is_object())
     }
 
+    /// The `chunk` entry currently in the file, or `None` when untouched. Like [`RagConfigFile::rerank`],
+    /// this is a user setting the provider rewrite must carry across rather than reset.
+    pub fn chunk(&self) -> Option<Value> {
+        let raw = std::fs::read_to_string(&self.path).ok()?;
+        let parsed: Value = serde_json::from_str(&raw).ok()?;
+        parsed
+            .get("chunk")
+            .cloned()
+            .filter(|found| found.is_object())
+    }
+
+    /// Rewrite the `chunk` entry, leaving everything else alone.
+    pub fn write_chunk(&self, chunk: Value) -> std::io::Result<()> {
+        let mut root: Value = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|_| json!({})),
+            Err(_) => json!({}),
+        };
+        if !root.is_object() {
+            root = json!({});
+        }
+        root["chunk"] = chunk;
+        self.atomic(&serde_json::to_vec_pretty(&root)?)
+    }
+
     /// OCR is on by default. Return the persisted switch and the current vision model so the library screen can
     /// explain whether enabling it is actionable instead of presenting a checkbox that can never succeed.
     pub fn ocr_status(&self) -> (bool, Option<String>) {
@@ -153,6 +177,10 @@ impl RagConfigFile {
         // "unset, use service defaults", while `null` is a type error the service rejects.
         if let Some(rerank) = self.rerank() {
             root["rerank"] = rerank;
+        }
+        // Same rule for chunking: switching chat model must not silently re-cut and re-embed the library.
+        if let Some(chunk) = self.chunk() {
+            root["chunk"] = chunk;
         }
         // Provider changes rewrite this file; preserve a user's OCR choice through those unrelated updates.
         if let Ok(raw) = std::fs::read_to_string(&self.path)
@@ -288,4 +316,42 @@ fn provider_json(provider: Option<&StoredProvider>, role: Role) -> Value {
         "api_key": provider.config.api_key,
         "model": model.unwrap_or_default(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider save rewrites this whole file. The user's own settings -- chunking here -- must survive
+    /// that, or picking a different chat model would silently re-cut and re-embed the entire library.
+    #[test]
+    fn a_provider_rewrite_keeps_the_chunking_the_user_chose() {
+        let temp = tempfile::tempdir().expect("thư mục tạm");
+        let config = RagConfigFile::new(temp.path(), None);
+
+        config
+            .write_chunk(json!({ "size": 600, "overlap": 40 }))
+            .expect("ghi cấu hình cắt đoạn");
+        assert_eq!(config.chunk(), Some(json!({ "size": 600, "overlap": 40 })));
+
+        // No providers and no open project: the emptiest possible rewrite, which is the worst case here.
+        config.write(&[], None);
+
+        assert_eq!(
+            config.chunk(),
+            Some(json!({ "size": 600, "overlap": 40 })),
+            "cấu hình cắt đoạn bị mất khi ghi lại tệp"
+        );
+    }
+
+    /// Nothing written means nothing claimed: the service then uses its own defaults, and an empty `chunk`
+    /// object in the file would be a different statement from an absent one.
+    #[test]
+    fn an_untouched_file_claims_no_chunking() {
+        let temp = tempfile::tempdir().expect("thư mục tạm");
+        let config = RagConfigFile::new(temp.path(), None);
+        assert_eq!(config.chunk(), None);
+        config.write(&[], None);
+        assert_eq!(config.chunk(), None);
+    }
 }

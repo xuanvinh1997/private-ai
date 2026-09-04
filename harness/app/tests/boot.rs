@@ -945,6 +945,15 @@ async fn doi_tu_du_an_tai_lieu_sang_ma_nguon_thi_tool_quay_lai() {
         .expect("ghi nhận");
     harness.open_project(&goc_docs).await.expect("mở được");
     assert!(!ten().iter().any(|n| n == "read"), "{:?}", ten());
+    // Kệ đính kèm là chuyện của dự án mã nguồn: ở đây tệp người dùng gửi đã nằm sẵn trong
+    // thư viện, nên mount thứ hai không có lý do tồn tại.
+    for cam in ["attachment.search", "attachment.read", "attachment.list"] {
+        assert!(
+            !ten().iter().any(|n| n == cam),
+            "dự án tài liệu không nên có `{cam}`: {:?}",
+            ten()
+        );
+    }
 
     // Rồi sang một dự án mã nguồn.
     let repo = TempDir::new().expect("thư mục tạm");
@@ -975,6 +984,14 @@ async fn doi_tu_du_an_tai_lieu_sang_ma_nguon_thi_tool_quay_lai() {
         assert!(
             !sau.iter().any(|n| n == cam),
             "tool tài liệu còn nằm lại trong dự án mã nguồn: {sau:?}"
+        );
+    }
+    // Đổi lại, dự án mã nguồn có kệ đính kèm: cùng ba tool ấy trên thư mục tệp đính kèm,
+    // mang tên riêng, vì `read` không mở nổi một tệp PDF hay DOCX.
+    for can in ["attachment.search", "attachment.read", "attachment.list"] {
+        assert!(
+            sau.iter().any(|n| n == can),
+            "dự án mã nguồn thiếu `{can}`: {sau:?}"
         );
     }
 

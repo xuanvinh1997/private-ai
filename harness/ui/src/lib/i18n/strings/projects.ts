@@ -103,6 +103,8 @@ export const projects = {
   },
   reindexFile: { en: "Re-index {name}", vi: "Lập chỉ mục lại {name}" },
   reindexingFile: { en: "Re-indexing {name}", vi: "Đang lập chỉ mục lại {name}" },
+  stopReindexFile: { en: "Stop re-indexing {name}", vi: "Dừng lập chỉ mục lại {name}" },
+  stoppingReindexFile: { en: "Stopping re-index of {name}", vi: "Đang dừng lập chỉ mục lại {name}" },
   reindexedFile: { en: "Re-indexed {name}", vi: "Đã lập chỉ mục lại {name}" },
   retryReindexFile: {
     en: "Retry re-indexing {name}",
@@ -112,6 +114,14 @@ export const projects = {
   reindexError: {
     en: "Could not re-index {name}: {err}",
     vi: "Không lập chỉ mục lại được {name}: {err}",
+  },
+  reindexCancelled: {
+    en: "Stopped re-indexing {name}. Previously indexed content was kept.",
+    vi: "Đã dừng lập chỉ mục lại {name}. Nội dung đã lập chỉ mục trước đó vẫn được giữ.",
+  },
+  stopReindexError: {
+    en: "Could not stop re-indexing: {err}",
+    vi: "Không dừng được việc lập chỉ mục lại: {err}",
   },
   deleteFile: { en: "Delete {name}", vi: "Xoá {name}" },
   deleteFileTitle: {
@@ -158,6 +168,14 @@ export const projects = {
   uploadIndexError: {
     en: "The files were copied, but some could not be indexed: {err}",
     vi: "Tệp đã được chép nhưng có tệp chưa lập chỉ mục được: {err}",
+  },
+  uploadIndexCancelled: {
+    en: "Indexing stopped. Copied files and completed index entries were kept.",
+    vi: "Đã dừng lập chỉ mục. Tệp đã chép và phần đã lập chỉ mục xong vẫn được giữ.",
+  },
+  uploadStopError: {
+    en: "Could not stop indexing: {err}",
+    vi: "Không dừng được việc lập chỉ mục: {err}",
   },
 
   // New project dialog

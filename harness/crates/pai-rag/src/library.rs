@@ -95,7 +95,9 @@ pub enum IngestStage {
     Removed,
     /// Catch-up embedding pass at the end of a run; kept out of `Failed` so the UI does not count it as a broken *file*.
     Embedding,
-    /// The whole batch is done. Always the last event of a stream.
+    /// The user stopped the batch. No further work is scheduled and completed files remain available.
+    Cancelled,
+    /// The whole batch completed normally. Always the last event of a successful stream.
     Finished,
 }
 
@@ -109,6 +111,7 @@ impl IngestStage {
             IngestStage::Skipped => "skipped",
             IngestStage::Removed => "removed",
             IngestStage::Embedding => "embedding",
+            IngestStage::Cancelled => "cancelled",
             IngestStage::Finished => "finished",
         }
     }
@@ -146,6 +149,8 @@ pub trait DocLibrary: Send + Sync + 'static {
     fn ingest(&self, paths: Vec<PathBuf>) -> BoxStream<'_, IngestEvent>;
     /// Forget every fingerprint and read the whole folder again.
     fn reprocess(&self) -> BoxStream<'_, IngestEvent>;
+    /// Stop the active ingest pass, if any. Work already committed stays in the library.
+    fn cancel_ingest(&self) -> bool;
     /// Drop a document from the library. Does *not* delete the file on disk.
     async fn remove(&self, id: &str) -> Result<(), RagError>;
 }

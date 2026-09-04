@@ -14,7 +14,7 @@ import type {
 } from "./protocol";
 
 export type DocumentTaskKind = "sync" | "add" | "reprocess";
-export type DocumentTaskState = "running" | "completed" | "failed";
+export type DocumentTaskState = "running" | "completed" | "cancelled" | "failed";
 
 export interface DocumentTaskFailure {
   path: string;
@@ -87,13 +87,15 @@ function syncDocumentTaskNotification(task: DocumentTask, announce: boolean): vo
     failed: task.failures.length,
   });
   const count = documentTaskCount(task);
+  const status =
+    task.state === "failed"
+      ? S.docs.ingest.statusFailed
+      : task.state === "cancelled"
+        ? S.docs.ingest.statusCancelled
+        : S.docs.ingest.statusCompleted;
   const message = running
     ? `${stageLabel(task.progress.stage)}${count === "" ? "" : ` · ${count}`}`
-    : `${t(
-        task.state === "failed"
-          ? S.docs.ingest.statusFailed
-          : S.docs.ingest.statusCompleted,
-      )} · ${summary}`;
+    : `${t(status)} · ${summary}`;
   const detail =
     task.error ??
     task.warning ??
@@ -104,6 +106,8 @@ function syncDocumentTaskNotification(task: DocumentTask, announce: boolean): vo
     ? "progress"
     : task.state === "failed"
       ? "error"
+      : task.state === "cancelled"
+        ? "info"
       : task.warning !== null || task.failures.length > 0
         ? "warning"
         : "success";
@@ -159,6 +163,7 @@ export function runDocumentTask(
 
   const note = (progress: IngestProgress) => {
     const updated = updateDocumentTask(scope, id, (current) => {
+      if (current.state !== "running") return current;
       const fatal = progress.stage === "failed" && progress.error !== null && progress.total === 0;
       const failure =
         progress.stage === "failed" && progress.error !== null && !fatal
@@ -166,6 +171,8 @@ export function runDocumentTask(
           : [];
       return {
         ...current,
+        state: progress.stage === "cancelled" ? "cancelled" : current.state,
+        finishedAt: progress.stage === "cancelled" ? Date.now() : current.finishedAt,
         progress,
         stored: current.stored + (progress.stage === "stored" ? 1 : 0),
         skipped: current.skipped + (progress.stage === "skipped" ? 1 : 0),
@@ -184,7 +191,12 @@ export function runDocumentTask(
     .then((documents) => {
       const updated = updateDocumentTask(scope, id, (current) => ({
         ...current,
-        state: current.error === null ? "completed" : "failed",
+        state:
+          current.state === "cancelled"
+            ? "cancelled"
+            : current.error === null
+              ? "completed"
+              : "failed",
         finishedAt: Date.now(),
         documents,
       }));
@@ -217,6 +229,28 @@ export function dismissDocumentTask(scope: string) {
     delete next[scope];
     return next;
   });
+}
+
+/** Ask the Rust library to stop its active extraction/OCR/embedding stream. */
+export function stopDocumentIndexing(): Promise<boolean> {
+  if (!inTauri()) return Promise.resolve(false);
+  return invoke<boolean>("stop_document_indexing");
+}
+
+/** Stop the persistent task for one project. Browser/demo mode has no Rust stream, so finish it locally. */
+export async function stopDocumentTask(scope: string): Promise<boolean> {
+  const current = documentTasks()[scope];
+  if (current === undefined || current.state !== "running") return false;
+  if (inTauri()) return stopDocumentIndexing();
+
+  const updated = updateDocumentTask(scope, current.id, (task) => ({
+    ...task,
+    state: "cancelled",
+    finishedAt: Date.now(),
+    progress: { ...task.progress, stage: "cancelled", finished: true },
+  }));
+  if (updated !== undefined) syncDocumentTaskNotification(updated, true);
+  return true;
 }
 
 export async function getOcrSetting(): Promise<OcrSetting> {

@@ -60,7 +60,14 @@ export const docs = {
     kindAdd: { en: "Add documents", vi: "Thêm tài liệu" },
     kindReprocess: { en: "Library reprocessing", vi: "Xử lý lại thư viện" },
     statusCompleted: { en: "Completed", vi: "Đã hoàn tất" },
+    statusCancelled: { en: "Cancelled", vi: "Đã huỷ" },
     statusFailed: { en: "Stopped with an error", vi: "Đã dừng do lỗi" },
+    stop: { en: "Stop indexing", vi: "Dừng lập chỉ mục" },
+    stopping: { en: "Stopping…", vi: "Đang dừng…" },
+    stopError: {
+      en: "Could not stop indexing: {err}",
+      vi: "Không dừng được việc lập chỉ mục: {err}",
+    },
     background: {
       en: "This task keeps running when you switch screens.",
       vi: "Tác vụ vẫn tiếp tục khi bạn chuyển sang màn hình khác.",
@@ -226,6 +233,7 @@ export const docs = {
     skipped: { en: "Skipped", vi: "Bỏ qua" },
     removed: { en: "Removed", vi: "Đã bỏ" },
     embedding: { en: "Embedding", vi: "Đang nhúng" },
+    cancelled: { en: "Cancelled", vi: "Đã huỷ" },
     finished: { en: "Finished", vi: "Xong" },
   },
 } satisfies Record<string, Msg | Record<string, Msg>>;
