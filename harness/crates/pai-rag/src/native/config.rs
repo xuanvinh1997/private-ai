@@ -92,18 +92,29 @@ pub struct RerankConfig {
 #[serde(default)]
 pub struct OcrConfig {
     pub enabled: bool,
-    pub min_chars_per_page: usize,
+    /// Read the pictures sitting inside pages that already have text. Off by default and deliberately so:
+    /// most illustrations, photos and logos hold nothing worth indexing, and each one costs a model call.
+    /// The scanned-page pass above is the one nobody can do without; this one is a choice.
+    pub images: bool,
     pub max_pages: usize,
     pub scale: f32,
+    /// Smallest edge, in pixels, of an image inside a page worth reading. Below this it is a bullet, a rule
+    /// or a logo: no text to find, and one request each to find out.
+    pub min_image_side: u32,
+    /// How many images to read from one page. A figure-heavy page can hold dozens; the first few are the
+    /// figures, the rest are decoration.
+    pub max_images_per_page: usize,
 }
 
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            min_chars_per_page: 200,
+            images: false,
             max_pages: 120,
             scale: 2.0,
+            min_image_side: 160,
+            max_images_per_page: 4,
         }
     }
 }

@@ -72,7 +72,27 @@ impl RagConfigFile {
         (enabled, vision)
     }
 
+    /// Reading the pictures inside pages that already have text; off unless the user asked for it, since most
+    /// illustrations hold nothing to index and each one is a model call.
+    pub fn ocr_images(&self) -> bool {
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|parsed| parsed.pointer("/ocr/images").and_then(Value::as_bool))
+            .unwrap_or(false)
+    }
+
     pub fn write_ocr_enabled(&self, enabled: bool) -> std::io::Result<()> {
+        self.write_ocr_flag("enabled", enabled)
+    }
+
+    pub fn write_ocr_images(&self, enabled: bool) -> std::io::Result<()> {
+        self.write_ocr_flag("images", enabled)
+    }
+
+    /// Read-modify-write of one `ocr` flag, leaving the rest of the file alone: everything else in it is
+    /// derived from the provider store, which this type does not hold.
+    fn write_ocr_flag(&self, key: &str, enabled: bool) -> std::io::Result<()> {
         let mut root: Value = std::fs::read_to_string(&self.path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
@@ -81,7 +101,7 @@ impl RagConfigFile {
         if !root.get("ocr").is_some_and(Value::is_object) {
             root["ocr"] = json!({});
         }
-        root["ocr"]["enabled"] = json!(enabled);
+        root["ocr"][key] = json!(enabled);
         self.atomic(&serde_json::to_vec_pretty(&root)?)
     }
 

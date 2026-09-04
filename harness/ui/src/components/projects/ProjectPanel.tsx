@@ -3,7 +3,7 @@ import { addDocuments, stageLabel } from "../../lib/docs";
 import { S, t } from "../../lib/i18n";
 import { deleteProjectDocument, listDir, originHost } from "../../lib/projects";
 import { relativeTime } from "../../lib/sessions";
-import type { DirEntry, Project } from "../../lib/protocol";
+import type { DirEntry, IngestProgress, Project } from "../../lib/protocol";
 import Icon from "../Icon";
 import { IconButton } from "../primitives";
 import ConfirmDialog from "../providers/ConfirmDialog";
@@ -187,6 +187,7 @@ function Node(props: {
     "idle" | "busy" | "success" | "error"
   >("idle");
   const [reindexDetail, setReindexDetail] = createSignal<string | null>(null);
+  const [reindexProgress, setReindexProgress] = createSignal<IngestProgress | null>(null);
 
   const reindexLabel = () => {
     const name = props.entry.name;
@@ -207,22 +208,34 @@ function Node(props: {
     let failure: string | null = null;
     setReindexState("busy");
     setReindexDetail(t(S.projects.reindexPreparing));
+    setReindexProgress({
+      path: props.entry.path,
+      stage: "preparing",
+      done: 0,
+      total: 0,
+      finished: false,
+      error: null,
+    });
     try {
       await addDocuments([props.entry.path], (frame) => {
+        setReindexProgress(frame);
         setReindexDetail(stageLabel(frame.stage));
         if (frame.error !== null) failure = frame.error;
       });
       if (failure === null) {
         setReindexState("success");
         setReindexDetail(null);
+        setReindexProgress(null);
       } else {
         setReindexState("error");
+        setReindexProgress(null);
         setReindexDetail(
           t(S.projects.reindexError, { name: props.entry.name, err: failure }),
         );
       }
     } catch (err) {
       setReindexState("error");
+      setReindexProgress(null);
       setReindexDetail(
         t(S.projects.reindexError, { name: props.entry.name, err: String(err) }),
       );
@@ -287,19 +300,24 @@ function Node(props: {
         </Show>
       </div>
 
-      <Show when={reindexDetail()}>
+      <Show when={reindexState() === "busy" && reindexProgress()}>
+        {(frame) => (
+          <FileReindexProgress
+            frame={frame()}
+            fileName={props.entry.name}
+            depth={props.depth}
+          />
+        )}
+      </Show>
+
+      <Show when={reindexState() === "error" && reindexDetail()}>
         {(detail) => (
           <p
-            class="m-0 py-3xs pr-sm text-2xs break-words"
-            classList={{
-              "text-muted": reindexState() === "busy",
-              "text-danger": reindexState() === "error",
-            }}
+            class="m-0 py-3xs pr-sm text-2xs break-words text-danger"
             style={{ "padding-left": `${props.depth * 12 + 24}px` }}
-            role={reindexState() === "error" ? "alert" : "status"}
-            aria-live="polite"
+            role="alert"
           >
-            {reindexState() === "busy" ? `${detail()}: ${props.entry.name}` : detail()}
+            {detail()}
           </p>
         )}
       </Show>
@@ -316,6 +334,72 @@ function Node(props: {
         />
       </Show>
     </li>
+  );
+}
+
+/** Live progress directly below the file being re-indexed. Reading/extraction has no measurable substeps,
+ * while OCR and embedding report real page/chunk counts. */
+function FileReindexProgress(props: {
+  frame: IngestProgress;
+  fileName: string;
+  depth: number;
+}) {
+  const determinate = () =>
+    props.frame.total > 0 && !(props.frame.stage === "reading" && props.frame.done === 0);
+  const percentage = () =>
+    determinate()
+      ? Math.min(100, Math.max(0, Math.round((props.frame.done / props.frame.total) * 100)))
+      : 0;
+  const count = () => {
+    if (props.frame.total <= 0) return "";
+    if (props.frame.stage === "ocr") {
+      return t(S.docs.ingest.pages, { done: props.frame.done, total: props.frame.total });
+    }
+    if (props.frame.stage === "embedding") {
+      return t(S.docs.ingest.chunks, { done: props.frame.done, total: props.frame.total });
+    }
+    return t(S.docs.ingest.files, { done: props.frame.done, total: props.frame.total });
+  };
+  const valueText = () =>
+    `${stageLabel(props.frame.stage)}${count() === "" ? "" : `, ${count()}`}`;
+
+  return (
+    <div
+      class="flex flex-col gap-3xs py-2xs pr-sm"
+      style={{ "padding-left": `${props.depth * 12 + 24}px` }}
+    >
+      <div
+        class="flex min-w-0 items-center justify-between gap-sm text-2xs text-muted"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        <span class="min-w-0 truncate">
+          {stageLabel(props.frame.stage)}: {props.fileName}
+        </span>
+        <Show when={count()}>
+          <span class="shrink-0 tabular-nums">
+            {count()}
+            <Show when={determinate()}> · {percentage()}%</Show>
+          </span>
+        </Show>
+      </div>
+      <div
+        role="progressbar"
+        aria-label={`${t(S.docs.ingest.progressLabel)}: ${props.fileName}`}
+        aria-valuemin={determinate() ? 0 : undefined}
+        aria-valuemax={determinate() ? props.frame.total : undefined}
+        aria-valuenow={determinate() ? props.frame.done : undefined}
+        aria-valuetext={valueText()}
+        class="h-1.5 w-full overflow-hidden rounded-pill bg-[var(--overlay-faint)]"
+      >
+        <div
+          class="h-full w-full origin-left rounded-pill bg-accent transition-transform duration-[var(--dur-base)] motion-reduce:transition-none"
+          classList={{ "motion-safe:animate-pulse": !determinate() }}
+          style={{ transform: `scaleX(${determinate() ? percentage() / 100 : 0.35})` }}
+        />
+      </div>
+    </div>
   );
 }
 

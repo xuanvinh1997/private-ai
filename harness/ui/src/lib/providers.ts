@@ -16,6 +16,7 @@ import {
   demoProbeVision,
   demoSetEmbedding,
   demoSetOcrEnabled,
+  demoSetOcrImages,
   demoSetProviderModel,
   demoSetVision,
   demoVisionSetting,
@@ -200,6 +201,7 @@ export async function visionSetting(): Promise<VisionSetting> {
     onDevice: false,
     reason: null,
     ocrEnabled: true,
+    ocrImages: false,
   };
   if (isDemo()) return demoVisionSetting();
   if (!inTauri()) return none;
@@ -222,6 +224,13 @@ export async function setOcr(enabled: boolean): Promise<VisionSetting> {
   if (isDemo()) return demoSetOcrEnabled(enabled);
   await invoke("set_ocr_enabled", { enabled });
   return visionSetting();
+}
+
+/** The optional half: reading the pictures inside pages that already have text. Off is the sane default —
+ * a report full of photos would otherwise cost one model call per picture for nothing. */
+export async function setOcrImages(enabled: boolean): Promise<VisionSetting> {
+  if (isDemo()) return demoSetOcrImages(enabled);
+  return invoke<VisionSetting>("set_ocr_images", { enabled });
 }
 
 /** Actually read a bundled test image; a model list never says which models can see. */

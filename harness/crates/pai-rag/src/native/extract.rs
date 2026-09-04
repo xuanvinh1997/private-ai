@@ -205,33 +205,129 @@ pub fn pdf_from_pages(path: &Path, pages: Vec<String>, ocr_pages: Vec<u32>) -> E
 
 /// Render at most `limit` PDF pages into PNGs. PDFium is downloaded and cached on the first OCR request;
 /// keeping this blocking function outside the async path prevents both FFI and PNG encoding from stalling it.
-pub fn render_pdf_pages(path: &Path, scale: f32, limit: usize) -> Result<Vec<Vec<u8>>, RagError> {
-    use image::ImageFormat;
+/// One PDFium handle. The bindings are a process-wide singleton: the first call loads the library, and every
+/// later one is told so rather than handed the existing bindings. Reusing them is the intended answer -- the
+/// crate's own `Default` does exactly this -- and without it only the first PDF of a session could be
+/// rendered, with every later one failing on a message about initialization that says nothing about PDFs.
+fn bind_pdfium() -> Result<pdfium_bundled::pdfium_render::prelude::Pdfium, RagError> {
+    match pdfium_bundled::bind_pdfium_silent() {
+        Ok(pdfium) => Ok(pdfium),
+        Err(error) if error.to_string().contains("AlreadyInitialized") => {
+            Ok(pdfium_bundled::pdfium_render::prelude::Pdfium::default())
+        }
+        Err(error) => Err(RagError::Extraction(format!(
+            "không chuẩn bị được bộ dựng trang PDFium: {error}"
+        ))),
+    }
+}
+
+/// One image handed to the vision model, and the page it belongs to.
+#[derive(Clone, Debug)]
+pub struct PageImage {
+    /// Zero-based page index.
+    pub page: usize,
+    pub png: Vec<u8>,
+}
+
+/// Render whole pages, named by zero-based index rather than a count: only pages with no usable text layer
+/// are worth rendering, and rendering the rest is pure cost at two megapixels apiece.
+pub fn render_pdf_pages(
+    path: &Path,
+    scale: f32,
+    wanted: &[usize],
+) -> Result<Vec<PageImage>, RagError> {
     use pdfium_bundled::pdfium_render::prelude::*;
 
-    let pdfium = pdfium_bundled::bind_pdfium_silent().map_err(|error| {
-        RagError::Extraction(format!("không chuẩn bị được bộ dựng trang PDFium: {error}"))
-    })?;
+    if wanted.is_empty() {
+        return Ok(Vec::new());
+    }
+    let pdfium = bind_pdfium()?;
     let document = pdfium.load_pdf_from_file(path, None).map_err(|error| {
         RagError::Extraction(format!("không dựng được PDF `{}`: {error}", path.display()))
     })?;
     let width = (1_000.0 * scale.clamp(1.0, 4.0)).round() as i32;
     let config = PdfRenderConfig::new().set_target_width(width);
     let mut output = Vec::new();
-    for page in document.pages().iter().take(limit) {
+    for &index in wanted {
+        let Ok(page) = document.pages().get(index as i32) else {
+            continue;
+        };
         let image = page
             .render_with_config(&config)
             .and_then(|bitmap| bitmap.as_image())
             .map_err(|error| RagError::Extraction(format!("không dựng được trang PDF: {error}")))?;
-        let mut png = Cursor::new(Vec::new());
-        image
-            .write_to(&mut png, ImageFormat::Png)
-            .map_err(|error| {
-                RagError::Extraction(format!("không mã hoá được trang PDF: {error}"))
-            })?;
-        output.push(png.into_inner());
+        output.push(PageImage {
+            page: index,
+            png: to_png(&image)?,
+        });
     }
     Ok(output)
+}
+
+/// Pull the raster images embedded in the named pages. This is the other half of a mixed document: those
+/// pages have a real text layer, so the text is read as text, and only the pictures in them need a model.
+/// Small images are left out -- a bullet, a rule, a logo hold no readable text -- and an image already seen
+/// is dropped, because a letterhead repeated on ninety pages is ninety identical requests.
+pub fn pdf_embedded_images(
+    path: &Path,
+    wanted: &[usize],
+    min_side: u32,
+    per_page: usize,
+) -> Result<Vec<PageImage>, RagError> {
+    use pdfium_bundled::pdfium_render::prelude::*;
+    use std::collections::HashSet;
+
+    if wanted.is_empty() || per_page == 0 {
+        return Ok(Vec::new());
+    }
+    let pdfium = bind_pdfium()?;
+    let document = pdfium.load_pdf_from_file(path, None).map_err(|error| {
+        RagError::Extraction(format!("không mở được PDF `{}`: {error}", path.display()))
+    })?;
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+    let mut output = Vec::new();
+    for &index in wanted {
+        let Ok(page) = document.pages().get(index as i32) else {
+            continue;
+        };
+        let mut taken = 0;
+        for object in page.objects().iter() {
+            if taken >= per_page {
+                break;
+            }
+            let Some(embedded) = object.as_image_object() else {
+                continue;
+            };
+            // `get_processed_image` applies the page's own masks and transforms; the raw buffer can be a
+            // colour-separated or inverted plate that no model would read the same way the page shows it.
+            let Ok(image) = embedded.get_processed_image(&document) else {
+                continue;
+            };
+            if image.width() < min_side || image.height() < min_side {
+                continue;
+            }
+            let png = to_png(&image)?;
+            // Identity by encoded bytes: the same XObject drawn on many pages encodes identically.
+            if !seen.insert(png.clone()) {
+                continue;
+            }
+            output.push(PageImage { page: index, png });
+            taken += 1;
+        }
+    }
+    Ok(output)
+}
+
+fn to_png(image: &image::DynamicImage) -> Result<Vec<u8>, RagError> {
+    use image::ImageFormat;
+
+    let mut png = Cursor::new(Vec::new());
+    image
+        .write_to(&mut png, ImageFormat::Png)
+        .map_err(|error| {
+            RagError::Extraction(format!("không mã hoá được ảnh trong PDF: {error}"))
+        })?;
+    Ok(png.into_inner())
 }
 
 pub fn image_bytes(path: &Path) -> Result<(Vec<u8>, &'static str), RagError> {
@@ -526,14 +622,91 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "downloads and binds PDFium"]
+    #[ignore = "binds PDFium; run with --test-threads=1, the library is not thread-safe"]
     fn pdfium_renders_a_page_for_ocr() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("scan.pdf");
         std::fs::write(&path, one_page_pdf("OCR render probe")).unwrap();
-        let pages = render_pdf_pages(&path, 1.0, 1).unwrap();
+        let pages = render_pdf_pages(&path, 1.0, &[0]).unwrap();
         assert_eq!(pages.len(), 1);
-        assert!(pages[0].starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(pages[0].page, 0);
+        assert!(pages[0].png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        // Naming no page renders nothing, which is the whole point of the index list.
+        assert!(render_pdf_pages(&path, 1.0, &[]).unwrap().is_empty());
+    }
+
+    /// A page that has both: real text *and* a picture. The text layer must be left alone, and the picture
+    /// must come back as its own image -- that is the whole shape of a mixed document.
+    #[test]
+    #[ignore = "binds PDFium; run with --test-threads=1, the library is not thread-safe"]
+    fn embedded_images_come_out_of_a_page_that_also_has_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("mixed.pdf");
+        std::fs::write(&path, one_page_pdf_with_image("Chữ thật của trang", 200)).unwrap();
+
+        // The text layer is read as text, untouched by any model.
+        let pages = pdf_text_pages(&path).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert!(
+            pages[0].contains("th"),
+            "trang phải giữ lớp chữ: {:?}",
+            pages[0]
+        );
+
+        let found = pdf_embedded_images(&path, &[0], 160, 4).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].page, 0);
+        assert!(found[0].png.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        // Same picture, raised threshold: too small to hold readable text, so it is not worth a request.
+        assert!(pdf_embedded_images(&path, &[0], 300, 4).unwrap().is_empty());
+        // A page nobody asked about is never opened.
+        assert!(pdf_embedded_images(&path, &[], 160, 4).unwrap().is_empty());
+    }
+
+    /// One page carrying `text` and a `side`×`side` raw RGB image; uncompressed, so the builder stays readable.
+    fn one_page_pdf_with_image(text: &str, side: usize) -> Vec<u8> {
+        let stream =
+            format!("BT /F1 12 Tf 72 700 Td ({text}) Tj ET\nq 200 0 0 200 100 400 cm /Im0 Do Q\n");
+        let pixels = side * side * 3;
+        let head = [
+            "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
+            "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
+            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 4 0 R >> /XObject << /Im0 6 0 R >> >> /Contents 5 0 R >>".to_owned(),
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>".to_owned(),
+            format!("<< /Length {} >>\nstream\n{stream}endstream", stream.len()),
+        ];
+        let mut pdf = b"%PDF-1.4\n".to_vec();
+        let mut offsets = Vec::new();
+        for (index, object) in head.iter().enumerate() {
+            offsets.push(pdf.len());
+            pdf.extend_from_slice(format!("{} 0 obj\n{object}\nendobj\n", index + 1).as_bytes());
+        }
+        // The image XObject is written by hand because its stream is binary, not text.
+        offsets.push(pdf.len());
+        pdf.extend_from_slice(
+            format!(
+                "6 0 obj\n<< /Type /XObject /Subtype /Image /Width {side} /Height {side} \
+                 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Length {pixels} >>\nstream\n"
+            )
+            .as_bytes(),
+        );
+        // A grey field: pdfium only has to decode it, nobody has to read it.
+        pdf.extend(std::iter::repeat_n(0x80u8, pixels));
+        pdf.extend_from_slice(b"\nendstream\nendobj\n");
+
+        let count = offsets.len() + 1;
+        let xref = pdf.len();
+        pdf.extend_from_slice(format!("xref\n0 {count}\n").as_bytes());
+        pdf.extend_from_slice(b"0000000000 65535 f \n");
+        for offset in offsets {
+            pdf.extend_from_slice(format!("{offset:010} 00000 n \n").as_bytes());
+        }
+        pdf.extend_from_slice(
+            format!("trailer\n<< /Size {count} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n")
+                .as_bytes(),
+        );
+        pdf
     }
 
     fn one_page_pdf(text: &str) -> Vec<u8> {

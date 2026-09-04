@@ -4,6 +4,7 @@ import {
   probeVision,
   providerModels,
   setOcr,
+  setOcrImages,
   setVision,
   suggestedVisionModel,
   visionSetting,
@@ -20,6 +21,7 @@ const NONE: VisionSetting = {
   onDevice: false,
   reason: null,
   ocrEnabled: true,
+  ocrImages: false,
 };
 
 /** The vision model screen. Two settings that only make sense together: whether scans are read at all, and
@@ -40,6 +42,7 @@ export default function VisionView(props: {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [ocrBusy, setOcrBusy] = createSignal(false);
+  const [imagesBusy, setImagesBusy] = createSignal(false);
 
   const [probing, setProbing] = createSignal(false);
   const [probe, setProbe] = createSignal<VisionProbe | null>(null);
@@ -165,6 +168,22 @@ export default function VisionView(props: {
     }
   };
 
+  const toggleImages = async (enabled: boolean) => {
+    setImagesBusy(true);
+    setError(null);
+    try {
+      setSetting(await setOcrImages(enabled));
+    } catch (err) {
+      setError(
+        t(S.vision.ocr.imagesSaveFailed, {
+          detail: err instanceof Error ? err.message : String(err),
+        }),
+      );
+    } finally {
+      setImagesBusy(false);
+    }
+  };
+
   const runProbe = async () => {
     if (probing() || !complete()) return;
     setProbing(true);
@@ -228,6 +247,25 @@ export default function VisionView(props: {
               />
             )}
           />
+
+          {/* Only reachable while OCR is on: with it off there are no pages being read at all. */}
+          <Show when={setting().ocrEnabled}>
+            <Row
+              label={t(S.vision.ocr.imagesLabel)}
+              icon="document"
+              desc={t(S.vision.ocr.imagesDesc)}
+              more={t(S.vision.ocr.imagesMore)}
+              control={() => (
+                <Toggle
+                  label={t(S.vision.ocr.imagesToggleLabel)}
+                  checked={setting().ocrImages}
+                  disabled={busy()}
+                  busy={imagesBusy()}
+                  onChange={(enabled) => void toggleImages(enabled)}
+                />
+              )}
+            />
+          </Show>
         </RowGroup>
 
         <Show

@@ -361,6 +361,7 @@ pub async fn vision_setting(state: State<'_, AppState>) -> Result<VisionSetting,
     let held = harness.providers.vision().map_err(|err| err.to_string())?;
     let reason = pai_providers::vision_reason(held.as_ref());
     let (ocr_enabled, _) = harness.rag_config.ocr_status();
+    let ocr_images = harness.rag_config.ocr_images();
     Ok(match held {
         Some(provider) => VisionSetting {
             provider_name: Some(provider.config.name.clone()),
@@ -369,6 +370,7 @@ pub async fn vision_setting(state: State<'_, AppState>) -> Result<VisionSetting,
             model: provider.vision_model.clone(),
             reason,
             ocr_enabled,
+            ocr_images,
         },
         None => VisionSetting {
             provider_id: None,
@@ -377,6 +379,7 @@ pub async fn vision_setting(state: State<'_, AppState>) -> Result<VisionSetting,
             on_device: false,
             reason,
             ocr_enabled,
+            ocr_images,
         },
     })
 }
@@ -423,4 +426,20 @@ pub async fn probe_vision(
         message: result.message,
         text: result.text,
     })
+}
+
+/// The optional half of OCR: reading pictures inside pages that already have text. Separate from
+/// [`crate::commands::docs::set_ocr_enabled`] because they answer different questions -- "read scans at all"
+/// versus "also read the illustrations" -- and a document full of photos should not cost a request each.
+#[tauri::command]
+pub async fn set_ocr_images(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<VisionSetting, String> {
+    let harness = state.harness().await?;
+    harness
+        .rag_config
+        .write_ocr_images(enabled)
+        .map_err(|error| format!("không lưu được cấu hình đọc ảnh: {error}"))?;
+    vision_setting(state).await
 }

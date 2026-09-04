@@ -363,6 +363,8 @@ export interface VisionSetting {
   reason: string | null;
   /** The OCR switch; off means images and scanned pages are skipped rather than read. */
   ocrEnabled: boolean;
+  /** Whether pictures inside pages that already have text are read too — the optional half of OCR. */
+  ocrImages: boolean;
 }
 
 /** Result of really reading the bundled test image; a model list never says which models can see. */

@@ -527,6 +527,8 @@ pub struct VisionSetting {
     pub reason: Option<String>,
     /// The OCR switch itself, so one screen answers "will scans be read" without a second round trip.
     pub ocr_enabled: bool,
+    /// Whether pictures inside pages that already have text are read too; the optional half of OCR.
+    pub ocr_images: bool,
 }
 
 /// One real OCR attempt on a bundled test image.

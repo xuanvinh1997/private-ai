@@ -527,6 +527,7 @@ pub fn run() {
             commands::providers::vision_setting,
             commands::providers::set_vision,
             commands::providers::probe_vision,
+            commands::providers::set_ocr_images,
             commands::mcp::list_mcp_servers,
             commands::mcp::mcp_catalog,
             commands::mcp::save_mcp_server,

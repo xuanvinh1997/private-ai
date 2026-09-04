@@ -603,21 +603,33 @@ impl NativeLibrary {
         let mut pages = tokio::task::spawn_blocking(move || extract::pdf_text_pages(&owned))
             .await
             .map_err(|error| RagError::Service(format!("luồng đọc PDF bị dừng: {error}")))??;
-        // Whole-document text, not the per-page average: a novel with a few plates, a cover and a blank page
-        // averages badly while still being a perfectly readable book. Only a PDF with no text layer at all
-        // needs OCR to be usable.
-        let text_chars: usize = pages.iter().map(|page| page.trim().chars().count()).sum();
-        let has_sparse_page = pages
+        // The only question asked of a page is whether it has a text layer at all -- not how much of one.
+        // "Enough characters" was a guess dressed as a rule: it called a chapter opening a scan and a
+        // caption-only plate a page of prose, and either way it decided the fate of the whole file.
+        let has_text = |page: &String| !page.trim().is_empty();
+        let blank: Vec<usize> = pages
             .iter()
-            .any(|page| page.trim().chars().count() < runtime.ocr.min_chars_per_page);
-        if !has_sparse_page {
+            .enumerate()
+            .filter(|(_, page)| !has_text(page))
+            .map(|(index, _)| index)
+            .take(runtime.ocr.max_pages.max(1))
+            .collect();
+        let written: Vec<usize> = pages
+            .iter()
+            .enumerate()
+            .filter(|(_, page)| has_text(page))
+            .map(|(index, _)| index)
+            .collect();
+
+        // Nothing left to read once every page has its text, so no model is needed at all.
+        if blank.is_empty() && !runtime.ocr.images {
             return self
                 .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
                 .await
                 .map(|_| Ingested::Stored);
         }
-        // Why OCR cannot run here, if it cannot. Unreadable pages never cost the whole document: the text
-        // layer is stored and those images are simply left out.
+        // Why OCR cannot run here, if it cannot. Pages nobody can read never cost the whole document: the
+        // text layer is stored and those pages are simply left out of it.
         let blocked = if !runtime.ocr.enabled {
             Some("OCR đang tắt")
         } else if runtime.vision.is_none() {
@@ -626,59 +638,103 @@ impl NativeLibrary {
             None
         };
         if let Some(reason) = blocked {
-            if text_chars >= runtime.ocr.min_chars_per_page {
+            if !written.is_empty() {
                 return self
                     .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
                     .await
                     .map(|_| Ingested::Stored);
             }
-            // Nothing but images, and no way to read them: left out rather than recorded as a broken
-            // document, since the user turned OCR off. Nothing is remembered, so turning it on picks the
-            // file up on the next sync.
+            // Not one page carries text, and no way to read the images: left out rather than recorded as a
+            // broken document. Nothing is remembered, so turning OCR on picks the file up on the next sync.
             return Ok(Ingested::Skipped(format!(
-                "`{}` là PDF quét, {reason} nên bỏ qua",
+                "`{}` không có trang nào đọc được chữ, {reason} nên bỏ qua",
                 path.display()
             )));
         }
         let Some(vision) = runtime.vision else {
             // Unreachable: `blocked` returns above when there is no vision model.
             return Ok(Ingested::Skipped(format!(
-                "`{}` là PDF quét, chưa chọn mô hình vision nên bỏ qua",
+                "`{}` chưa chọn mô hình vision nên bỏ qua",
                 path.display()
             )));
         };
-        let owned = path.to_owned();
+        // Two different jobs, split by that same question. A page with no text layer *is* an image, so it is
+        // rendered whole and read -- that is the scan case, and it does not depend on the picture switch. A
+        // page that has text keeps its own characters, and only the pictures inside it are optional.
+
         let scale = runtime.ocr.scale;
-        let limit = runtime.ocr.max_pages.max(1);
-        let images =
-            tokio::task::spawn_blocking(move || extract::render_pdf_pages(&owned, scale, limit))
-                .await
-                .map_err(|error| RagError::Service(format!("luồng dựng PDF bị dừng: {error}")))??;
-        let ocr_total = images.len() as u32;
-        on_ocr(0, ocr_total);
+        let to_render = path.to_owned();
+        let render_list = blank.clone();
+        let renders = tokio::task::spawn_blocking(move || {
+            extract::render_pdf_pages(&to_render, scale, &render_list)
+        })
+        .await
+        .map_err(|error| RagError::Service(format!("luồng dựng PDF bị dừng: {error}")))??;
+
+        // The second pass is opt-in: plenty of documents are full of pictures nobody needs read, and each
+        // one is a request. Off means the pages keep their own text and nothing else is sent anywhere.
+        let embedded: Vec<_> = if runtime.ocr.images {
+            let to_scan = path.to_owned();
+            let min_side = runtime.ocr.min_image_side;
+            let per_page = runtime.ocr.max_images_per_page;
+            tokio::task::spawn_blocking(move || {
+                extract::pdf_embedded_images(&to_scan, &written, min_side, per_page)
+            })
+            .await
+            .map_err(|error| RagError::Service(format!("luồng đọc ảnh trong PDF bị dừng: {error}")))?
+            // Pulling pictures out is a bonus pass: a document whose text layer is fine must not fail
+            // because one XObject could not be decoded.
+            .unwrap_or_else(|error| {
+                tracing::warn!(%error, path = %path.display(), "could not read the images embedded in this PDF");
+                Vec::new()
+            })
+            .into_iter()
+            .take(runtime.ocr.max_pages.max(1))
+            .collect()
+        } else {
+            Vec::new()
+        };
+
+        let ocr_total = (renders.len() + embedded.len()) as u32;
+        let mut done = 0u32;
+        on_ocr(done, ocr_total);
         let mut ocr_pages = Vec::new();
-        for (index, image) in images.iter().enumerate() {
-            if pages
-                .get(index)
-                .is_some_and(|page| page.trim().chars().count() >= runtime.ocr.min_chars_per_page)
-            {
-                on_ocr(index as u32 + 1, ocr_total);
-                continue;
-            }
-            match vision.ocr(image, "image/png").await {
+        for item in &renders {
+            match vision.ocr(&item.png, "image/png").await {
                 Ok(text) if !text.is_empty() => {
-                    if let Some(page) = pages.get_mut(index) {
+                    if let Some(page) = pages.get_mut(item.page) {
                         *page = text;
-                        ocr_pages.push(index as u32 + 1);
+                        ocr_pages.push(item.page as u32 + 1);
                     }
                 }
                 Ok(_) => {}
                 Err(error) => {
-                    tracing::warn!(%error, page = index + 1, path = %path.display(), "OCR page failed")
+                    tracing::warn!(%error, page = item.page + 1, path = %path.display(), "OCR page failed")
                 }
             }
-            on_ocr(index as u32 + 1, ocr_total);
+            done += 1;
+            on_ocr(done, ocr_total);
         }
+        for item in &embedded {
+            match vision.ocr(&item.png, "image/png").await {
+                Ok(text) if !text.is_empty() => {
+                    if let Some(page) = pages.get_mut(item.page) {
+                        // Appended, never substituted: the page's own words are the exact ones, and what the
+                        // model read off a picture is an addition to them.
+                        page.push_str(&format!("\n\n[Ảnh trong trang {}]\n{text}", item.page + 1));
+                        ocr_pages.push(item.page as u32 + 1);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, page = item.page + 1, path = %path.display(), "OCR of an embedded image failed")
+                }
+            }
+            done += 1;
+            on_ocr(done, ocr_total);
+        }
+        ocr_pages.sort_unstable();
+        ocr_pages.dedup();
         if !pages.iter().any(|page| !page.trim().is_empty()) {
             return Err(RagError::Extraction(format!(
                 "model vision `{}` đã chạy nhưng không đọc được chữ trong `{}`",

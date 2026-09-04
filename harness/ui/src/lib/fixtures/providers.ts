@@ -296,8 +296,9 @@ export function demoProbeEmbedding(providerId: string, model: string): Embedding
   };
 }
 
-/** The OCR switch in demo mode; a module-level flag, so toggling it on one screen shows on the other. */
+/** The OCR switches in demo mode; module-level, so toggling one on a screen shows on the other. */
 let demoOcrEnabled = true;
+let demoOcrImages = false;
 
 export function demoVisionSetting(): VisionSetting {
   const entry = all().find((provider) => provider.activeVision) ?? null;
@@ -309,6 +310,7 @@ export function demoVisionSetting(): VisionSetting {
       onDevice: false,
       reason: "Chưa giao vai đọc ảnh cho provider nào.",
       ocrEnabled: demoOcrEnabled,
+      ocrImages: demoOcrImages,
     };
   }
   const base = {
@@ -317,6 +319,7 @@ export function demoVisionSetting(): VisionSetting {
     model: entry.visionModel,
     onDevice: entry.onDevice,
     ocrEnabled: demoOcrEnabled,
+    ocrImages: demoOcrImages,
   };
   if (!entry.enabled) return { ...base, reason: `${entry.name} đang bị tắt.` };
   if (entry.visionModel === null) {
@@ -335,6 +338,11 @@ export function demoSetVision(providerId: string, model: string): VisionSetting 
 
 export function demoSetOcrEnabled(enabled: boolean): VisionSetting {
   demoOcrEnabled = enabled;
+  return demoVisionSetting();
+}
+
+export function demoSetOcrImages(enabled: boolean): VisionSetting {
+  demoOcrImages = enabled;
   return demoVisionSetting();
 }
 

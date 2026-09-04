@@ -48,6 +48,20 @@ export const vision = {
       en: "Could not save the OCR switch: {detail}",
       vi: "Không lưu được công tắc OCR: {detail}",
     },
+    imagesLabel: { en: "Read pictures in pages", vi: "Đọc ảnh nằm trong trang có chữ" },
+    imagesDesc: {
+      en: "One model call per picture.",
+      vi: "Mỗi tấm ảnh là một lần gọi mô hình.",
+    },
+    imagesMore: {
+      en: "Separate from the switch above, which is about pages that have no text at all. This one is about a page whose text is already read: turn it on and the photos, charts and diagrams in it are read too. Most documents do not need it — a picture rarely holds text worth searching for — and every picture costs a request. Small images, and one repeated across pages, are left out either way.",
+      vi: "Khác với công tắc ở trên, cái đó nói về trang không có chữ nào. Cái này nói về trang đã đọc được chữ: bật lên thì ảnh, biểu đồ, sơ đồ trong trang cũng được đọc. Phần lớn tài liệu không cần — ảnh hiếm khi chứa chữ đáng để tìm — và mỗi tấm là một lần gọi mô hình. Ảnh nhỏ, và ảnh lặp lại giữa các trang, đằng nào cũng bị bỏ qua.",
+    },
+    imagesToggleLabel: { en: "Read pictures in pages", vi: "Đọc ảnh nằm trong trang có chữ" },
+    imagesSaveFailed: {
+      en: "Could not save the picture switch: {detail}",
+      vi: "Không lưu được công tắc đọc ảnh trong trang: {detail}",
+    },
     offTitle: { en: "Scans skipped", vi: "Đang bỏ qua ảnh" },
     offBody: {
       en: "Images and scanned pages are left out of the library. Everything with a text layer still indexes.",
