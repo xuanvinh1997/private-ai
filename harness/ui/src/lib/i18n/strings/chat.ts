@@ -66,6 +66,10 @@ export const chat = {
     nav: common.navigation,
     navMain: { en: "Main navigation", vi: "Điều hướng chính" },
     collapse: { en: "Collapse the sidebar", vi: "Thu gọn thanh bên" },
+    resize: {
+      en: "Resize sidebar. Use arrow keys; Enter resets.",
+      vi: "Đổi độ rộng thanh bên. Dùng phím mũi tên; Enter để đặt lại.",
+    },
 
     searchOpen: { en: "Find a session", vi: "Tìm phiên" },
     searchClose: { en: "Close the session filter", vi: "Đóng ô tìm phiên" },
@@ -106,6 +110,10 @@ export const chat = {
     label: { en: "Workspace inspector", vi: "Bảng thông tin workspace" },
     tabs: { en: "Workspace inspector views", vi: "Các góc nhìn của workspace" },
     close: { en: "Close the workspace inspector", vi: "Đóng bảng thông tin workspace" },
+    resize: {
+      en: "Resize inspector. Use arrow keys; Enter resets.",
+      vi: "Đổi độ rộng bảng thông tin. Dùng phím mũi tên; Enter để đặt lại.",
+    },
   },
 
   // ---- Session search palette -----------------------------------------------

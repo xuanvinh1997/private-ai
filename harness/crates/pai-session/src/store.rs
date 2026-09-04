@@ -104,7 +104,8 @@ pub trait SessionStore: Send + Sync + 'static {
     async fn create(&self, spec: NewSession) -> Result<SessionHeader>;
 
     /// Newest first.
-    async fn list(&self, scope: SessionScope<'_>, limit: Option<u32>) -> Result<Vec<SessionHeader>>;
+    async fn list(&self, scope: SessionScope<'_>, limit: Option<u32>)
+    -> Result<Vec<SessionHeader>>;
 
     async fn header(&self, id: &str) -> Result<SessionHeader>;
 

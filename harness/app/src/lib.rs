@@ -8,8 +8,11 @@ mod commands;
 pub mod harness;
 mod llm;
 pub mod protocol;
+mod qdrant;
 mod rag_config;
 pub mod scope;
+mod sidecar;
+mod surrealdb;
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,6 +43,12 @@ pub(crate) struct AppState {
     pub(crate) running: Mutex<HashMap<String, CancellationToken>>,
     /// The running clone, if any; one, not a map, because a user clones one repository at a time.
     pub(crate) cloning: Mutex<Option<CancellationToken>>,
+    /// Local vector database owned by the desktop process. It starts eagerly, while document commands also
+    /// await the same guard so an early re-index cannot race sidecar startup.
+    qdrant: Arc<qdrant::ManagedQdrant>,
+    /// Local graph database shipped in the same installer; kept separate because either service may be reused
+    /// from an already-running development instance without transferring ownership of that process.
+    surrealdb: Arc<surrealdb::ManagedSurrealDb>,
 }
 
 impl AppState {
@@ -465,6 +474,21 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .setup(|app| {
+            let qdrant = app.state::<AppState>().qdrant.clone();
+            let surrealdb = app.state::<AppState>().surrealdb.clone();
+            tauri::async_runtime::spawn(async move {
+                let (qdrant_result, surreal_result) =
+                    tokio::join!(qdrant.ensure(), surrealdb.ensure());
+                if let Err(error) = qdrant_result {
+                    tracing::warn!(%error, "could not start managed Qdrant");
+                }
+                if let Err(error) = surreal_result {
+                    tracing::warn!(%error, "could not start managed SurrealDB");
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             send_message,
             approval_result,
@@ -510,8 +534,11 @@ pub fn run() {
             commands::docs::sync_library,
             commands::docs::reprocess_library,
             commands::docs::library_stats,
+            commands::docs::ocr_setting,
+            commands::docs::set_ocr_enabled,
             commands::docs::add_documents,
             commands::docs::remove_document,
+            commands::docs::delete_project_document,
             commands::docs::search_documents,
             commands::rerank::rerank_setting,
             commands::rerank::set_rerank,
@@ -525,11 +552,14 @@ pub fn run() {
         .run(|app, event| {
             // Process exit cleans up most things, but not those needing a goodbye: an LSP `shutdown`, a polite
             // MCP close, a background job's process group. Blocking here is fine -- the window is already closed.
-            if let tauri::RunEvent::Exit = event
-                && let Some(harness) = app.state::<AppState>().harness.get()
-            {
-                let harness = harness.clone();
-                tauri::async_runtime::block_on(async move { harness.shutdown().await });
+            if let tauri::RunEvent::Exit = event {
+                let state = app.state::<AppState>();
+                state.qdrant.stop();
+                state.surrealdb.stop();
+                if let Some(harness) = state.harness.get() {
+                    let harness = harness.clone();
+                    tauri::async_runtime::block_on(async move { harness.shutdown().await });
+                }
             }
         });
 }

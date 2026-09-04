@@ -24,7 +24,11 @@ pub struct LmStudioAdmin {
 }
 
 impl LmStudioAdmin {
-    pub fn new(base_url: impl Into<String>, api_key: impl Into<String>, http: reqwest::Client) -> Self {
+    pub fn new(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+        http: reqwest::Client,
+    ) -> Self {
         Self {
             base_url: base_url.into().trim_end_matches('/').to_string(),
             api_key: api_key.into(),
@@ -66,9 +70,7 @@ impl LmStudioAdmin {
     fn khong_co(verb: &str, thay_the: &str) -> LlmError {
         LlmError::new(
             LlmErrorCode::Unsupported,
-            format!(
-                "LM Studio không có API để {verb} qua máy chủ cục bộ. {thay_the}"
-            ),
+            format!("LM Studio không có API để {verb} qua máy chủ cục bộ. {thay_the}"),
         )
     }
 }
@@ -113,7 +115,11 @@ pub fn details_from_model(name: &str, entry: &Value) -> ModelDetails {
     {
         push("tools");
     }
-    if entry.get("vision").and_then(Value::as_bool).unwrap_or(false) {
+    if entry
+        .get("vision")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         push("vision");
     }
     // (3) Model type.
@@ -133,12 +139,13 @@ pub fn details_from_model(name: &str, entry: &Value) -> ModelDetails {
         _ => {}
     }
 
-    let capabilities = Capabilities::from_reported(&reported, context_window).unwrap_or_else(|| {
-        let mut inferred =
-            Capabilities::infer(&format!("{name} {}", arch.clone().unwrap_or_default()));
-        inferred.context_window = context_window;
-        inferred
-    });
+    let capabilities =
+        Capabilities::from_reported(&reported, context_window).unwrap_or_else(|| {
+            let mut inferred =
+                Capabilities::infer(&format!("{name} {}", arch.clone().unwrap_or_default()));
+            inferred.context_window = context_window;
+            inferred
+        });
 
     ModelDetails {
         capabilities,

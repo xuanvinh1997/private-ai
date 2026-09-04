@@ -165,7 +165,10 @@ fn instantiate_noi_ro_bien_nao_con_thieu() {
         panic!("mục github phải ra một server http");
     };
     assert!(url.starts_with("https://"), "endpoint phải là https: {url}");
-    assert_eq!(headers.get("Authorization").map(String::as_str), Some("ghp_gia"));
+    assert_eq!(
+        headers.get("Authorization").map(String::as_str),
+        Some("ghp_gia")
+    );
 }
 
 /// A remote entry must require nothing locally: that is the whole reason to pick it over the local build.

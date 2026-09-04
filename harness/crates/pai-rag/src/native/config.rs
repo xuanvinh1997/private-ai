@@ -89,16 +89,22 @@ pub struct RerankConfig {
     pub api_key: String,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct OcrConfig {
+    pub enabled: bool,
     pub min_chars_per_page: usize,
+    pub max_pages: usize,
+    pub scale: f32,
 }
 
 impl Default for OcrConfig {
     fn default() -> Self {
         Self {
+            enabled: true,
             min_chars_per_page: 200,
+            max_pages: 120,
+            scale: 2.0,
         }
     }
 }
@@ -144,6 +150,7 @@ struct FileConfig {
     projects: Vec<ProjectConfig>,
     active_project: String,
     embedding: ProviderConfig,
+    vision: ProviderConfig,
     vectors: VectorConfig,
     chunk: ChunkConfig,
     ocr: OcrConfig,
@@ -158,6 +165,7 @@ impl Default for FileConfig {
             projects: Vec::new(),
             active_project: String::new(),
             embedding: ProviderConfig::default(),
+            vision: ProviderConfig::default(),
             vectors: VectorConfig::default(),
             chunk: ChunkConfig::default(),
             ocr: OcrConfig::default(),
@@ -172,6 +180,7 @@ pub struct NativeConfig {
     pub root: PathBuf,
     pub store_path: PathBuf,
     pub embedding: ProviderConfig,
+    pub vision: ProviderConfig,
     pub vectors: VectorConfig,
     pub chunk: ChunkConfig,
     pub ocr: OcrConfig,
@@ -222,6 +231,7 @@ impl NativeConfig {
             root,
             store_path: data_dir.join(project_id).join("rag.sqlite"),
             embedding: parsed.embedding,
+            vision: parsed.vision,
             vectors: parsed.vectors,
             chunk: parsed.chunk,
             ocr: parsed.ocr,

@@ -41,7 +41,7 @@ export default function CompletionPopup(props: {
   return (
     <Show when={props.items.length > 0 || props.empty !== undefined}>
       <div
-        class="absolute bottom-full left-0 right-0 z-20 mb-2xs overflow-hidden rounded-panel border border-line bg-surface shadow-pop"
+        class="absolute bottom-full left-0 right-0 z-[var(--z-floating)] mb-2xs overflow-hidden rounded-panel border border-line bg-surface shadow-pop"
         // Clicking the list must not steal focus: losing it collapses the composer before the click lands.
         onMouseDown={(event) => event.preventDefault()}
       >

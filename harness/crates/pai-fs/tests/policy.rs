@@ -75,7 +75,10 @@ async fn dot_dot_and_symlinks_cannot_escape_the_root() {
                 json!({ "file_path": link.display().to_string() }),
             ))
             .await;
-        assert!(err.is_err(), "a symlink pointing outside must count as outside");
+        assert!(
+            err.is_err(),
+            "a symlink pointing outside must count as outside"
+        );
     }
 }
 

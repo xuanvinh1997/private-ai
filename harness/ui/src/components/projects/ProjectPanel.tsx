@@ -1,18 +1,17 @@
 import { createResource, createSignal, For, Show, Suspense } from "solid-js";
 import { addDocuments, stageLabel } from "../../lib/docs";
 import { S, t } from "../../lib/i18n";
-import { listDir, originHost } from "../../lib/projects";
+import { deleteProjectDocument, listDir, originHost } from "../../lib/projects";
 import { relativeTime } from "../../lib/sessions";
 import type { DirEntry, Project } from "../../lib/protocol";
 import Icon from "../Icon";
 import { IconButton } from "../primitives";
-import { Button } from "./DialogShell";
+import ConfirmDialog from "../providers/ConfirmDialog";
 import UploadFilesDialog from "./UploadFilesDialog";
 
 /** The open project's file tree in the right column; it reads one level per expand, so `.git` and `node_modules` cost nothing until opened, and clicking a file drops an `@path` into the composer. */
 export function ProjectFilesContent(props: {
   project: Project;
-  onOpenFolder: () => void;
   /** Put a file into the composer; takes an absolute path, the caller shortens it. */
   onPickFile: (path: string) => void;
   /** Open the project's own screen: Changes for code, Library for documents. */
@@ -21,6 +20,25 @@ export function ProjectFilesContent(props: {
   const docs = () => props.project.kind === "docs";
   const [uploadOpen, setUploadOpen] = createSignal(false);
   const [treeRevision, setTreeRevision] = createSignal(0);
+  const [deleting, setDeleting] = createSignal<DirEntry | null>(null);
+  const [deleteBusy, setDeleteBusy] = createSignal(false);
+  const [deleteError, setDeleteError] = createSignal<string | null>(null);
+
+  const confirmDelete = async (entry: DirEntry) => {
+    if (deleteBusy()) return;
+    setDeleteBusy(true);
+    setDeleteError(null);
+    try {
+      await deleteProjectDocument(entry.path);
+      setDeleting(null);
+      setTreeRevision((revision) => revision + 1);
+    } catch (err) {
+      setDeleting(null);
+      setDeleteError(t(S.projects.deleteFileError, { name: entry.name, err: String(err) }));
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   return (
     <div class="flex min-h-0 flex-1 flex-col">
@@ -44,7 +62,8 @@ export function ProjectFilesContent(props: {
             </Show>
           </span>
         </div>
-        {/* These two actions belong to the tree, so they sit here and not in the inspector tablist. */}
+        {/* Keep tree-level actions in the project header. Upload replaces the redundant file-manager shortcut,
+            which removes a whole toolbar row and lets the file list start immediately below this context. */}
         <IconButton
           icon={docs() ? "library" : "diff"}
           label={docs() ? t(S.projects.openLibrary) : t(S.projects.openChanges)}
@@ -52,18 +71,20 @@ export function ProjectFilesContent(props: {
           onClick={props.onOpenScreen}
         />
         <IconButton
-          icon="external"
-          label={t(S.projects.openInFileManager)}
+          icon="upload"
+          label={t(S.projects.uploadFiles)}
           size="sm"
-          onClick={props.onOpenFolder}
+          onClick={() => setUploadOpen(true)}
         />
       </div>
 
-      <div class="flex shrink-0 items-center border-b border-line px-sm py-sm">
-        <Button variant="outline" icon="upload" onClick={() => setUploadOpen(true)}>
-          {t(S.projects.uploadFiles)}
-        </Button>
-      </div>
+      <Show when={deleteError()}>
+        {(message) => (
+          <p class="m-sm rounded-panel bg-danger-soft px-sm py-xs text-2xs break-words text-danger" role="alert">
+            {message()}
+          </p>
+        )}
+      </Show>
 
       <div class="min-h-0 flex-1 overflow-y-auto p-2xs">
         {/* `keyed` by path: a new project is a new tree, and stale expansion points at gone folders. */}
@@ -75,6 +96,10 @@ export function ProjectFilesContent(props: {
               revision={treeRevision()}
               canReindex={docs()}
               onPickFile={props.onPickFile}
+              onDelete={(entry) => {
+                setDeleteError(null);
+                setDeleting(entry);
+              }}
             />
           )}
         </Show>
@@ -87,6 +112,24 @@ export function ProjectFilesContent(props: {
           onImported={() => setTreeRevision((revision) => revision + 1)}
         />
       </Show>
+      <Show when={deleting()}>
+        {(entry) => (
+          <ConfirmDialog
+            title={t(S.projects.deleteFileTitle, { name: entry().name })}
+            body={t(S.projects.deleteFileBody)}
+            more={t(S.projects.deleteFileMore)}
+            detail={entry().path}
+            confirmLabel={
+              deleteBusy() ? t(S.projects.deletingFile) : t(S.projects.deleteFileConfirm)
+            }
+            busy={deleteBusy()}
+            onConfirm={() => void confirmDelete(entry())}
+            onClose={() => {
+              if (!deleteBusy()) setDeleting(null);
+            }}
+          />
+        )}
+      </Show>
     </div>
   );
 }
@@ -98,6 +141,7 @@ function Branch(props: {
   revision: number;
   canReindex: boolean;
   onPickFile: (path: string) => void;
+  onDelete: (entry: DirEntry) => void;
 }) {
   const [entries] = createResource(
     () => ({ path: props.path, revision: props.revision }),
@@ -119,6 +163,7 @@ function Branch(props: {
                 revision={props.revision}
                 canReindex={props.canReindex}
                 onPickFile={props.onPickFile}
+                onDelete={props.onDelete}
               />
             )}
           </For>
@@ -135,6 +180,7 @@ function Node(props: {
   revision: number;
   canReindex: boolean;
   onPickFile: (path: string) => void;
+  onDelete: (entry: DirEntry) => void;
 }) {
   const [open, setOpen] = createSignal(false);
   const [reindexState, setReindexState] = createSignal<
@@ -219,14 +265,25 @@ function Node(props: {
         </button>
 
         <Show when={props.canReindex && !props.entry.isDir}>
-          <IconButton
-            icon={reindexIcon()}
-            label={reindexLabel()}
-            size="sm"
-            tip="left"
-            busy={reindexState() === "busy"}
-            onClick={() => void reindex()}
-          />
+          <div class="flex shrink-0 items-center">
+            <IconButton
+              icon={reindexIcon()}
+              label={reindexLabel()}
+              size="sm"
+              tip="left"
+              busy={reindexState() === "busy"}
+              onClick={() => void reindex()}
+            />
+            <IconButton
+              icon="trash"
+              label={t(S.projects.deleteFile, { name: props.entry.name })}
+              size="sm"
+              tip="left"
+              danger
+              disabled={reindexState() === "busy"}
+              onClick={() => props.onDelete(props.entry)}
+            />
+          </div>
         </Show>
       </div>
 
@@ -255,6 +312,7 @@ function Node(props: {
           revision={props.revision}
           canReindex={props.canReindex}
           onPickFile={props.onPickFile}
+          onDelete={props.onDelete}
         />
       </Show>
     </li>

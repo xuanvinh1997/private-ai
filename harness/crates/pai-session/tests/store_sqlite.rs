@@ -5,8 +5,7 @@ use std::sync::Arc;
 use pai_session::{
     AssistantChunk, AssistantMessage, Message, NewSession, SessionError, SessionEvent,
     SessionScope, SessionService, SessionStore, SessionTitler, SqliteSessionStore, StepEnd,
-    StepStart, TurnEnd,
-    TurnEndReason, TurnStart,
+    StepStart, TurnEnd, TurnEndReason, TurnStart,
 };
 
 fn service() -> SessionService {
@@ -84,7 +83,10 @@ async fn liet_ke_theo_thu_muc() {
         .await
         .expect("liệt kê A");
     assert_eq!(a.len(), 2);
-    assert!(a.iter().all(|row| row.cwd.as_deref() == Some("/tmp/du-an-a")));
+    assert!(
+        a.iter()
+            .all(|row| row.cwd.as_deref() == Some("/tmp/du-an-a"))
+    );
 
     let b = sessions
         .list(SessionScope::Directory("/tmp/du-an-b"), None)
@@ -101,7 +103,11 @@ async fn liet_ke_theo_thu_muc() {
     assert!(unbound[0].cwd.is_none());
 
     assert_eq!(
-        sessions.list(SessionScope::All, None).await.expect("tất cả").len(),
+        sessions
+            .list(SessionScope::All, None)
+            .await
+            .expect("tất cả")
+            .len(),
         4
     );
 
@@ -127,7 +133,10 @@ async fn tao_liet_ke_mo_lai() {
     mot_luot(&mut session, 0, "chào", "chào bạn").await;
     session.flush().await.expect("ghi");
 
-    let listed = sessions.list(SessionScope::All, None).await.expect("liệt kê");
+    let listed = sessions
+        .list(SessionScope::All, None)
+        .await
+        .expect("liệt kê");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].id, id);
     assert_eq!(listed[0].cwd.as_deref(), Some("/tmp/repo"));
@@ -242,7 +251,14 @@ async fn fork_cam_cat_giua_mot_luot_dang_mo() {
         other => panic!("phải là OpenTurn, gặp {:?}", other.err()),
     }
     // No rounding back to the nearest `turn/end`: only one session ever exists.
-    assert_eq!(sessions.list(SessionScope::All, None).await.expect("liệt kê").len(), 1);
+    assert_eq!(
+        sessions
+            .list(SessionScope::All, None)
+            .await
+            .expect("liệt kê")
+            .len(),
+        1
+    );
 }
 
 #[tokio::test]
@@ -511,7 +527,10 @@ async fn doi_ten_phien_thi_danh_sach_thay_ngay() {
         .rename(&id, "Sửa bộ nạp cấu hình")
         .await
         .expect("đổi tên được");
-    let listed = service.list(SessionScope::All, Some(10)).await.expect("liệt kê");
+    let listed = service
+        .list(SessionScope::All, Some(10))
+        .await
+        .expect("liệt kê");
     let found = listed
         .iter()
         .find(|header| header.id == id)

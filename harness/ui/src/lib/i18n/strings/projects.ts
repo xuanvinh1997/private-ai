@@ -113,6 +113,25 @@ export const projects = {
     en: "Could not re-index {name}: {err}",
     vi: "Không lập chỉ mục lại được {name}: {err}",
   },
+  deleteFile: { en: "Delete {name}", vi: "Xoá {name}" },
+  deleteFileTitle: {
+    en: 'Delete "{name}" from this project?',
+    vi: 'Xoá "{name}" khỏi dự án này?',
+  },
+  deleteFileBody: {
+    en: "The file and its indexed content will be deleted.",
+    vi: "Tệp và nội dung đã lập chỉ mục sẽ bị xoá.",
+  },
+  deleteFileMore: {
+    en: "This permanently deletes the copy stored in the project, all extracted chunks, and its search vectors. This cannot be undone.",
+    vi: "Thao tác này xoá vĩnh viễn bản sao trong dự án, toàn bộ đoạn nội dung đã tách và vector tìm kiếm. Không thể hoàn tác.",
+  },
+  deleteFileConfirm: { en: "Delete file", vi: "Xoá tệp" },
+  deletingFile: { en: "Deleting…", vi: "Đang xoá…" },
+  deleteFileError: {
+    en: 'Could not delete "{name}": {err}',
+    vi: 'Không xoá được "{name}": {err}',
+  },
   uploadFiles: { en: "Upload files", vi: "Tải tệp lên" },
   uploadTitle: { en: "Upload files", vi: "Tải tệp lên" },
   uploadDesc: {
@@ -120,8 +139,8 @@ export const projects = {
     vi: "Chép tệp vào {name}",
   },
   uploadMore: {
-    en: "Files are copied into the project root. Existing files are never replaced, and folders are not accepted.",
-    vi: "Tệp được chép vào thư mục gốc của dự án. Tệp đã có sẽ không bị ghi đè và không nhận cả thư mục.",
+    en: "Files are copied into the project root. A document library indexes them immediately. Existing files are never replaced, and folders are not accepted.",
+    vi: "Tệp được chép vào thư mục gốc của dự án. Thư viện tài liệu lập chỉ mục ngay sau khi chép. Tệp đã có sẽ không bị ghi đè và không nhận cả thư mục.",
   },
   uploadDropTitle: { en: "Drop files here", vi: "Thả tệp vào đây" },
   uploadDropHint: {
@@ -135,6 +154,10 @@ export const projects = {
   uploadError: {
     en: "Could not upload files: {err}",
     vi: "Không tải được tệp: {err}",
+  },
+  uploadIndexError: {
+    en: "The files were copied, but some could not be indexed: {err}",
+    vi: "Tệp đã được chép nhưng có tệp chưa lập chỉ mục được: {err}",
   },
 
   // New project dialog

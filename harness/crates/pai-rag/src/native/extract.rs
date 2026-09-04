@@ -8,7 +8,7 @@ use quick_xml::{Reader, events::Event};
 
 use crate::{Format, RagError};
 
-pub const EXTRACT_VERSION: u32 = 1;
+pub const EXTRACT_VERSION: u32 = 2;
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const BINARY_PROBE: usize = 4_096;
 
@@ -21,15 +21,14 @@ const CODE: &[&str] = &[
     "php", "swift", "sh", "ps1", "sql", "toml", "ini", "cfg", "conf", "gradle", "lua", "r", "m",
     "scala", "dart",
 ];
-const UNSUPPORTED_BINARY: &[&str] = &[
-    "pdf", "xlsx", "xlsm", "pptx", "doc", "xls", "ppt", "png", "jpg", "jpeg", "webp", "bmp", "gif",
-    "tif", "tiff",
-];
+const IMAGE: &[&str] = &["png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"];
+const UNSUPPORTED_BINARY: &[&str] = &["xlsx", "xlsm", "pptx", "doc", "xls", "ppt"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReaderKind {
     Native(Format),
     Pdf,
+    Image,
     Unsupported,
 }
 
@@ -51,6 +50,8 @@ pub fn reader_for(path: &Path) -> Option<ReaderKind> {
     let ext = extension.as_str();
     if ext == "pdf" {
         Some(ReaderKind::Pdf)
+    } else if IMAGE.contains(&ext) {
+        Some(ReaderKind::Image)
     } else if ext == "docx" {
         Some(ReaderKind::Native(Format::Office))
     } else if MARKDOWN.contains(&ext) {
@@ -119,9 +120,21 @@ pub fn extract(path: &Path, format: Format) -> Result<Extracted, RagError> {
     })
 }
 
-/// Extract a PDF text layer in Rust. Sparse/scanned PDFs fail explicitly because this
-/// crate does not ship an OCR runtime.
+/// Extract a PDF text layer in Rust. This strict entry point is kept for callers and tests that do not provide
+/// a vision model; the native library uses [`pdf_text_pages`] and falls back to OCR for sparse pages.
+#[cfg(test)]
 pub fn extract_pdf(path: &Path, min_chars_per_page: usize) -> Result<Extracted, RagError> {
+    let pages = pdf_text_pages(path)?;
+    if average_chars(&pages) < min_chars_per_page {
+        return Err(RagError::Extraction(format!(
+            "PDF `{}` không có đủ lớp chữ; cần bật OCR và chọn mô hình vision",
+            path.display()
+        )));
+    }
+    Ok(pdf_from_pages(path, pages, Vec::new()))
+}
+
+pub fn pdf_text_pages(path: &Path) -> Result<Vec<String>, RagError> {
     let shown = path.display().to_string();
     let metadata = std::fs::metadata(path)
         .map_err(|error| RagError::Extraction(format!("không đọc được `{shown}`: {error}")))?;
@@ -154,19 +167,29 @@ pub fn extract_pdf(path: &Path, min_chars_per_page: usize) -> Result<Extracted, 
             "PDF `{shown}` không có trang nào"
         )));
     }
-    let characters: usize = pages.iter().map(|page| page.trim().chars().count()).sum();
-    if characters / pages.len() < min_chars_per_page {
-        return Err(RagError::Extraction(format!(
-            "PDF `{shown}` không có đủ lớp chữ; OCR chưa có trong bản Rust"
-        )));
+    Ok(pages)
+}
+
+pub fn average_chars(pages: &[String]) -> usize {
+    if pages.is_empty() {
+        return 0;
     }
+    pages
+        .iter()
+        .map(|page| page.trim().chars().count())
+        .sum::<usize>()
+        / pages.len()
+}
+
+pub fn pdf_from_pages(path: &Path, pages: Vec<String>, ocr_pages: Vec<u32>) -> Extracted {
+    let shown = path.display().to_string();
     let text = pages
         .iter()
         .enumerate()
         .map(|(index, page)| format!("<!-- pai-page:{} -->\n\n{}", index + 1, page.trim()))
         .collect::<Vec<_>>()
         .join("\n\n");
-    Ok(Extracted {
+    Extracted {
         text,
         format: Format::Pdf,
         title: path
@@ -174,8 +197,70 @@ pub fn extract_pdf(path: &Path, min_chars_per_page: usize) -> Result<Extracted, 
             .map(|stem| stem.to_string_lossy().into_owned())
             .unwrap_or(shown),
         pages: pages.len() as u32,
-        ocr_pages: Vec::new(),
-    })
+        ocr_pages,
+    }
+}
+
+/// Render at most `limit` PDF pages into PNGs. PDFium is downloaded and cached on the first OCR request;
+/// keeping this blocking function outside the async path prevents both FFI and PNG encoding from stalling it.
+pub fn render_pdf_pages(path: &Path, scale: f32, limit: usize) -> Result<Vec<Vec<u8>>, RagError> {
+    use image::ImageFormat;
+    use pdfium_bundled::pdfium_render::prelude::*;
+
+    let pdfium = pdfium_bundled::bind_pdfium_silent().map_err(|error| {
+        RagError::Extraction(format!("không chuẩn bị được bộ dựng trang PDFium: {error}"))
+    })?;
+    let document = pdfium.load_pdf_from_file(path, None).map_err(|error| {
+        RagError::Extraction(format!("không dựng được PDF `{}`: {error}", path.display()))
+    })?;
+    let width = (1_000.0 * scale.clamp(1.0, 4.0)).round() as i32;
+    let config = PdfRenderConfig::new().set_target_width(width);
+    let mut output = Vec::new();
+    for page in document.pages().iter().take(limit) {
+        let image = page
+            .render_with_config(&config)
+            .and_then(|bitmap| bitmap.as_image())
+            .map_err(|error| RagError::Extraction(format!("không dựng được trang PDF: {error}")))?;
+        let mut png = Cursor::new(Vec::new());
+        image
+            .write_to(&mut png, ImageFormat::Png)
+            .map_err(|error| {
+                RagError::Extraction(format!("không mã hoá được trang PDF: {error}"))
+            })?;
+        output.push(png.into_inner());
+    }
+    Ok(output)
+}
+
+pub fn image_bytes(path: &Path) -> Result<(Vec<u8>, &'static str), RagError> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        RagError::Extraction(format!("không đọc được `{}`: {error}", path.display()))
+    })?;
+    if metadata.len() == 0 || metadata.len() > MAX_FILE_BYTES {
+        return Err(RagError::Extraction(format!(
+            "ảnh `{}` rỗng hoặc vượt trần {} MB",
+            path.display(),
+            MAX_FILE_BYTES / 1024 / 1024
+        )));
+    }
+    let ext = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        "bmp" => "image/bmp",
+        "tif" | "tiff" => "image/tiff",
+        _ => "application/octet-stream",
+    };
+    let bytes = std::fs::read(path).map_err(|error| {
+        RagError::Extraction(format!("không đọc được `{}`: {error}", path.display()))
+    })?;
+    Ok((bytes, mime))
 }
 
 pub fn scan(root: &Path, limit: usize) -> (Vec<PathBuf>, usize) {
@@ -389,10 +474,7 @@ mod tests {
             Some(ReaderKind::Native(Format::Markdown))
         );
         assert_eq!(reader_for(Path::new("a.pdf")), Some(ReaderKind::Pdf));
-        assert_eq!(
-            reader_for(Path::new("a.png")),
-            Some(ReaderKind::Unsupported)
-        );
+        assert_eq!(reader_for(Path::new("a.png")), Some(ReaderKind::Image));
         assert_eq!(reader_for(Path::new("a.exe")), None);
     }
 
@@ -425,7 +507,35 @@ mod tests {
 
     #[test]
     fn pdf_text_layer_keeps_page_metadata() {
-        let stream = "BT /F1 12 Tf 72 700 Td (Native Rust PDF text layer) Tj ET\n";
+        let pdf = one_page_pdf("Native Rust PDF text layer");
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("native.pdf");
+        std::fs::write(&path, pdf).unwrap();
+
+        let extracted = extract_pdf(&path, 1).unwrap();
+        assert_eq!(extracted.format, Format::Pdf);
+        assert_eq!(extracted.pages, 1);
+        assert!(extracted.text.contains("<!-- pai-page:1 -->"));
+        assert!(extracted.text.contains("Native Rust PDF text layer"));
+        assert!(matches!(
+            extract_pdf(&path, 1_000),
+            Err(RagError::Extraction(_))
+        ));
+    }
+
+    #[test]
+    #[ignore = "downloads and binds PDFium"]
+    fn pdfium_renders_a_page_for_ocr() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("scan.pdf");
+        std::fs::write(&path, one_page_pdf("OCR render probe")).unwrap();
+        let pages = render_pdf_pages(&path, 1.0, 1).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0].starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    fn one_page_pdf(text: &str) -> Vec<u8> {
+        let stream = format!("BT /F1 12 Tf 72 700 Td ({text}) Tj ET\n");
         let objects = [
             "<< /Type /Catalog /Pages 2 0 R >>".to_owned(),
             "<< /Type /Pages /Kids [3 0 R] /Count 1 >>".to_owned(),
@@ -452,19 +562,7 @@ mod tests {
             )
             .as_bytes(),
         );
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("native.pdf");
-        std::fs::write(&path, pdf).unwrap();
-
-        let extracted = extract_pdf(&path, 1).unwrap();
-        assert_eq!(extracted.format, Format::Pdf);
-        assert_eq!(extracted.pages, 1);
-        assert!(extracted.text.contains("<!-- pai-page:1 -->"));
-        assert!(extracted.text.contains("Native Rust PDF text layer"));
-        assert!(matches!(
-            extract_pdf(&path, 1_000),
-            Err(RagError::Extraction(_))
-        ));
+        pdf
     }
 
     #[test]

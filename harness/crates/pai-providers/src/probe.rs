@@ -53,7 +53,10 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
         ),
         // `/api/v0/models`, not `/v1/models`: same server, but the latter returns only ids.
         ProviderKind::LmStudio => (
-            format!("{}/api/v0/models", pai_llm::lmstudio::server_root(&config.base_url)),
+            format!(
+                "{}/api/v0/models",
+                pai_llm::lmstudio::server_root(&config.base_url)
+            ),
             !config.api_key.is_empty(),
         ),
         ProviderKind::OpenAiCompatible => match openai_base_url(&config.base_url) {

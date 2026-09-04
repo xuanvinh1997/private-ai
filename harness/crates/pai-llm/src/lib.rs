@@ -18,9 +18,9 @@ pub mod wire;
 pub use assembler::BlockAssembler;
 pub use capabilities::{Capabilities, CapabilitySource};
 pub use error::{LlmError, LlmErrorCode};
+pub use lmstudio::{LmStudioAdapter, LmStudioAdmin};
 pub use message::{ChatRequest, ContentBlock, Message, ToolCall, ToolCallId, ToolSchema};
 pub use model::{ModelDetails, ModelInfo, ModelState, PullProgress, RunningModel};
-pub use lmstudio::{LmStudioAdapter, LmStudioAdmin};
 pub use ollama::{OllamaAdapter, OllamaAdmin};
 pub use openai::{OpenAiAdapter, openai_base_url};
 pub use registry::{

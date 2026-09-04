@@ -8,9 +8,9 @@ use std::sync::{Arc, Mutex};
 use futures::StreamExt;
 use pai_llm::assembler::BlockAssembler;
 use pai_llm::error::LlmErrorCode;
+use pai_llm::lmstudio::LmStudioAdapter;
 use pai_llm::message::{ChatRequest, Message, ToolSchema};
 use pai_llm::model::ModelState;
-use pai_llm::lmstudio::LmStudioAdapter;
 use pai_llm::ollama::OllamaAdapter;
 use pai_llm::openai::OpenAiAdapter;
 use pai_llm::seam::LlmAdapter;
@@ -62,7 +62,9 @@ async fn serve(routes: Vec<(&str, Route)>) -> String {
 }
 
 /// Like [`serve`], but keeps every request that arrived.
-async fn serve_recording(routes: Vec<(&str, Route)>) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
+async fn serve_recording(
+    routes: Vec<(&str, Route)>,
+) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
     let table: HashMap<String, Route> = routes
         .into_iter()
         .map(|(path, route)| (path.to_string(), route))
@@ -505,11 +507,8 @@ async fn lmstudio_chat_sse_va_ttl_di_theo() {
         "\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":4}}\n\n",
         "data: [DONE]\n\n"
     );
-    let (base, log) = serve_recording(vec![(
-        "/v1/chat/completions",
-        Route::streamed(body, 7),
-    )])
-    .await;
+    let (base, log) =
+        serve_recording(vec![("/v1/chat/completions", Route::streamed(body, 7))]).await;
     let adapter = LmStudioAdapter::new("lms", &base, "", client());
 
     let (assembler, failure) = collect(
@@ -603,7 +602,10 @@ async fn lmstudio_danh_sach_biet_mo_hinh_nao_dang_nam_trong_vram() {
     // Classifying embedding models is what `/v1/models` cannot do, and where users pick wrong most often.
     let embed = by_name("nomic-embed-text-v1.5");
     assert!(embed.capabilities.is_embedding_only());
-    assert!(by_name("gemma-3-4b").capabilities.vision, "`vlm` là thị giác");
+    assert!(
+        by_name("gemma-3-4b").capabilities.vision,
+        "`vlm` là thị giác"
+    );
     assert_eq!(by_name("qwen3-8b").quantization.as_deref(), Some("Q4_K_M"));
 
     let running = admin.running().await.expect("hỏi được");

@@ -26,8 +26,10 @@ function seed(): Provider[] {
       onDevice: true,
       activeChat: false,
       activeEmbedding: true,
+      activeVision: true,
       model: "qwen2.5-coder:14b",
       embeddingModel: "nomic-embed-text",
+      visionModel: "gemma3:12b",
     },
     {
       id: "pv-openai",
@@ -39,9 +41,11 @@ function seed(): Provider[] {
       onDevice: false,
       activeChat: true,
       activeEmbedding: false,
+      activeVision: false,
       model: "gpt-4o-mini",
       // A stored embedding model without the embedding role: the field means "what to use *if* given the role".
       embeddingModel: "text-embedding-3-small",
+      visionModel: null,
     },
     {
       id: "pv-lmstudio",
@@ -53,8 +57,10 @@ function seed(): Provider[] {
       onDevice: true,
       activeChat: false,
       activeEmbedding: false,
+      activeVision: false,
       model: null,
       embeddingModel: null,
+      visionModel: null,
     },
     // Remote without a key: the only row where the form opens with an *empty* key field rather than "set".
     {
@@ -67,8 +73,10 @@ function seed(): Provider[] {
       onDevice: false,
       activeChat: false,
       activeEmbedding: false,
+      activeVision: false,
       model: null,
       embeddingModel: null,
+      visionModel: null,
     },
   ];
 }
@@ -180,8 +188,10 @@ export function demoSaveProvider(input: ProviderInput): Provider {
     // The two roles are set by `set_active_provider` and `set_embedding`, never by the form.
     activeChat: previous?.activeChat ?? false,
     activeEmbedding: previous?.activeEmbedding ?? false,
+    activeVision: previous?.activeVision ?? (input.visionModel !== null && !list.some((entry) => entry.activeVision)),
     model: input.model,
     embeddingModel: input.embeddingModel,
+    visionModel: input.visionModel,
   };
 
   if (at < 0) list.push(saved);

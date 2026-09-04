@@ -94,7 +94,7 @@ function BackBottom(props: { visible: boolean; onClick: () => void }) {
       onClick={props.onClick}
       tabIndex={props.visible ? 0 : -1}
       aria-hidden={!props.visible}
-      class="absolute right-lg bottom-lg z-20 flex items-center gap-2xs rounded-pill border border-line bg-[var(--glass)] px-md py-2xs text-2xs text-text shadow-float backdrop-blur transition-all duration-[var(--dur-base)] ease-[var(--ease-out)] hover:bg-surface"
+      class="absolute right-lg bottom-lg z-[var(--z-floating)] flex items-center gap-2xs rounded-pill border border-line bg-[var(--glass)] px-md py-2xs text-2xs text-text shadow-float backdrop-blur transition-all duration-[var(--dur-base)] ease-[var(--ease-out)] hover:bg-surface"
       classList={{
         "pointer-events-none translate-y-2 opacity-0": !props.visible,
         "translate-y-0 opacity-100": props.visible,

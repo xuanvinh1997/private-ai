@@ -23,7 +23,10 @@ fn a_transport_helper_is_blocked_because_it_is_command_execution() {
     let err = request("ext::sh -c id", dir.path())
         .validate()
         .expect_err("must be blocked");
-    assert!(err.to_string().contains("ext"), "the error must say why: {err}");
+    assert!(
+        err.to_string().contains("ext"),
+        "the error must say why: {err}"
+    );
 
     // Not just `ext::`: every helper, because the helper list is extensible.
     assert!(request("other::something", dir.path()).validate().is_err());
@@ -42,7 +45,10 @@ fn a_url_starting_with_a_dash_is_blocked() {
     let err = request("--upload-pack=id", dir.path())
         .validate()
         .expect_err("must be blocked");
-    assert!(err.to_string().contains('-'), "the error must say why: {err}");
+    assert!(
+        err.to_string().contains('-'),
+        "the error must say why: {err}"
+    );
 }
 
 #[test]
@@ -107,7 +113,10 @@ fn a_destination_holding_data_is_never_cloned_over() {
     let err = request("https://vi.du/x.git", dir.path())
         .validate()
         .expect_err("must be blocked");
-    assert!(err.to_string().contains("mất dữ liệu"), "vague error: {err}");
+    assert!(
+        err.to_string().contains("mất dữ liệu"),
+        "vague error: {err}"
+    );
 
     // An empty directory is fine: that is the folder the user just made to clone into.
     std::fs::remove_file(destination.join("cua-toi.txt")).expect("remove");
@@ -202,7 +211,10 @@ async fn a_real_clone_emits_progress_and_ends_with_done() {
         }
     }
 
-    assert!(saw_tick, "the stream emitted no ticks — the UI would sit still");
+    assert!(
+        saw_tick,
+        "the stream emitted no ticks — the UI would sit still"
+    );
     let path = finished.expect("must end with Done");
     assert_eq!(path, parent.join("copy"));
     assert!(

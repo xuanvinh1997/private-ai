@@ -48,7 +48,10 @@ fn forgetting_a_project_never_touches_the_disk() {
     store.forget(&project.id).expect("forgets");
     assert!(store.list().expect("lists").is_empty());
     // Getting this wrong destroys the user's work.
-    assert!(marker.exists(), "forgetting from the list deleted the directory");
+    assert!(
+        marker.exists(),
+        "forgetting from the list deleted the directory"
+    );
     assert!(
         store.forget(&project.id).is_err(),
         "forgetting twice has to be reported"
@@ -194,7 +197,10 @@ fn set_kind_is_the_way_out_of_the_dead_end() {
         .set_kind(&wrong.id, ProjectKind::Code)
         .expect("the kind changes");
     assert_eq!(fixed.kind, ProjectKind::Code);
-    assert_eq!(store.get(&wrong.id).expect("reads back").kind, ProjectKind::Code);
+    assert_eq!(
+        store.get(&wrong.id).expect("reads back").kind,
+        ProjectKind::Code
+    );
 
     // And reopening afterwards keeps the corrected kind.
     assert_eq!(
@@ -208,7 +214,10 @@ fn set_kind_is_the_way_out_of_the_dead_end() {
 fn a_nonexistent_id_is_named_in_every_error() {
     let store = store();
     for err in [
-        store.get("no-such-id").expect_err("must be an error").to_string(),
+        store
+            .get("no-such-id")
+            .expect_err("must be an error")
+            .to_string(),
         store
             .forget("no-such-id")
             .expect_err("must be an error")
@@ -218,7 +227,10 @@ fn a_nonexistent_id_is_named_in_every_error() {
             .expect_err("must be an error")
             .to_string(),
     ] {
-        assert!(err.contains("no-such-id"), "the error does not name the id: {err}");
+        assert!(
+            err.contains("no-such-id"),
+            "the error does not name the id: {err}"
+        );
     }
 }
 

@@ -2,12 +2,18 @@ import { Key } from "@solid-primitives/keyed";
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
 import { LOCALES, LOCALE_NAMES, locale, S, setLocale, t, type Msg } from "../lib/i18n";
 import type { ProjectKind, SessionSummary } from "../lib/protocol";
+import {
+  setSidebarWidth,
+  sidebarWidth,
+  SIDEBAR_WIDTH,
+} from "../lib/prefs";
 import { groupSessions, relativeTime } from "../lib/sessions";
 import { setTheme, theme, type ThemeChoice } from "../lib/theme";
 import { BrandLockup } from "./Brand";
 import Icon, { type IconName } from "./Icon";
 import Menu from "./Menu";
 import { IconButton } from "./primitives";
+import ResizeHandle from "./ResizeHandle";
 
 /** The open screen. This list is short by decision, not omission: users already have their own editor. */
 export type TabId = "chat" | "diff" | "library" | "projects" | "settings";
@@ -105,8 +111,18 @@ export default function Sidebar(props: SidebarProps) {
   return (
     <aside
       aria-label={t(S.chat.sidebar.nav)}
-      class="flex w-(--sidebar-w) shrink-0 flex-col border-r border-line bg-sidebar"
+      style={{ width: `${sidebarWidth()}px` }}
+      class="relative flex max-w-[calc(100vw-48px)] shrink-0 flex-col border-r border-line bg-sidebar min-[1048px]:max-w-[34vw]"
     >
+      <ResizeHandle
+        edge="right"
+        label={t(S.chat.sidebar.resize)}
+        value={sidebarWidth()}
+        min={SIDEBAR_WIDTH.min}
+        max={SIDEBAR_WIDTH.max}
+        defaultValue={SIDEBAR_WIDTH.default}
+        onChange={setSidebarWidth}
+      />
       {/* Window drag strip and the space for the macOS traffic lights; it stays empty because they sit on top. */}
       <div class="h-(--titlebar-h) shrink-0" data-tauri-drag-region />
 
@@ -206,7 +222,7 @@ export default function Sidebar(props: SidebarProps) {
                 {(group) => (
                   <div class="mb-xs">
                     {/* Date groups sit under "Recent" one size down; equal sizes would read as sibling groups. */}
-                    <h3 class="sticky top-0 z-10 m-0 bg-sidebar px-sm py-3xs text-2xs font-semibold tracking-wide text-faint">
+                    <h3 class="sticky top-0 z-[var(--z-sticky)] m-0 bg-sidebar px-sm py-3xs text-2xs font-semibold tracking-wide text-faint">
                       {group.label}
                     </h3>
                     <ul class="m-0 flex list-none flex-col gap-3xs p-0">

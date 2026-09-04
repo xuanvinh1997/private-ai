@@ -175,6 +175,7 @@ export function inputOf(provider: Provider): ProviderInput {
     enabled: provider.enabled,
     model: provider.model,
     embeddingModel: provider.embeddingModel,
+    visionModel: provider.visionModel,
   };
 }
 

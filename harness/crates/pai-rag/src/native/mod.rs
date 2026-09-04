@@ -3,6 +3,7 @@ mod embedding;
 mod extract;
 mod rerank;
 mod vector;
+mod vision;
 
 use std::{
     collections::{HashMap, HashSet},
@@ -25,6 +26,7 @@ use self::{
     embedding::{EMBED_INPUT_VERSION, EmbeddingClient, MAX_BATCH},
     extract::{EXTRACT_VERSION, ReaderKind, reader_for},
     vector::Qdrant,
+    vision::VisionClient,
 };
 use crate::{
     DocLibrary, Document, Format, Hit, IngestEvent, IngestStage, MatchedBy, RagError, Scanning,
@@ -47,11 +49,13 @@ pub struct NativeLibrary {
 struct RuntimeState {
     stamp: Option<std::time::SystemTime>,
     embedding_config: ProviderConfig,
+    vision_config: ProviderConfig,
     vector_config: VectorConfig,
     chunk_config: ChunkConfig,
     ocr_config: OcrConfig,
     rerank_config: RerankConfig,
     embedder: Option<EmbeddingClient>,
+    vision: Option<VisionClient>,
     vectors: Qdrant,
     splitter: SectionAwareSplitter,
     candidate_pool: usize,
@@ -60,10 +64,11 @@ struct RuntimeState {
 #[derive(Clone)]
 struct RuntimeSnapshot {
     embedder: Option<EmbeddingClient>,
+    vision: Option<VisionClient>,
     vectors: Qdrant,
     splitter: SectionAwareSplitter,
     candidate_pool: usize,
-    pdf_min_chars_per_page: usize,
+    ocr: OcrConfig,
     rerank: RerankConfig,
 }
 
@@ -98,14 +103,21 @@ impl NativeLibrary {
             Some(EmbeddingClient::new(native.embedding.clone())?)
         };
         let vectors = Qdrant::new(&native.vectors, native.collection())?;
+        let vision = if native.vision.model.trim().is_empty() {
+            None
+        } else {
+            Some(VisionClient::new(native.vision.clone())?)
+        };
         let runtime = RuntimeState {
             stamp: config_stamp(&config_path),
             embedding_config: native.embedding.clone(),
+            vision_config: native.vision.clone(),
             vector_config: native.vectors.clone(),
             chunk_config: native.chunk.clone(),
             ocr_config: native.ocr.clone(),
             rerank_config: native.rerank.clone(),
             embedder,
+            vision,
             vectors,
             splitter: SectionAwareSplitter::new(native.chunk.size, native.chunk.overlap),
             candidate_pool: native.rerank.candidates.max(20),
@@ -156,6 +168,14 @@ impl NativeLibrary {
                     .map_err(store_error)?;
                 *self.last_embed_error.lock() = None;
             }
+            if fresh.vision != state.vision_config {
+                state.vision = if fresh.vision.model.trim().is_empty() {
+                    None
+                } else {
+                    Some(VisionClient::new(fresh.vision.clone())?)
+                };
+                state.vision_config = fresh.vision.clone();
+            }
             if fresh.chunk != state.chunk_config {
                 state.splitter = SectionAwareSplitter::new(fresh.chunk.size, fresh.chunk.overlap);
                 state.chunk_config = fresh.chunk;
@@ -171,10 +191,11 @@ impl NativeLibrary {
         }
         Ok(RuntimeSnapshot {
             embedder: state.embedder.clone(),
+            vision: state.vision.clone(),
             vectors: state.vectors.clone(),
             splitter: state.splitter.clone(),
             candidate_pool: state.candidate_pool,
-            pdf_min_chars_per_page: state.ocr_config.min_chars_per_page,
+            ocr: state.ocr_config.clone(),
             rerank: state.rerank_config.clone(),
         })
     }
@@ -389,6 +410,7 @@ impl NativeLibrary {
             let outcome = match reader_for(&path) {
                 Some(ReaderKind::Native(format)) => self.ingest_native(&path, format).await,
                 Some(ReaderKind::Pdf) => self.ingest_pdf(&path).await,
+                Some(ReaderKind::Image) => self.ingest_image(&path).await,
                 Some(ReaderKind::Unsupported) => Err(RagError::Extraction(format!(
                     "`{shown}` cần bộ đọc chưa có trong bản Rust"
                 ))),
@@ -452,12 +474,118 @@ impl NativeLibrary {
     }
 
     async fn ingest_pdf(&self, path: &Path) -> Result<String, RagError> {
-        let threshold = self.runtime()?.pdf_min_chars_per_page;
+        let runtime = self.runtime()?;
         let owned = path.to_owned();
-        let extracted =
-            tokio::task::spawn_blocking(move || extract::extract_pdf(&owned, threshold))
+        let mut pages = tokio::task::spawn_blocking(move || extract::pdf_text_pages(&owned))
+            .await
+            .map_err(|error| RagError::Service(format!("luồng đọc PDF bị dừng: {error}")))??;
+        let average_chars = extract::average_chars(&pages);
+        let has_sparse_page = pages
+            .iter()
+            .any(|page| page.trim().chars().count() < runtime.ocr.min_chars_per_page);
+        if !has_sparse_page {
+            return self
+                .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
+                .await;
+        }
+        if !runtime.ocr.enabled {
+            // A mixed PDF is still useful without OCR: keep its native text instead of rejecting the whole
+            // document because a cover or illustration page is blank. Fully scanned PDFs remain actionable
+            // failures, so the UI can tell the user to enable OCR.
+            if average_chars >= runtime.ocr.min_chars_per_page {
+                return self
+                    .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
+                    .await;
+            }
+            return Err(RagError::Extraction(format!(
+                "PDF `{}` không có đủ lớp chữ và OCR đang tắt",
+                path.display()
+            )));
+        }
+        let Some(vision) = runtime.vision else {
+            if average_chars >= runtime.ocr.min_chars_per_page {
+                return self
+                    .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
+                    .await;
+            }
+            return Err(RagError::Extraction(
+                "đây là PDF quét; hãy chọn mô hình vision trong Cài đặt rồi xử lý lại".into(),
+            ));
+        };
+        let owned = path.to_owned();
+        let scale = runtime.ocr.scale;
+        let limit = runtime.ocr.max_pages.max(1);
+        let images =
+            tokio::task::spawn_blocking(move || extract::render_pdf_pages(&owned, scale, limit))
                 .await
-                .map_err(|error| RagError::Service(format!("luồng đọc PDF bị dừng: {error}")))??;
+                .map_err(|error| RagError::Service(format!("luồng dựng PDF bị dừng: {error}")))??;
+        let mut ocr_pages = Vec::new();
+        for (index, image) in images.iter().enumerate() {
+            if pages
+                .get(index)
+                .is_some_and(|page| page.trim().chars().count() >= runtime.ocr.min_chars_per_page)
+            {
+                continue;
+            }
+            match vision.ocr(image, "image/png").await {
+                Ok(text) if !text.is_empty() => {
+                    if let Some(page) = pages.get_mut(index) {
+                        *page = text;
+                        ocr_pages.push(index as u32 + 1);
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, page = index + 1, path = %path.display(), "OCR page failed")
+                }
+            }
+        }
+        if !pages.iter().any(|page| !page.trim().is_empty()) {
+            return Err(RagError::Extraction(format!(
+                "model vision `{}` đã chạy nhưng không đọc được chữ trong `{}`",
+                vision.model(),
+                path.display()
+            )));
+        }
+        let extracted = extract::pdf_from_pages(path, pages, ocr_pages);
+        self.store_extracted(path, extracted).await
+    }
+
+    async fn ingest_image(&self, path: &Path) -> Result<String, RagError> {
+        let runtime = self.runtime()?;
+        if !runtime.ocr.enabled {
+            return Err(RagError::Extraction(format!(
+                "`{}` là ảnh và OCR đang tắt",
+                path.display()
+            )));
+        }
+        let vision = runtime.vision.ok_or_else(|| {
+            RagError::Extraction(
+                "đây là ảnh; hãy chọn mô hình vision trong Cài đặt rồi nạp lại".into(),
+            )
+        })?;
+        let owned = path.to_owned();
+        let (bytes, mime) = tokio::task::spawn_blocking(move || extract::image_bytes(&owned))
+            .await
+            .map_err(|error| RagError::Service(format!("luồng đọc ảnh bị dừng: {error}")))??;
+        let text = vision.ocr(&bytes, mime).await?;
+        if text.is_empty() {
+            return Err(RagError::Extraction(format!(
+                "model vision `{}` không đọc được chữ trong `{}`",
+                vision.model(),
+                path.display()
+            )));
+        }
+        let extracted = extract::Extracted {
+            text,
+            format: Format::Image,
+            title: path
+                .file_stem()
+                .map(|stem| stem.to_string_lossy().into_owned())
+                .unwrap_or_else(|| path.display().to_string()),
+            pages: 1,
+            ocr_pages: vec![1],
+        };
         self.store_extracted(path, extracted).await
     }
 

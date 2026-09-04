@@ -68,10 +68,20 @@ impl ProviderRuntime {
         self.store.active(Role::Embedding)
     }
 
+    pub fn vision(&self) -> Result<Option<StoredProvider>> {
+        self.store.active(Role::Vision)
+    }
+
     /// Hand over the embedding role, with a model if one was picked; it never touches `Driver`, but still goes
     /// through [`ProviderRuntime::resync`], since one reapply path is the whole point of this runtime.
     pub async fn set_embedding(&self, id: &str, model: Option<&str>) -> Result<StoredProvider> {
         let active = self.store.activate(Role::Embedding, id, model)?;
+        self.resync().await;
+        Ok(active)
+    }
+
+    pub async fn set_vision(&self, id: &str, model: Option<&str>) -> Result<StoredProvider> {
+        let active = self.store.activate(Role::Vision, id, model)?;
         self.resync().await;
         Ok(active)
     }

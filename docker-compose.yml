@@ -1,5 +1,6 @@
-# Private AI background stack. The Rust application reads documents in-process;
-# Ollama serves models and Qdrant holds vectors.
+# Development stack only. Production installers bundle and supervise native Qdrant
+# and SurrealDB sidecars; they never invoke Docker Compose on the user's machine.
+# The Rust application reads documents in-process; Ollama serves local models here.
 
 name: private-ai
 

@@ -188,9 +188,10 @@ impl PluginCatalog {
     }
 
     pub fn build(&self, row: &Row) -> anyhow::Result<Box<dyn crate::Plugin>> {
-        let builder = self.builders.get(&row.plugin).ok_or_else(|| {
-            anyhow::anyhow!("row `{}`: unknown plugin `{}`", row.id, row.plugin)
-        })?;
+        let builder = self
+            .builders
+            .get(&row.plugin)
+            .ok_or_else(|| anyhow::anyhow!("row `{}`: unknown plugin `{}`", row.id, row.plugin))?;
         builder(&row.config)
             .map_err(|err| anyhow::anyhow!("row `{}` ({}): {err}", row.id, row.plugin))
     }

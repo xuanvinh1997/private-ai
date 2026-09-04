@@ -60,10 +60,7 @@ fn workspace_write_blocks_writes_outside_the_workspace() {
 
     // Not a `TempDir` as the outside location: the temp directory is deliberately writable.
     let home = std::env::var("HOME").expect("HOME is set");
-    let target = Path::new(&home).join(format!(
-        ".pai-sandbox-must-not-{}.txt",
-        std::process::id()
-    ));
+    let target = Path::new(&home).join(format!(".pai-sandbox-must-not-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&target);
 
     assert!(
@@ -129,9 +126,7 @@ fn deny_network_really_blocks_a_connection() {
         }
     });
 
-    let probe = format!(
-        "/usr/bin/nc -z -w 2 127.0.0.1 {port} || exit 1"
-    );
+    let probe = format!("/usr/bin/nc -z -w 2 127.0.0.1 {port} || exit 1");
 
     // Unconfined it connects; without this half a block could just mean `nc` never ran.
     let open = Policy::new(Mode::WorkspaceWrite, dir.path());

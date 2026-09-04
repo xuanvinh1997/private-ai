@@ -2,7 +2,7 @@
 //! ingesting and deleting are user actions, and the model only gets `docs.search`, `docs.read` and
 //! `docs.list`: it reads the library, it does not rearrange it.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -13,7 +13,7 @@ use tauri::ipc::Channel;
 
 use crate::AppState;
 use crate::harness::Harness;
-use crate::protocol::{DocumentHit, DocumentView, IngestProgress, LibraryStats};
+use crate::protocol::{DocumentHit, DocumentView, IngestProgress, LibraryStats, OcrSetting};
 
 /// The open project's library; absence is valid, since code projects do not load `rag`, and the answer says
 /// which project type this is rather than reporting a technical error.
@@ -33,10 +33,39 @@ fn view(doc: Document) -> DocumentView {
         format: doc.format.as_str().to_string(),
         bytes: doc.bytes,
         chunks: doc.chunks,
+        pages: doc.pages,
+        ocr_pages: doc.ocr_pages,
         embedded: doc.embedded,
         added_at: doc.added_at,
         error: doc.error,
     }
+}
+
+#[tauri::command]
+pub async fn ocr_setting(state: State<'_, AppState>) -> Result<OcrSetting, String> {
+    let harness = state.harness().await?;
+    let (enabled, vision_model) = harness.rag_config.ocr_status();
+    Ok(OcrSetting {
+        enabled,
+        vision_model,
+    })
+}
+
+#[tauri::command]
+pub async fn set_ocr_enabled(
+    enabled: bool,
+    state: State<'_, AppState>,
+) -> Result<OcrSetting, String> {
+    let harness = state.harness().await?;
+    harness
+        .rag_config
+        .write_ocr_enabled(enabled)
+        .map_err(|error| format!("không lưu được cấu hình OCR: {error}"))?;
+    let (_, vision_model) = harness.rag_config.ocr_status();
+    Ok(OcrSetting {
+        enabled,
+        vision_model,
+    })
 }
 
 /// Drain an ingest stream, forwarding each milestone to the UI, then return the whole library; the three
@@ -118,6 +147,7 @@ pub async fn add_documents(
     on_progress: Channel<IngestProgress>,
     state: State<'_, AppState>,
 ) -> Result<Vec<DocumentView>, String> {
+    state.qdrant.ensure().await?;
     let harness = state.harness().await?;
     let library = library(&harness)?;
     let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
@@ -133,6 +163,7 @@ pub async fn sync_library(
     on_progress: Channel<IngestProgress>,
     state: State<'_, AppState>,
 ) -> Result<Vec<DocumentView>, String> {
+    state.qdrant.ensure().await?;
     let harness = state.harness().await?;
     let library = library(&harness)?;
 
@@ -148,6 +179,7 @@ pub async fn reprocess_library(
     on_progress: Channel<IngestProgress>,
     state: State<'_, AppState>,
 ) -> Result<Vec<DocumentView>, String> {
+    state.qdrant.ensure().await?;
     let harness = state.harness().await?;
     let library = library(&harness)?;
 
@@ -162,6 +194,56 @@ pub async fn remove_document(id: String, state: State<'_, AppState>) -> Result<(
         .remove(&id)
         .await
         .map_err(|err| err.to_string())
+}
+
+fn project_document_path(root: &Path, raw: &str) -> Result<PathBuf, String> {
+    let root = root
+        .canonicalize()
+        .map_err(|err| format!("không mở được thư mục dự án: {err}"))?;
+    let target = Path::new(raw)
+        .canonicalize()
+        .map_err(|err| format!("không mở được {raw}: {err}"))?;
+    if target == root || !target.starts_with(&root) {
+        return Err("tệp nằm ngoài thư mục dự án".to_string());
+    }
+    if !target.is_file() {
+        return Err(format!("{} không phải là tệp", target.display()));
+    }
+    Ok(target)
+}
+
+/// Delete one file owned by the open document project and remove its derived chunks/vectors first. This is
+/// deliberately separate from `remove_document`, whose Library-screen contract leaves the source file alone.
+#[tauri::command]
+pub async fn delete_project_document(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let harness = state.harness().await?;
+    let library = library(&harness)?;
+    let root = harness
+        .current_project()
+        .map(|project| PathBuf::from(project.path))
+        .ok_or_else(|| "chưa mở dự án".to_string())?;
+    let target = project_document_path(&root, &path)?;
+
+    let documents = library.documents().await.map_err(|err| err.to_string())?;
+    if let Some(document) = documents.into_iter().find(|document| {
+        document
+            .path
+            .canonicalize()
+            .is_ok_and(|document_path| document_path == target)
+    }) {
+        library
+            .remove(&document.id)
+            .await
+            .map_err(|err| err.to_string())?;
+    }
+
+    tokio::task::spawn_blocking(move || std::fs::remove_file(&target))
+        .await
+        .map_err(|err| format!("tác vụ xoá tệp bị dừng: {err}"))?
+        .map_err(|err| format!("không xoá được {}: {err}", path))
 }
 
 /// A test search, so the user can verify the library before asking the assistant; matches come back verbatim
@@ -188,4 +270,24 @@ pub async fn search_documents(
             matched_by: hit.matched_by.as_str().to_string(),
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::project_document_path;
+
+    #[test]
+    fn project_document_must_be_a_file_inside_the_project() {
+        let project = tempfile::tempdir().unwrap();
+        let outside = tempfile::NamedTempFile::new().unwrap();
+        let inside = project.path().join("notes.md");
+        std::fs::write(&inside, "notes").unwrap();
+
+        assert_eq!(
+            project_document_path(project.path(), inside.to_str().unwrap()).unwrap(),
+            inside.canonicalize().unwrap()
+        );
+        assert!(project_document_path(project.path(), outside.path().to_str().unwrap()).is_err());
+        assert!(project_document_path(project.path(), project.path().to_str().unwrap()).is_err());
+    }
 }

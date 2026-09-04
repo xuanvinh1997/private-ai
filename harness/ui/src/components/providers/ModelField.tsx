@@ -5,7 +5,7 @@ import { usableForChat } from "../ModelPicker";
 import { InfoDot, Select, TextField } from "../settings/FormKit";
 
 /**
- * One model field for both roles, chat and embedding, since both ask the same question.
+ * One model field for chat, embedding and vision, since all three ask the same question.
  * Capability flags order the list rather than filter it, typing a name is always possible,
  * and a stored value is never rewritten behind the user's back.
  */
@@ -26,12 +26,15 @@ export const notListed = (models: ModelChoice[], value: string) =>
 /** The "type another name" option; it starts with `<` so it cannot collide with a real model id. */
 const CUSTOM = "<custom>";
 
-export type ModelRole = "chat" | "embedding";
+export type ModelRole = "chat" | "embedding" | "vision";
 
 /** Which models fit a role; ill-fitting ones stay in the list, just annotated. */
 const FITS: Record<ModelRole, (model: ModelChoice) => boolean> = {
   chat: usableForChat,
   embedding: embeddable,
+  // The provider probes do not yet expose a vision capability bit. Keep chat-capable models first, while
+  // allowing an exact model name because Ollama/compatible servers often omit capability metadata.
+  vision: usableForChat,
 };
 
 export default function ModelField(props: {

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "build": {
+    "beforeBuildCommand": "node ../scripts/prepare-sidecars.mjs && npm run build --prefix ../ui"
+  },
+  "bundle": {
+    "externalBin": [
+      "binaries/qdrant",
+      "binaries/surreal"
+    ]
+  }
+}

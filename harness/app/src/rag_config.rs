@@ -52,6 +52,39 @@ impl RagConfigFile {
             .filter(|found| found.is_object())
     }
 
+    /// OCR is on by default. Return the persisted switch and the current vision model so the library screen can
+    /// explain whether enabling it is actionable instead of presenting a checkbox that can never succeed.
+    pub fn ocr_status(&self) -> (bool, Option<String>) {
+        let parsed = std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .unwrap_or_else(|| json!({}));
+        let enabled = parsed
+            .pointer("/ocr/enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let vision = parsed
+            .pointer("/vision/model")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .map(str::to_owned);
+        (enabled, vision)
+    }
+
+    pub fn write_ocr_enabled(&self, enabled: bool) -> std::io::Result<()> {
+        let mut root: Value = std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|raw| serde_json::from_str(&raw).ok())
+            .filter(Value::is_object)
+            .unwrap_or_else(|| json!({}));
+        if !root.get("ocr").is_some_and(Value::is_object) {
+            root["ocr"] = json!({});
+        }
+        root["ocr"]["enabled"] = json!(enabled);
+        self.atomic(&serde_json::to_vec_pretty(&root)?)
+    }
+
     /// Rewrite the `rerank` entry, leaving everything else alone: read-modify-write, because the rest derives
     /// from the provider store we do not hold here.
     pub fn write_rerank(&self, rerank: Value) -> std::io::Result<()> {
@@ -101,6 +134,13 @@ impl RagConfigFile {
         if let Some(rerank) = self.rerank() {
             root["rerank"] = rerank;
         }
+        // Provider changes rewrite this file; preserve a user's OCR choice through those unrelated updates.
+        if let Ok(raw) = std::fs::read_to_string(&self.path)
+            && let Ok(previous) = serde_json::from_str::<Value>(&raw)
+            && let Some(ocr) = previous.get("ocr").filter(|value| value.is_object())
+        {
+            root["ocr"] = ocr.clone();
+        }
         root
     }
 
@@ -112,6 +152,10 @@ impl RagConfigFile {
                 .or_else(|| std::env::var(key).ok())
                 .unwrap_or_else(|| fallback.to_string())
         };
+        let graph_url = get(
+            "PAI_RAG_GRAPH_URL",
+            &format!("ws://127.0.0.1:{}", get("SURREAL_HTTP_PORT", "8000")),
+        );
 
         let projects = match &project {
             Some(Project { id, name, root }) => json!([{
@@ -135,10 +179,10 @@ impl RagConfigFile {
                 "api_key": get("QDRANT_API_KEY", ""),
             },
             "graph": {
-                // Kept for schema compatibility while the Rust graph path is completed.
                 "enabled": true,
-                // Empty means no external graph endpoint.
-                "url": get("PAI_RAG_GRAPH_URL", ""),
+                // The desktop app owns this loopback SurrealDB sidecar in production.
+                "url": graph_url,
+                "namespace": "pai",
             },
         })
     }

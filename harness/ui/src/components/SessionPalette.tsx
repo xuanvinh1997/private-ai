@@ -50,7 +50,7 @@ export default function SessionPalette(props: {
 
   return (
     <div
-      class="fixed inset-0 z-40 flex items-start justify-center p-4xl"
+      class="fixed inset-0 z-[var(--z-modal)] flex items-start justify-center p-4xl"
       style={{ background: "var(--scrim)" }}
       onClick={(event) => {
         if (event.target === event.currentTarget) props.onClose();

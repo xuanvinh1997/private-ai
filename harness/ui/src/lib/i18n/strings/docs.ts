@@ -79,6 +79,8 @@ export const docs = {
     format: { en: "Format", vi: "Định dạng" },
     size: { en: "Size", vi: "Kích thước" },
     chunks: { en: "Chunks", vi: "Đoạn" },
+    pages: { en: "Pages", vi: "Trang" },
+    ocrPages: { en: "{ocr}/{pages} OCR", vi: "{ocr}/{pages} OCR" },
     addedAt: { en: "Added", vi: "Nạp lúc" },
     embed: common.embedding,
     actions: { en: "Actions", vi: "Thao tác" },
@@ -91,12 +93,25 @@ export const docs = {
   // File format names; keys match `DocumentFormat`.
   format: {
     pdf: { en: "PDF", vi: "PDF" },
-    docx: { en: "Word", vi: "Word" },
+    office: { en: "Word", vi: "Word" },
+    image: { en: "Image", vi: "Ảnh" },
     markdown: { en: "Markdown", vi: "Markdown" },
     text: { en: "Text", vi: "Văn bản" },
     html: { en: "HTML", vi: "HTML" },
-    csv: { en: "CSV", vi: "CSV" },
+    data: { en: "Data", vi: "Dữ liệu" },
     code: { en: "Code", vi: "Mã nguồn" },
+  },
+
+  ocr: {
+    enable: { en: "OCR scanned PDFs and images", vi: "OCR PDF quét và tệp ảnh" },
+    ready: {
+      en: "Uses vision model {model}. Dense PDF pages keep their original text layer.",
+      vi: "Dùng model vision {model}. Trang PDF đã có đủ chữ vẫn giữ nguyên lớp chữ gốc.",
+    },
+    noModel: {
+      en: "OCR is enabled, but a vision model must be selected in Settings before it can read images.",
+      vi: "OCR đang bật nhưng cần chọn model vision trong Cài đặt trước khi có thể đọc ảnh.",
+    },
   },
 
   // Embedding status badge of a document
@@ -110,8 +125,8 @@ export const docs = {
   drop: {
     emptyTitle: { en: "Library empty", vi: "Thư viện còn trống" },
     emptyMore: {
-      en: "Takes PDF, Word, Markdown, HTML, CSV and plain text. The original files stay where they are — the library only reads what is inside them.",
-      vi: "Nhận PDF, Word, Markdown, HTML, CSV và văn bản thuần — tệp gốc nằm nguyên chỗ cũ, thư viện chỉ đọc nội dung.",
+      en: "Takes PDF, images, Word, Markdown, HTML, data and plain text. Scans use the selected vision model; original files stay where they are.",
+      vi: "Nhận PDF, ảnh, Word, Markdown, HTML, dữ liệu và văn bản thuần. Bản quét dùng model vision đã chọn; tệp gốc vẫn nằm nguyên chỗ cũ.",
     },
     emptyHint: {
       en: "Drop files here, or browse.",
@@ -173,6 +188,7 @@ export const docs = {
     },
     pick: common.pickerFailed,
     remove: { en: 'Could not delete "{title}": {err}', vi: 'Không xoá được "{title}": {err}' },
+    ocr: { en: "Could not save OCR setting: {err}", vi: "Không lưu được cấu hình OCR: {err}" },
     stats: {
       en: "Could not read the library status.",
       vi: "Không hỏi được tình trạng thư viện.",

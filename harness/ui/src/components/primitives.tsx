@@ -1,4 +1,5 @@
-import { createSignal, createUniqueId, Show, type JSX } from "solid-js";
+import { createEffect, createSignal, createUniqueId, onCleanup, Show, type JSX } from "solid-js";
+import { Portal } from "solid-js/web";
 import { useTranscriptActions } from "../lib/transcriptActions";
 import { S, t } from "../lib/i18n";
 import type { Msg } from "../lib/i18n";
@@ -57,6 +58,8 @@ export function IconButton(props: {
   tip?: TipSide;
   ref?: (el: HTMLButtonElement) => void;
 }) {
+  const [tipOpen, setTipOpen] = createSignal(false);
+  let trigger: HTMLButtonElement | undefined;
   const box = () =>
     props.size === "lg"
       ? "size-(--cta-h)"
@@ -67,9 +70,16 @@ export function IconButton(props: {
   return (
     <span class="group/tip relative inline-flex shrink-0">
       <button
-        ref={props.ref}
+        ref={(el) => {
+          trigger = el;
+          props.ref?.(el);
+        }}
         type="button"
         onClick={(event) => props.onClick?.(event)}
+        onMouseEnter={() => setTipOpen(true)}
+        onMouseLeave={() => setTipOpen(false)}
+        onFocus={() => setTipOpen(true)}
+        onBlur={() => setTipOpen(false)}
         disabled={props.disabled || props.busy}
         aria-label={props.label}
         aria-busy={props.busy || undefined}
@@ -93,25 +103,96 @@ export function IconButton(props: {
           class={props.busy ? "motion-safe:animate-spin" : undefined}
         />
       </button>
-      <Tip side={props.tip ?? "bottom"}>{props.label}</Tip>
+      <Tip anchor={() => trigger} open={tipOpen()} side={props.tip ?? "bottom"}>
+        {props.label}
+      </Tip>
     </span>
   );
 }
 
-/** Shared tooltip; decoration only, since the real text is the button's `aria-label`. */
-function Tip(props: { side: TipSide; children: JSX.Element }) {
+type TipPosition = { left: number; top: number };
+
+/** Shared tooltip; portalled to the document layer because z-index cannot escape a scroll container's clipping.
+ * It remains decoration only: the button's `aria-label` is the accessible name. */
+function Tip(props: {
+  anchor: () => HTMLElement | undefined;
+  open: boolean;
+  side: TipSide;
+  children: JSX.Element;
+}) {
+  const [position, setPosition] = createSignal<TipPosition | null>(null);
+  let bubble: HTMLSpanElement | undefined;
+
+  const place = () => {
+    const anchor = props.anchor();
+    if (!anchor || !bubble) return;
+    const target = anchor.getBoundingClientRect();
+    const tip = bubble.getBoundingClientRect();
+    const gap = 8;
+    const margin = 8;
+    let left = target.left + (target.width - tip.width) / 2;
+    let top = target.bottom + gap;
+
+    if (props.side === "left") {
+      left = target.left - tip.width - gap;
+      top = target.top + (target.height - tip.height) / 2;
+      if (left < margin) left = target.right + gap;
+    } else if (props.side === "right") {
+      left = target.right + gap;
+      top = target.top + (target.height - tip.height) / 2;
+      if (left + tip.width > window.innerWidth - margin) {
+        left = target.left - tip.width - gap;
+      }
+    } else if (top + tip.height > window.innerHeight - margin) {
+      top = target.top - tip.height - gap;
+    }
+
+    setPosition({
+      left: Math.min(Math.max(left, margin), Math.max(margin, window.innerWidth - tip.width - margin)),
+      top: Math.min(Math.max(top, margin), Math.max(margin, window.innerHeight - tip.height - margin)),
+    });
+  };
+
+  createEffect(() => {
+    if (!props.open) {
+      setPosition(null);
+      return;
+    }
+    let frame = requestAnimationFrame(place);
+    const schedule = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(place);
+    };
+    window.addEventListener("resize", schedule);
+    window.addEventListener("scroll", schedule, true);
+    const resize = new ResizeObserver(schedule);
+    const anchor = props.anchor();
+    if (anchor) resize.observe(anchor);
+    if (bubble) resize.observe(bubble);
+    onCleanup(() => {
+      cancelAnimationFrame(frame);
+      resize.disconnect();
+      window.removeEventListener("resize", schedule);
+      window.removeEventListener("scroll", schedule, true);
+    });
+  });
+
   return (
-    <span
-      aria-hidden="true"
-      class="pointer-events-none absolute z-50 hidden rounded-btn bg-ink px-2xs py-3xs text-2xs whitespace-nowrap text-bg opacity-0 shadow-float transition-opacity duration-[var(--dur-fast)] group-hover/tip:opacity-100 group-focus-within/tip:opacity-100 md:block"
-      classList={{
-        "left-full top-1/2 ml-sm -translate-y-1/2": props.side === "right",
-        "right-full top-1/2 mr-sm -translate-y-1/2": props.side === "left",
-        "top-full left-1/2 mt-2xs -translate-x-1/2": props.side === "bottom",
-      }}
-    >
-      {props.children}
-    </span>
+    <Portal>
+      <Show when={props.open}>
+        <span
+          ref={bubble}
+          aria-hidden="true"
+          class="pointer-events-none fixed z-[var(--z-tooltip)] hidden max-w-[min(28rem,calc(100vw-16px))] rounded-btn bg-ink px-2xs py-3xs text-center text-2xs break-words text-bg shadow-float motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)] md:block"
+          style={{
+            left: `${position()?.left ?? -9999}px`,
+            top: `${position()?.top ?? -9999}px`,
+          }}
+        >
+          {props.children}
+        </span>
+      </Show>
+    </Portal>
   );
 }
 

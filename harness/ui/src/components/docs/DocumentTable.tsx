@@ -14,7 +14,7 @@ export default function DocumentTable(props: {
 }) {
   return (
     <div class="overflow-x-auto rounded-card border border-line bg-surface">
-      <table class="w-full min-w-[720px] border-collapse text-left">
+      <table class="w-full min-w-[780px] border-collapse text-left">
         <caption class="sr-only">{t(S.docs.table.caption)}</caption>
         <thead>
           <tr class="border-b border-line">
@@ -22,6 +22,7 @@ export default function DocumentTable(props: {
             <Th>{t(S.docs.table.format)}</Th>
             <Th>{t(S.docs.table.size)}</Th>
             <Th>{t(S.docs.table.chunks)}</Th>
+            <Th>{t(S.docs.table.pages)}</Th>
             <Th>{t(S.docs.table.addedAt)}</Th>
             <Th>{t(S.docs.table.embed)}</Th>
             <th class="w-10 px-sm py-xs">
@@ -56,6 +57,11 @@ export default function DocumentTable(props: {
                 </td>
                 <td class="px-sm py-xs align-top text-2xs whitespace-nowrap text-muted tabular-nums">
                   {keyed().chunks}
+                </td>
+                <td class="px-sm py-xs align-top text-2xs whitespace-nowrap text-muted tabular-nums">
+                  {keyed().ocrPages.length > 0
+                    ? t(S.docs.table.ocrPages, { ocr: keyed().ocrPages.length, pages: keyed().pages })
+                    : keyed().pages || "—"}
                 </td>
                 <td class="px-sm py-xs align-top text-2xs whitespace-nowrap text-muted">
                   {relativeTime(keyed().addedAt)}

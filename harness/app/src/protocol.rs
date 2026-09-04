@@ -378,10 +378,19 @@ pub struct DocumentView {
     pub format: String,
     pub bytes: u64,
     pub chunks: u32,
+    pub pages: u32,
+    pub ocr_pages: Vec<u32>,
     /// Whether vectors exist; `false` with no `error` means queued, not broken, and keyword search still works.
     pub embedded: bool,
     pub added_at: i64,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrSetting {
+    pub enabled: bool,
+    pub vision_model: Option<String>,
 }
 
 /// Progress of ingesting documents into the library.
@@ -478,10 +487,13 @@ pub struct ProviderView {
     /// different models on different endpoints, and the most useful pairing is cross-wired: embed locally while
     /// chatting with a large remote model.
     pub active_embedding: bool,
+    /// Currently used to read images and scanned PDF pages.
+    pub active_vision: bool,
     /// The chat model chosen for this provider.
     pub model: Option<String>,
     /// The embedding model chosen for this provider.
     pub embedding_model: Option<String>,
+    pub vision_model: Option<String>,
 }
 
 /// The embedding configuration in effect, provider and model combined, because "what embeds my documents, and does it work" is one question.
@@ -659,6 +671,7 @@ pub struct ProviderInputWire {
     pub enabled: bool,
     pub model: Option<String>,
     pub embedding_model: Option<String>,
+    pub vision_model: Option<String>,
 }
 
 /// An MCP server sent up from the UI.

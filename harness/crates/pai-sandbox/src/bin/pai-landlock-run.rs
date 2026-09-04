@@ -87,10 +87,7 @@ mod linux {
         let mut ruleset = base
             .create()?
             // `/` is readable, or the process cannot even read the binary it is about to `exec`.
-            .add_rules(path_beneath_rules(
-                ["/"],
-                AccessFs::from_read(DESIRED_ABI),
-            ))?
+            .add_rules(path_beneath_rules(["/"], AccessFs::from_read(DESIRED_ABI)))?
             // The `/dev/null` hole: Landlock cannot grant it per file, so all of `/dev` opens.
             .add_rules(path_beneath_rules(
                 ["/dev"],
@@ -100,10 +97,8 @@ mod linux {
         for path in writable {
             // A missing root is skipped, not fatal: it can vanish between filtering and running.
             if std::path::Path::new(path).exists() {
-                ruleset = ruleset.add_rules(path_beneath_rules(
-                    [path],
-                    AccessFs::from_all(DESIRED_ABI),
-                ))?;
+                ruleset = ruleset
+                    .add_rules(path_beneath_rules([path], AccessFs::from_all(DESIRED_ABI)))?;
             }
         }
 

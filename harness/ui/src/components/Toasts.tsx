@@ -5,11 +5,11 @@ import Icon from "./Icon";
 import { IconButton } from "./primitives";
 
 /** Toast stack in the workspace's top-right, the only corner with nothing competing for space; below the top bar
- * so it never covers the drag region. `z-[60]` puts it above dialogs, which is usually where toasts come from.
+ * so it never covers the drag region. The toast layer sits above dialogs, which is usually where toasts come from.
  * The strip itself is `pointer-events-none`, since an invisible click-eating area is untraceable. */
 export default function Toasts() {
   return (
-    <div class="pointer-events-none fixed top-(--header-h) right-0 z-[60] flex w-[min(26rem,calc(100vw-2rem))] flex-col gap-2xs p-md">
+    <div class="pointer-events-none fixed top-(--header-h) right-0 z-[var(--z-toast)] flex w-[min(26rem,calc(100vw-2rem))] flex-col gap-2xs p-md">
       <For each={toasts()}>
         {(toast) => (
           <div

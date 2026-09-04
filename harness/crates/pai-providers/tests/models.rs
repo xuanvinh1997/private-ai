@@ -17,7 +17,9 @@ use tokio::net::TcpListener;
 /// `/api/show` is a `POST` where only the body distinguishes models.
 async fn serve(reply: impl Fn(&str, &str) -> Value + Send + Sync + 'static) -> String {
     let reply = Arc::new(reply);
-    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind loopback");
     let addr = listener.local_addr().expect("địa chỉ đã gán");
     tokio::spawn(async move {
         loop {
@@ -116,10 +118,22 @@ async fn ollama_khai_mo_hinh_nao_nhung_duoc_thi_lay_dung_cai_do() {
     let config = ProviderConfig::new("pv", "Ollama nhà", ProviderKind::Ollama, base);
     let models = runtime().models(&config).await;
 
-    let bge = models.iter().find(|m| m.id == "bge-m3:latest").expect("có bge-m3");
-    assert!(bge.embedding, "máy chủ khai nhúng được mà danh sách nói không");
-    let qwen = models.iter().find(|m| m.id == "qwen2.5:7b").expect("có qwen");
-    assert!(!qwen.embedding, "mô hình trò chuyện không được trôi vào nhóm nhúng");
+    let bge = models
+        .iter()
+        .find(|m| m.id == "bge-m3:latest")
+        .expect("có bge-m3");
+    assert!(
+        bge.embedding,
+        "máy chủ khai nhúng được mà danh sách nói không"
+    );
+    let qwen = models
+        .iter()
+        .find(|m| m.id == "qwen2.5:7b")
+        .expect("có qwen");
+    assert!(
+        !qwen.embedding,
+        "mô hình trò chuyện không được trôi vào nhóm nhúng"
+    );
     assert!(qwen.chat && qwen.tools);
 }
 
@@ -145,7 +159,11 @@ async fn provider_tu_xa_khong_co_nua_vong_doi_thi_van_liet_ke_duoc() {
     let models = runtime().models(&config).await;
 
     assert_eq!(models.len(), 2);
-    assert!(models.iter().any(|m| m.id == "text-embedding-3-small" && m.embedding));
+    assert!(
+        models
+            .iter()
+            .any(|m| m.id == "text-embedding-3-small" && m.embedding)
+    );
     assert!(models.iter().any(|m| m.id == "gpt-4o-mini" && !m.embedding));
 }
 

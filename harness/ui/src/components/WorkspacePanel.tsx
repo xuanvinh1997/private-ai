@@ -10,9 +10,15 @@ import {
 import type { ChangedFile } from "../lib/changes";
 import { S, t } from "../lib/i18n";
 import type { Project } from "../lib/protocol";
+import {
+  setWorkspacePanelWidth,
+  workspacePanelWidth,
+  WORKSPACE_PANEL_WIDTH,
+} from "../lib/prefs";
 import { ChangesPanelContent } from "./ChangesPanel";
 import Icon, { type IconName } from "./Icon";
 import { IconButton } from "./primitives";
+import ResizeHandle from "./ResizeHandle";
 import { ProjectFilesContent } from "./projects/ProjectPanel";
 
 export type WorkspacePanelTab = "changes" | "files";
@@ -28,7 +34,6 @@ export default function WorkspacePanel(props: {
   onTab: (tab: WorkspacePanelTab) => void;
   onReveal: (nodeId: string) => void;
   onPickFile: (path: string) => void;
-  onOpenFolder: () => void;
   onOpenScreen: () => void;
   onClose: () => void;
   focusOnMount?: boolean;
@@ -67,8 +72,18 @@ export default function WorkspacePanel(props: {
     <aside
       ref={panel}
       aria-label={t(S.chat.inspector.label)}
-      class="absolute inset-y-0 right-0 z-20 flex w-(--workspace-panel-w) shrink-0 flex-col border-l border-line bg-surface shadow-pop min-[1048px]:static min-[1048px]:shadow-none"
+      style={{ width: `${workspacePanelWidth()}px` }}
+      class="absolute inset-y-0 right-0 z-[var(--z-floating)] flex max-w-[calc(100vw-48px)] shrink-0 flex-col border-l border-line bg-surface shadow-pop min-[1048px]:static min-[1048px]:max-w-[40vw] min-[1048px]:shadow-none"
     >
+      <ResizeHandle
+        edge="left"
+        label={t(S.chat.inspector.resize)}
+        value={workspacePanelWidth()}
+        min={WORKSPACE_PANEL_WIDTH.min}
+        max={WORKSPACE_PANEL_WIDTH.max}
+        defaultValue={WORKSPACE_PANEL_WIDTH.default}
+        onChange={setWorkspacePanelWidth}
+      />
       <header class="flex h-(--header-h) shrink-0 items-center border-b border-line px-sm">
         <div
           ref={tabList}
@@ -160,7 +175,6 @@ export default function WorkspacePanel(props: {
           <ProjectFilesContent
             project={props.project}
             onPickFile={props.onPickFile}
-            onOpenFolder={props.onOpenFolder}
             onOpenScreen={props.onOpenScreen}
           />
         </Show>

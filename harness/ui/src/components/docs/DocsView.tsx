@@ -2,17 +2,19 @@ import { createEffect, createSignal, For, on, Show } from "solid-js";
 import { isDemo } from "../../lib/demo";
 import {
   addDocuments,
+  getOcrSetting,
   libraryStats,
   listDocuments,
   reprocessLibrary,
   syncLibrary,
   pickDocuments,
   removeDocument,
+  setOcrEnabled,
   stageLabel,
 } from "../../lib/docs";
 import { demoDocuments, demoIngestFrames, demoLibraryStats } from "../../lib/fixtures/docs";
 import { S, t, tn } from "../../lib/i18n";
-import type { DocumentView, IngestProgress, LibraryStats } from "../../lib/protocol";
+import type { DocumentView, IngestProgress, LibraryStats, OcrSetting } from "../../lib/protocol";
 import Icon from "../Icon";
 import { InfoDot } from "../settings/FormKit";
 import ConfirmDialog from "../projects/ConfirmDialog";
@@ -42,19 +44,27 @@ export default function DocsView(props: {
   const [error, setError] = createSignal<string | null>(null);
   const [removing, setRemoving] = createSignal<DocumentView | null>(null);
   const [busy, setBusy] = createSignal(false);
+  const [ocr, setOcr] = createSignal<OcrSetting | null>(null);
+  const [ocrBusy, setOcrBusy] = createSignal(false);
 
   const load = async () => {
     setLoading(true);
     if (isDemo()) {
       setDocs(demoDocuments());
       setStats(demoLibraryStats());
+      setOcr({ enabled: true, visionModel: "qwen2.5vl" });
       setLoading(false);
       return;
     }
     // Show what is known first, then scan, or the screen stays blank through a large folder.
-    const [list, health] = await Promise.all([listDocuments(), libraryStats()]);
+    const [list, health, ocrSetting] = await Promise.all([
+      listDocuments(),
+      libraryStats(),
+      getOcrSetting(),
+    ]);
     setDocs(list);
     setStats(health);
+    setOcr(ocrSetting);
     setLoading(false);
 
     // Then sync with the folder: the project folder is the library, so opening it scans.
@@ -81,6 +91,7 @@ export default function DocsView(props: {
         setFailures([]);
         setAdded(0);
         setError(null);
+        setOcr(null);
         void load();
       },
     ),
@@ -175,6 +186,21 @@ export default function DocsView(props: {
     }
   };
 
+  const toggleOcr = async (enabled: boolean) => {
+    const previous = ocr();
+    if (previous === null || ocrBusy()) return;
+    setOcrBusy(true);
+    setOcr({ ...previous, enabled });
+    try {
+      if (!isDemo()) setOcr(await setOcrEnabled(enabled));
+    } catch (err) {
+      setOcr(previous);
+      setError(t(S.docs.error.ocr, { err: String(err) }));
+    } finally {
+      setOcrBusy(false);
+    }
+  };
+
   const confirmRemove = async (doc: DocumentView) => {
     setRemoving(null);
     setBusy(true);
@@ -222,6 +248,31 @@ export default function DocsView(props: {
             onPaths={(paths) => void addFiles(paths)}
             onPick={() => void pick()}
           />
+
+          <Show when={ocr()}>
+            {(setting) => (
+              <label class="flex items-start gap-sm rounded-card border border-line bg-surface px-(--card-pad-x) py-(--card-pad-y) text-xs text-text">
+                <input
+                  type="checkbox"
+                  checked={setting().enabled}
+                  disabled={ocrBusy() || busy()}
+                  onChange={(event) => void toggleOcr(event.currentTarget.checked)}
+                  class="mt-3xs size-4 shrink-0 accent-[var(--accent)]"
+                />
+                <span class="flex min-w-0 flex-col gap-3xs">
+                  <span class="font-medium text-ink">{t(S.docs.ocr.enable)}</span>
+                  <span class="text-2xs text-muted">
+                    <Show
+                      when={setting().visionModel}
+                      fallback={<>{t(S.docs.ocr.noModel)}</>}
+                    >
+                      {(model) => t(S.docs.ocr.ready, { model: model() })}
+                    </Show>
+                  </span>
+                </span>
+              </label>
+            )}
+          </Show>
 
           <Show when={ingest()}>
             {(frame) => (

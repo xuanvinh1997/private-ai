@@ -56,7 +56,7 @@ export default function ApprovalDialog(props: {
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-center justify-center p-lg"
+      class="fixed inset-0 z-[var(--z-modal)] flex items-center justify-center p-lg"
       style={{ background: "var(--scrim)" }}
       // A click outside is also a rejection, not a way to skip the question.
       onClick={(event) => {

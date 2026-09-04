@@ -27,8 +27,10 @@ fn view(stored: &StoredProvider) -> ProviderView {
         on_device: stored.config.on_device(),
         active_chat: stored.active_chat,
         active_embedding: stored.active_embedding,
+        active_vision: stored.active_vision,
         model: stored.model.clone(),
         embedding_model: stored.embedding_model.clone(),
+        vision_model: stored.vision_model.clone(),
     }
 }
 
@@ -39,6 +41,7 @@ fn input(wire: ProviderInputWire) -> Result<ProviderInput, String> {
     built.model = wire.model;
     built.api_key = wire.api_key;
     built.embedding_model = wire.embedding_model;
+    built.vision_model = wire.vision_model;
     Ok(built)
 }
 
@@ -82,11 +85,31 @@ pub async fn save_provider(
     state: State<'_, AppState>,
 ) -> Result<ProviderView, String> {
     let harness = state.harness().await?;
-    let saved = harness
+    let vision_model = input.vision_model.clone();
+    let mut saved = harness
         .providers
         .save(self::input(input)?)
         .await
         .map_err(|err| err.to_string())?;
+    // The first explicitly configured vision model becomes the OCR provider. Editing that same provider keeps
+    // it active; configuring a second provider does not silently move image data to a different endpoint.
+    if let Some(model) = vision_model
+        .as_deref()
+        .filter(|model| !model.trim().is_empty())
+    {
+        let no_holder = harness
+            .providers
+            .vision()
+            .map_err(|err| err.to_string())?
+            .is_none();
+        if no_holder || saved.active_vision {
+            saved = harness
+                .providers
+                .set_vision(saved.id(), Some(model))
+                .await
+                .map_err(|err| err.to_string())?;
+        }
+    }
     // Reapplying can fail, but the row is already saved, and erroring here would make the UI revert the form.
     // Real connection state comes from the probe button, not from saving.
     if let Err(err) = harness.apply_provider().await {

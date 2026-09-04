@@ -47,6 +47,7 @@ export default function ProviderForm(props: {
   const [enabled, setEnabled] = createSignal(props.provider?.enabled ?? true);
   // From `props.provider`, not `start`: a catalogue preset carries no embedding model.
   const [embeddingModel, setEmbeddingModel] = createSignal(props.provider?.embeddingModel ?? "");
+  const [visionModel, setVisionModel] = createSignal(props.provider?.visionModel ?? "");
 
   const hadKey = props.provider?.hasKey === true;
   const [keyMode, setKeyMode] = createSignal<KeyMode>(hadKey ? "keep" : "set");
@@ -84,6 +85,7 @@ export default function ProviderForm(props: {
     model: model(),
     // An empty string means unset, so send `null`; `""` would be stored as a valid-looking name.
     embeddingModel: embeddingModel().trim() === "" ? null : embeddingModel().trim(),
+    visionModel: visionModel().trim() === "" ? null : visionModel().trim(),
   });
 
   const complete = () => name().trim() !== "" && baseUrl().trim() !== "";
@@ -274,6 +276,18 @@ export default function ProviderForm(props: {
         placeholder={suggestedEmbeddingModel(kind())}
         hint={t(S.providers.form.embedHint)}
         more={t(S.providers.form.embedMore)}
+      />
+
+      <ModelField
+        role="vision"
+        label={t(S.providers.form.visionModel)}
+        showLabel
+        models={probe()?.models ?? []}
+        value={visionModel()}
+        onInput={setVisionModel}
+        placeholder={t(S.providers.form.visionPlaceholder)}
+        hint={t(S.providers.form.visionHint)}
+        more={t(S.providers.form.visionMore)}
       />
 
       {/* Only when editing: nobody adds a provider to leave it off, so the question has one answer. */}

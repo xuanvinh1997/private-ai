@@ -1,4 +1,5 @@
 import { createSignal, Show } from "solid-js";
+import { addDocuments, stageLabel } from "../../lib/docs";
 import { S, t, tn } from "../../lib/i18n";
 import { importProjectFiles, pickProjectFiles } from "../../lib/projects";
 import type { Project } from "../../lib/protocol";
@@ -15,6 +16,8 @@ export default function UploadFilesDialog(props: {
   const [busy, setBusy] = createSignal(false);
   const [uploaded, setUploaded] = createSignal(0);
   const [error, setError] = createSignal<string | null>(null);
+  const [indexing, setIndexing] = createSignal<string | null>(null);
+  const [indexError, setIndexError] = createSignal<string | null>(null);
 
   const close = () => {
     if (!busy()) props.onClose();
@@ -25,14 +28,26 @@ export default function UploadFilesDialog(props: {
     setBusy(true);
     setUploaded(0);
     setError(null);
+    setIndexError(null);
+    setIndexing(null);
     try {
       const imported = await importProjectFiles(paths);
       if (imported.length === 0) return;
       setUploaded(imported.length);
       props.onImported(imported);
+      if (props.project.kind === "docs") {
+        let failure: string | null = null;
+        await addDocuments(imported, (frame) => {
+          setIndexing(`${stageLabel(frame.stage)} · ${frame.done}/${frame.total}`);
+          if (frame.error !== null) failure = frame.error;
+        });
+        setIndexing(null);
+        if (failure !== null) setIndexError(failure);
+      }
     } catch (err) {
       setError(t(S.projects.uploadError, { err: String(err) }));
     } finally {
+      setIndexing(null);
       setBusy(false);
     }
   };
@@ -74,7 +89,7 @@ export default function UploadFilesDialog(props: {
 
       <Show when={busy()}>
         <p class="m-0 text-xs text-muted" role="status" aria-live="polite">
-          {t(S.projects.uploading)}
+          {indexing() ?? t(S.projects.uploading)}
         </p>
       </Show>
 
@@ -86,6 +101,14 @@ export default function UploadFilesDialog(props: {
         >
           {tn(uploaded(), S.projects.uploadDoneOne, S.projects.uploadDoneMany)}
         </p>
+      </Show>
+
+      <Show when={indexError()}>
+        {(message) => (
+          <p class="m-0 rounded-panel bg-warn-soft px-sm py-2xs text-xs break-words text-text" role="alert">
+            {t(S.projects.uploadIndexError, { err: message() })}
+          </p>
+        )}
       </Show>
 
       <Show when={error()}>

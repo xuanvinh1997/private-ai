@@ -210,7 +210,15 @@ export interface CloneProgress {
   error: string | null;
 }
 
-export type DocumentFormat = "pdf" | "docx" | "markdown" | "text" | "html" | "csv" | "code";
+export type DocumentFormat =
+  | "pdf"
+  | "office"
+  | "image"
+  | "markdown"
+  | "text"
+  | "html"
+  | "data"
+  | "code";
 
 /** Raw facts about the open project for empty-screen suggestions; the wording itself lives in `lib/prompts.ts`. */
 export interface PromptSeeds {
@@ -230,10 +238,17 @@ export interface DocumentView {
   format: DocumentFormat;
   bytes: number;
   chunks: number;
+  pages: number;
+  ocrPages: number[];
   /** Whether vectors exist; `false` with `error === null` means queued, not failed. */
   embedded: boolean;
   addedAt: number;
   error: string | null;
+}
+
+export interface OcrSetting {
+  enabled: boolean;
+  visionModel: string | null;
 }
 
 export interface IngestProgress {
@@ -292,10 +307,14 @@ export interface Provider {
   activeChat: boolean;
   /** Currently used for *embedding*; the roles are separate because local embedding with remote chat is the common pairing. */
   activeEmbedding: boolean;
+  /** Currently used for OCR. */
+  activeVision: boolean;
   /** Chat model. */
   model: string | null;
   /** Embedding model. */
   embeddingModel: string | null;
+  /** Image-reading model used for scanned PDFs and image files. */
+  visionModel: string | null;
 }
 
 /** The effective embedding configuration. */
@@ -355,6 +374,7 @@ export interface ProviderInput {
   enabled: boolean;
   model: string | null;
   embeddingModel: string | null;
+  visionModel: string | null;
 }
 
 /** One entry in the project directory tree. */

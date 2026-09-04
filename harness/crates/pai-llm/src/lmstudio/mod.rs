@@ -72,8 +72,9 @@ pub fn server_root(base_url: &str) -> String {
     let mut value = base_url.trim().trim_end_matches('/');
     loop {
         let tail = value.rsplit('/').next().unwrap_or_default();
-        let versioned =
-            tail.starts_with('v') && tail.len() > 1 && tail[1..].chars().all(|c| c.is_ascii_digit());
+        let versioned = tail.starts_with('v')
+            && tail.len() > 1
+            && tail[1..].chars().all(|c| c.is_ascii_digit());
         if !(versioned || tail == "api") {
             break;
         }

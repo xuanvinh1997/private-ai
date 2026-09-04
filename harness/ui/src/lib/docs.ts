@@ -8,7 +8,22 @@ import type {
   DocumentView,
   IngestProgress,
   LibraryStats,
+  OcrSetting,
 } from "./protocol";
+
+export async function getOcrSetting(): Promise<OcrSetting> {
+  if (!inTauri()) return { enabled: true, visionModel: null };
+  try {
+    return await invoke<OcrSetting>("ocr_setting");
+  } catch (err) {
+    console.error("failed to read OCR setting", err);
+    return { enabled: true, visionModel: null };
+  }
+}
+
+export function setOcrEnabled(enabled: boolean): Promise<OcrSetting> {
+  return invoke<OcrSetting>("set_ocr_enabled", { enabled });
+}
 
 /** The document library commands. Screen-load calls swallow errors and return honest empty values; anything
  * behind a click throws, because silence after a click is indistinguishable from slowness. */

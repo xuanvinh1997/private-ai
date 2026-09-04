@@ -167,6 +167,9 @@ async fn moi_lan_giao_viec_la_mot_phien_rieng() {
     let second = provider.delegate("việc hai", 0).await.expect("giao được");
     assert_ne!(first.session_id, second.session_id);
 
-    let listed = sessions.list(SessionScope::All, Some(10)).await.expect("liệt kê");
+    let listed = sessions
+        .list(SessionScope::All, Some(10))
+        .await
+        .expect("liệt kê");
     assert!(listed.len() >= 2);
 }

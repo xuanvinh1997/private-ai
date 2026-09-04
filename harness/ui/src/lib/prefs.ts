@@ -48,10 +48,53 @@ function flag(key: string, fallback: boolean): [Accessor<boolean>, (value: boole
   return [() => get() === "on", (value: boolean) => set(value ? "on" : "off")];
 }
 
+function numberPreference(
+  key: string,
+  fallback: number,
+  min: number,
+  max: number,
+): [Accessor<number>, (value: number) => void] {
+  let initial = fallback;
+  try {
+    const value = Number(localStorage.getItem(key));
+    if (Number.isFinite(value) && value >= min && value <= max) initial = value;
+  } catch {
+    /* ignore */
+  }
+  const [get, set] = createSignal(initial);
+  return [
+    get,
+    (value) => {
+      const next = Math.min(max, Math.max(min, Math.round(value)));
+      set(next);
+      try {
+        localStorage.setItem(key, String(next));
+      } catch {
+        /* cannot persist: the choice lives only for this session */
+      }
+    },
+  ];
+}
+
 /** Left sidebar; the storage key was renamed with the column, which now holds every route, not just sessions. */
 export const [sidebarOpen, setSidebarOpen] = flag("pai-sidebar", true);
 /** Right inspector. Keeps the old key so anyone who had the changes panel open keeps their layout. */
 export const [workspacePanelOpen, setWorkspacePanelOpen] = flag("pai-changes-panel", false);
+
+export const SIDEBAR_WIDTH = { min: 220, max: 420, default: 268 } as const;
+export const WORKSPACE_PANEL_WIDTH = { min: 252, max: 560, default: 300 } as const;
+export const [sidebarWidth, setSidebarWidth] = numberPreference(
+  "pai-sidebar-width",
+  SIDEBAR_WIDTH.default,
+  SIDEBAR_WIDTH.min,
+  SIDEBAR_WIDTH.max,
+);
+export const [workspacePanelWidth, setWorkspacePanelWidth] = numberPreference(
+  "pai-workspace-panel-width",
+  WORKSPACE_PANEL_WIDTH.default,
+  WORKSPACE_PANEL_WIDTH.min,
+  WORKSPACE_PANEL_WIDTH.max,
+);
 
 const isToolScope = (raw: string): raw is ToolScope =>
   raw === "read" || raw === "write" || raw === "shell";

@@ -426,7 +426,7 @@ fn builtin_skills() -> Option<PathBuf> {
 }
 
 /// Optional environment file shared with the root Docker Compose stack.
-fn rag_env_file() -> Option<PathBuf> {
+pub(crate) fn rag_env_file() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("PAI_RAG_ENV_FILE") {
         return Some(PathBuf::from(explicit));
     }

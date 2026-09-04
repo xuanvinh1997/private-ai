@@ -993,7 +993,6 @@ export default function App() {
                     if (narrowWorkspace()) closeWorkspacePanel();
                   }}
                   onClose={closeWorkspacePanel}
-                  onOpenFolder={() => void openFolder(open.path)}
                   onPickFile={(path) => mentionFile(open.path, path)}
                   onOpenScreen={() => {
                     setTab(open.kind === "docs" ? "library" : "diff");
@@ -1009,8 +1008,8 @@ export default function App() {
 
         {/* Settings is a full-window mode, so it sits outside `<main>` rather than inside the workspace `<Switch>`:
             the sidebar and composer have no business there, and leaving them visible invites a misclick while an
-            API key is being edited. The tree below stays mounted, so returning keeps your place. `z-30`, below
-            dialogs at `z-50`, since approval and session search must still float above settings. */}
+            API key is being edited. The tree below stays mounted, so returning keeps your place. The screen layer
+            remains below the shared modal layer, so approval and session search still float above settings. */}
         <Show when={tab() === "settings"}>
           <SettingsView
             page={settingsPage()}

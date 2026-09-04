@@ -128,6 +128,7 @@ export const providers = {
     keyLabel: { en: "API key saved", vi: "Đã lưu khoá API" },
     roleEmbedding: { en: "Embedding documents with {model}", vi: "Đang nhúng tài liệu bằng {model}" },
     roleEmbeddingNone: { en: "no model chosen", vi: "mô hình chưa chọn" },
+    roleVision: { en: "Reading scans with {model}", vi: "Đang đọc bản quét bằng {model}" },
     noRole: { en: "No role", vi: "Chưa có" },
   },
 
@@ -237,6 +238,16 @@ export const providers = {
     embedMore: {
       en: "It only matters if this provider is the one chosen to embed documents in the section below. Leaving it blank is fine.",
       vi: "Chỉ có tác dụng nếu nhà cung cấp này được chọn để nhúng tài liệu ở mục bên dưới. Để trống cũng được.",
+    },
+    visionModel: { en: "Vision model for OCR", vi: "Mô hình vision cho OCR" },
+    visionPlaceholder: { en: "e.g. gemma3:12b", vi: "Ví dụ: gemma3:12b" },
+    visionHint: {
+      en: "The first configured vision model becomes the OCR reader.",
+      vi: "Mô hình vision đầu tiên được cấu hình sẽ dùng để đọc OCR.",
+    },
+    visionMore: {
+      en: "Scanned PDF pages and image files are sent to this model for transcription. Leave blank when this provider cannot read images.",
+      vi: "Trang PDF quét và tệp ảnh được gửi tới mô hình này để chép lại chữ. Để trống nếu nhà cung cấp này không đọc được ảnh.",
     },
   },
 

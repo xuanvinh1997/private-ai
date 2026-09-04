@@ -49,7 +49,11 @@ pub fn rank(paths: &[String], query: &str, limit: usize) -> Vec<String> {
             .then_with(|| a.1.len().cmp(&b.1.len()))
             .then_with(|| a.1.cmp(b.1))
     });
-    scored.into_iter().take(limit).map(|(_, p)| p.clone()).collect()
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, p)| p.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -105,7 +109,10 @@ mod tests {
 
     #[test]
     fn khop_dau_ten_tren_khop_giua_ten() {
-        let list = vec!["src/complete.rs".to_string(), "src/precompute.rs".to_string()];
+        let list = vec![
+            "src/complete.rs".to_string(),
+            "src/precompute.rs".to_string(),
+        ];
         assert_eq!(rank(&list, "comp", 2)[0], "src/complete.rs");
     }
 

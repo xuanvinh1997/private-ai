@@ -494,7 +494,11 @@ impl SessionStore for SqliteSessionStore {
         Ok(header)
     }
 
-    async fn list(&self, scope: SessionScope<'_>, limit: Option<u32>) -> Result<Vec<SessionHeader>> {
+    async fn list(
+        &self,
+        scope: SessionScope<'_>,
+        limit: Option<u32>,
+    ) -> Result<Vec<SessionHeader>> {
         // The directory is bound, never interpolated: it comes from a project path, and a path is user
         // input the moment someone names a folder with a quote in it.
         let directory = match scope {

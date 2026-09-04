@@ -4,13 +4,41 @@
 
 ```sh
 cd harness
-./ui/node_modules/.bin/tauri build
+node scripts/package.mjs
 ```
 
-Lệnh này build giao diện trước (`beforeBuildCommand`), rồi biên dịch bản release, rồi
-đóng gói theo nền tảng đang chạy. Thêm `--no-bundle` để chỉ lấy tệp thực thi.
+Đây là lối vào production bắt buộc. Nó chạy Tauri với `app/tauri.production.conf.json`;
+hook build tải đúng Qdrant **v1.19.0** và SurrealDB **v3.2.4** cho target, kiểm SHA-256,
+rồi `externalBin` đưa cả hai vào `.app`/installer. Máy người dùng không cần Docker và
+không cần mạng để khởi động hai cơ sở dữ liệu. Binary sinh ra nằm tạm ở
+`app/binaries/` và bị gitignore vì có thể tái tạo từ version + digest đã ghim.
 
-Sản phẩm nằm ở `harness/target/release/bundle/`.
+Thêm tham số Tauri sau lệnh, chẳng hạn `node scripts/package.mjs --no-bundle` hoặc:
+
+```sh
+# Apple Silicon
+node scripts/package.mjs --target aarch64-apple-darwin
+
+# Intel Mac
+node scripts/package.mjs --target x86_64-apple-darwin
+
+# Universal Mac (cần cài cả hai Rust target)
+node scripts/package.mjs --target universal-apple-darwin
+
+# Chạy lệnh này trên máy/runner Windows x64
+node scripts/package.mjs --target x86_64-pc-windows-msvc
+```
+
+Không phát hành bằng `tauri build` trần: cấu hình mặc định cố ý không có `externalBin`
+để `cargo test` không đòi tải 170–250 MB sidecar. Script production mới ghép cấu hình
+sidecar vào đúng lúc đóng gói.
+
+Sản phẩm host mặc định nằm ở `harness/target/release/bundle/`; khi truyền `--target`,
+nó nằm ở `harness/target/<target>/release/bundle/`.
+
+Workflow thủ công `.github/workflows/package-smoke.yml` dựng **macOS universal** và
+**Windows x64** trên đúng hệ điều hành, rồi lưu toàn bộ bundle làm artifact. Đây là bài
+smoke unsigned; bản phát hành thật vẫn phải truyền chứng chỉ như phần dưới.
 
 ## Quyết định trung tâm: App Sandbox tắt trên macOS
 
@@ -41,7 +69,7 @@ export APPLE_CERTIFICATE="$(base64 -i chung-chi.p12)"
 export APPLE_CERTIFICATE_PASSWORD='…'
 export APPLE_SIGNING_IDENTITY='Developer ID Application: Tên (TEAMID)'
 export APPLE_ID='…' APPLE_PASSWORD='…' APPLE_TEAM_ID='…'   # để công chứng
-./ui/node_modules/.bin/tauri build
+node scripts/package.mjs
 ```
 
 `APPLE_ID` + `APPLE_PASSWORD` (mật khẩu riêng cho ứng dụng) + `APPLE_TEAM_ID` bật công
@@ -52,6 +80,7 @@ ký nói "ai làm ra nó", công chứng nói "Apple đã quét nó".
 
 ```powershell
 $env:TAURI_WINDOWS_CERTIFICATE_THUMBPRINT = '…'
+node scripts/package.mjs --target x86_64-pc-windows-msvc
 ```
 
 `timestampUrl` đã đặt sẵn trong cấu hình: không đóng dấu thời gian thì chữ ký hết hiệu
@@ -68,13 +97,15 @@ tách rời cho AppImage) là việc của quy trình phát hành, không phải
 |---|---|---|---|---|
 | macOS (arm64) | ✅ | ✅ | ✗ chưa có chứng chỉ | ✅ |
 | Linux (arm64) | ✅ trong Docker | ✗ | ✗ | ✅ vòng giam đã đo |
-| Windows | ✗ | ✗ | ✗ | ✗ |
+| Windows x64 | ✅ sidecar PE x64 | ⚙️ workflow đúng OS | ✗ chưa có chứng chỉ | ✗ chưa chạy app trên Windows |
 
 Hàng Linux: `pai-sandbox` biên dịch và **7/7 bài kiểm chứng vòng giam chạy thật** trong
 `rust:1-slim` trên kernel 6.x/7.x (cần `--security-opt seccomp=unconfined`, vì hồ sơ
 seccomp mặc định của Docker chặn syscall của Landlock). Phần đóng gói `deb`/AppImage thì
-chưa chạy. Hàng Windows là **cấu hình chưa từng chạy**. Chúng theo tài liệu Tauri và sẽ cần sửa khi
-lần đầu build thật — viết ra đây để không ai đọc bảng này rồi tưởng chúng đã xong.
+chưa chạy. Hai sidecar Windows đã được tải, kiểm SHA-256 và giải nén thử thành PE32+
+x86-64 trên máy phát triển. Installer phải được dựng trên Windows; workflow smoke là
+cổng kiểm tra đó, nhưng bảng không đánh dấu chạy thử cho tới khi artifact được mở trên
+máy Windows.
 
 Hai bài mới trong số đó là phần **giam mạng**: một bài nối TCP tới cổng do chính nó mở rồi
 kiểm rằng `deny_network` chặn được, một bài kiểm rằng bật giam mạng không nới lỏng phần giam

@@ -421,7 +421,9 @@ async fn dispatch(message: Value, sink: &Sink, pending: &Pending, state: &Arc<St
             }
         }
         (None, Some(method)) => notice(method, &message, state),
-        (None, None) => tracing::debug!(server = %state.label, "message has neither `id` nor `method`"),
+        (None, None) => {
+            tracing::debug!(server = %state.label, "message has neither `id` nor `method`")
+        }
     }
 }
 
@@ -516,7 +518,7 @@ fn raw_note(item: &Value) -> RawNote {
             .pointer("/range/start/character")
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32,
-            // The spec allows a missing `severity`, leaving it to the client; treating it as an error is the safe direction.
+        // The spec allows a missing `severity`, leaving it to the client; treating it as an error is the safe direction.
         severity: item.get("severity").and_then(Value::as_u64).unwrap_or(1),
         source: item
             .get("source")

@@ -247,12 +247,21 @@ async fn list_dir_hides_protected_paths_and_honours_gitignore() {
         text.contains(".gitignore"),
         "hidden files have to appear — they say how the project runs:\n{text}"
     );
-    assert!(text.contains("src/"), "directories need a trailing `/`:\n{text}");
-    assert!(text.contains("2.0 KB"), "sizes have to be included:\n{text}");
+    assert!(
+        text.contains("src/"),
+        "directories need a trailing `/`:\n{text}"
+    );
+    assert!(
+        text.contains("2.0 KB"),
+        "sizes have to be included:\n{text}"
+    );
 
     let dir_at = text.find("src/").expect("src is present");
     let file_at = text.find("alpha.txt").expect("alpha.txt is present");
-    assert!(dir_at < file_at, "directories have to come before files:\n{text}");
+    assert!(
+        dir_at < file_at,
+        "directories have to come before files:\n{text}"
+    );
     assert!(
         text.find("alpha.txt") < text.find("zeta.txt"),
         "files have to be ordered by name:\n{text}"

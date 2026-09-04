@@ -10,7 +10,7 @@ pub enum Format {
     Pdf,
     /// `.docx` is supported natively. Other Office formats are currently rejected.
     Office,
-    /// Retained for existing library rows; new images are currently rejected.
+    /// Raster image whose text is extracted by the configured vision model.
     Image,
     Html,
     /// `.csv`, `.tsv`, `.json`, `.xml`, `.yaml` — structured, but read out as text.

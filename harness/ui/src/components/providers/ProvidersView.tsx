@@ -509,14 +509,26 @@ function ProviderRow(props: {
   );
 }
 
-/** Which roles this provider holds: both, one, or none, where none gets its own label rather than a blank; the embedding role is shown but not changeable here. */
+/** Which roles this provider holds; compact badges keep the row readable when one local server holds all three. */
 function Roles(props: { provider: Provider }) {
-  const none = () => !props.provider.activeChat && !props.provider.activeEmbedding;
+  const none = () =>
+    !props.provider.activeChat && !props.provider.activeEmbedding && !props.provider.activeVision;
   return (
     <>
       <Show when={props.provider.activeChat}>
         <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-accent px-2xs py-3xs text-2xs font-medium text-on-accent">
           <Icon name="chat" size={10} />
+        </span>
+      </Show>
+
+      <Show when={props.provider.activeVision}>
+        <span
+          class="inline-flex shrink-0 items-center gap-3xs rounded-pill border border-accent px-2xs py-3xs text-2xs font-medium text-accent-ink"
+          title={t(S.providers.row.roleVision, {
+            model: props.provider.visionModel ?? t(S.providers.row.roleEmbeddingNone),
+          })}
+        >
+          <Icon name="eye" size={10} />
         </span>
       </Show>
 

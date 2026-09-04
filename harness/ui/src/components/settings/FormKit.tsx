@@ -27,7 +27,7 @@ export function DialogShell(props: {
 
   return (
     <div
-      class="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto p-2xl"
+      class="fixed inset-0 z-[var(--z-modal)] flex items-start justify-center overflow-y-auto p-2xl"
       style={{ background: "var(--scrim)" }}
       onClick={(event) => {
         if (event.target === event.currentTarget) props.onClose();
@@ -459,7 +459,7 @@ export function InfoDot(props: { text: string; label?: string }) {
       <span
         id={id}
         role="tooltip"
-        class="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-40 w-64 -translate-x-1/2 rounded-panel border border-line bg-surface px-sm py-2xs text-2xs leading-relaxed text-muted shadow-pop transition-opacity duration-[var(--dur-fast)]"
+        class="pointer-events-none absolute bottom-[calc(100%+6px)] left-1/2 z-[var(--z-popover)] w-64 -translate-x-1/2 rounded-panel border border-line bg-surface px-sm py-2xs text-2xs leading-relaxed text-muted shadow-pop transition-opacity duration-[var(--dur-fast)]"
         classList={{ "opacity-0": !open(), "opacity-100": open() }}
         aria-hidden={!open()}
       >

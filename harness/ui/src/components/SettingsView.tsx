@@ -49,7 +49,7 @@ export default function SettingsView(props: {
 
   return (
     // `fixed inset-0`, not a grid cell: this screen *is* the window, so both columns reserve `--titlebar-h`.
-    <div class="fixed inset-0 z-30 flex bg-bg">
+    <div class="fixed inset-0 z-[var(--z-screen)] flex bg-bg">
       <aside
         aria-label={t(S.common.settings)}
         class="flex w-(--sidebar-w) shrink-0 flex-col border-r border-line bg-sidebar"

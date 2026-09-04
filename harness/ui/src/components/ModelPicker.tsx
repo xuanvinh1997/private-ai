@@ -89,7 +89,7 @@ export default function ModelPicker(props: {
             }
           }}
           // Open upward: the composer sits at the bottom, so a downward menu has nowhere to go.
-          class="absolute bottom-full left-0 z-40 mb-3xs flex w-[min(22rem,72vw)] flex-col rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
+          class="absolute bottom-full left-0 z-[var(--z-popover)] mb-3xs flex w-[min(22rem,72vw)] flex-col rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
         >
           {/* Two reasons for an empty list, two messages: unreachable server versus a server with no chat model. */}
           <Show

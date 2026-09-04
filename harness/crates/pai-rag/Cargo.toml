@@ -26,6 +26,9 @@ zip = { workspace = true }
 pdf-extract = { workspace = true }
 encoding_rs = { workspace = true }
 sha1 = "0.10"
+base64 = { workspace = true }
+image = { workspace = true }
+pdfium-bundled = { workspace = true }
 
 [dev-dependencies]
 pai-core = { workspace = true }

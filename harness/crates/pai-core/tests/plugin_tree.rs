@@ -176,9 +176,7 @@ async fn disposing_a_plugin_withdraws_its_registrations() {
 #[tokio::test]
 async fn two_providers_for_one_seam_in_one_realm_is_a_config_error() {
     let root = Context::root();
-    let first = root
-        .provide::<Tools>(Arc::new(EchoTools))
-        .expect("mounts");
+    let first = root.provide::<Tools>(Arc::new(EchoTools)).expect("mounts");
     assert!(root.provide::<Tools>(Arc::new(EchoTools)).is_err());
 
     // But in a different realm they coexist.

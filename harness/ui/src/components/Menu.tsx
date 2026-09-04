@@ -140,7 +140,7 @@ export function Menu(props: {
               move(-1);
             }
           }}
-          class="absolute z-40 flex flex-col gap-3xs rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
+          class="absolute z-[var(--z-popover)] flex flex-col gap-3xs rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
           classList={{
             // A menu with hints must be wider: an explanation broken into four two-word lines goes unread.
             "min-w-40": !props.items.some((item) => item.hint !== undefined),

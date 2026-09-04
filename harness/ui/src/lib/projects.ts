@@ -22,6 +22,11 @@ export function importProjectFiles(paths: string[]): Promise<string[]> {
   return invoke<string[]>("import_project_files", { paths });
 }
 
+/** Permanently remove a file from the open document project and its derived index. */
+export function deleteProjectDocument(path: string): Promise<void> {
+  return invoke("delete_project_document", { path });
+}
+
 /** OS file dialog for project import; `null` is normalized to an empty batch. */
 export async function pickProjectFiles(title?: string): Promise<string[]> {
   if (!inTauri()) return [];

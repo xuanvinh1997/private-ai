@@ -83,6 +83,19 @@ describe("token CSS", () => {
     }
   });
 
+  it("thang z-index tăng đúng theo thứ tự lớp của ứng dụng", () => {
+    const css = readFileSync(join(SRC, "styles/tokens.css"), "utf8");
+    const names = ["sticky", "floating", "screen", "popover", "modal", "toast", "tooltip"];
+    const values = names.map((name) => {
+      const value = css.match(new RegExp(`--z-${name}\\s*:\\s*(\\d+)`))?.[1];
+      expect(value, `thiếu --z-${name}`).toBeDefined();
+      return Number(value);
+    });
+
+    expect(values).toEqual([...values].sort((a, b) => a - b));
+    expect(new Set(values).size).toBe(values.length);
+  });
+
   // Every colour must be declared on bare `:root` first; declaring it only in the dark block breaks light mode.
   it("token của khối tối đều đã có bản sáng", () => {
     const text = readFileSync(join(SRC, "styles/tokens.css"), "utf8");

@@ -79,6 +79,16 @@
   --traffic-lights-w: 78px;
   --avatar: 28px;
 
+  /* One global stacking contract. Local content starts at zero; each named layer has exactly one job, so
+   * overlays never depend on render order or an arbitrary huge value. Tooltips are portalled and topmost. */
+  --z-sticky: 10;
+  --z-floating: 20;
+  --z-screen: 30;
+  --z-popover: 40;
+  --z-modal: 50;
+  --z-toast: 60;
+  --z-tooltip: 70;
+
   /* Motion: a three-step scale, no ad-hoc durations outside it. */
   --dur-fast: 110ms;
   --dur-base: 170ms;

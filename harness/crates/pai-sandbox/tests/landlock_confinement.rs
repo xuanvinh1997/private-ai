@@ -113,10 +113,7 @@ fn danger_full_access_wraps_nothing() {
     let argv = vec!["/bin/echo".to_string(), "hello".to_string()];
 
     // The absence of a sandbox, so nothing is wrapped; this never touches the kernel.
-    assert_eq!(
-        provider().wrap(argv.clone(), &policy).expect("wraps"),
-        argv
-    );
+    assert_eq!(provider().wrap(argv.clone(), &policy).expect("wraps"), argv);
     assert_eq!(policy.mode, Mode::DangerFullAccess);
 }
 
@@ -198,5 +195,8 @@ fn denying_the_network_leaves_file_confinement_intact() {
         !runs(&policy, &format!("echo x > {}", blocked.display())),
         "denying the network must not loosen the file confinement"
     );
-    assert!(!blocked.exists(), "no file outside the workspace may be created");
+    assert!(
+        !blocked.exists(),
+        "no file outside the workspace may be created"
+    );
 }
