@@ -1,8 +1,6 @@
-//! Thư viện tài liệu: nạp lên, liệt kê, xoá, và thử tìm.
-//!
-//! Không có tool nào của mô hình xuất hiện ở đây, và đó là có chủ ý: nạp và xoá tài liệu
-//! là hành động của **người dùng**. Mô hình chỉ được `docs.search`, `docs.read`,
-//! `docs.list` — nó đọc thư viện, nó không sắp xếp lại thư viện.
+//! The document library: ingest, list, delete, and test-search. No model tools appear here on purpose --
+//! ingesting and deleting are user actions, and the model only gets `docs.search`, `docs.read` and
+//! `docs.list`: it reads the library, it does not rearrange it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,10 +15,8 @@ use crate::AppState;
 use crate::harness::Harness;
 use crate::protocol::{DocumentHit, DocumentView, IngestProgress, LibraryStats};
 
-/// Thư viện của dự án đang mở.
-///
-/// Vắng mặt là trạng thái **hợp lệ**: dự án mã nguồn không cắm `rag`. Câu trả lời nói ra
-/// loại dự án, vì đó là thứ người dùng cần để hiểu — không phải một lỗi kỹ thuật.
+/// The open project's library; absence is valid, since code projects do not load `rag`, and the answer says
+/// which project type this is rather than reporting a technical error.
 fn library(harness: &Harness) -> Result<Arc<dyn DocLibrary>, String> {
     harness
         .ctx
@@ -31,9 +27,7 @@ fn library(harness: &Harness) -> Result<Arc<dyn DocLibrary>, String> {
 fn view(doc: Document) -> DocumentView {
     DocumentView {
         id: doc.id,
-        // Đường dẫn **thật** trong thư mục dự án, không phải chỗ tệp đến từ đâu: người
-        // dùng bấm vào một hàng là để mở đúng tệp đó, và `origin` có thể trỏ vào một chỗ
-        // đã bị di chuyển từ lâu.
+        // The real path inside the project, not where the file came from: `origin` may have moved long ago.
         path: doc.path.display().to_string(),
         title: doc.title,
         format: doc.format.as_str().to_string(),
@@ -45,10 +39,8 @@ fn view(doc: Document) -> DocumentView {
     }
 }
 
-/// Thu một dòng nạp cho tới hết, đẩy từng mốc lên giao diện, rồi trả về **cả thư viện**.
-///
-/// Ba lệnh dưới đây khác nhau ở đúng một chỗ — dòng nào — nên phần còn lại nằm ở đây.
-/// Chép nó ra ba bản là ba chỗ để quên mất `drop(stream)` hoặc để bỏ sót một mốc.
+/// Drain an ingest stream, forwarding each milestone to the UI, then return the whole library; the three
+/// commands below differ only in which stream they pass.
 async fn drain(
     library: &Arc<dyn DocLibrary>,
     mut stream: BoxStream<'_, IngestEvent>,
@@ -64,9 +56,8 @@ async fn drain(
             error: event.error,
         };
         if let Err(err) = on_progress.send(progress) {
-            // Cửa sổ đóng giữa chừng không phải lý do bỏ dở việc nạp: những tệp đã sao
-            // vào kho sẽ nằm đó dở dang nếu ta dừng ở đây.
-            tracing::debug!("không gửi được tiến trình nạp: {err}");
+            // A closed window is no reason to abandon the ingest: files already copied into the store would be left half-done.
+            tracing::debug!("could not send ingest progress: {err}");
         }
     }
     drop(stream);
@@ -116,15 +107,8 @@ pub async fn library_stats(state: State<'_, AppState>) -> Result<LibraryStats, S
     })
 }
 
-/// Nạp một mẻ tệp, phát tiến trình, rồi trả về **cả thư viện**.
-///
-/// Trả cả thư viện chứ không trả phần vừa thêm: nạp lại một tệp đã có sẽ cập nhật hàng cũ
-/// thay vì tạo hàng mới, nên "phần vừa thêm" không phải một khái niệm đúng ở đây. Giao
-/// diện thay nguyên bảng, và không có cách nào để hai bên lệch nhau.
-///
-/// Một tệp hỏng **không** làm hỏng cả mẻ. Đó là hợp đồng của `pai-rag` và nó phải đi
-/// nguyên vẹn tới màn hình: người dùng thả hai mươi tệp, một tệp là PDF hỏng, và mười chín
-/// tệp kia vẫn phải vào.
+/// Ingest a batch, emit progress, and return the whole library rather than the additions, since re-ingesting
+/// updates existing rows. One bad file never fails the batch -- that is `pai-rag`'s contract, unchanged here.
 #[tauri::command]
 pub async fn add_documents(
     paths: Vec<String>,
@@ -139,14 +123,8 @@ pub async fn add_documents(
     drain(&library, stream, on_progress).await
 }
 
-/// Quét lại thư mục dự án và đồng bộ thư viện với nó.
-///
-/// **Thư mục dự án là thư viện.** Người dùng chỉ vào một thư mục tài liệu và mong trợ lý
-/// đọc được những gì đang nằm trong đó — không phải mong được thêm lại từng tệp một.
-///
-/// Không chạy trong `Library::open`: một lần quét đồng bộ ở đó là đóng băng cửa sổ hàng
-/// chục giây mà không có gì trên màn hình nói vì sao. Ở đây nó có kênh tiến trình, huỷ
-/// được bằng cách đóng cửa sổ, và giao diện vẽ được từng bước.
+/// Rescan the project directory and sync the library with it, because the project directory is the library.
+/// Not done inside `Library::open`, where a synchronous scan would freeze the window with nothing on screen.
 #[tauri::command]
 pub async fn sync_library(
     on_progress: Channel<IngestProgress>,
@@ -159,17 +137,9 @@ pub async fn sync_library(
     drain(&library, stream, on_progress).await
 }
 
-/// Xử lý lại toàn bộ thư viện, theo một cú bấm của người dùng.
-///
-/// # Vì sao có một nút cho việc mà máy đáng ra tự làm
-///
-/// Lượt quét khi mở màn hình là lượt tăng dần: tệp không đổi thì không đọc lại, tệp đã
-/// đọc hỏng một lần thì cũng không đọc lại. Đúng cho việc thường ngày, và sai cho đúng
-/// những lần người dùng đi tìm một nút bấm — tệp hỏng vì một lý do đã qua nằm nguyên đó,
-/// không đổi một byte, nên không lượt quét nào chạm lại vào nó nữa.
-///
-/// Lệnh này quên sạch dấu vân tay rồi rút chữ lại cả thư mục, và nhúng nốt phần còn thiếu
-/// vector ở cuối. Nó đắt, nên nó đứng sau một cú bấm chứ không tự chạy.
+/// Reprocess the whole library on an explicit click. The automatic scan is incremental, so a file that failed
+/// for a since-fixed reason is never revisited; this forgets every fingerprint, re-extracts, and embeds what
+/// is missing. It is expensive, hence a button rather than automatic.
 #[tauri::command]
 pub async fn reprocess_library(
     on_progress: Channel<IngestProgress>,
@@ -191,11 +161,8 @@ pub async fn remove_document(id: String, state: State<'_, AppState>) -> Result<(
         .map_err(|err| err.to_string())
 }
 
-/// Thử tìm, để người dùng kiểm chứng thư viện **trước khi** hỏi trợ lý.
-///
-/// Trả về nguyên văn đoạn khớp. Giao diện phải hiện nó như một **trích dẫn**, không như
-/// lời của ứng dụng: đây là chữ do người ngoài viết, và cùng ranh giới tin cậy mà ba tool
-/// `docs.*` phải giữ cũng áp dụng ở đây.
+/// A test search, so the user can verify the library before asking the assistant; matches come back verbatim
+/// and the UI must render them as quotations, since this is third-party text.
 #[tauri::command]
 pub async fn search_documents(
     query: String,

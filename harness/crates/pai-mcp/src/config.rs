@@ -1,8 +1,6 @@
-//! Cấu hình một server bên thứ ba, và những cái tên nó không được phép mang.
-//!
-//! Việc kiểm tra ở đây không phải là vệ sinh dữ liệu cho đẹp. Tên server là một **thành
-//! phần của danh tính tool** — nó nằm giữa `ext.` và tên tool từ xa — nên một cái tên
-//! không kiểm được sẽ đẻ ra một tool không kiểm được. Xem [`ServerConfig::validate`].
+//! Config for a third-party server, and the names it may not carry.
+//! The server name sits between `ext.` and the remote tool name, so it is part of a tool's
+//! identity: an unchecked name yields an unchecked tool. See [`ServerConfig::validate`].
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -10,16 +8,10 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
-/// Bao lâu thì một server không trả lời `initialize` bị coi là không có ở đó.
-///
-/// Hai mươi giây, lấy từ bản Python. Một server stdio phải kịp `npx` tải gói về lần đầu;
-/// dài hơn nữa thì người dùng ngồi nhìn một cửa sổ chưa có tool nào mà không hiểu vì sao.
+/// How long before a server that never answers `initialize` counts as absent; long enough for a first `npx` download.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// Thử nối lại bao nhiêu lần trước khi bỏ cuộc.
-///
-/// Có một giới hạn là bắt buộc: một lệnh gõ sai trong cấu hình mà thử lại vô hạn là một
-/// vòng lặp đẻ tiến trình con, và nó chạy im lặng trong nền suốt phiên làm việc.
+/// Reconnect attempts before giving up; unbounded retries on a mistyped command spawn processes forever.
 pub const DEFAULT_MAX_RETRIES: u32 = 5;
 
 #[derive(Debug, thiserror::Error)]
@@ -36,22 +28,21 @@ pub enum ConfigError {
     EmptyCommand(String),
     #[error("server `{0}` khai url `{1}`: chỉ chấp nhận http:// hoặc https://")]
     BadUrl(String, String),
-    /// Nói **thiếu cái gì**, không chỉ nói là thiếu: người dùng đang nhìn một biểu mẫu và
-    /// cần biết ô nào còn trống, chứ không cần biết rằng có một ô nào đó còn trống.
+    /// Names what is missing: the user is looking at a form and needs to know which field is blank.
     #[error("mục `{0}` trong danh mục còn thiếu giá trị bắt buộc: {1}")]
     MissingValue(String, String),
 }
 
-/// Đường tới một server. Hai cái, đúng bằng hai cái mà spec định nghĩa.
+/// How to reach a server: two ways, exactly the two the spec defines.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(tag = "transport", rename_all = "snake_case")]
 pub enum McpTransport {
-    /// Một tiến trình con nói JSON-RPC qua stdin/stdout.
+    /// A child process speaking JSON-RPC over stdin/stdout.
     Stdio {
         command: String,
         #[serde(default)]
         args: Vec<String>,
-        /// Thêm vào môi trường của tiến trình con, không thay thế nó.
+        /// Added to the child's environment rather than replacing it.
         #[serde(default)]
         env: BTreeMap<String, String>,
         #[serde(default)]
@@ -60,20 +51,20 @@ pub enum McpTransport {
     /// Streamable HTTP.
     Http {
         url: String,
-        /// Header gửi kèm mọi request — chỗ để một token của người dùng đi vào.
+        /// Headers sent with every request — where a user token goes.
         #[serde(default)]
         headers: BTreeMap<String, String>,
     },
 }
 
-/// Một server bên thứ ba, đúng như người dùng khai nó.
+/// A third-party server, exactly as the user declared it.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct ServerConfig {
-    /// Thành phần giữa của `ext.<name>.<tool>`.
+    /// The middle component of `ext.<name>.<tool>`.
     pub name: String,
     #[serde(flatten)]
     pub transport: McpTransport,
-    /// Tắt một server mà không phải xoá cấu hình của nó.
+    /// Turn a server off without deleting its configuration.
     #[serde(default = "yes")]
     pub enabled: bool,
     #[serde(default = "default_connect_timeout_secs")]
@@ -95,7 +86,7 @@ fn default_max_retries() -> u32 {
 }
 
 impl ServerConfig {
-    /// Một server stdio với cấu hình mặc định.
+    /// A stdio server with default settings.
     pub fn stdio(name: impl Into<String>, command: impl Into<String>) -> ServerConfig {
         ServerConfig {
             name: name.into(),
@@ -111,7 +102,7 @@ impl ServerConfig {
         }
     }
 
-    /// Một server streamable HTTP với cấu hình mặc định.
+    /// A streamable-HTTP server with default settings.
     pub fn http(name: impl Into<String>, url: impl Into<String>) -> ServerConfig {
         ServerConfig {
             name: name.into(),
@@ -129,19 +120,7 @@ impl ServerConfig {
         Duration::from_secs(self.connect_timeout_secs)
     }
 
-    /// Kiểm trước khi nối, không phải sau.
-    ///
-    /// Ba luật về cái tên, và cả ba đều nói về cùng một chuyện — tên server đi vào danh
-    /// tính của tool:
-    ///
-    /// - **Không rỗng**, nếu không thì `ext..search` có hai dấu chấm liền và cái phần lẽ
-    ///   ra định danh một server thì không định danh gì cả.
-    /// - **Không có dấu chấm**, nếu không thì `a.b` và `a` + tool `b.x` đẻ ra cùng một
-    ///   tên đầy đủ từ hai server khác nhau.
-    /// - **Không có `__`**, vì `pai-tools` chiếu dấu chấm sang `__` để nói với mô hình, và
-    ///   một cái tên chứa sẵn `__` làm phép chiếu đó mất tính khả nghịch. Sổ đăng ký sẽ
-    ///   từ chối nó, nhưng từ chối ở đó thì người dùng chỉ thấy tool biến mất; từ chối ở
-    ///   đây thì họ đọc được vì sao.
+    /// Check before dialing: the name must be non-empty, dot-free and `__`-free, since it is part of every tool's identity.
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.name.is_empty() {
             return Err(ConfigError::EmptyName);

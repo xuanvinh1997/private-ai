@@ -1,43 +1,27 @@
 import { Key } from "@solid-primitives/keyed";
 import { createSignal, onCleanup, onMount, Show, type JSX } from "solid-js";
 import { Dynamic } from "solid-js/web";
+import { S, t } from "../lib/i18n";
 import { displayMode } from "../lib/prefs";
 import type { ConversationNode } from "../lib/protocol";
 import { nodeRenderer } from "../lib/registry";
 import Icon from "./Icon";
 
-/** Ngưỡng bám đáy, lấy đúng số của chat_view.py:1226. */
+/** Stick-to-bottom threshold, the same number as chat_view.py:1226. */
 const STICK_PX = 80;
 
-/**
- * Bản ghi hội thoại.
- *
- * Tệp này cố ý **không biết** có những loại nội dung nào. Nó tra sổ đăng ký theo `kind`
- * rồi dựng component tương ứng; thêm thẻ tool mới hay loại thông báo mới không đụng tới
- * đây. Đó là toàn bộ lý do sổ đăng ký tồn tại.
- *
- * Việc bám đáy đo bằng `ResizeObserver` chứ không bằng một effect nghe cả mảng: nghe cả
- * mảng thì mỗi token là một lần đọc `scrollHeight`, tức một lần buộc layout chạy lại
- * giữa lúc đang stream — đúng thứ làm giao diện giật. `ResizeObserver` chỉ nổ khi chiều
- * cao thật sự đổi, và nổ *sau* layout nên số đo đã đúng.
- */
+/** The transcript, which deliberately knows no content kinds: it looks each one up in the registry by `kind`.
+ * Stick-to-bottom uses a `ResizeObserver`, since an effect on the array would force layout on every token. */
 export default function Transcript(props: {
   nodes: ConversationNode[];
   empty?: JSX.Element;
-  /**
-   * Dán vào cuối danh sách, **trong** vùng được `ResizeObserver` theo dõi.
-   *
-   * Chỉ báo "đang làm việc" đi đường này chứ không nằm ngoài bản ghi: nó cao thêm một
-   * hàng, và hàng đó phải tính vào phép bám đáy — treo nó bên ngoài thì mỗi lần nó hiện
-   * hay tắt là một lần dòng cuối bị đẩy khuất dưới mép.
-   */
+  /** Appended inside the observed region, so the working indicator's height counts toward stick-to-bottom. */
   footer?: JSX.Element;
 }) {
   let scroller: HTMLDivElement | undefined;
   let content: HTMLDivElement | undefined;
 
-  // Người dùng cuộn lên đọc lại thì thôi bám đáy. Cuộn ép là cách nhanh nhất làm người
-  // ta mất chỗ đang đọc, và họ không có cách nào đòi lại.
+  // Scrolling up releases the stick: forcing the view down loses the reader's place with no way back.
   let stuck = true;
   const [atBottom, setAtBottom] = createSignal(true);
 
@@ -74,23 +58,20 @@ export default function Transcript(props: {
       <div
         ref={scroller}
         class="h-full overflow-y-auto px-(--page-pad-x)"
-        // Trình duyệt tự neo cuộn khi nội dung phía trên đổi kích thước; giữa lúc stream
-        // nó đánh nhau với logic bám đáy ở trên và kết quả là màn hình rung.
+        // The browser's own scroll anchoring fights the stick-to-bottom logic mid-stream and the view judders.
         style={{ "overflow-anchor": "none" }}
       >
         <div
           ref={content}
           class="mx-auto flex flex-col gap-lg py-lg"
-          // Chế độ tài liệu bỏ giới hạn bề rộng đọc: nó tồn tại để diff và đầu ra lệnh
-          // có chỗ thở, mà cắt nó xuống 720px thì đúng thứ đó bị bóp lại đầu tiên.
+          // Document mode drops the reading measure: it exists so diffs and command output get room.
           classList={{
             "max-w-(--reading-measure)": displayMode() === "bubble",
             "max-w-[min(100%,980px)]": displayMode() === "document",
           }}
         >
           <Show when={props.nodes.length > 0} fallback={props.empty}>
-            {/* Keyed theo `id`: một node giữ nguyên DOM của nó kể cả khi danh sách được nạp
-                thêm ở đầu (phân trang ngược). Keyed theo vị trí thì cả bản ghi remount. */}
+            {/* Keyed by `id`, so prepending older nodes does not remount the whole transcript. */}
             <Key each={props.nodes} by="id">
               {(node) => <NodeSeat node={node()} />}
             </Key>
@@ -105,14 +86,7 @@ export default function Transcript(props: {
   );
 }
 
-/**
- * Nút về đáy.
- *
- * Luôn nằm trong cây DOM và chỉ đổi độ mờ với vị trí: gắn/gỡ nó theo trạng thái cuộn sẽ
- * làm tiêu điểm bàn phím rơi mất giữa chừng nếu người dùng đang đứng trên nó. Khi ẩn thì
- * `pointer-events: none` để nó không nuốt cú bấm vào bản ghi phía dưới, và `tabIndex=-1`
- * để Tab không dừng ở một cái nút vô hình.
- */
+/** Scroll-to-bottom button, always mounted and only fading, so keyboard focus is never dropped from under the user. */
 function BackBottom(props: { visible: boolean; onClick: () => void }) {
   return (
     <button
@@ -127,7 +101,7 @@ function BackBottom(props: { visible: boolean; onClick: () => void }) {
       }}
     >
       <Icon name="arrow-down" size={13} />
-      Về cuối
+      {t(S.chat.transcript.toBottom)}
     </button>
   );
 }
@@ -135,8 +109,7 @@ function BackBottom(props: { visible: boolean; onClick: () => void }) {
 function NodeSeat(props: { node: ConversationNode }) {
   const render = () => nodeRenderer(props.node.kind);
   return (
-    // Id trên chỗ ngồi chứ không trong renderer: bảng "tệp đã thay đổi" cần cuộn tới một
-    // node bất kỳ, và nó không được phép biết node đó do component nào vẽ.
+    // The id lives on the slot, not the renderer: the changes panel scrolls to any node without knowing who draws it.
     <div id={`node-${props.node.id}`} class="scroll-mt-lg">
       <Show when={render()} fallback={<UnknownNode kind={props.node.kind} />}>
         {(component) => <Dynamic component={component()} node={props.node} />}
@@ -145,14 +118,11 @@ function NodeSeat(props: { node: ConversationNode }) {
   );
 }
 
-/**
- * Không gian khoá là mở, nên "không có renderer" là trạng thái hợp lệ chứ không phải
- * lỗi. Hiện một dòng xám còn hơn nuốt mất một sự kiện mà không ai biết.
- */
+/** The key space is open, so a missing renderer is valid; a grey line beats silently swallowing an event. */
 function UnknownNode(props: { kind: string }) {
   return (
     <p class="m-0 px-sm text-2xs text-faint">
-      (chưa có cách hiển thị cho <code class="font-mono">{props.kind}</code>)
+      {t(S.chat.transcript.unknown, { kind: props.kind })}
     </p>
   );
 }

@@ -1,15 +1,6 @@
-//! Paths: canonicalise, and only then check.
-//!
-//! That order is the entire content of this file. Checking before canonicalising lets
-//! `root/../../etc/passwd` through, because at comparison time it still starts with `root/`.
-//!
-//! There are two ways to canonicalise and both are needed. The **read** path uses the
-//! operating system's `canonicalize` — it follows symlinks, which is exactly what we want: a
-//! symlink pointing outside the root has to count as outside the root. The **write** path
-//! cannot use it, because the file does not exist yet; so we resolve `..` lexically, then
-//! `canonicalize` the nearest existing ancestor and rejoin the tail. The existing part is
-//! still checked through symlinks, and the part that does not exist has no symlink to
-//! follow.
+//! Paths: canonicalise, and only then check, or `root/../../etc/passwd` still starts with `root/`.
+//! Reads use the OS `canonicalize` so symlinks out of the root count as out of the root.
+//! Writes resolve `..` lexically, canonicalise the nearest existing ancestor, then rejoin the tail.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -23,19 +14,14 @@ pub enum PathError {
     Unresolvable(PathBuf, String),
 }
 
-/// Resolve `.` and `..` lexically, without touching the disk.
-///
-/// `canonicalize` cannot do this because it requires the file to exist. Skipping it is not
-/// an option either: an unresolved `..` is how a path escapes the root while still looking
-/// like it is inside.
+/// Resolve `.` and `..` without touching the disk; an unresolved `..` is how a path escapes a root.
 fn lexical(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for part in path.components() {
         match part {
             Component::CurDir => {}
             Component::ParentDir => {
-                // A leading `..` on a relative path has nothing to pop; keep it and let
-                // the roots layer refuse, rather than silently swallowing it.
+                // A leading `..` has nothing to pop; keep it so the roots layer refuses it.
                 if !out.pop() {
                     out.push(Component::ParentDir);
                 }
@@ -68,19 +54,17 @@ impl FileRoots {
         &self.roots
     }
 
-    /// Exact match, not prefix match: what is protected is *that file*, not the whole tree
-    /// beneath it.
+    /// Exact match, not prefix match: what is protected is that file, not the tree beneath it.
     pub fn is_protected(&self, resolved: &Path) -> bool {
         self.protected.iter().any(|p| p == resolved)
     }
 
     fn within_roots(&self, resolved: &Path) -> bool {
-        // No roots means nobody granted anything — refuse everything, not allow
-        // everything. An empty config is the tightest config.
+        // No roots means nobody granted anything, so an empty config refuses everything.
         self.roots.iter().any(|root| resolved.starts_with(root))
     }
 
-    /// Resolve a path for **reading**. Follows symlinks.
+    /// Resolve a path for reading; follows symlinks.
     pub fn resolve_read(&self, path: &Path) -> Result<PathBuf, PathError> {
         let resolved = path
             .canonicalize()
@@ -88,7 +72,7 @@ impl FileRoots {
         self.authorize(resolved)
     }
 
-    /// Resolve a path for **writing**. The file need not exist; the parent directory must.
+    /// Resolve a path for writing; the file need not exist, the parent directory must.
     pub fn resolve_write(&self, path: &Path) -> Result<PathBuf, PathError> {
         let lexical = lexical(path);
         if let Ok(resolved) = lexical.canonicalize() {
@@ -109,8 +93,7 @@ impl FileRoots {
     }
 
     fn authorize(&self, resolved: PathBuf) -> Result<PathBuf, PathError> {
-        // Protected is asked **first**: for a file that is both inside a root and
-        // protected the answer is no, and the reason has to be the right one.
+        // Protected is asked first, so a protected file inside a root reports the right reason.
         if self.is_protected(&resolved) {
             return Err(PathError::Protected(resolved));
         }
@@ -121,11 +104,7 @@ impl FileRoots {
     }
 }
 
-/// A NUL byte in the first four thousand bytes means binary.
-///
-/// Refuse outright rather than returning a string full of replacement characters: a binary
-/// file read badly looks exactly like a text file with the wrong encoding, and the model
-/// will reason over garbage.
+/// A NUL byte in the first 4 KiB means binary; refuse rather than feed the model garbage.
 pub fn looks_binary(head: &[u8]) -> bool {
     head.iter().take(4096).any(|byte| *byte == 0)
 }

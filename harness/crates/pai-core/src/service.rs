@@ -1,22 +1,13 @@
 //! Seams: the identity of a capability, separated from its implementation.
-//!
-//! Cordis addresses services by string (`ctx.tools`). Doing that in Rust trades compile
-//! errors for runtime errors and buys nothing, so the key is an uninstantiable **marker
-//! type** and the value is a **trait object**. Consumers still see only the interface —
-//! swapping a provider does not touch call sites — and a misspelled name does not compile.
-//!
-//! The `NAME` string still exists, but only to talk to humans and to the config file:
-//! `--dump-config`, `isolate:`, error messages.
+//! The key is an uninstantiable marker type and the value a trait object, so a misspelled
+//! seam fails to compile; `NAME` exists only for config, logs and error messages.
 
 use std::any::TypeId;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// A replaceable capability.
-///
-/// `Self` is a pure label. Declare it as an empty `enum` so nobody can accidentally
-/// construct a value of it.
+/// A replaceable capability; declare `Self` as an empty `enum`, it is only a label.
 pub trait ServiceKey: 'static {
     /// The interface consumers see. Must be object-safe.
     type Api: ?Sized + Send + Sync + 'static;
@@ -31,18 +22,14 @@ pub struct Realm(pub(crate) u64);
 impl Realm {
     pub const ROOT: Realm = Realm(0);
 
-    /// A fresh, unnamed realm — the equivalent of `ctx.isolate('shell')`.
+    /// A fresh, unnamed realm.
     pub fn anonymous() -> Realm {
         static NEXT: AtomicU64 = AtomicU64::new(1);
         Realm(NEXT.fetch_add(1, Ordering::Relaxed))
     }
 }
 
-/// A seam → realm map, shaped as a linked list.
-///
-/// Inheritance is O(1) and `Clone` is a single `Arc` bump; lookup is O(depth), and depth
-/// in practice stays under five. This is the Rust version of the prototype chain Cordis
-/// uses.
+/// A seam -> realm map as a linked list: O(1) inheritance and clone, O(depth) lookup.
 #[derive(Clone, Default)]
 pub struct RealmChain(Option<Arc<RealmNode>>);
 
@@ -73,17 +60,13 @@ impl RealmChain {
     }
 }
 
-/// The cell holding one provider.
-///
-/// `value` really holds an `Arc<K::Api>`. An `Arc<dyn Trait>` is a fat pointer but still
-/// `Sized + 'static`, so it fits inside a `Box<dyn Any>` and comes back out intact — that
-/// is the trick that makes this work.
+/// One provider cell: `value` is an `Arc<K::Api>`, which is `Sized`, so `Box<dyn Any>` holds it.
 pub(crate) struct ServiceCell {
     pub(crate) value: Box<dyn std::any::Any + Send + Sync>,
     pub(crate) name: &'static str,
 }
 
-/// A name → seam lookup, so config and `--dump-config` can speak in strings.
+/// A name -> seam lookup, so config and `--dump-config` can speak in strings.
 #[derive(Default)]
 pub struct ServiceCatalog {
     by_name: HashMap<&'static str, TypeId>,

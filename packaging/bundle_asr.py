@@ -1,20 +1,6 @@
-"""Copy the compiled transcribe.cpp runtime into a built ``.app``.
-
-Not a PyInstaller ``datas`` entry, for one reason: every ``.dylib`` here was linked with
-``LC_RPATH`` pointing at an **absolute** path inside the build machine's ``.local-data``.
-Copying the files alone produces a bundle that loads on the machine that built it and
-nowhere else — ``@rpath/libggml.0.dylib`` resolves through a directory the recipient does
-not have. So the copy is followed by rewriting each rpath to the ``@loader_path``-relative
-equivalent, which is only correct if the tree keeps its shape. It does: the layout under
-``build-shared`` is preserved exactly, so the relative hops are the ones the linker
-already recorded.
-
-This runs after PyInstaller and **before** codesign, because ``install_name_tool`` edits a
-Mach-O header and invalidates any signature it already carried.
-
-The Python bindings come along too. They are pure Python and load the library through
-``ctypes``, honouring ``TRANSCRIBE_LIBRARY``, which is what ``AsrService`` sets.
-"""
+"""Copy the compiled transcribe.cpp runtime into a built `.app`.
+Not a PyInstaller `datas` entry: each `.dylib` carries an absolute `LC_RPATH`, so the copy
+is followed by rewriting them `@loader_path`-relative - after PyInstaller, before codesign."""
 
 from __future__ import annotations
 
@@ -25,8 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Relative to the transcribe.cpp source tree: the directories holding shared libraries,
-# and the bindings package. Anything outside these is build scaffolding.
+# Relative to the transcribe.cpp source tree: shared-library directories and the bindings package.
 LIBRARY_DIRS = (
     Path("build-shared") / "src",
     Path("build-shared") / "ggml" / "src",
@@ -42,12 +27,7 @@ class BundleError(RuntimeError):
 
 
 def _copy_libraries(source: Path, destination: Path) -> list[Path]:
-    """Copy each library directory, keeping symlinks as symlinks.
-
-    ``libtranscribe.dylib -> libtranscribe.0.2.dylib -> libtranscribe.0.2.2.dylib`` is the
-    chain the resolver walks and the linker records. Dereferencing it would triple the
-    payload and leave three files that no longer agree about which is canonical.
-    """
+    """Copy each library directory, keeping symlinks as symlinks - dereferencing the version chain would triple the payload and lose which file is canonical."""
     copied: list[Path] = []
     for relative in LIBRARY_DIRS:
         origin = source / relative
@@ -92,18 +72,7 @@ def _rpaths(library: Path) -> list[str]:
 
 
 def _relocate(library: Path, *, source_root: Path, dest_root: Path) -> list[tuple[str, str]]:
-    """Turn every absolute rpath into the ``@loader_path`` hop that means the same thing.
-
-    The hop is measured in the *original* tree — from where this library used to sit to
-    where the rpath pointed — and then applied in the copied tree, which is valid only
-    because the copy preserved the layout. Measuring it against the copied location
-    instead would produce a path back out into the build machine's ``.local-data``, which
-    is the bug this whole file exists to avoid.
-
-    An rpath that is already ``@``-relative is portable and left alone. One whose target
-    did not come along is deleted rather than rewritten: a dangling rpath sends dyld
-    looking through a directory the recipient does not have.
-    """
+    """Turn every absolute rpath into the equivalent `@loader_path` hop, measured in the *original* tree; already-relative rpaths are left alone and dangling ones deleted."""
     relative = library.relative_to(dest_root)
     original_parent = source_root / relative.parent
     changes: list[tuple[str, str]] = []

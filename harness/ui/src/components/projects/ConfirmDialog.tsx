@@ -1,29 +1,14 @@
 import { Show } from "solid-js";
+import { S, t } from "../../lib/i18n";
 import type { IconName } from "../Icon";
 import DialogShell, { Button } from "./DialogShell";
 
-/**
- * Hộp xác nhận cho những việc không hoàn lại được.
- *
- * Chữ trên nút xác nhận do chỗ gọi đặt, và đó là điểm quan trọng nhất của component này:
- * một nút ghi "Đồng ý" không nói được việc sắp xảy ra, còn "Bỏ khỏi danh sách" và "Xoá
- * khỏi thư viện" thì nói được — và hai việc đó khác nhau xa. Người đọc chỉ nhìn cái nút
- * họ sắp bấm chứ không đọc lại câu hỏi phía trên.
- *
- * `window.confirm` làm được việc này nhưng không mang được đoạn giải thích *thư mục trên
- * đĩa không bị đụng tới*, mà chính đoạn đó mới là thứ giữ người dùng dám bấm.
- *
- * Tiêu điểm rơi vào nút **Huỷ**, không vào nút xác nhận — cố ý, và là chỗ duy nhất trong
- * đợt này lệch khỏi luật "Enter xác nhận". Hộp thoại này chỉ mở ra trước những việc
- * không hoàn lại được, và một cú Enter theo quán tính từ màn hình trước sẽ thực hiện
- * đúng cái việc người dùng đang được hỏi lại. Esc vẫn đóng, và Tab một nhịp là tới nút
- * xác nhận.
- */
+/** Confirmation for irreversible actions: the caller names the confirm button, because people read the button and not the question, and focus lands on Cancel so a stray Enter cannot destroy anything. */
 export default function ConfirmDialog(props: {
   title: string;
-  /** Câu nói rõ chuyện gì xảy ra và chuyện gì **không** xảy ra. */
+  /** The sentence saying what happens and what does not. */
   body: string;
-  /** Phần còn lại của lời trấn an, cất sau dấu chấm hỏi cạnh tiêu đề. */
+  /** The rest of the reassurance, behind the question mark next to the title. */
   more?: string;
   detail?: string;
   confirmLabel: string;
@@ -43,7 +28,7 @@ export default function ConfirmDialog(props: {
       footer={() => (
         <>
           <Button onClick={props.onClose} disabled={props.busy}>
-            Huỷ
+            {t(S.common.cancel)}
           </Button>
           <Button variant="danger" onClick={props.onConfirm} disabled={props.busy}>
             {props.confirmLabel}

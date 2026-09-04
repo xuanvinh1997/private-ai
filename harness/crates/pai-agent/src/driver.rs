@@ -1,18 +1,6 @@
-//! Vòng lặp turn/step.
-//!
-//! Viết tay bằng `loop`, không phải một máy trạng thái đồ thị. Trình tự ở đây ngắn đến
-//! mức đọc hết trong một màn hình, và đó là điểm mạnh chứ không phải sự thô sơ: mọi thứ
-//! phức tạp — phê duyệt, sandbox, hook, nén ngữ cảnh — cắm vào từ ngoài qua bốn điểm nối
-//! trong [`crate::events`], nên vòng lặp không phải lớn lên theo số tính năng.
-//!
-//! Hai luật giữ nguyên từ bản Python, cả hai đều là chỗ đã từng sai:
-//!
-//! **Lịch sử mô hình dựng từ sổ, không từ một bản sao trong bộ nhớ.** Có hai nguồn sự
-//! thật thì sớm muộn chúng lệch nhau, và cái lệch chỉ lộ ra khi mở lại phiên cũ.
-//!
-//! **Vòng cuối cùng không được trao tool.** Chỉ có trần số vòng thì lượt kết thúc bằng
-//! một lời gọi tool không ai trả lời — mô hình treo giữa câu, và bản ghi không giải thích
-//! được vì sao.
+//! The turn/step loop, hand-written as a `loop` and short enough to read in one screen.
+//! Everything complex hooks in from outside through [`crate::events`]. History is derived
+//! from the journal, and the last round is offered no tools so no call goes unanswered.
 
 use std::sync::Arc;
 
@@ -34,17 +22,11 @@ use crate::bridge::{assistant_to_log, to_llm_history};
 use crate::events::{AgentRequest, PreStep, PreStepRequest, StepDecision, TurnStop, TurnStopping};
 use crate::prompt::SystemPrompt;
 
-/// Nơi vòng lặp kể lại những gì đang xảy ra, theo thời gian thực.
-///
-/// Tách khỏi sổ vì hai thứ trả lời hai câu hỏi khác nhau: sổ trả lời "mô hình đã thấy
-/// gì", sink trả lời "người dùng đang nhìn thấy gì". Trộn chúng lại là cách một chi tiết
-/// hiển thị lọt vào ngữ cảnh của mô hình.
+/// Where the loop narrates in real time; separate from the journal, which answers what the model saw, not the user.
 pub trait TurnSink: Send + Sync {
     fn token(&self, _text: &str) {}
     fn tool_start(&self, _call_id: &str, _name: &str, _arguments: &str) {}
-    /// `meta` là phần dành riêng cho giao diện — diff, danh sách khớp, output terminal.
-    /// Mô hình **không** thấy nó; nó đi song song với `content` chứ không nằm trong đó,
-    /// nên một khối diff hiện ra cho người dùng không tốn một token nào của mô hình.
+    /// `meta` is UI-only and travels beside `content`, so a diff shown to the user costs the model no tokens.
     fn tool_end(
         &self,
         _call_id: &str,
@@ -56,34 +38,23 @@ pub trait TurnSink: Send + Sync {
     }
     fn notice(&self, _message: &str) {}
 
-    /// Token của bước vừa xong, khi máy chủ chịu nói.
-    ///
-    /// Mặc định không làm gì: đây là số liệu, không phải một phần của câu trả lời, và một
-    /// sink chỉ quan tâm tới chữ thì không phải viết gì thêm.
+    /// The finished step's tokens when the server reports them; a no-op by default, since this is telemetry.
     fn usage(&self, _input_tokens: u64, _output_tokens: u64) {}
 }
 
-/// Sink không làm gì. Dùng cho chạy không giao diện và cho test.
+/// A sink that does nothing; for headless runs and tests.
 pub struct Silent;
 impl TurnSink for Silent {}
 
-/// Vòng lặp, cộng cái nó đang nói chuyện cùng.
-///
-/// `llm` và `model` nằm sau [`ArcSwapAny`] chứ không phải là hai trường thường: người
-/// dùng đổi nhà cung cấp trong lúc ứng dụng đang chạy, và dựng lại cả `Driver` cho mỗi
-/// lần đổi nghĩa là dựng lại mọi thứ treo trên nó — đường ống tool, prompt, các scope
-/// plugin — chỉ để thay một con trỏ. Đọc bằng `load_full()`, ghi bằng `store()`, không
-/// khoá nào bị giữ qua một `.await`.
+/// The loop plus whatever it is talking to; `llm` and `model` sit behind [`ArcSwapAny`] so a provider swap replaces one pointer.
 pub struct Driver {
     ctx: Context,
-    /// Một `Arc` bọc ngoài một `Arc`, vì `arc-swap` chỉ hoán đổi được `Arc<T>` với `T`
-    /// có kích thước biết trước, còn `dyn LlmAdapter` thì không. Cái giá là một lần
-    /// truy con trỏ, trả đúng một lần cho mỗi lượt.
+    /// An `Arc` inside an `Arc`, because `arc-swap` needs a sized `T`; the cost is one extra hop per turn.
     llm: ArcSwap<Arc<dyn LlmAdapter>>,
     tools: Arc<ToolPipeline>,
     prompt: Arc<SystemPrompt>,
     model: ArcSwap<String>,
-    /// Trần số bước trong một lượt.
+    /// The step ceiling within one turn.
     max_steps: u64,
 }
 
@@ -105,22 +76,22 @@ impl Driver {
         }
     }
 
-    /// Đổi provider. Có hiệu lực từ **lượt sau**, không phải từ bước sau — xem [`Driver::drive`].
+    /// Change provider; takes effect from the next turn, not the next step — see [`Driver::drive`].
     pub fn set_llm(&self, llm: Arc<dyn LlmAdapter>) {
         self.llm.store(Arc::new(llm));
     }
 
-    /// Đổi mô hình. Cùng một luật thời điểm như [`Driver::set_llm`].
+    /// Change model, with the same timing rule as [`Driver::set_llm`].
     pub fn set_model(&self, model: impl Into<String>) {
         self.model.store(Arc::new(model.into()));
     }
 
-    /// Provider đang được ghim. Dành cho màn hình trạng thái và cho bài kiểm chứng.
+    /// The currently pinned provider; for status screens and tests.
     pub fn llm(&self) -> Arc<dyn LlmAdapter> {
         Arc::clone(&self.llm.load())
     }
 
-    /// Mô hình đang được ghim.
+    /// The currently pinned model.
     pub fn model(&self) -> String {
         self.model.load().as_str().to_string()
     }
@@ -130,7 +101,7 @@ impl Driver {
         self
     }
 
-    /// Chạy một lượt tới khi không còn gì nợ.
+    /// Run a turn until nothing is outstanding.
     pub async fn run_turn(
         &self,
         session: &mut Session,
@@ -170,12 +141,7 @@ impl Driver {
         let mut pending = input;
         let mut step = 0u64;
 
-        // Chốt provider và mô hình **một lần cho cả lượt**, ngay tại đây. Một lượt là
-        // nhiều bước, và mỗi bước gửi lại toàn bộ lịch sử: đọc lại `llm` ở đầu mỗi bước
-        // thì một cú đổi provider giữa chừng làm nửa hội thoại bay tới máy chủ này và
-        // nửa kia tới máy chủ khác — với hai tokenizer, hai cách hiểu tool call, và một
-        // bản ghi không giải thích nổi vì sao câu trả lời đứt mạch. Cú đổi vẫn xảy ra,
-        // chỉ là nó có hiệu lực từ lượt kế tiếp.
+        // Pin provider and model once per turn: re-reading them per step would split one conversation across two servers.
         let llm: Arc<dyn LlmAdapter> = Arc::clone(&self.llm.load());
         let model = self.model.load_full();
 
@@ -198,17 +164,9 @@ impl Driver {
 
             let entered = match decision {
                 StepDecision::Enter { messages, replace } => {
-                    // Che trước khi message mới vào sổ: vị trí trong `replace` tính trên
-                    // phép chiếu mà listener vừa nhìn thấy, và thêm gì vào trước sẽ làm
-                    // mọi vị trí đó trượt đi một chỗ.
+                    // Mask before the new message lands: `replace` indices refer to the projection the listener saw.
                     if let Some(replace) = replace {
-                        // Nói ra rằng phần đầu cuộc trò chuyện vừa bị rút gọn.
-                        //
-                        // Nén trong im lặng là đúng cái kiểu hỏng mà cả dự án này từ chối ở
-                        // mọi chỗ khác: bộ đệm terminal **nói** đã bỏ bao nhiêu dòng, sandbox
-                        // **báo** `Partial` thay vì làm tròn lên. Ở đây cái mất còn khó thấy
-                        // hơn — mô hình bỗng không nhớ một quyết định từ đầu phiên, và người
-                        // dùng kết luận nó ngu đi chứ không kết luận là ngữ cảnh đã đầy.
+                        // Say that the start of the conversation was summarised; compacting in silence just looks like forgetting.
                         let bo = replace.end.saturating_sub(replace.start);
                         sink.notice(&format!(
                             "Ngữ cảnh đã đầy: {bo} tin nhắn đầu phiên được rút gọn thành một                              bản tóm tắt. Chi tiết trong phần đó không còn nguyên văn — hỏi                              lại nếu cần."
@@ -224,8 +182,7 @@ impl Driver {
                     messages
                 }
                 StepDecision::Reject { reason } => {
-                    // Lượt vẫn đóng lại bình thường và không tiêu bước nào. Bản ghi phải
-                    // nhớ là đã có người thử, kể cả khi chẳng có gì được gửi đi.
+                    // The turn still closes normally and spends no step; the record must remember the attempt.
                     sink.notice(&reason);
                     return Ok(TurnEndReason::Completed);
                 }
@@ -268,13 +225,13 @@ impl Driver {
             }
             if !calls.is_empty() {
                 if last_round {
-                    // Không xảy ra được: vòng cuối không có schema tool nào để mà gọi.
+                    // Unreachable: the last round advertises no tool schema to call.
                     return Ok(TurnEndReason::MaxSteps);
                 }
                 continue;
             }
 
-            // Không còn nợ tool. Hỏi xem có ai muốn nối thêm việc không.
+            // No tool work outstanding; ask whether anyone wants to add more.
             match self.ctx.first::<TurnStop>(&TurnStopping { turn }).await {
                 Some(more) if !more.is_empty() => pending = more,
                 _ => return Ok(TurnEndReason::Completed),
@@ -285,7 +242,7 @@ impl Driver {
         }
     }
 
-    /// Một lần gọi mô hình, từ lúc dựng request tới lúc message vào sổ.
+    /// One model call, from building the request to journalling the message.
     #[allow(clippy::too_many_arguments)]
     async fn one_step(
         &self,
@@ -295,8 +252,7 @@ impl Driver {
         last_round: bool,
         cancel: &CancellationToken,
         sink: &dyn TurnSink,
-        // Bản chốt của lượt, do `drive` truyền xuống. Cố tình **không** đọc lại từ
-        // `self` ở đây: xem bình luận trong `drive`.
+        // The turn's pinned pair, passed down by `drive`; deliberately not re-read from `self`.
         llm: &dyn LlmAdapter,
         model: &str,
     ) -> anyhow::Result<LlmMessage> {
@@ -316,7 +272,7 @@ impl Driver {
                 .schemas(self.ctx.scope_key())
                 .into_iter()
                 .map(|schema| {
-                    // Mô hình thấy tên đã mã hoá; sổ đăng ký nhận lại cả hai dạng.
+                    // The model sees the encoded name; the registry accepts both forms back.
                     pai_llm::ToolSchema::new(
                         schema.name.wire(),
                         schema.description,
@@ -344,8 +300,7 @@ impl Driver {
 
         loop {
             tokio::select! {
-                // Huỷ không nhảy ra khỏi hàm: phần trả lời dở vẫn phải vào sổ ở dưới.
-                // Thoát sớm ở đây là đúng cái lỗi khiến người dùng mất nửa câu trả lời.
+                // Cancelling does not leave the function: the partial reply still has to be journalled below.
                 _ = cancel.cancelled() => { interrupted = true; break }
                 next = stream.next() => match next {
                     None => break,
@@ -371,15 +326,11 @@ impl Driver {
         drop(stream);
 
         let message = assembler.message();
-        // Máy chủ đã nói số token và bộ ghép đã giữ lại — ghi nó vào sổ thay vì bỏ đi.
-        // Không có nó thì sổ phiên không trả lời được câu "lượt này tốn bao nhiêu", và
-        // giao diện không có cách nào cho người dùng thấy ngữ cảnh đang đầy dần **trước**
-        // lúc nén cắt mất phần đầu.
+        // Journal the token counts the server reported, or nothing can say what a turn cost or how full the context is.
         let usage = assembler.usage().map(|counted| Usage {
             input_tokens: counted.input_tokens,
             output_tokens: counted.output_tokens,
-            // Không phải máy chủ nào cũng tách phần đọc từ cache; để `None` chứ không
-            // đoán bằng 0 — số 0 đọc ra là "cache không giúp gì", một câu khác hẳn.
+            // Not every server separates cache reads; `None` rather than 0, which would read as "the cache did not help".
             cached_input_tokens: None,
         });
         if let Some(counted) = usage {
@@ -420,9 +371,7 @@ impl Driver {
             .await?;
         sink.tool_start(&call.id, &call.name, &call.arguments);
 
-        // Tham số hỏng không phải lỗi của ta: một mô hình nhỏ phát ra JSON không đóng
-        // ngoặc là chuyện thường. Đưa nguyên `null` xuống để đường ống trả về một câu
-        // giải thích mà mô hình đọc được, thay vì làm đứt lượt ở đây.
+        // Malformed arguments are common from small models; pass `null` down so the pipeline explains it instead of breaking the turn.
         let arguments = serde_json::from_str(&call.arguments).unwrap_or(serde_json::Value::Null);
         let outcome = self.tools.execute(&call.id, &call.name, arguments).await;
 

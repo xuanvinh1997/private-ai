@@ -1,36 +1,6 @@
-//! Kho: SQLite + FTS5, và một đồ thị dựng trên chính bảng ký hiệu ấy.
-//!
-//! Ba quyết định, và cả ba đều là chỗ bản Python thua.
-//!
-//! **1. FTS5.** Bản cũ quét toàn bộ mỗi lần hỏi vì nó không có chỉ mục đảo ngược nào cả.
-//! Một bảng FTS5 đổi việc đó lấy một lần tra `MATCH`. Bảng FTS ở đây **tự giữ nội dung**
-//! chứ không dùng `content=`: bảng external-content bắt buộc phải có trigger đồng bộ, mà
-//! trigger ghi vào một virtual table là đúng thứ `trusted_schema = OFF` chặn. Đổi lại là
-//! vài chục byte lặp cho mỗi ký hiệu — cái giá đúng để không phải chọn giữa tìm nhanh và
-//! đóng một cửa.
-//!
-//! **2. `mtime` + kích thước.** Xem [`Store::known_files`]. Không có nó thì mỗi lần hỏi
-//! là một lần parse lại cả repo, và tính năng bị người dùng tắt đi trước khi nó kịp có
-//! ích.
-//!
-//! **3. Lệch schema thì dựng lại, không từ chối.** Ngược hẳn với sổ tay phiên, và vì một
-//! lý do: sổ phiên là **nguồn sự thật**, mất là mất hẳn; chỉ mục thì derive được từ mã
-//! nguồn trong vài giây. Từ chối mở một bộ nhớ đệm là từ chối làm việc mà không đổi lại
-//! được gì. Chỉ khi tệp *không phải* của chỉ mục thì mới từ chối — lúc đó nó là dữ liệu
-//! của người khác.
-//!
-//! # Đồ thị: hai bảng chứ không một
-//!
-//! `refs` giữ cái **nhìn thấy được trong một tệp**: chỗ này nhắc tới cái tên kia. `edges`
-//! giữ cái **đã phân giải**: chỗ này nối vào ký hiệu số kia. Tách ra vì hai thứ có vòng
-//! đời khác nhau — `refs` chỉ đổi khi tệp đổi, còn `edges` đổi mỗi khi **bất kỳ** tệp nào
-//! đổi: `helper()` trong `a.rs` không nối được vào đâu cho tới lúc `b.rs` được quét, và
-//! nếu chỉ có một bảng thì cạnh đó phải chờ tới lần `a.rs` được sửa mới xuất hiện — tức
-//! là một đồ thị đúng hay sai tuỳ theo thứ tự đi thư mục.
-//!
-//! Cả hai bảng treo vào `symbols(id)` bằng `ON DELETE CASCADE`. Đó không phải tiện lợi:
-//! quét lại một tệp đã sửa mà cạnh cũ của nó còn ở lại thì đồ thị lớn dần bằng rác, và
-//! rác trong đồ thị trông y hệt sự thật.
+//! The store: SQLite + FTS5, with a graph built on the same symbol table.
+//! FTS5 keeps its own content (external-content needs triggers `trusted_schema = OFF` bans),
+//! schema drift rebuilds rather than refuses, and `refs`/`edges` are split by lifetime.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -48,17 +18,11 @@ use crate::symbol::{Symbol, SymbolKind};
 
 type Result<T> = std::result::Result<T, IndexError>;
 
-/// `'PIDX'`. Mở nhầm một tệp SQLite khác thì thấy ngay, trước khi ghi vào.
+/// `'PIDX'`. Opening someone else's SQLite file is caught before anything is written.
 const APPLICATION_ID: i32 = 0x50494458;
 const SCHEMA_VERSION: i32 = 2;
 
-/// Bao nhiêu ứng viên là còn đáng ghi.
-///
-/// Khi một cái tên vẫn còn nhiều khai báo sau cả bốn bậc ưu tiên, tất cả được ghi chứ
-/// không chọn bừa một cái — xem [`crate::graph`]. Nhưng "tất cả" phải có trần: một tên
-/// như `new` có hàng trăm khai báo trong một repo Rust, và hàng trăm cạnh từ một chỗ gọi
-/// không thu hẹp được gì cho người đọc, nó chỉ làm mọi đỉnh nối với mọi đỉnh. Quá trần
-/// thì bỏ hẳn tham chiếu đó: một cạnh không nói gì tệ hơn là không có cạnh.
+/// How many candidates are still worth writing; past the cap the reference is dropped, since a meaningless edge is worse than none.
 const MAX_CANDIDATES: usize = 4;
 
 const SCHEMA: &str = r#"
@@ -114,9 +78,7 @@ CREATE TABLE meta (
 ) STRICT;
 "#;
 
-/// Đỉnh module không phải một khai báo mà người ta đi tìm, nên nó bị chặn khỏi mọi câu
-/// hỏi của `symbol_search` và `outline`. Nó chỉ tồn tại trong đồ thị — xem
-/// [`crate::graph::MODULE_KIND`].
+/// Module nodes are not declarations anyone searches for, so `symbol_search` and `outline` exclude them.
 const NOT_MODULE: &str = "s.kind <> 'module'";
 
 const SELECT_SYMBOL: &str = "SELECT s.name, s.kind, s.parent, s.start_line, s.end_line, \
@@ -125,7 +87,7 @@ const SELECT_SYMBOL: &str = "SELECT s.name, s.kind, s.parent, s.start_line, s.en
 const SELECT_NODE: &str = "SELECT s.id, s.name, s.kind, f.path, s.start_line \
      FROM symbols s JOIN files f ON f.id = s.file_id";
 
-/// Một hàng `files` đã biết, đủ để trả lời "tệp này có đổi không".
+/// A known `files` row, enough to answer "has this file changed".
 #[derive(Clone, Copy)]
 pub struct FileState {
     pub id: i64,
@@ -134,8 +96,7 @@ pub struct FileState {
 }
 
 pub struct Store {
-    /// `Connection` không `Sync`. Một khoá thật thay vì một pool: chỉ mục là chỗ ghi
-    /// tuần tự, và mọi lần giữ khoá đều nằm gọn trong một `spawn_blocking` của tầng trên.
+    /// `Connection` is not `Sync`; a real lock beats a pool since writes are serial and always inside `spawn_blocking`.
     conn: Mutex<Connection>,
 }
 
@@ -144,7 +105,7 @@ impl Store {
         Store::from_connection(Connection::open(path)?)
     }
 
-    /// Cho bài kiểm chứng, và cho phiên không cần sống qua lần khởi động sau.
+    /// For tests, and for sessions that need not outlive this run.
     pub fn open_in_memory() -> Result<Store> {
         Store::from_connection(Connection::open_in_memory()?)
     }
@@ -165,10 +126,7 @@ impl Store {
         body(&mut guard)
     }
 
-    /// Mọi tệp đã biết, kèm dấu vân tay của chúng.
-    ///
-    /// Lấy hết một lần rồi so trong bộ nhớ, chứ không hỏi từng tệp một: một câu truy vấn
-    /// cho mười nghìn tệp rẻ hơn mười nghìn câu, và bảng này vốn đã nằm gọn trong RAM.
+    /// Every known file with its fingerprint; fetched in one query and compared in memory.
     pub fn known_files(&self) -> Result<HashMap<String, FileState>> {
         self.with(|conn| {
             let mut stmt = conn.prepare("SELECT id, path, mtime, size FROM files")?;
@@ -191,15 +149,7 @@ impl Store {
         })
     }
 
-    /// Đường dẫn của mọi tệp đã biết, để hoàn thành `@` trong ô soạn tin.
-    ///
-    /// Chỉ lấy cột `path`, không lấy dấu vân tay như [`Store::known_files`]: gõ thêm một
-    /// ký tự là một lần gọi lại, và kéo cả `mtime` lẫn `size` về chỉ để vứt đi là trả giá
-    /// ở đúng chỗ người dùng cảm thấy — giữa hai lần nhấn phím.
-    ///
-    /// Xếp theo đường dẫn để thứ tự ổn định giữa hai lần gọi. Việc chấm điểm nằm ở
-    /// [`crate::complete`], không ở đây: SQL xếp theo chữ cái, còn thứ người ta muốn thấy
-    /// trước là tệp có **tên** khớp, thứ SQL không nói được.
+    /// Known file paths for `@` completion: `path` only, ordered for stability; scoring lives in [`crate::complete`].
     pub fn paths(&self) -> Result<Vec<String>> {
         self.with(|conn| {
             let mut stmt = conn.prepare("SELECT path FROM files ORDER BY path")?;
@@ -212,11 +162,7 @@ impl Store {
         })
     }
 
-    /// Thay toàn bộ ký hiệu **và** tham chiếu của một tệp, trong một giao dịch.
-    ///
-    /// Thay chứ không vá: một tệp vừa sửa có thể mất ký hiệu chứ không chỉ thêm, và lần
-    /// ra cái đã mất tốn hơn là viết lại cả nhóm. Cạnh đi theo bằng `ON DELETE CASCADE`,
-    /// nên không có đường nào để một cạnh cũ sống sót qua một lần quét lại.
+    /// Replace, not patch, a file's symbols and references in one transaction; edges follow via `ON DELETE CASCADE`.
     pub fn replace_file(
         &self,
         path: &str,
@@ -238,9 +184,7 @@ impl Store {
                     r.get(0)
                 })?;
 
-            // Đỉnh module đi trước mọi ký hiệu: nó là chủ nhà mặc định cho `use` ở đầu
-            // tệp và cho những khai báo không có cha, nên nó phải tồn tại trước khi có ai
-            // cần trỏ vào nó. Nó **không** vào FTS — người ta tra tên hàm, không tra tên tệp.
+            // The module node comes first as the default owner, and stays out of FTS: people search function names.
             let module = module_name(path);
             tx.execute(
                 "INSERT INTO symbols (file_id, name, kind, parent, start_line, end_line, signature) \
@@ -277,9 +221,7 @@ impl Store {
             }
 
             for reference in &found.refs {
-                // `impl Foo` không tự mình là ký hiệu; chủ nhà thật của nó là `struct Foo`
-                // **trong chính tệp này**. Không tìm thấy — vì `Foo` khai ở tệp khác —
-                // thì chủ nhà lùi về đỉnh module: tệp này vẫn thật sự chứa khối đó.
+                // `impl Foo` is owned by `struct Foo` in this same file, falling back to the module node.
                 let src = match &reference.from {
                     Owner::Symbol(index) => ids.get(*index).copied().unwrap_or(module_id),
                     Owner::Scope(name) => by_name.get(name.as_str()).copied().unwrap_or(module_id),
@@ -299,7 +241,7 @@ impl Store {
         })
     }
 
-    /// Quên hẳn một tệp: hàng `files`, ký hiệu của nó, và cả dấu vết trong FTS.
+    /// Forget a file entirely: its `files` row, its symbols, and its FTS entries.
     pub fn forget_files(&self, paths: &[String]) -> Result<()> {
         if paths.is_empty() {
             return Ok(());
@@ -315,20 +257,9 @@ impl Store {
         })
     }
 
-    /// Dựng lại **toàn bộ** bảng cạnh từ `refs`.
-    ///
-    /// Toàn bộ, không phải phần chênh, và đó là một lựa chọn có giá: một tệp đổi thì cả
-    /// kho được phân giải lại. Cái nó mua là thứ không mua được bằng cách khác — một cạnh
-    /// từ `a.rs` sang một hàm vừa được thêm vào `b.rs` **xuất hiện ngay**, thay vì nằm chờ
-    /// tới lần ai đó động vào `a.rs`. Phần đắt của một lần quét là parse, và parse vẫn
-    /// tăng dần; phân giải chỉ là một lượt tra bảng băm trên vài nghìn hàng đã nằm trong RAM.
-    ///
-    /// Bậc ưu tiên: **cùng tệp → cùng thư mục → cùng ngôn ngữ → toàn kho**. Bậc đầu tiên
-    /// có ứng viên là bậc thắng, và những bậc sau không được xét nữa — một `helper` ngay
-    /// trong tệp gần như luôn là `helper` mà người viết đang nói tới, kể cả khi có mười
-    /// cái cùng tên ở nơi khác.
-    ///
-    /// Trả về số cạnh đã ghi.
+    /// Rebuild the whole edge table from `refs` — whole, not incremental, so a new target links immediately.
+    /// Tiers are same file, same directory, same language, whole store; the first tier with a hit wins.
+    /// Returns how many edges were written.
     pub fn rebuild_edges(&self) -> Result<usize> {
         self.with(|conn| {
             let tx = conn.transaction()?;
@@ -408,9 +339,7 @@ impl Store {
                     };
 
                     for dst in targets {
-                        // Một cạnh trỏ vào chính nó không dẫn đi đâu: đệ quy là sự thật
-                        // nhưng nó không trả lời được câu hỏi nào mà đồ thị này phục vụ,
-                        // và nó biến mọi lần duyệt thành một vòng lặp phải canh.
+                        // A self-edge leads nowhere and turns every traversal into a loop to guard.
                         if dst == src {
                             continue;
                         }
@@ -429,7 +358,7 @@ impl Store {
         })
     }
 
-    /// Ghi lại thời điểm quét xong, epoch mili-giây.
+    /// Record when the scan finished, epoch milliseconds.
     pub fn mark_scanned(&self, at: i64) -> Result<()> {
         self.with(|conn| {
             conn.execute(
@@ -441,13 +370,7 @@ impl Store {
         })
     }
 
-    /// Tìm ký hiệu theo tên.
-    ///
-    /// Hai lượt, và lượt thứ hai không phải để chữa cháy. FTS5 cắt token ở ranh giới từ,
-    /// nên `"handle"*` tìm ra `handleRequest` còn `"Request"` thì không — mà hỏi bằng nửa
-    /// sau của một tên camelCase là chuyện người ta làm suốt. Lượt `LIKE` bù đúng chỗ đó,
-    /// và nó chỉ chạy khi lượt đầu về rỗng nên không đánh đổi tốc độ của trường hợp
-    /// thường.
+    /// Search symbols by name; the `LIKE` pass runs only when FTS5 finds nothing, since FTS5 cannot match mid-camelCase.
     pub fn search(
         &self,
         query: &str,
@@ -481,7 +404,7 @@ impl Store {
         })
     }
 
-    /// Bản đồ ký hiệu của một tệp, theo thứ tự xuất hiện.
+    /// A file's symbol map, in source order.
     pub fn outline(&self, path: &str) -> Result<Vec<Symbol>> {
         self.with(|conn| {
             let sql = format!(
@@ -494,8 +417,7 @@ impl Store {
         })
     }
 
-    /// Tệp này đã có trong chỉ mục chưa. Dùng để phân biệt "tệp không có ký hiệu nào" với
-    /// "tệp chưa từng được quét" — hai câu trả lời khác hẳn nhau đối với người hỏi.
+    /// Whether the file is indexed, telling "no symbols" apart from "never scanned".
     pub fn knows(&self, path: &str) -> Result<bool> {
         self.with(|conn| {
             let found: Option<i64> = conn
@@ -521,10 +443,7 @@ impl Store {
         self.with(|conn| Ok(conn.query_row("SELECT count(*) FROM edges", [], |r| r.get(0))?))
     }
 
-    /// Đỉnh mang đúng cái tên này.
-    ///
-    /// `Foo::bar` được tách làm hai: mô hình chép lại nguyên cái tên đủ tư cách mà
-    /// `symbol_search` vừa in ra cho nó, và bắt nó gõ lại chỉ nửa sau là bắt nó đoán.
+    /// Nodes with exactly this name; `Foo::bar` is split, because the model copies back the qualified name it was shown.
     pub fn nodes_named(&self, name: &str) -> Result<Vec<GraphNode>> {
         let (parent, leaf) = match name.rsplit_once("::") {
             Some((parent, leaf)) => (Some(parent.to_string()), leaf.to_string()),
@@ -553,10 +472,7 @@ impl Store {
         })
     }
 
-    /// Mọi cạnh chạm vào một trong các đỉnh này, cả hai chiều.
-    ///
-    /// Chiều ngược đi qua chỉ mục trên `dst`: câu hỏi "ai gọi hàm này" là câu hỏi hay
-    /// nhất mà đồ thị trả lời được, và không có chỉ mục đó thì nó là một lần quét cả bảng.
+    /// Every edge touching one of these nodes, both directions; the reverse leg needs the `dst` index.
     pub fn edges_touching(&self, ids: &[i64]) -> Result<Vec<GraphEdge>> {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -567,16 +483,14 @@ impl Store {
                 "SELECT src, dst, kind FROM edges WHERE src IN ({holes}) \
                  UNION SELECT src, dst, kind FROM edges WHERE dst IN ({holes})"
             );
-            // Hai nửa của `UNION` dùng lại **đúng** những chỗ giữ `?1..?n` ấy, nên bộ
-            // tham số chỉ được truyền một lần: SQLite đếm chỗ giữ riêng biệt, không đếm
-            // số lần chúng xuất hiện.
+            // Both `UNION` halves reuse `?1..?n`, so the parameters are bound once: SQLite counts distinct holes.
             let mut stmt = conn.prepare(&sql)?;
             let rows = stmt.query_map(params_from_iter(ids), read_edge)?;
             Ok(rows.collect::<rusqlite::Result<Vec<GraphEdge>>>()?)
         })
     }
 
-    /// Láng giềng theo một loại cạnh và một chiều. `forward` là đi theo mũi tên.
+    /// Neighbours along one edge kind and direction; `forward` follows the arrow.
     pub fn step(&self, ids: &[i64], kind: EdgeKind, forward: bool) -> Result<Vec<GraphEdge>> {
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -596,7 +510,7 @@ impl Store {
         })
     }
 
-    /// Cạnh quan sát được trong một tệp, đã kèm hai đầu. Dùng để kiểm chứng và để gỡ lỗi.
+    /// Edges observed in one file with both ends attached; for tests and debugging.
     pub fn edges_of_file(&self, path: &str) -> Result<Vec<(GraphNode, EdgeKind, GraphNode)>> {
         self.with(|conn| {
             let sql = "SELECT e.kind, \
@@ -652,7 +566,7 @@ impl Store {
         })
     }
 
-    /// Bản đồ kiến trúc. `directories` bị cắt ở `dir_cap`, `central` ở `central_cap`.
+    /// The architecture map; `directories` is capped at `dir_cap`, `central` at `central_cap`.
     pub fn overview(&self, dir_cap: usize, central_cap: usize) -> Result<Overview> {
         self.with(|conn| {
             let mut folders: HashMap<String, DirectorySummary> = HashMap::new();
@@ -679,14 +593,12 @@ impl Store {
                 }
             }
             let mut directories: Vec<DirectorySummary> = folders.into_values().collect();
-            // Nhiều ký hiệu trước: một kho lạ được đọc từ chỗ đông nhất, không theo bảng chữ cái.
+            // Most symbols first: an unfamiliar repo is read from its busiest place, not alphabetically.
             directories.sort_by(|a, b| b.symbols.cmp(&a.symbols).then_with(|| a.path.cmp(&b.path)));
             let directories_omitted = directories.len().saturating_sub(dir_cap) as u32;
             directories.truncate(dir_cap);
 
-            // `contains` bị loại khỏi phép đếm bậc: mọi tệp đều chứa ký hiệu của nó, nên
-            // để nó vào thì thứ hạng chỉ nói lên tệp nào dài nhất — một câu `wc -l` đã
-            // trả lời được và không ai cần một đồ thị để hỏi.
+            // `contains` is excluded from degree, or the ranking just reports which file is longest.
             let mut stmt = conn.prepare(
                 "SELECT s.id, s.name, s.kind, f.path, s.start_line, d.incoming, d.outgoing \
                  FROM (SELECT id, sum(inc) AS incoming, sum(outg) AS outgoing FROM ( \
@@ -723,7 +635,7 @@ impl Store {
     }
 }
 
-/// Một tệp, đã tách sẵn thư mục để khỏi cắt lại chuỗi cho từng tham chiếu.
+/// A file with its directory pre-split, to avoid re-slicing the string per reference.
 struct FileRow {
     path: String,
     dir: String,
@@ -737,8 +649,7 @@ struct Candidate {
     module: bool,
 }
 
-/// Bốn bậc, và chỉ bậc đầu tiên có ứng viên mới được xét. Xem
-/// [`Store::rebuild_edges`] để biết vì sao dừng ở bậc đầu tiên chứ không gộp.
+/// Four tiers; only the first tier with a hit is used — see [`Store::rebuild_edges`].
 fn resolve(
     pool: &[Candidate],
     kind: EdgeKind,
@@ -785,8 +696,7 @@ fn resolve(
     Vec::new()
 }
 
-/// Tên của đỉnh module: phần thân tên tệp. `store.rs` thành `store`, và đó cũng là cái
-/// tên mà một `use crate::store::…` sẽ đi tra.
+/// The module node's name: the file stem, which is also what a `use crate::store::...` looks up.
 fn module_name(path: &str) -> String {
     Path::new(path)
         .file_stem()
@@ -813,16 +723,13 @@ fn placeholders_from(count: usize, first: usize) -> String {
 }
 
 fn forget_symbols_of(tx: &rusqlite::Transaction<'_>, path: &str) -> Result<()> {
-    // FTS trước, bảng thường sau: sau khi hàng `symbols` biến mất thì không còn cách nào
-    // biết `rowid` nào cần xoá khỏi FTS, và một hàng FTS mồ côi vẫn trả về kết quả.
+    // FTS first: once the `symbols` rows are gone, nothing says which FTS rowids to delete.
     tx.execute(
         "DELETE FROM symbols_fts WHERE rowid IN \
          (SELECT s.id FROM symbols s JOIN files f ON f.id = s.file_id WHERE f.path = ?1)",
         params![path],
     )?;
-    // `refs` và `edges` đi theo bằng `ON DELETE CASCADE`, kể cả những cạnh **trỏ vào**
-    // tệp này từ tệp khác. Cạnh đó sẽ được dựng lại ở lần phân giải kế tiếp nếu đích của
-    // nó còn; nếu không còn thì nó vốn đã sai.
+    // `refs` and `edges` follow by `ON DELETE CASCADE`, inbound edges too; the next resolve rebuilds the valid ones.
     tx.execute(
         "DELETE FROM symbols WHERE file_id IN (SELECT id FROM files WHERE path = ?1)",
         params![path],
@@ -834,8 +741,7 @@ fn read_symbol(row: &Row<'_>) -> rusqlite::Result<Symbol> {
     let kind: String = row.get(1)?;
     Ok(Symbol {
         name: row.get(0)?,
-        // Một nhãn lạ trong cơ sở dữ liệu chỉ có thể đến từ một bản cũ hơn của chính
-        // crate này; xếp nó vào `type` đọc được hơn là làm hỏng cả câu truy vấn.
+        // An unknown label can only come from an older build of this crate; `type` reads better than failing.
         kind: SymbolKind::parse(&kind).unwrap_or(SymbolKind::Type),
         parent: row.get(2)?,
         start_line: row.get(3)?,
@@ -864,12 +770,7 @@ fn read_edge(row: &Row<'_>) -> rusqlite::Result<GraphEdge> {
     })
 }
 
-/// Biến câu hỏi của người dùng thành một biểu thức FTS5 an toàn.
-///
-/// Chuỗi của người dùng **không bao giờ** được ghép thẳng vào cú pháp MATCH: `"`, `*`,
-/// `:`, `^`, `NOT` đều có nghĩa ở đó, nên một câu hỏi bình thường có thể thành lỗi cú
-/// pháp, và một câu hỏi cố ý có thể thành một truy vấn khác hẳn. Cắt thành token rồi bọc
-/// nháy kép biến mọi thứ thành chữ nghĩa thuần tuý; `*` cuối là của ta, không phải của họ.
+/// Turn a user query into a safe FTS5 expression: never concatenated into MATCH syntax, but tokenised and quoted.
 fn fts_expression(query: &str) -> Option<String> {
     let tokens: Vec<String> = query
         .split(|c: char| !c.is_alphanumeric() && c != '_')
@@ -883,7 +784,7 @@ fn fts_expression(query: &str) -> Option<String> {
     }
 }
 
-/// `%` và `_` là ký tự đại diện của `LIKE`; thoát chúng thì `foo_bar` tìm đúng `foo_bar`.
+/// `%` and `_` are `LIKE` wildcards; escaping them makes `foo_bar` match `foo_bar`.
 fn like_pattern(query: &str) -> String {
     let escaped = query
         .replace('\\', "\\\\")
@@ -898,10 +799,9 @@ fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "busy_timeout", 5000)?;
     let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
     if mode != "wal" {
-        tracing::debug!(mode, "không bật được WAL cho kho chỉ mục này");
+        tracing::debug!(mode, "could not enable WAL for this index store");
     }
-    // Chỉ mục dựng lại được từ mã nguồn, nên một giao dịch mất vì mất điện không phải mất
-    // dữ liệu — nó chỉ là một tệp phải parse lại. `NORMAL` là mức đúng cho một thứ như thế.
+    // The index is rebuildable, so a transaction lost to a power cut costs one re-parse, not data.
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     Ok(())
 }
@@ -927,7 +827,7 @@ fn ensure_schema(conn: &mut Connection) -> Result<()> {
         tracing::info!(
             from = version,
             to = SCHEMA_VERSION,
-            "schema chỉ mục đã cũ, dựng lại từ đầu"
+            "index schema is out of date, rebuilding from scratch"
         );
         let tx = conn.transaction()?;
         tx.execute_batch(

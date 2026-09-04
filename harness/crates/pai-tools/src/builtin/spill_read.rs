@@ -1,11 +1,6 @@
-//! `spill_read` — đọc lại phần đã bị cắt khỏi một kết quả tool.
-//!
-//! Không có tool này thì câu "toàn văn vẫn nguyên vẹn trong kho `spill-3`" là một lời hứa
-//! suông: vé nằm ở `meta`, mà `meta` không đi ra tới mô hình. Nói với mô hình rằng dữ
-//! liệu còn đó rồi không cho nó đường lấy còn tệ hơn cắt thẳng — nó tin là đã đọc được.
-//!
-//! Tham số cố tình giống `read`: cùng `offset`/`limit` theo dòng, nên mô hình không phải
-//! học một cách phân trang thứ hai.
+//! `spill_read` — read back what was cut from a tool result.
+//! Without it, "the full text is in the store" is an empty promise, since the ticket lives
+//! in `meta`. The parameters mirror `read` so there is no second pagination style to learn.
 
 use async_trait::async_trait;
 use pai_core::Context;
@@ -19,7 +14,7 @@ use crate::schema::{ToolMeta, ToolSchema, json_schema_for};
 use crate::seam::Spill;
 use crate::tool::{Invocation, Tool, ToolError, ToolOutcome};
 
-/// Mặc định trả bao nhiêu dòng một lần. Cùng con số với `read` vì cùng một thói quen.
+/// Lines returned per call by default; the same number as `read`.
 const DEFAULT_LIMIT: usize = 2000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -61,8 +56,7 @@ impl Tool for SpillRead {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Kho tràn chứa output của tool khác, kể cả tool đọc tệp của người khác — nó
-        // không đáng tin hơn nguồn đã sinh ra nó.
+        // The store holds other tools' output, so it is no more trustworthy than whatever produced it.
         ToolMeta::read_only().untrusted().concurrency_safe(true)
     }
 
@@ -76,8 +70,7 @@ impl Tool for SpillRead {
             .get::<Spill>()
             .ok_or_else(|| ToolError::Failed("phiên này không có kho tràn nào".into()))?;
         let full = store.read_id(&args.id).ok_or_else(|| {
-            // Vé hết hạn là chuyện bình thường (kho sống bằng phiên), nên nói ra lối
-            // thoát thay vì chỉ nói "không tìm thấy".
+            // An expired ticket is normal, since the store is session-scoped, so name the way out.
             ToolError::Invalid(format!(
                 "không còn vé `{}` trong kho; hãy chạy lại tool đã sinh ra nó.",
                 args.id
@@ -97,8 +90,7 @@ impl Tool for SpillRead {
             rendered = format!("(vé có {total} dòng; không có dòng nào trong khoảng đã hỏi)\n");
         }
 
-        // Chính `spill_read` cũng chịu ngân sách: một vé 200 nghìn dòng đọc lại nguyên
-        // khối chỉ chuyển chỗ tràn chứ không giải quyết gì.
+        // `spill_read` is budgeted too: reading a 200k-line ticket whole just moves the overflow.
         let name = ToolName::new(SpillRead::NAME);
         let folded = self.overflow.fold(&name, rendered, |split| {
             format!(

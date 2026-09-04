@@ -1,14 +1,6 @@
-//! Từ vựng sự kiện.
-//!
-//! Một bất biến chi phối cả tệp này: **cái gì mô hình thấy được thì phải nằm trong sổ.**
-//! Hệ quả trực tiếp là thêm một loại đầu vào mới cho mô hình = thêm một loại sự kiện mới,
-//! chứ không phải nhét thêm một trường vào chỗ nào đó ngoài sổ.
-//!
-//! Bộ v0.1 ở đây là mười loại. Bộ đầy đủ là năm mươi ba. Chênh lệch đó là lý do
-//! [`SessionEvent`] có nhánh [`SessionEvent::Unknown`] và envelope có cờ `ignorable`:
-//! một bản cũ đọc sổ do bản mới ghi phải **từ chối**, trừ khi bản mới đã tự nhận rằng
-//! loại đó bỏ qua được. Im lặng lướt qua một loại lạ là cách êm ái nhất để dựng lại một
-//! lịch sử thiếu mà không ai biết.
+//! Event vocabulary. Anything the model sees must be in the log, so a new kind of model input is a
+//! new event type. v0.1 defines ten of an eventual fifty-three, hence [`SessionEvent::Unknown`] and
+//! the `ignorable` flag: an older build must reject a newer type unless it was declared skippable.
 
 use serde::de::{self, Deserializer};
 use serde::ser::{SerializeMap, Serializer};
@@ -21,17 +13,14 @@ use crate::surface::SurfaceOp;
 
 pub type Seq = u64;
 
-/// Nằm ở header của phiên, **không** nằm trong sổ: sổ chỉ-ghi-thêm không có chỗ cho một
-/// con số thay đổi được.
+/// Lives in the session header, not the log: an append-only log has no room for a mutable number.
 pub const SESSION_FORMAT_VERSION: i64 = 1;
 
-/// Đúng ba loại này sinh ra message cho mô hình. Mọi loại còn lại chỉ để ghi lại.
-///
-/// Danh sách này là ranh giới giữa "sổ" và "ngữ cảnh": nó ngắn có chủ ý, và mỗi lần nó
-/// dài ra là một lần cả bộ nhớ của mô hình đổi hình dạng.
+/// Exactly these three produce messages for the model; every other type is record-only. The list is
+/// the boundary between log and context, and each addition reshapes the model's memory.
 pub const SURFACE_TYPES: [&str; 3] = ["user/message", "assistant/message", "tool/result"];
 
-// --- payload theo từng loại ----------------------------------------------------------
+// --- per-type payloads -----------------------------------------------------------------
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct TurnStart {
@@ -48,8 +37,7 @@ pub struct TurnEnd {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum TurnEndReason {
     Completed,
-    /// Lý do duy nhất vòng lặp không bao giờ tự phát. Nó chỉ xuất hiện khi bộ khôi phục
-    /// đóng một lượt mồ côi sau sự cố — nên thấy nó là biết đã có một lần chết giữa chừng.
+    /// The one reason the loop never emits itself: recovery closes an orphaned turn, so it marks a crash.
     Interrupted,
     MaxSteps,
     Error {
@@ -69,11 +57,8 @@ pub struct StepEnd {
     pub step: u64,
 }
 
-/// Một mảnh stream thô.
-///
-/// `chunk` để nguyên `Value`: từ vựng stream thuộc về `pai-llm`, và sổ không cần hiểu nó
-/// để làm đúng việc của mình. Cái sổ cần biết chỉ là `(turn, step)` — đủ để gói nhiều
-/// mảnh liên tiếp vào một hàng lưu trữ.
+/// A raw stream chunk. `chunk` stays a `Value` because stream vocabulary belongs to `pai-llm`;
+/// the log only needs `(turn, step)` to pack consecutive chunks into one stored row.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AssistantChunk {
     pub turn: u64,
@@ -106,7 +91,7 @@ pub struct ToolCall {
     pub step: u64,
     pub call_id: String,
     pub name: String,
-    /// Chuỗi JSON thô mô hình sinh ra, giữ nguyên byte.
+    /// Raw JSON string as the model produced it, byte for byte.
     pub arguments: String,
 }
 
@@ -118,7 +103,7 @@ pub struct ToolResult {
     pub message: Message,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ToolErrorInfo>,
-    /// Dữ liệu cho giao diện (diff, đường dẫn spill…). Mô hình không thấy.
+    /// UI-only data (diffs, spill paths); never shown to the model.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meta: Option<Value>,
 }
@@ -129,10 +114,8 @@ pub struct ToolErrorInfo {
     pub code: String,
 }
 
-/// Phần đầu bất biến của một request: system prompt, schema tool, tham số mô hình.
-///
-/// Ghi lại nó là điều kiện để phát lại byte-for-byte về sau — cũng là thứ cho phép tận
-/// dụng KV cache khi nén ngữ cảnh dựng lại đúng vùng bị che.
+/// The invariant head of a request (system prompt, tool schemas, model params); recording it is what
+/// makes byte-for-byte replay -- and KV-cache reuse after compaction -- possible.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RequestHeader {
     pub header: Value,
@@ -150,14 +133,14 @@ pub enum RequestReason {
     Series,
 }
 
-/// Một loại do bản mới hơn ghi ra. Giữ nguyên văn để ghi lại được y như cũ.
+/// A type written by a newer build, kept verbatim so it can be written back unchanged.
 #[derive(Clone, Debug, PartialEq)]
 pub struct UnknownEvent {
     pub kind: String,
     pub data: Value,
 }
 
-// --- enum sự kiện ---------------------------------------------------------------------
+// --- event enum ------------------------------------------------------------------------
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum SessionEvent {
@@ -191,7 +174,7 @@ impl SessionEvent {
         }
     }
 
-    /// Loại này có sinh message cho mô hình không?
+    /// Does this type produce a message for the model?
     pub fn is_surface(&self) -> bool {
         matches!(
             self,
@@ -201,7 +184,7 @@ impl SessionEvent {
         )
     }
 
-    /// Payload dạng JSON — chính là thứ nằm ở cột `data`.
+    /// The JSON payload, exactly what sits in the `data` column.
     pub fn data(&self) -> Result<Value> {
         let value = match self {
             SessionEvent::TurnStart(p) => serde_json::to_value(p)?,
@@ -219,10 +202,8 @@ impl SessionEvent {
         Ok(value)
     }
 
-    /// Dựng lại từ hai cột `(type, data)` — đường đọc chính, không đi qua envelope JSON.
-    ///
-    /// Loại lạ **không** là lỗi ở đây. Quyết định nhận hay từ chối cần thêm cờ
-    /// `ignorable`, mà cờ đó nằm ở envelope; xem [`SessionEventEnvelope::from_parts`].
+    /// Rebuild from the `(type, data)` columns; an unknown type is not an error here, since deciding
+    /// needs the envelope's `ignorable` flag -- see [`SessionEventEnvelope::from_parts`].
     pub fn from_parts(kind: &str, data: Value) -> Result<SessionEvent> {
         let event = match kind {
             "turn/start" => SessionEvent::TurnStart(serde_json::from_value(data)?),
@@ -243,11 +224,8 @@ impl SessionEvent {
         Ok(event)
     }
 
-    /// Message mà loại này chiếu ra, nếu có.
-    ///
-    /// Nguyên văn, không thêm khung. Một `assistant/message` rỗng nội dung trả `None`:
-    /// nó tồn tại chỉ để giữ `usage` của một bước bị cụt vì hết token, và đẩy một message
-    /// rỗng vào lịch sử là làm nhiều nhà cung cấp mô hình từ chối cả request.
+    /// The message this type projects, verbatim. An empty `assistant/message` returns `None`: it exists
+    /// only to carry `usage` from a truncated step, and empty messages make many providers reject the request.
     pub fn message(&self) -> Option<&Message> {
         match self {
             SessionEvent::UserMessage(m) => Some(m),
@@ -258,7 +236,7 @@ impl SessionEvent {
     }
 }
 
-/// Hai cột `{type, data}` — hình dạng trên dây và trong DB.
+/// The `{type, data}` pair: the shape on the wire and in the database.
 #[derive(Serialize, Deserialize)]
 struct Tagged {
     #[serde(rename = "type")]
@@ -296,11 +274,8 @@ impl<'de> Deserialize<'de> for SessionEvent {
 
 // --- envelope ---------------------------------------------------------------------------
 
-/// Vỏ bọc quanh mỗi sự kiện.
-///
-/// `seq` liền mạch kể cả với mảnh stream thô. Đó là điều kiện để kho lưu trữ chép lại
-/// nguyên văn cả sổ mà không phải đánh số lại — và để bất kỳ ai cũng phát hiện được một
-/// lỗ hổng chỉ bằng phép so sánh chỉ số.
+/// Envelope around each event. `seq` is gapless even for raw chunks, so a store can copy a log
+/// verbatim without renumbering and anyone can spot a gap by comparing indices.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionEventEnvelope {
     pub seq: Seq,
@@ -308,23 +283,20 @@ pub struct SessionEventEnvelope {
     pub time: i64,
     #[serde(flatten)]
     pub event: SessionEvent,
-    /// Vắng nghĩa là **bắt buộc**: reader không hiểu loại này thì phải từ chối cả sổ.
+    /// Absent means mandatory: a reader that does not understand the type must reject the whole log.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ignorable: Option<bool>,
-    /// Những seq đã đẻ ra sự kiện này. Với `replace`, đây là toàn bộ node bị che.
+    /// The seqs that produced this event; for `replace`, every shadowed node.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_event_seqs: Option<Vec<Seq>>,
-    /// Bắt buộc trên sự kiện surface, và cấm trên mọi loại khác.
+    /// Required on surface events, forbidden on every other type.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub surface_op: Option<SurfaceOp>,
 }
 
 impl SessionEventEnvelope {
-    /// Dựng lại từ các cột đã lưu, và thi hành hai luật đọc.
-    ///
-    /// Luật thứ nhất: loại lạ mà không tự nhận bỏ qua được thì từ chối cả sổ.
-    /// Luật thứ hai: `surface_op` chỉ được có mặt trên đúng ba loại surface — nếu không,
-    /// phép chiếu sẽ nhìn thấy một lịch sử khác với thứ đã thật sự gửi cho mô hình.
+    /// Rebuild from stored columns and enforce two read rules: an unknown type that is not skippable
+    /// rejects the log, and `surface_op` may appear only on the three surface types.
     pub fn from_parts(
         seq: Seq,
         time: i64,
@@ -364,8 +336,7 @@ impl SessionEventEnvelope {
     }
 }
 
-/// `SessionError` cầm `&'static str`; danh sách loại surface là hằng, còn loại lạ thì
-/// gộp về một nhãn chung thay vì rò rỉ một chuỗi có vòng đời ngắn hơn.
+/// `SessionError` holds a `&'static str`, so unknown types collapse to one label rather than leaking a short-lived string.
 fn surface_name(name: &str) -> &'static str {
     SURFACE_TYPES
         .iter()

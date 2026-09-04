@@ -1,14 +1,6 @@
-//! Seam của crate này, và từ vựng đi qua nó.
-//!
-//! Một seam duy nhất: "có ai trả lời được câu hỏi về ngữ nghĩa mã nguồn không". Bản cài
-//! đặt trong crate này nuôi những tiến trình con trên máy ([`crate::pool::StdioServers`]),
-//! nhưng hình dạng ở đây không nói gì về tiến trình con — nên trỏ nó vào một sandbox từ xa
-//! sau này là thay một provider, không phải sửa tool.
-//!
-//! **Toạ độ ở biên này là 1-based theo ký tự**, giống hệt thứ `read` in ra và thứ con
-//! người đọc. Việc đổi sang 0-based/UTF-16 của LSP nằm gọn trong provider, ở đúng một
-//! chỗ — xem [`crate::pool`]. Để nó rò ra tới seam là mời mỗi consumer tự đổi một lần, và
-//! lệch một cột thì câu trả lời không sai hẳn, nó chỉ trỏ vào ký hiệu bên cạnh.
+//! This crate's seam, and the vocabulary that crosses it.
+//! One seam: can anything answer semantic questions about code? Coordinates here are
+//! 1-based by character, and the conversion to LSP's 0-based/UTF-16 stays in the provider.
 
 use std::path::PathBuf;
 
@@ -17,14 +9,7 @@ use pai_core::ServiceKey;
 
 use crate::error::LspError;
 
-/// Bốn thao tác, và cả bốn đều là thứ tree-sitter **không** làm được.
-///
-/// Ranh giới với `pai-index` là cố ý và cần được giữ: `symbol_search` và `outline` trả lời
-/// "cái tên này khai ở đâu" bằng cú pháp thuần tuý, chạy offline, không cần cài gì. Những
-/// gì ở đây đòi một trình biên dịch: đi tới định nghĩa qua nhiều tệp và qua `use`, tìm mọi
-/// nơi *tham chiếu* (không phải mọi nơi trùng chữ), kiểu suy ra được, và lỗi biên dịch
-/// thật. Thêm một thao tác vào đây mà tree-sitter cũng làm được là thêm một tool thứ hai
-/// cho cùng một câu hỏi, rồi mô hình phải đoán xem cái nào đúng.
+/// Four operations, all of them things tree-sitter cannot do; keeping the boundary with `pai-index` means the model is never left choosing between two tools for one question.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Operation {
     Definition,
@@ -43,14 +28,13 @@ impl Operation {
         }
     }
 
-    /// `diagnostics` nói về cả tệp, ba cái kia nói về một con trỏ. Phân biệt ở đây để chỗ
-    /// kiểm tham số không phải chép lại danh sách.
+    /// `diagnostics` is about a whole file, the other three about a cursor; distinguished here so argument checking need not repeat the list.
     pub fn needs_position(self) -> bool {
         !matches!(self, Operation::Diagnostics)
     }
 }
 
-/// Một câu hỏi: thao tác nào, ở tệp nào, tại con trỏ nào (1-based).
+/// One question: which operation, in which file, at which cursor (1-based).
 #[derive(Clone, Debug)]
 pub struct Query {
     pub op: Operation,
@@ -59,21 +43,20 @@ pub struct Query {
     pub column: u32,
 }
 
-/// Một chỗ trong mã, đã quy về toạ độ mà con người và `read` cùng dùng.
+/// A place in the code, in the coordinates humans and `read` share.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {
-    /// Tương đối với thư mục làm việc khi nằm trong đó, tuyệt đối khi không.
+    /// Relative to the working directory when inside it, absolute when not.
     pub path: String,
     pub line: u32,
     pub column: u32,
-    /// Dòng mã ở đó, đã cắt hai đầu. Rỗng khi tệp nằm ngoài thư mục làm việc: ranh giới
-    /// của `pai-fs` không có ngoại lệ cho crate này.
+    /// The line of code there, trimmed; empty when the file is outside the working directory, since `pai-fs` boundaries have no exception for this crate.
     pub text: String,
-    /// `read` với tới được không. Nói ra để mô hình không đi đọc một tệp nó sẽ bị từ chối.
+    /// Can `read` reach it? Stated so the model does not go read a file it will be refused.
     pub reachable: bool,
 }
 
-/// Một chẩn đoán của trình biên dịch.
+/// One compiler diagnostic.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Note {
     pub line: u32,
@@ -83,11 +66,7 @@ pub struct Note {
     pub message: String,
 }
 
-/// Câu trả lời, kèm một điều server nói về chính nó.
-///
-/// `busy` là "server còn đang lập chỉ mục". Nó đi kèm **mọi** dạng câu trả lời chứ không
-/// chỉ dạng rỗng, vì một danh sách tham chiếu thu được giữa lúc đang nạp là một danh sách
-/// *thiếu*, và mô hình cần biết nó thiếu chứ không phải nó đủ.
+/// The answer, plus one thing the server says about itself: `busy` means still indexing, and it rides along with every answer shape, because a partial reference list must not read as complete.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Answer {
     Locations {
@@ -107,14 +86,13 @@ pub enum Answer {
 
 #[async_trait]
 pub trait LanguageServers: Send + Sync + 'static {
-    /// Ngôn ngữ nào **thật sự** có server trên máy này. Danh sách rỗng thì plugin đã không
-    /// đăng ký tool nào — xem [`crate::plugin`].
+    /// Which languages actually have a server on this machine; an empty list means the plugin registered no tool.
     fn languages(&self) -> Vec<String>;
 
     async fn ask(&self, query: &Query) -> Result<Answer, LspError>;
 }
 
-/// Không có provider = không có tool `lsp`, và mọi thứ khác vẫn chạy.
+/// No provider means no `lsp` tool, and everything else still works.
 pub enum Lsp {}
 impl ServiceKey for Lsp {
     type Api = dyn LanguageServers;

@@ -19,8 +19,7 @@ schemars = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
-# Nói MCP với tiến trình con. Chỉ cần nửa client và transport stdio: crate này không phơi
-# gì ra ngoài, nó chỉ gọi đi.
+# Speaks MCP to a child process: only the client half and stdio transport are needed.
 rmcp = { workspace = true }
 
 [dev-dependencies]

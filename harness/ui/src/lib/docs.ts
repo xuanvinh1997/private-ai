@@ -1,6 +1,7 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { inTauri } from "./agent";
+import { S, t, type Msg } from "./i18n";
 import type {
   DocumentFormat,
   DocumentHit,
@@ -9,37 +10,20 @@ import type {
   LibraryStats,
 } from "./protocol";
 
-/**
- * Sáu lệnh của thư viện tài liệu.
- *
- * Chia lỗi theo đúng ranh giới của `projects.ts`, và ranh giới đó là "người dùng có vừa
- * bấm một cú và đang đứng chờ không":
- *
- *   - `listDocuments` và `libraryStats` chạy lúc mở màn hình, nên **nuốt lỗi** và trả về
- *     một giá trị rỗng nhưng nói thật. Một hộp lỗi ở đó chặn mất cả màn hình vì một con
- *     số thống kê.
- *   - `addDocuments`, `removeDocument`, `searchDocuments` **ném ra ngoài**. Cả ba đều đi
- *     sau một cú bấm, và im lặng sau một cú bấm không phân biệt được với "đang chậm".
- */
+/** The document library commands. Screen-load calls swallow errors and return honest empty values; anything
+ * behind a click throws, because silence after a click is indistinguishable from slowness. */
 
 export async function listDocuments(): Promise<DocumentView[]> {
   if (!inTauri()) return [];
   try {
     return await invoke<DocumentView[]>("list_documents");
   } catch (err) {
-    console.error("không đọc được danh sách tài liệu", err);
+    console.error("failed to list documents", err);
     return [];
   }
 }
 
-/**
- * Sức khoẻ thư viện.
- *
- * Khi không hỏi được, trả về `semanticReady: false` kèm `reason` nói đúng chuyện đã xảy
- * ra — chứ không phải một bản thống kê rỗng trông như một thư viện trống. Hai thứ đó dẫn
- * người dùng đi hai đường khác nhau: một bên là nạp thêm tài liệu, một bên là mở lại ứng
- * dụng.
- */
+/** Library health; when unreachable it reports `semanticReady: false` with a reason, not stats that look empty. */
 export async function libraryStats(): Promise<LibraryStats> {
   const unknown: LibraryStats = {
     documents: 0,
@@ -47,14 +31,13 @@ export async function libraryStats(): Promise<LibraryStats> {
     embeddedChunks: 0,
     embedder: null,
     semanticReady: false,
-    reason: "Không hỏi được tình trạng thư viện.",
+    reason: t(S.docs.error.stats),
     root: "",
     filesSeen: 0,
     filesSkipped: 0,
     unreadable: 0,
     excluded: 0,
-    // `null` chứ không phải `0`: chưa hỏi được thì cũng chưa biết đã quét lần nào chưa,
-    // và `0` ở đây sẽ hiện thành "quét lúc 1/1/1970".
+    // `null`, not `0`: we do not know whether a scan ever ran, and `0` would render as 1/1/1970.
     scannedAt: null,
     scanning: null,
   };
@@ -62,19 +45,12 @@ export async function libraryStats(): Promise<LibraryStats> {
   try {
     return await invoke<LibraryStats>("library_stats");
   } catch (err) {
-    console.error("không đọc được tình trạng thư viện", err);
+    console.error("failed to read library stats", err);
     return unknown;
   }
 }
 
-/**
- * Nạp thêm tài liệu, tiến trình đi qua `Channel`.
- *
- * Trả về danh sách tài liệu **sau khi nạp**, không phải danh sách vừa thêm: một lô hai
- * mươi tệp có thể hỏng một tệp, và chỗ gọi cần bức tranh đúng của cả thư viện chứ không
- * cần ghép hai mảnh lại. Tệp hỏng đi ra qua `onProgress` với `error` khác `null`, còn
- * mười chín tệp kia vẫn vào — nên lệnh này chỉ ném khi *cả lô* không chạy được.
- */
+/** Ingest documents, progress over a `Channel`; returns the library after ingest, and throws only if the whole batch fails. */
 export function addDocuments(
   paths: string[],
   onProgress: (p: IngestProgress) => void,
@@ -84,14 +60,8 @@ export function addDocuments(
   return invoke<DocumentView[]>("add_documents", { paths, onProgress: channel });
 }
 
-/** Bỏ một tài liệu khỏi thư viện, kèm mọi đoạn đã cắt từ nó. */
-/**
- * Quét lại thư mục dự án.
- *
- * Chạy khi mở màn hình thư viện, không phải khi người dùng bấm một nút: thư mục là thư
- * viện, và bắt họ bấm "quét" để thấy tệp của chính mình là bắt họ làm việc của máy. Lõi
- * bỏ qua tệp không đổi nên lần chạy thứ hai gần như miễn phí.
- */
+/** Remove a document from the library, along with every chunk cut from it. */
+/** Rescan the project directory on screen open, not on a button: the core skips unchanged files, so it is near free. */
 export function syncLibrary(onProgress: (p: IngestProgress) => void): Promise<DocumentView[]> {
   if (!inTauri()) return Promise.resolve([]);
   const channel = new Channel<IngestProgress>();
@@ -99,12 +69,7 @@ export function syncLibrary(onProgress: (p: IngestProgress) => void): Promise<Do
   return invoke<DocumentView[]>("sync_library", { onProgress: channel });
 }
 
-/**
- * Xử lý lại cả thư viện, sau một cú bấm.
- *
- * Ném ra ngoài chứ không nuốt như `syncLibrary`: người dùng vừa bấm một nút và đang đứng
- * chờ, nên im lặng ở đây không phân biệt được với "đang chậm".
- */
+/** Reprocess the whole library after a click; throws rather than swallowing, unlike `syncLibrary`. */
 export function reprocessLibrary(
   onProgress: (p: IngestProgress) => void,
 ): Promise<DocumentView[]> {
@@ -117,26 +82,12 @@ export function removeDocument(id: string): Promise<void> {
   return invoke("remove_document", { id });
 }
 
-/**
- * Tìm thử trong thư viện.
- *
- * `limit` có mặc định vì một ô thử tìm không phải chỗ đọc hết kết quả: nó tồn tại để trả
- * lời "thư viện có tìm ra thứ này không", và câu trả lời đó nằm ở vài kết quả đầu.
- */
+/** Probe search: `limit` has a default because the probe answers "can the library find this", not "show me everything". */
 export function searchDocuments(query: string, limit = 8): Promise<DocumentHit[]> {
   return invoke<DocumentHit[]>("search_documents", { query, limit });
 }
 
-/**
- * Hộp thoại chọn tệp của hệ điều hành. Mảng rỗng = người dùng bấm huỷ.
- *
- * Vùng thả tệp là lối nhanh nhất nhưng không phải lối duy nhất được: kéo thả không có
- * ngoài Tauri, và không phải ai cũng có sẵn một cửa sổ Finder mở cạnh ứng dụng.
- *
- * Không lọc theo đuôi tệp ở đây. Danh sách định dạng đọc được nằm ở phía Rust, và một
- * bản sao ở giao diện sẽ lệch đúng vào lúc phía kia thêm một định dạng mới — người dùng
- * gặp một hộp thoại từ chối chính cái tệp mà lõi đọc được.
- */
+/** OS file dialog; an empty array means the user cancelled. Unfiltered, since the readable-format list lives in Rust. */
 export async function pickDocuments(): Promise<string[]> {
   if (!inTauri()) return [];
   const picked = await open({ directory: false, multiple: true });
@@ -144,29 +95,13 @@ export async function pickDocuments(): Promise<string[]> {
   return Array.isArray(picked) ? picked : [picked];
 }
 
-/* ── Vài hàm hiển thị, để bảng tài liệu không tự bịa cách gọi tên ───────────── */
-
-const FORMAT_LABEL: Record<DocumentFormat, string> = {
-  pdf: "PDF",
-  docx: "Word",
-  markdown: "Markdown",
-  text: "Văn bản",
-  html: "HTML",
-  csv: "CSV",
-  code: "Mã nguồn",
-};
+/* --- Display helpers, so the document table does not invent its own naming --- */
 
 export function formatLabel(format: DocumentFormat): string {
-  return FORMAT_LABEL[format];
+  return t(S.docs.format[format]);
 }
 
-/**
- * Kích thước tệp cho mắt người.
- *
- * Chia 1024 chứ không chia 1000, và làm tròn một chữ số thập phân từ mức MB trở lên:
- * dưới mức đó chữ số thập phân chỉ là nhiễu, còn từ mức đó trở lên "2 MB" và "2,4 MB" là
- * hai tệp khác nhau về thời gian nạp.
- */
+/** Human file size, base 1024, one decimal from MB up, where the fraction is a real difference in load time. */
 export function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   const kb = bytes / 1024;
@@ -176,17 +111,18 @@ export function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(1)} GB`;
 }
 
-/** Ba trạng thái nhúng, tách ra khỏi JSX vì cả bảng lẫn dải thống kê đều cần đọc nó. */
+/** Three embedding states, kept out of JSX because both the table and the stats strip read them. */
 export type EmbedState = "embedded" | "queued" | "failed";
 
-/**
- * `embedded === false` mà `error === null` là **đang xếp hàng**, không phải hỏng.
- *
- * Gộp hai thứ đó lại là lỗi tốn kém nhất của màn hình này: người dùng thấy một tệp hoàn
- * toàn bình thường bị đánh dấu hỏng sẽ xoá đi nạp lại, và lần nạp lại cũng "hỏng" y như
- * vậy cho tới khi hàng đợi chạy xong.
- */
+/** `embedded === false` with `error === null` means queued, not failed; conflating the two makes users re-add good files. */
 export function embedState(doc: DocumentView): EmbedState {
   if (doc.error !== null) return "failed";
   return doc.embedded ? "embedded" : "queued";
+}
+
+/** Translated ingest stage name; `stage` is a core key, and an unknown one is returned verbatim rather than blank. */
+export function stageLabel(stage: string): string {
+  const table: Record<string, Msg> = S.docs.stage;
+  const msg = table[stage];
+  return msg === undefined ? stage : t(msg);
 }

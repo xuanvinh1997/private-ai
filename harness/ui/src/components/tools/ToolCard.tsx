@@ -1,24 +1,30 @@
 import { createSignal, createUniqueId, Show, type JSX } from "solid-js";
+import { S, t } from "../../lib/i18n";
+import type { Msg } from "../../lib/i18n";
 import type { ToolCall } from "../../lib/protocol";
 import Icon from "../Icon";
-import { Disclosure, StateDot, type DotState } from "../primitives";
+import { Disclosure, StateDot, stateLabel, type DotState } from "../primitives";
 
-/** Nhãn tiếng Việt cho tên tool trên wire. Tên lạ thì hiện nguyên tên. */
-const TOOL_LABEL: Record<string, string> = {
-  read: "Đọc tệp",
-  write: "Ghi tệp",
-  edit: "Sửa tệp",
-  glob: "Tìm tệp",
-  grep: "Tìm trong tệp",
-  bash: "Chạy lệnh",
-  job_output: "Đầu ra tiến trình",
-  job_kill: "Dừng tiến trình",
-  todo_write: "Danh sách việc",
+/** Labels for wire tool names; an unknown name is shown as it is. */
+const TOOL_LABEL: Record<string, Msg> = {
+  read: S.tools.name.read,
+  write: S.tools.name.write,
+  edit: S.tools.name.edit,
+  glob: S.tools.name.glob,
+  grep: S.tools.name.grep,
+  bash: S.tools.name.bash,
+  job_output: S.tools.name.jobOutput,
+  job_kill: S.tools.name.jobKill,
+  todo_write: S.tools.name.todoWrite,
 };
 
-export const toolLabel = (name: string): string => TOOL_LABEL[name] ?? name;
+// Translated at the call site, so the label follows the language without changing the signature.
+export const toolLabel = (name: string): string => {
+  const msg = TOOL_LABEL[name];
+  return msg === undefined ? name : t(msg);
+};
 
-/** Rút gọn một giá trị đối số xuống một dòng đọc lướt được. */
+/** Shorten an argument value to a single skimmable line. */
 function short(value: unknown, max = 48): string {
   const text =
     typeof value === "string" ? value : value === undefined ? "" : JSON.stringify(value) ?? "";
@@ -47,26 +53,10 @@ const DEFAULT_STATE: Record<ToolCall["state"], DotState> = {
   error: "error",
 };
 
-const STATE_TEXT: Record<ToolCall["state"], string> = {
-  running: "đang chạy",
-  ok: "xong",
-  error: "lỗi",
-};
-
-/**
- * Khung chung của mọi thẻ tool.
- *
- * Mọi thẻ dùng chung khung này để hàng tiêu đề luôn ở cùng một chỗ dù nội dung bên
- * dưới khác hẳn nhau — mắt tìm trạng thái ở một vị trí cố định, không phải đọc lại bố
- * cục cho từng loại tool.
- *
- * Cả hàng tiêu đề là nút gập: một lượt sửa mã dài có hai chục thẻ, và người đọc lại bản
- * ghi cần gập được thứ họ đã xem qua. Viền mảnh và nền chìm hơn tin nhắn một bậc, vì
- * thẻ tool là *việc trợ lý làm*, không phải *điều trợ lý nói*.
- */
+/** Shared frame for every tool card: one fixed header row, and the whole row folds. */
 export function ToolShell(props: {
   call: ToolCall;
-  /** Ghi đè chấm trạng thái — `bash` cần đỏ khi exit code khác 0 dù không phải lỗi tool. */
+  /** Override the state dot: `bash` needs red on a non-zero exit, which is not a tool error. */
   state?: DotState;
   summary?: JSX.Element;
   defaultOpen?: boolean;
@@ -78,7 +68,10 @@ export function ToolShell(props: {
   return (
     <section
       class="ml-[calc(var(--avatar)+var(--sp-md))] flex flex-col overflow-hidden rounded-panel border border-line bg-surface-soft"
-      aria-label={`${toolLabel(props.call.name)} — ${STATE_TEXT[props.call.state]}`}
+      aria-label={t(S.tools.card.aria, {
+        name: toolLabel(props.call.name),
+        state: t(stateLabel(DEFAULT_STATE[props.call.state])),
+      })}
     >
       <button
         type="button"
@@ -90,8 +83,7 @@ export function ToolShell(props: {
       >
         <StateDot state={props.state ?? DEFAULT_STATE[props.call.state]} />
         <span class="shrink-0 text-xs font-medium text-ink">{toolLabel(props.call.name)}</span>
-        {/* Tên trên wire chỉ hiện khi nhãn khác nó — với tool từ MCP thì hai thứ trùng
-            nhau, và lặp lại một chuỗi dài như `mcp__jira__...` hai lần chỉ tổ chật hàng. */}
+        {/* Show the wire name only when it differs from the label, or MCP names print twice. */}
         <Show when={toolLabel(props.call.name) !== props.call.name}>
           <code class="shrink-0 rounded-btn bg-[var(--overlay-faint)] px-3xs font-mono text-2xs text-faint">
             {props.call.name}
@@ -119,23 +111,18 @@ export function ToolShell(props: {
   );
 }
 
-/**
- * Thẻ mặc định cho tool chưa có renderer riêng.
- *
- * Không gian khoá của sổ đăng ký là mở — một tool đến từ MCP sẽ không bao giờ có thẻ
- * riêng. Thẻ này phải luôn hiện được *cái gì đó*: tên, đối số thô, kết quả thô.
- */
+/** Fallback card: an MCP tool has no card of its own, so always show name, args and result. */
 export default function GenericToolCard(props: { call: ToolCall }) {
   return (
     <ToolShell call={props.call} summary={summarizeArgs(props.call.args)} defaultOpen={false}>
-      <Disclosure label="Đối số">
+      <Disclosure label={t(S.tools.card.args)}>
         <pre class="max-h-64 overflow-auto rounded-panel bg-surface px-sm py-2xs font-mono text-2xs whitespace-pre text-text">
           {prettyArgs(props.call.args)}
         </pre>
       </Disclosure>
       <Show when={props.call.preview}>
         {(preview) => (
-          <Disclosure label="Kết quả" hint={`${preview().length} ký tự`}>
+          <Disclosure label={t(S.tools.card.result)} hint={t(S.tools.card.chars, { n: preview().length })}>
             <pre class="max-h-64 overflow-auto rounded-panel bg-surface px-sm py-2xs font-mono text-2xs whitespace-pre-wrap text-text">
               {preview()}
             </pre>

@@ -1,8 +1,6 @@
-//! `outline` — bản đồ ký hiệu của một tệp.
-//!
-//! Lý do tồn tại: một tệp hai nghìn dòng tốn khoảng hai mươi nghìn token để đọc, và
-//! thường thì mô hình chỉ cần biết trong đó có gì để chọn ra ba mươi dòng đáng đọc. Cái
-//! bản đồ đó tốn vài trăm token.
+//! `outline` — a file's symbol map.
+//! A two-thousand-line file costs about twenty thousand tokens to read; usually the model
+//! only needs to know what is in it to pick thirty lines. The map costs a few hundred.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -17,7 +15,7 @@ use serde_json::json;
 use crate::index::SymbolIndex;
 use crate::symbol::Symbol;
 
-/// Bao nhiêu dòng được hiện trong thẻ giao diện. Phần dư vẫn nằm nguyên trong content.
+/// How many lines the UI card shows; the remainder still goes out in the content.
 const DISPLAY_CAP: usize = 250;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -39,7 +37,7 @@ impl Outline {
     }
 }
 
-/// Lồng nhau thì thụt vào. Một tầng là đủ: quan hệ duy nhất chỉ mục lưu là cha trực tiếp.
+/// Nested items are indented; one level is enough, as the index stores only the direct parent.
 fn line(symbol: &Symbol) -> String {
     let indent = if symbol.parent.is_some() { "  " } else { "" };
     format!(
@@ -72,9 +70,7 @@ impl Tool for Outline {
             serde_json::from_value(serde_json::Value::Object(call.arguments.clone()))
                 .map_err(|err| ToolError::Invalid(err.to_string()))?;
 
-        // Chuẩn hoá trước, kiểm tra sau — và luật đó áp cho đường dẫn của tool này y hệt
-        // như cho `read`. Một chỉ mục trả lời được câu hỏi "tệp ngoài gốc có những hàm
-        // nào" là một đường vòng quanh chính cái gốc đó.
+        // Resolve then check, exactly as `read` does: an index that answers about files outside the roots bypasses them.
         let path = self
             .roots
             .resolve_read(Path::new(&args.file_path))

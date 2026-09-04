@@ -1,10 +1,6 @@
-//! `code.overview` — bản đồ kiến trúc, đọc trước khi đọc mã.
-//!
-//! Lý do tồn tại giống hệt `outline`, chỉ khác bậc: `outline` cứu mô hình khỏi việc đọc
-//! cả một tệp để biết trong đó có gì; tool này cứu nó khỏi việc `ls` và `read` mười lăm
-//! lần để biết trong repo có gì. Cái nó trả về không phải cây thư mục — `glob` đã làm
-//! được — mà là **chỗ đông ký hiệu nhất** và **chỗ nhiều cạnh nhất**, tức là hai câu trả
-//! lời cho cùng một câu hỏi "bắt đầu đọc từ đâu".
+//! `code.overview` — the architecture map, read before reading code.
+//! Same idea as `outline` one level up: not a directory tree, which `glob` already gives,
+//! but the densest directories and the busiest symbols — where to start reading.
 
 use std::sync::Arc;
 
@@ -17,8 +13,7 @@ use serde_json::json;
 use crate::graph::NAME_BASED_NOTICE;
 use crate::index::SymbolIndex;
 
-/// Không tham số. Một struct rỗng chứ không phải bỏ trắng schema: `json_schema_for` cần
-/// một kiểu, và một object schema rỗng là thứ nói với mô hình "đừng gửi gì cả".
+/// No parameters; an empty struct rather than no schema, since an empty object schema tells the model to send nothing.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct OverviewArgs {}
 

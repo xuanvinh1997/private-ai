@@ -1,31 +1,26 @@
+import { S, locale, t } from "./i18n";
 import type { SessionSummary } from "./protocol";
 
-/** Ngày giờ tương đối, đủ thô để không phải cập nhật mỗi giây. */
+/** Language tag for `toLocaleDateString`: dates must follow the UI language or "15/01/2024" is ambiguous. */
+const dateLocale = (): string => (locale() === "vi" ? "vi-VN" : "en-US");
+
+/** Relative time, coarse enough that it need not refresh every second. */
 export function relativeTime(at: number, now = Date.now()): string {
   const minutes = Math.round((now - at) / 60_000);
-  if (minutes < 1) return "vừa xong";
-  if (minutes < 60) return `${minutes} phút trước`;
+  if (minutes < 1) return t(S.libs.time.justNow);
+  if (minutes < 60) return t(S.libs.time.minutes, { n: minutes });
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `${hours} giờ trước`;
+  if (hours < 24) return t(S.libs.time.hours, { n: hours });
   const days = Math.round(hours / 24);
-  return days < 30 ? `${days} ngày trước` : new Date(at).toLocaleDateString("vi-VN");
+  return days < 30 ? t(S.libs.time.days, { n: days }) : new Date(at).toLocaleDateString(dateLocale());
 }
 
-/** Giờ trong ngày cho hàng tiêu đề của một tin nhắn. */
+/** Time of day for a message header row. */
 export function clockTime(at: number): string {
-  return new Date(at).toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+  return new Date(at).toLocaleTimeString(dateLocale(), { hour: "2-digit", minute: "2-digit" });
 }
 
-/**
- * Tiêu đề suy từ tin nhắn **đầu tiên** của người dùng.
- *
- * "Phiên 1/2/3" không nói được phiên nào là phiên nào, và với vài chục hàng trong cột trái
- * thì một danh sách số thứ tự bắt người ta mở từng phiên ra để nhớ. Câu hỏi đầu tiên là thứ
- * gần nhất với "phiên này về cái gì" mà ta có ngay lúc cần đặt tên.
- *
- * Cắt ở **ranh giới từ** rồi mới thêm dấu ba chấm: cắt giữa từ cho ra những cái tên như
- * "Bỏ hết unwrap trong bộ nạ…", đọc vấp đúng một nhịp mỗi lần liếc qua cột.
- */
+/** Title derived from the *first* user message, truncated at a word boundary so names stay readable at a glance. */
 export function titleFromMessage(text: string, max = 48): string {
   const line = text.trim().split("\n")[0]?.replace(/\s+/g, " ").trim() ?? "";
   if (line === "") return "";
@@ -43,13 +38,7 @@ export interface SessionGroup {
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/**
- * Nhóm phiên theo thời gian.
- *
- * Mốc "hôm nay" tính từ **nửa đêm địa phương**, không phải "trong 24 giờ qua": một phiên
- * lúc 23h hôm qua không phải là "hôm nay", dù nó mới hơn một phiên lúc 1h sáng nay.
- * Nhóm rỗng bị loại luôn — một tiêu đề không có gì bên dưới chỉ làm danh sách dài ra.
- */
+/** Group sessions by time from local midnight, not a rolling 24 hours; empty groups are dropped. */
 export function groupSessions(sessions: SessionSummary[], now = Date.now()): SessionGroup[] {
   const midnight = new Date(now);
   midnight.setHours(0, 0, 0, 0);
@@ -65,22 +54,14 @@ export function groupSessions(sessions: SessionSummary[], now = Date.now()): Ses
 
   return (
     [
-      { id: "today", label: "Hôm nay", sessions: buckets.today },
-      { id: "week", label: "7 ngày qua", sessions: buckets.week },
-      { id: "older", label: "Cũ hơn", sessions: buckets.older },
+      { id: "today", label: t(S.libs.sessionGroup.today), sessions: buckets.today },
+      { id: "week", label: t(S.libs.sessionGroup.week), sessions: buckets.week },
+      { id: "older", label: t(S.libs.sessionGroup.older), sessions: buckets.older },
     ] satisfies SessionGroup[]
   ).filter((group) => group.sessions.length > 0);
 }
 
-/**
- * Bỏ dấu tiếng Việt trước khi so khớp.
- *
- * Gõ "phien" phải tìm ra "phiên". Người đang lọc một danh sách thường gõ không dấu — bật
- * bộ gõ lên chỉ để tìm một hàng là một bước thừa — nên khoá so khớp là chuỗi đã bỏ dấu,
- * còn chuỗi hiển thị giữ nguyên.
- *
- * `đ` không phải `d` cộng dấu tổ hợp nên `NFD` không tách nó ra; phải thay tay.
- */
+/** Strip Vietnamese diacritics for matching, since people filter unaccented; `NFD` misses d-stroke, so replace it. */
 export function foldDiacritics(text: string): string {
   return text
     .normalize("NFD")
@@ -89,12 +70,7 @@ export function foldDiacritics(text: string): string {
     .replace(/đ/g, "d");
 }
 
-/**
- * Điểm khớp của một token, hoặc `null` khi không khớp.
- *
- * Ba bậc, và thứ tự giữa chúng mới là thứ đáng kể chứ không phải giá trị tuyệt đối: khớp
- * từ đầu tiêu đề đứng trên khớp đầu một từ, và cả hai đứng trên khớp lọt giữa từ.
- */
+/** Score one token, or `null` when it does not match; only the ordering of the three tiers matters. */
 function scoreToken(haystack: string, token: string): number | null {
   const at = haystack.indexOf(token);
   if (at < 0) return null;
@@ -102,18 +78,7 @@ function scoreToken(haystack: string, token: string): number | null {
   return /\s/.test(haystack[at - 1] ?? "") ? 2 : 1;
 }
 
-/**
- * Lọc và xếp hạng phiên theo tên.
- *
- * Tách truy vấn thành token rồi bắt **mọi** token phải khớp, thay vì so cả câu như một
- * chuỗi con: người ta gõ mấy mẩu còn nhớ được, không gõ lại đúng thứ tự trong tiêu đề. Nhờ
- * đó "auth sua" tìm ra "Sửa authentication", còn "authx" thì không tìm ra gì — nới thêm
- * nữa (khớp theo ký tự rời rạc) thì mọi truy vấn đều khớp mọi hàng, và một danh sách không
- * bao giờ rỗng thì không lọc được gì.
- *
- * Truy vấn rỗng trả về cả danh sách theo thứ tự mới nhất trước; đó là câu trả lời đúng cho
- * "tôi chưa gõ gì", không phải một danh sách rỗng.
- */
+/** Filter and rank sessions: every query token must match, so word order does not matter; an empty query lists all. */
 export function rankSessions(sessions: SessionSummary[], query: string): SessionSummary[] {
   const tokens = foldDiacritics(query).trim().split(/\s+/).filter((token) => token !== "");
   if (tokens.length === 0) return [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
@@ -133,8 +98,7 @@ export function rankSessions(sessions: SessionSummary[], query: string): Session
     if (total >= 0) scored.push({ session, score: total });
   }
 
-  // Cùng điểm thì phiên mới hơn đứng trước: hai tiêu đề khớp ngang nhau thì cái vừa động
-  // tới gần như luôn là cái đang tìm.
+  // On a tie the newer session wins: with equal titles, the one just touched is almost always the target.
   return scored
     .sort((a, b) => b.score - a.score || b.session.updatedAt - a.session.updatedAt)
     .map((entry) => entry.session);

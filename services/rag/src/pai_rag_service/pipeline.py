@@ -1,26 +1,6 @@
-"""Nạp tài liệu: quét thư mục → rút chữ → cắt đoạn → nhúng → ghi kho.
-
-# Ba bất biến
-
-**1. Một tệp hỏng chỉ làm hỏng chính nó.** Tệp thứ bảy là một PDF cụt thì mười ba tệp
-còn lại vẫn vào thư viện, và tệp hỏng được ghi vào bảng ``failures`` kèm lý do đọc được.
-
-**2. Quét lại một thư mục không đổi thì không rút chữ lại tệp nào.** Dấu vân tay là
-``mtime`` + kích thước. Đây là thứ biến "mở lại dự án" từ một buổi chờ thành một giây.
-
-**3. Nhúng là bước được phép hỏng.** Ollama tắt thì tài liệu **vẫn** được rút chữ, cắt
-đoạn và đưa vào FTS5 — tìm bằng từ khoá chạy ngay. :meth:`Pipeline.embed_pending` dọn nốt
-khi Ollama quay lại. Nếu bước nhúng bắt buộc thì một máy chủ chưa bật biến cả lần nạp
-thành công cốc, và người dùng không có gì trong tay cả.
-
-# Danh tính, và khi nào phải làm lại từ đầu
-
-Ba thứ quyết định ý nghĩa của những gì đã lưu: bản của bộ rút chữ, cách dựng văn bản đem
-nhúng, và model nhúng. Đổi bất cứ cái nào là những gì đang nằm trong kho không còn so
-sánh được với những gì sắp ghi vào. :meth:`Pipeline.open` so cả ba với thứ đã ghi và tự
-dọn — quên dấu vân tay, dựng lại collection — chứ không để người dùng phải biết rằng họ
-vừa cần làm việc đó.
-"""
+"""Ingest: scan folder -> extract -> chunk -> embed -> write store. Three invariants: a
+broken file only breaks itself, an unchanged folder re-extracts nothing (mtime + size),
+and embedding may fail. Extractor, embed-input and model identity trigger a rebuild."""
 
 from __future__ import annotations
 
@@ -35,12 +15,19 @@ from pai_rag_service import store as store_meta
 from pai_rag_service.chunking import SectionAwareSplitter, embedding_text_for
 from pai_rag_service.config import ProjectConfig, RagConfig
 from pai_rag_service.embed import EMBED_INPUT_VERSION, embedder_for
-from pai_rag_service.errors import EmbedError, ExtractError, RagError, VectorStoreError
+from pai_rag_service.errors import (
+    EmbedError,
+    ExtractError,
+    GraphError,
+    RagError,
+    VectorStoreError,
+)
 from pai_rag_service.extract import (
     EXTRACT_VERSION,
     SUPPORTED_EXTENSIONS,
     extract,
 )
+from pai_rag_service.graph import GraphStore
 from pai_rag_service.store import ChunkRow, Store
 from pai_rag_service.vectors import VectorStore
 
@@ -48,15 +35,10 @@ __all__ = ["MAX_FILES", "Pipeline", "SyncReport", "scan"]
 
 log = logging.getLogger(__name__)
 
-#: Bao nhiêu tệp một lần quét chịu nạp.
-#:
-#: Người dùng chỉ vào thư mục Downloads mười nghìn tệp là chuyện có thật, và mười nghìn
-#: lần rút chữ cộng mười nghìn lần gọi bộ nhúng không phải một lần chờ lâu — nó là một
-#: ứng dụng đứng hình cả buổi. Chạm trần thì **nói ra**, không lặng lẽ dừng.
+#: How many files one scan will ingest; pointing at a ten-thousand-file Downloads folder must say it hit the cap rather than stall silently.
 MAX_FILES = 5_000
 
-#: Thư mục không bao giờ chứa tài liệu của người dùng, chỉ chứa thứ máy sinh ra. Quét vào
-#: đây là nạp hàng nghìn tệp mã nguồn của thư viện bên thứ ba vào thư viện tài liệu.
+#: Directories that never hold user documents, only machine output; scanning them would ingest thousands of third-party source files.
 SKIP_DIRS = frozenset(
     {
         ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules", "__pycache__",
@@ -69,18 +51,18 @@ SKIP_DIRS = frozenset(
 
 @dataclass(slots=True)
 class SyncReport:
-    """Kết quả một lần đồng bộ, đủ để giao diện nói ra chuyện gì đã xảy ra."""
+    """Result of one sync, enough for the UI to say what happened."""
 
     scanned: int = 0
     ingested: int = 0
     skipped_unchanged: int = 0
     failed: list[tuple[str, str]] = field(default_factory=list)
     embedded_chunks: int = 0
-    #: Tệp bị bỏ qua vì chạm :data:`MAX_FILES`.
+    #: Files skipped because :data:`MAX_FILES` was reached.
     over_limit: int = 0
-    #: Tệp còn trong thư mục nhưng người dùng đã bỏ khỏi thư viện.
+    #: Files still in the folder that the user removed from the library.
     excluded: int = 0
-    #: Lý do phần ngữ nghĩa chưa sẵn sàng, khi nó chưa sẵn sàng.
+    #: Why the semantic half is not ready, when it is not.
     embed_error: str | None = None
     rebuilt: bool = False
 
@@ -99,7 +81,7 @@ class SyncReport:
 
 
 def scan(root: Path, limit: int = MAX_FILES) -> tuple[list[Path], int]:
-    """Tệp đọc được trong thư mục dự án, và số tệp bị bỏ vì chạm trần."""
+    """Readable files in the project folder, plus how many were dropped at the cap."""
     found: list[Path] = []
     over = 0
     for path in _walk(root):
@@ -113,15 +95,15 @@ def scan(root: Path, limit: int = MAX_FILES) -> tuple[list[Path], int]:
 
 
 def _walk(root: Path) -> Iterator[Path]:
-    """Đi cây thư mục, bỏ qua thư mục máy sinh và tệp ẩn."""
+    """Walk the tree, skipping machine-generated directories and hidden files."""
     stack = [root]
     while stack:
         current = stack.pop()
         try:
             entries = list(current.iterdir())
         except (PermissionError, OSError) as err:
-            # Một thư mục không đọc được không được làm hỏng cả lần quét.
-            log.debug("bỏ qua thư mục %s: %s", current, err)
+            # An unreadable directory must not break the whole scan.
+            log.debug("skipping directory %s: %s", current, err)
             continue
         for entry in entries:
             name = entry.name
@@ -137,13 +119,7 @@ def _walk(root: Path) -> Iterator[Path]:
 
 
 def document_id(root: Path, path: Path) -> str:
-    """Mã ổn định của một tài liệu, suy từ đường dẫn tương đối.
-
-    Băm chứ không dùng thẳng đường dẫn: mã này đi vào tên nhãn Neo4j và khoá payload
-    Qdrant, mà đường dẫn Windows có dấu hai chấm, dấu gạch ngược và khoảng trắng. Băm
-    theo đường dẫn **tương đối** để di chuyển cả thư mục dự án không đổi mã của mọi
-    tài liệu trong đó.
-    """
+    """Stable document id from the relative path; hashed because it goes into graph labels and Qdrant payload keys, and relative so moving the project folder keeps every id."""
     try:
         rel = path.relative_to(root).as_posix()
     except ValueError:
@@ -152,7 +128,7 @@ def document_id(root: Path, path: Path) -> str:
 
 
 class Pipeline:
-    """Nạp và giữ đồng bộ thư viện của một dự án."""
+    """Ingests and keeps one project's library in sync."""
 
     def __init__(self, config: RagConfig, project: ProjectConfig) -> None:
         self.config = config
@@ -163,10 +139,19 @@ class Pipeline:
             chunk_size=config.chunk.size, chunk_overlap=config.chunk.overlap
         )
         self.vectors = VectorStore(config.vectors, config.collection(project))
+        # Built even when the store is unreachable: `GraphStore` connects on first use, so a graph
+        # that is down costs nothing until something asks it a question.
+        self.graph = (
+            GraphStore(config.graph, config.graph_url(project), config.graph_database(project))
+            if config.graph.enabled
+            else None
+        )
         self._embedder = None
 
     def close(self) -> None:
         self.store.close()
+        if self.graph is not None:
+            self.graph.close()
 
     def __enter__(self) -> Pipeline:
         return self
@@ -174,7 +159,7 @@ class Pipeline:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    # -- danh tính ---------------------------------------------------------------------
+    # -- identity --------------------------------------------------------------------------
 
     @property
     def embedder(self):
@@ -183,10 +168,7 @@ class Pipeline:
         return self._embedder
 
     def reconcile(self) -> bool:
-        """So danh tính đang chạy với danh tính đã ghi, và dọn khi lệch.
-
-        Trả về ``True`` khi có gì đó phải làm lại. Xem docstring của module.
-        """
+        """Compare running identity with stored identity and clean up on drift; `True` when something must be redone."""
         seen = self.store.identity()
         model = self.config.embedding.model
         stale_extract = seen["extract"] != str(EXTRACT_VERSION)
@@ -194,11 +176,10 @@ class Pipeline:
         stale_model = seen["embedder"] not in (None, model)
 
         if stale_extract or stale_input:
-            # Cách đọc tệp hoặc cách dựng văn bản nhúng đã đổi: mọi thứ phải đi lại từ
-            # đầu, kể cả những tệp không ai sửa.
+            # How files are read or how embed input is built has changed: everything goes again, untouched files included.
             count = self.store.forget_fingerprints()
             log.info(
-                "bộ rút chữ hoặc đầu vào nhúng đã đổi — sẽ đọc lại %d tài liệu", count
+                "extractor or embed input changed - re-reading %d documents", count
             )
         self.store.set_identity(
             embedder=model,
@@ -208,10 +189,10 @@ class Pipeline:
         )
         return stale_extract or stale_input or stale_model
 
-    # -- nạp ---------------------------------------------------------------------------
+    # -- ingest ----------------------------------------------------------------------------
 
     async def sync(self) -> SyncReport:
-        """Bắt kịp thư mục dự án. Gọi lại bao nhiêu lần cũng được."""
+        """Catch up with the project folder. Safe to call any number of times."""
         report = SyncReport()
         report.rebuilt = self.reconcile()
 
@@ -224,8 +205,7 @@ class Pipeline:
         files, report.over_limit = scan(self.root)
         report.scanned = len(files)
         known = self.store.known_files()
-        # Tệp người dùng đã bỏ khỏi thư viện thì vẫn nằm trong thư mục, nên lần quét nào
-        # cũng thấy nó. Không lọc ở đây thì `remove` là một nút bấm không có tác dụng.
+        # Files the user removed from the library are still on disk, so every scan sees them; without this filter `remove` would be a button that does nothing.
         excluded = self.store.excluded()
 
         for path in files:
@@ -245,39 +225,29 @@ class Pipeline:
                 await self.ingest(path)
                 report.ingested += 1
             except ExtractError as err:
-                # Bất biến 1: ghi lại rồi đi tiếp.
-                #
-                # Ghi vào `failures` **kèm dấu vân tay** vì đây là tính chất của chính
-                # tệp: nó sẽ đọc hỏng y như vậy ở mọi lần thử, cho tới khi người dùng sửa
-                # tệp — mà sửa thì `mtime` đổi và nó tự được thử lại.
+                # Invariant 1: record it and move on. The fingerprint goes into `failures` too, because the file will fail identically until the user edits it - and editing changes `mtime`.
                 self.store.put_failure(str(path), fingerprint[0], fingerprint[1], err.reason)
                 report.failed.append((str(path), err.reason))
             except RagError as err:
-                # Lỗi hạ tầng — Qdrant chết, máy chủ nhúng không trả lời — thì **không**
-                # ghi vào `failures`. Ghi vào đó là đóng dấu vân tay lên một tệp hoàn toàn
-                # lành, và lần quét sau sẽ thấy nó "không đổi" rồi bỏ qua vĩnh viễn: một
-                # sự cố mười giây biến thành một tài liệu không bao giờ vào thư viện.
-                # Báo trong report để người dùng thấy, rồi thử lại ở lần sync kế tiếp.
+                # Infrastructure errors do *not* go into `failures`: fingerprinting a healthy file would make the next scan see it "unchanged" and skip it forever.
                 report.failed.append((str(path), str(err)))
 
-        # Nhúng sau cùng, một lượt cho cả mẻ: gọi bộ nhúng theo lô lớn rẻ hơn nhiều so với
-        # gọi từng tài liệu, và nó cũng gom mọi đoạn còn nợ từ những lần trước.
+        # Embed last, once for the whole batch: large batches are far cheaper than per-document calls, and this also sweeps up chunks owed from earlier runs.
         try:
             report.embedded_chunks = await self.embed_pending()
         except (EmbedError, VectorStoreError) as err:
-            # Bất biến 3: nhúng hỏng không làm hỏng lần nạp.
+            # Invariant 3: a failed embedding does not fail the ingest.
             report.embed_error = str(err)
-            log.warning("chưa nhúng được: %s", err)
+            log.warning("embedding not done yet: %s", err)
 
-        # Ghi lại lượt quét này. Giao diện đọc ba con số ấy để nói "quét 240 tệp lúc
-        # 14:05, bỏ qua 3" ngay khi vừa mở dự án — trước cả lần quét đầu của phiên mới.
+        # Record this scan; the UI reads these three numbers to describe the last scan before the session's own first scan runs.
         self.store.set_meta(store_meta.META_SCAN_FILES, str(report.scanned))
         self.store.set_meta(store_meta.META_SCAN_SKIPPED, str(report.over_limit))
         self.store.set_meta(store_meta.META_SCAN_AT, str(int(time.time() * 1000)))
         return report
 
     async def ingest(self, path: Path) -> str:
-        """Rút chữ, cắt đoạn và ghi một tệp vào kho. Trả về mã tài liệu."""
+        """Extract, chunk and write one file into the store. Returns the document id."""
         got = await extract(path, vision=self.config.vision, ocr=self.config.ocr)
         chunks = self.splitter.split(got.text)
         if not chunks:
@@ -285,20 +255,12 @@ class Pipeline:
 
         stat = path.stat()
         doc_id = document_id(self.root, path)
-        # Dọn vector cũ của tài liệu này, nhưng **không** để việc đó chặn lần nạp.
-        #
-        # Một tệp bị sửa ngắn đi sẽ để lại vector mồ côi trong Qdrant. Chúng vô hại với
-        # tính đúng đắn của kết quả: phép tìm ánh xạ mã điểm Qdrant về hàng `chunks` bằng
-        # `chunks_by_id`, và một mã không còn hàng nào thì rơi ra khỏi kết quả. Chúng chỉ
-        # tốn chỗ, và lần nhúng kế tiếp ghi đè lên đúng những mã được dùng lại.
-        #
-        # Đổi lại, để `VectorStoreError` thoát ra ở đây là đánh đổi cả bất biến 3: Qdrant
-        # chết thì **không tệp nào** vào được thư viện, kể cả phần rút chữ và FTS5 vốn
-        # không cần Qdrant một chút nào.
+        # Clear this document's old vectors, but never let that block the ingest: orphan vectors are harmless, while letting the error escape would break invariant 3.
         try:
             self.vectors.remove_document(doc_id)
         except VectorStoreError as err:
-            log.debug("chưa dọn được vector cũ của %s: %s", path.name, err)
+            log.debug("could not clear old vectors for %s: %s", path.name, err)
+        self._forget_graph(doc_id)
         self.store.put_document(
             doc_id=doc_id,
             path=str(path),
@@ -311,22 +273,17 @@ class Pipeline:
             chunks=chunks,
         )
         if got.ocr_pages:
-            log.info("%s: đọc %d trang bằng OCR", path.name, len(got.ocr_pages))
+            log.info("%s: read %d pages via OCR", path.name, len(got.ocr_pages))
         return doc_id
 
     async def embed_pending(self) -> int:
-        """Nhúng mọi đoạn chưa có vector. Trả về số đoạn vừa nhúng.
-
-        Gọi được nhiều lần và gọi lúc nào cũng được: đây là đường mà một thư viện đã nạp
-        lúc Ollama tắt đi theo để bắt kịp khi Ollama bật lại.
-        """
+        """Embed every chunk without a vector; the path a library ingested while Ollama was down takes to catch up. Returns how many were embedded."""
         rows = self._all_chunks()
         if not rows:
             return 0
 
         model = self.config.embedding.model
-        # Số chiều chỉ biết được bằng cách nhúng thử một đoạn — nhiều máy chủ không khai
-        # nó ở đâu cả. Nhúng đúng một đoạn, đọc độ dài, rồi mới dựng collection.
+        # The dimension is only knowable by embedding one chunk - many servers publish it nowhere - so probe first, then create the collection.
         probe = await self.embedder.aembed_documents(
             [embedding_text_for(rows[0].section, rows[0].body)]
         )
@@ -335,8 +292,7 @@ class Pipeline:
         dim = len(probe[0])
         rebuilt = self.vectors.ensure(dim=dim, model=model, input_version=EMBED_INPUT_VERSION)
 
-        # Collection vừa dựng lại thì không điểm nào còn; hỏi Qdrant chỉ để nhận lại một
-        # tập rỗng là một vòng gọi thừa.
+        # A freshly rebuilt collection holds no points; asking Qdrant just to get an empty set is a wasted round trip.
         already: set[int] = (
             set() if rebuilt else self.vectors.existing_ids([row.id for row in rows])
         )
@@ -368,11 +324,7 @@ class Pipeline:
         return total
 
     def _all_chunks(self) -> list[ChunkRow]:
-        """Mọi đoạn trong kho, kèm đủ thứ để dựng cả văn bản nhúng lẫn payload.
-
-        Đọc một lần từ SQLite thay vì hỏi lại từng đoạn: mỗi hàng đã mang sẵn
-        ``document_id``, ``ordinal`` và ``page``, nên không có lý do gì để quay lại hỏi.
-        """
+        """Every chunk in the store with all the fields needed for both embed text and payload, read in one pass from SQLite."""
         out: list[ChunkRow] = []
         for doc in self.store.documents():
             offset = 0
@@ -384,15 +336,10 @@ class Pipeline:
                 offset += len(page)
         return out
 
-    # -- xoá ---------------------------------------------------------------------------
+    # -- removal ---------------------------------------------------------------------------
 
     def remove(self, doc_id: str) -> bool:
-        """Bỏ một tài liệu khỏi thư viện. **Không** xoá tệp của người dùng.
-
-        Đánh dấu loại trừ trước khi xoá: đường dẫn chỉ đọc được từ hàng `documents`, mà
-        hàng đó sắp biến mất. Thiếu bước này thì lần quét kế tiếp nạp lại đúng tài liệu
-        vừa bị bỏ.
-        """
+        """Drop a document from the library without deleting the user's file; exclusion is marked first, because the path is only readable from the row about to vanish."""
         row = self.store.document(doc_id)
         if row is not None:
             self.store.exclude(row.path, int(time.time() * 1000))
@@ -400,21 +347,38 @@ class Pipeline:
         try:
             self.vectors.remove_document(doc_id)
         except VectorStoreError as err:
-            # Vector mồ côi vô hại: phép tìm ánh xạ mã điểm về hàng `chunks`, và mã không
-            # còn hàng nào thì rơi ra khỏi kết quả. Đừng để Qdrant chết chặn một nút bấm.
-            log.debug("chưa dọn được vector của %s: %s", doc_id, err)
+            # Orphan vectors are harmless - unmatched ids drop out of results - so a dead Qdrant must not block a button.
+            log.debug("could not clear vectors for %s: %s", doc_id, err)
+        self._forget_graph(doc_id)
         return bool(removed)
+
+    def _forget_graph(self, doc_id: str) -> None:
+        """Clear a document's entities and edges. Same rule as vectors: the graph is an extra
+        strategy, so a store that is down must never block an ingest or a delete button."""
+        if self.graph is None:
+            return
+        try:
+            self.graph.remove_document(doc_id)
+        except GraphError as err:
+            log.debug("could not clear the graph for %s: %s", doc_id, err)
 
     def stats(self) -> dict[str, object]:
         docs, chunks = self.store.counts()
-        # `count()` ném khi không hỏi được, nên `reachable` ở đây nói đúng sự thật thay vì
-        # luôn luôn `True` — xem `VectorStore.count`.
+        # `count()` raises when it cannot ask, so `reachable` here states the truth instead of always being `True`.
         try:
             vectors = self.vectors.count()
             reachable = True
         except VectorStoreError as err:
             vectors, reachable = 0, False
-            log.debug("Qdrant không với tới được: %s", err)
+            log.debug("Qdrant unreachable: %s", err)
+        entities, relations, graph_reachable = 0, 0, False
+        if self.graph is not None:
+            try:
+                entities, relations = self.graph.count()
+                graph_reachable = True
+            except GraphError as err:
+                log.debug("graph unreachable: %s", err)
+
         def number(key: str) -> int:
             raw = self.store.meta(key)
             return int(raw) if raw and raw.isdigit() else 0
@@ -426,6 +390,9 @@ class Pipeline:
             "chunks": chunks,
             "vectors": vectors,
             "qdrant_reachable": reachable,
+            "entities": entities,
+            "relations": relations,
+            "graph_reachable": graph_reachable,
             "embedder": self.config.embedding.model,
             "failures": [
                 {"path": path, "reason": reason} for path, reason in self.store.failures()
@@ -433,8 +400,7 @@ class Pipeline:
             "excluded": len(self.store.excluded()),
             "files_seen": number(store_meta.META_SCAN_FILES),
             "files_skipped": number(store_meta.META_SCAN_SKIPPED),
-            # `None` chứ không phải "bây giờ": chưa quét lần nào là một trạng thái thật,
-            # và bịa ra một mốc thời gian ở đây làm giao diện nói dối.
+            # `None`, not "now": never scanned is a real state, and inventing a timestamp makes the UI lie.
             "scanned_at": number(store_meta.META_SCAN_AT) or None,
         }
 

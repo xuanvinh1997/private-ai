@@ -1,31 +1,16 @@
 import { createEffect, createMemo, createSignal, For, Show } from "solid-js";
 import { useFocusTrap } from "../hooks/useFocusTrap";
+import { S, t } from "../lib/i18n";
 import { rankSessions, relativeTime } from "../lib/sessions";
 import Icon from "./Icon";
 
 import type { SessionSummary } from "../lib/protocol";
 
-/**
- * Bảng lệnh tìm phiên (⌘/Ctrl+K).
- *
- * Chỉ làm một việc: lọc theo tên rồi mở. Nó không cố trở thành bảng lệnh đa năng —
- * thêm hành động vào đây trước khi có hành động thứ hai đáng thêm là cách nhanh nhất
- * biến một ô tìm kiếm thành một menu không ai nhớ nổi.
- *
- * Việc lọc thì nằm ở [`rankSessions`]: bỏ dấu trước khi so, bắt mọi token phải khớp, và
- * xếp hạng theo chỗ khớp rơi vào đâu. Để ở `lib/` vì đó là logic thuần, kiểm chứng được
- * mà không cần dựng DOM.
- *
- * # Ngữ nghĩa ARIA
- *
- * Tiêu điểm **không bao giờ rời ô nhập** — mũi tên chỉ dời một con trỏ vẽ bằng
- * `aria-selected`. Nên ô nhập phải là một `combobox` trỏ vào hàng đang sáng bằng
- * `aria-activedescendant`: thiếu nó thì người dùng trình đọc màn hình bấm mũi tên và
- * **không nghe thấy gì**, vì thứ duy nhất thay đổi là một màu nền.
- */
+/** Session search palette: filter by name and open, nothing else. The ranking lives in [`rankSessions`], since it
+ * is pure logic. Focus never leaves the input, so `aria-activedescendant` is what makes arrow keys audible. */
 export default function SessionPalette(props: {
   sessions: SessionSummary[];
-  /** Phiên đang mở, để đánh dấu nó trong danh sách. */
+  /** The open session, so it can be marked in the list. */
   currentId?: string;
   onPick: (id: string) => void;
   onClose: () => void;
@@ -41,10 +26,7 @@ export default function SessionPalette(props: {
 
   const optionId = (index: number) => `palette-opt-${index}`;
 
-  // Con trỏ đi bằng bàn phím phải kéo theo khung nhìn. Danh sách cuộn được mà con trỏ
-  // không cuộn theo thì bấm mũi tên lần thứ tám là con trỏ biến mất khỏi màn hình, và
-  // Enter mở một phiên người dùng không nhìn thấy. `block: "nearest"` cuộn tối thiểu —
-  // đủ để hàng lọt vào, không giật cả danh sách về giữa.
+  // A keyboard cursor must drag the viewport, or Enter opens a session the user cannot see; `nearest` scrolls minimally.
   createEffect(() => {
     const index = cursor();
     if (matches().length === 0) return;
@@ -78,15 +60,15 @@ export default function SessionPalette(props: {
         ref={panel}
         role="dialog"
         aria-modal="true"
-        aria-label="Tìm phiên"
+        aria-label={t(S.chat.palette.title)}
         class="flex max-h-[60vh] w-full max-w-[520px] flex-col overflow-hidden rounded-card border border-line bg-surface shadow-pop"
       >
         <input
           type="text"
           role="combobox"
           value={query()}
-          placeholder="Tìm phiên…"
-          aria-label="Tên phiên"
+          placeholder={t(S.chat.sessionSearch)}
+          aria-label={t(S.chat.palette.field)}
           aria-controls="palette-results"
           aria-expanded={matches().length > 0}
           aria-autocomplete="list"
@@ -115,14 +97,14 @@ export default function SessionPalette(props: {
               pick();
             }
           }}
-          class="border-b border-line bg-transparent px-(--dialog-pad-x) py-md text-base text-text outline-none transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
+          class="border-b border-line-strong bg-transparent px-(--dialog-pad-x) py-md text-base text-text outline-none transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
         />
         <Show
           when={matches().length > 0}
           fallback={
             <p class="flex items-center gap-2xs px-(--dialog-pad-x) py-md text-sm text-faint">
               <Icon name="search" size={14} />
-              Không có phiên nào khớp.
+              {t(S.chat.noSessionMatch)}
             </p>
           }
         >
@@ -130,7 +112,7 @@ export default function SessionPalette(props: {
             ref={list}
             id="palette-results"
             role="listbox"
-            aria-label="Kết quả"
+            aria-label={t(S.chat.palette.results)}
             class="m-0 list-none overflow-y-auto p-2xs"
           >
             <For each={matches()}>
@@ -147,11 +129,11 @@ export default function SessionPalette(props: {
                   >
                     <span class="flex w-full items-center gap-xs">
                       <span class="min-w-0 flex-1 truncate text-sm text-text">{session.title}</span>
-                      {/* Phiên đang mở. Nhãn chữ chứ không phải một chấm màu: ⌘K mở ra
-                          giữa lúc đang đọc một phiên, và "đang mở" là thứ trả lời câu hỏi
-                          "tôi đang đứng ở đâu" — một chấm thì phải đoán. */}
+                      {/* The open session, marked with a word rather than a coloured dot: a dot has to be guessed. */}
                       <Show when={session.id === props.currentId}>
-                        <span class="shrink-0 text-2xs text-faint">đang mở</span>
+                        <span class="shrink-0 text-2xs text-faint">
+                          {t(S.chat.palette.current)}
+                        </span>
                       </Show>
                     </span>
                     <span class="text-2xs text-faint">{relativeTime(session.updatedAt)}</span>

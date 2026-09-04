@@ -1,12 +1,6 @@
-//! `todo_write` — tool mẫu, và cũng là tool thật.
-//!
-//! Nó ở đây vì nó là hình dạng đơn giản nhất mà một tool có thể có: schema sinh từ một
-//! kiểu Rust, trạng thái thuộc về phiên, không đụng đĩa, không đụng mạng. Ai viết tool
-//! tiếp theo chép cái này.
-//!
-//! Danh sách sống trong tool chứ không trong sổ phiên, và đó là chủ ý: nó là bản nháp của
-//! mô hình, không phải nguồn ngữ cảnh. Cái vào sổ là `tools/result` — thứ mô hình đọc
-//! lại được ở lượt sau.
+//! `todo_write` — the reference tool, and a real one.
+//! The simplest shape a tool can take: schema from a Rust type, session state, no disk or
+//! network. The list lives in the tool, not the journal, because it is the model's scratchpad.
 
 use async_trait::async_trait;
 use parking_lot::Mutex;
@@ -38,7 +32,7 @@ pub struct TodoWriteArgs {
     pub todos: Vec<TodoItem>,
 }
 
-/// Danh sách việc của một phiên.
+/// One session's task list.
 #[derive(Default)]
 pub struct TodoWrite {
     todos: Mutex<Vec<TodoItem>>,
@@ -51,7 +45,7 @@ impl TodoWrite {
         TodoWrite::default()
     }
 
-    /// Ảnh chụp cho giao diện.
+    /// A snapshot for the UI.
     pub fn snapshot(&self) -> Vec<TodoItem> {
         self.todos.lock().clone()
     }
@@ -88,12 +82,8 @@ impl Tool for TodoWrite {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Không phải `mutating`: nó chỉ ghi vào bản nháp của chính lượt này. Không có tệp
-        // nào, bản ghi nào hay thiết lập nào ở ngoài phiên thay đổi vì nó, nên một agent
-        // chỉ-đọc vẫn phải được lập kế hoạch.
-        //
-        // `concurrency_safe = false`: mỗi lần ghi thay cả danh sách, nên hai lần ghi song
-        // song thì một trong hai biến mất mà không ai biết.
+        // Not `mutating`: it only writes this turn's scratchpad, so a read-only agent may still plan.
+        // Not concurrency-safe: each write replaces the whole list, so one of two parallel writes vanishes.
         ToolMeta::read_only().concurrency_safe(false)
     }
 

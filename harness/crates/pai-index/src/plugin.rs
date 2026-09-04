@@ -1,8 +1,6 @@
-//! Cắm chỉ mục vào cây.
-//!
-//! Một plugin, một provider, năm tool. Gỡ nó ra là mất `symbol_search`, `outline` và ba
-//! tool đồ thị, và không mất gì khác: không tool nào của crate khác gọi vào chỉ mục, nên
-//! không có luật nào ở lại canh giữ những tool không còn ở đó.
+//! Mount the index into the tree.
+//! One plugin, one provider, five tools. Removing it loses `symbol_search`, `outline` and
+//! the three graph tools and nothing else: no other crate's tools call into the index.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -21,13 +19,12 @@ use crate::tools::trace::CodeTrace;
 
 pub struct IndexPlugin {
     roots: FileRoots,
-    /// Thư mục chứa tệp chỉ mục, không phải chính tệp đó — xem [`db_name`].
+    /// The directory holding the index file, not the file itself — see [`db_name`].
     dir: PathBuf,
 }
 
 impl IndexPlugin {
-    /// `roots` và `protected` nên là **cùng bộ** đã cấp cho `FsPlugin`: một chỉ mục nhìn
-    /// rộng hơn hệ tệp là một đường vòng quanh chính cái ranh giới đó.
+    /// `roots` and `protected` should be the same set given to `FsPlugin`: an index that sees more is a way around it.
     pub fn new(
         roots: impl IntoIterator<Item = PathBuf>,
         protected: impl IntoIterator<Item = PathBuf>,
@@ -40,15 +37,7 @@ impl IndexPlugin {
     }
 }
 
-/// Tên tệp chỉ mục cho một thư mục làm việc.
-///
-/// Tên tệp được **suy ra** chứ không nhận từ ngoài, và đó là một quyết định chứ không
-/// phải một tiện lợi: một đường dẫn cố định do người gọi truyền vào thì hai workspace
-/// dùng chung một chỉ mục, và triệu chứng của việc đó là `symbol_search` trả về những
-/// hàm của một dự án khác — một lỗi trông y hệt một chỉ mục chỉ đơn giản là sai.
-///
-/// Băm là FNV-1a: nó không cần chống va chạm có chủ ý, nó chỉ cần phân biệt hai đường dẫn
-/// trên cùng một máy, và một dependency mật mã cho việc đó là trả giá cho thứ không dùng.
+/// The index filename for a working directory, derived rather than passed in: a caller-supplied path would let two workspaces share one index.
 fn db_name(root: &std::path::Path) -> String {
     let text = root.display().to_string();
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;

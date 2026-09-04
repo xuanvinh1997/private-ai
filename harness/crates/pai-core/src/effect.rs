@@ -1,15 +1,6 @@
-//! Registration is an undoable effect.
-//!
-//! Cordis needs `ctx.effect()` because JavaScript has no destructors. Rust does, so the
-//! default here is RAII: every registration function returns a guard, and dropping the
-//! guard unregisters.
-//!
-//! An explicit scope is still needed for two things `Drop` cannot do:
-//!
-//! 1. **Async cleanup.** Closing an MCP client, flushing a WAL, `await`ing a `JoinHandle`.
-//! 2. **Order.** Cordis disposes LIFO. Rust drops fields in declaration order and `Vec`
-//!    elements front to back — the opposite. This is the kind of mismatch that raises no
-//!    error and simply behaves wrongly.
+//! Registration is an undoable effect: registering returns a guard, dropping it unregisters.
+//! An explicit scope covers the two things `Drop` cannot do: async cleanup, and LIFO order
+//! (Rust drops fields and `Vec` elements front to back, the opposite of what we need).
 
 use std::future::Future;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -24,7 +15,7 @@ enum Disposer {
     Async(Box<dyn FnOnce() -> BoxFuture<'static, ()> + Send>),
 }
 
-/// Owns every registration made by one plugin — the equivalent of a Cordis fiber.
+/// Owns every registration made by one plugin.
 pub struct EffectScope {
     label: &'static str,
     disposers: Mutex<Vec<(&'static str, Disposer)>>,
@@ -71,11 +62,7 @@ impl EffectScope {
             .push((label, Disposer::Async(Box::new(move || Box::pin(f())))));
     }
 
-    /// A cancellation token that lives exactly as long as this scope.
-    ///
-    /// Built lazily and memoised, so everything running under one scope shares a single
-    /// token — disposing the scope stops everything it spawned, with nobody having to
-    /// collect them one by one.
+    /// Cancellation token living exactly as long as this scope; memoised so the scope shares one.
     pub fn cancel_token(&self) -> tokio_util::sync::CancellationToken {
         let mut slot = self.cancel.lock();
         slot.get_or_insert_with(|| {
@@ -87,14 +74,12 @@ impl EffectScope {
         .clone()
     }
 
-    /// Hand a guard to the scope: it then lives exactly as long as the plugin that made
-    /// it.
+    /// Hand a guard to the scope, so it lives exactly as long as the plugin that made it.
     pub fn keep<G: Send + 'static>(&self, guard: G) {
         self.defer("keep", move || drop(guard));
     }
 
-    /// Dispose. Safe to call more than once. One failing disposer does not stop the rest
-    /// — a half-finished cleanup is worse than a cleanup with one broken step.
+    /// Dispose; idempotent, and one failing disposer must not abort the remaining cleanup.
     pub async fn dispose(&self) {
         if self.disposed.swap(true, Ordering::SeqCst) {
             return;
@@ -122,17 +107,13 @@ impl Drop for EffectScope {
         if !self.disposed.load(Ordering::SeqCst) && !self.disposers.lock().is_empty() {
             tracing::warn!(
                 label = self.label,
-                "EffectScope dropped without dispose() — async cleanup was skipped"
+                "EffectScope dropped without dispose(); async cleanup was skipped"
             );
         }
     }
 }
 
-/// The generic guard for one registration. Dropping it unregisters.
-///
-/// `#[must_use]` turns the classic Cordis mistake — a forgotten disposer — into a compile
-/// -time warning. To make a registration live as long as the plugin, hand it to the scope
-/// with `Context::keep`.
+/// Guard for one registration: dropping it unregisters, and `#[must_use]` catches a forgotten one.
 #[must_use = "dropping the guard immediately unregisters; hold it or call ctx.keep(guard)"]
 pub struct Guard(Option<Box<dyn FnOnce() + Send>>);
 
@@ -141,8 +122,7 @@ impl Guard {
         Guard(Some(Box::new(undo)))
     }
 
-    /// Discard the guard and keep the registration forever. For things that genuinely
-    /// live as long as the process; everywhere else, `keep` is the right answer.
+    /// Keep the registration forever; only for things that outlive every scope, else use `keep`.
     pub fn leak(mut self) {
         self.0 = None;
     }

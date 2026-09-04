@@ -1,29 +1,6 @@
-"""Kho siêu dữ liệu: SQLite giữ tài liệu, đoạn và chỉ mục từ khoá.
-
-Vector **không** nằm ở đây — chúng ở Qdrant. Chia như vậy vì hai thứ có hình dạng truy
-vấn khác hẳn nhau: đoạn văn cần lọc theo tài liệu, phân trang, và tìm toàn văn có dấu
-tiếng Việt; vector cần láng giềng gần nhất trong không gian nhiều chiều. Nhét cả hai vào
-một chỗ nghĩa là một trong hai chạy kém.
-
-# Bốn quyết định
-
-**1. FTS5 external content.** ``chunks_fts`` trỏ về ``chunks`` bằng ``content='chunks'``.
-Mười nghìn đoạn ~1400 ký tự thì một bản sao tốn thêm mười bốn megabyte cho đúng dữ liệu
-đã nằm ngay bên cạnh.
-
-**2. ``remove_diacritics 2`` là bắt buộc, không phải tiện lợi.** Người Việt gõ tìm kiếm
-không dấu suốt, và một chỉ mục phân biệt dấu thì "bao mat" không tìm ra "bảo mật". Mức 2
-(chứ không phải 1) mới xử lý đúng các ký tự tổ hợp ngoài Latin-1.
-
-**3. Đường dẫn là danh tính, ``mtime`` + kích thước là dấu vân tay.** Băm mọi tệp ở mọi
-lần quét là đọc lại cả thư mục mỗi lần — đúng cái giá mà chỉ mục tăng dần sinh ra để khỏi
-phải trả. Nó bỏ sót đúng một trường hợp: sửa tệp mà giữ nguyên cả độ dài lẫn ``mtime``.
-
-**4. Xoá bằng lệnh tường minh, không dựa ``ON DELETE CASCADE``.** SQLite chỉ kích hoạt
-trigger cho hàng xoá theo dây chuyền khi ``recursive_triggers`` bật. Trông vào cascade thì
-hàng ``chunks`` biến mất còn chỉ mục FTS ở lại, và một hàng FTS mồ côi **vẫn trả kết
-quả** — tìm ra đoạn của tài liệu đã xoá rồi không đọc nổi nó.
-"""
+"""Metadata store: SQLite for documents, chunks and the keyword index; vectors live in
+Qdrant. FTS5 uses external content and `remove_diacritics 2` (Vietnamese is often typed
+unaccented); path is identity, mtime+size the fingerprint, and deletes are explicit."""
 
 from __future__ import annotations
 
@@ -53,9 +30,7 @@ META_EMBEDDER = "embedder.id"
 META_EMBEDDER_DIM = "embedder.dim"
 META_EMBED_INPUT = "embed.input.version"
 META_EXTRACT = "extract.version"
-#: Số tệp lần quét gần nhất nhìn thấy, số tệp bỏ qua vì chạm trần, và lúc quét xong.
-#: Ghi vào kho chứ không giữ trong bộ nhớ: giao diện phải nói được "quét lúc nào" ngay
-#: khi vừa mở ứng dụng, trước lần quét đầu tiên của phiên.
+#: Files seen by the last scan, files skipped at the cap, and when it finished; stored so the UI can say when the last scan ran before this session scans.
 META_SCAN_FILES = "scan.files"
 META_SCAN_SKIPPED = "scan.skipped"
 META_SCAN_AT = "scan.at"
@@ -110,16 +85,8 @@ CREATE TABLE IF NOT EXISTS meta (
   value TEXT NOT NULL
 );
 
--- Tệp đã thử đọc và không đọc được, kèm dấu vân tay lúc thử.
---
--- Không có bảng này thì mỗi lần quét lại đi rút chữ lại đúng những tệp đã hỏng — một PDF
--- cụt ở mọi lần mở dự án — và bất biến "quét lại một thư mục không đổi thì không rút chữ
--- lại tệp nào" chỉ còn đúng với thư mục toàn tệp lành.
--- Tệp còn nằm trong thư mục dự án nhưng người dùng đã bỏ khỏi thư viện.
---
--- Bảng này tồn tại vì `remove` không xoá tệp của người dùng: không có nó thì lần quét
--- ngay sau đó nạp lại đúng cái tài liệu họ vừa bỏ đi, và một nút bấm không có tác dụng
--- là một nút bấm dạy người dùng rằng phần mềm không nghe lời họ.
+-- Files that were tried and could not be read, with the fingerprint at the time; without this table every scan re-extracts the same broken files.
+-- Files still in the project folder that the user removed from the library; without this the next scan re-ingests exactly what they just removed.
 CREATE TABLE IF NOT EXISTS excluded (
   path TEXT PRIMARY KEY,
   at   INTEGER NOT NULL
@@ -162,13 +129,7 @@ class ChunkRow:
 
 
 def _fts_expressions(query: str) -> tuple[str, str] | None:
-    """``(biểu thức AND, biểu thức OR)`` từ một câu hỏi của người dùng.
-
-    Chuỗi người dùng **không bao giờ** được ghép thẳng vào cú pháp ``MATCH``: ``"``,
-    ``*``, ``:``, ``^``, ``NOT``, ``NEAR`` đều có nghĩa ở đó, nên một câu hỏi bình thường
-    có thể thành lỗi cú pháp và một câu hỏi cố ý có thể thành một truy vấn khác hẳn. Cắt
-    thành token rồi bọc nháy kép biến mọi thứ thành chữ nghĩa thuần tuý.
-    """
+    """`(AND expression, OR expression)` from a user query; user text is never spliced into `MATCH` syntax, so tokens are extracted and quoted into literals."""
     tokens = [f'"{token}"' for token in re.findall(r"[^\W_]+", query, re.UNICODE)]
     if not tokens:
         return None
@@ -176,15 +137,12 @@ def _fts_expressions(query: str) -> tuple[str, str] | None:
 
 
 class Store:
-    """Một tệp SQLite cho mỗi dự án tài liệu."""
+    """One SQLite file per document project."""
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         self.path = path
-        # `isolation_level=None` = tự commit mỗi câu lệnh, và transaction do ta mở
-        # bằng tay. Chế độ ngầm của `sqlite3` mở transaction trước mỗi câu ghi rồi
-        # để nó treo tới lần `commit()` kế tiếp — nên một câu ghi lẻ ở đâu đó khiến
-        # `BEGIN` của phép ghi kế tiếp hỏng với "transaction within a transaction".
+        # `isolation_level=None` = autocommit per statement with hand-rolled transactions; the implicit mode leaves one open until the next `commit()`.
         self.conn = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode = WAL")
@@ -194,8 +152,7 @@ class Store:
         self.conn.commit()
 
     def close(self) -> None:
-        # Gộp WAL lúc đóng: không có bước này thì thư mục ở lại với một tệp `-wal` mà lần
-        # mở sau phải phát lại.
+        # Checkpoint the WAL on close, or the directory keeps a `-wal` file the next open must replay.
         try:
             self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
@@ -207,7 +164,7 @@ class Store:
     def __exit__(self, *_: object) -> None:
         self.close()
 
-    # -- meta -------------------------------------------------------------------------
+    # -- meta ---------------------------------------------------------------------------
 
     def meta(self, key: str) -> str | None:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
@@ -237,14 +194,10 @@ class Store:
         self.set_meta(META_EMBED_INPUT, str(embed_input))
         self.set_meta(META_EXTRACT, str(extract))
 
-    # -- dấu vân tay ------------------------------------------------------------------
+    # -- fingerprints -------------------------------------------------------------------
 
     def known_files(self) -> dict[str, tuple[int, int]]:
-        """``đường dẫn -> (mtime, kích thước)`` của mọi tệp đã nạp hoặc đã thử và hỏng.
-
-        Gộp cả hai bảng vào một phép tra: lần quét sau phải bỏ qua **cả hai** nhóm, và
-        hỏi hai lần là hai chỗ để quên một lần.
-        """
+        """`path -> (mtime, size)` for every file ingested or tried and failed; one lookup for both tables, since the next scan must skip both."""
         out: dict[str, tuple[int, int]] = {}
         for row in self.conn.execute("SELECT path, mtime, bytes FROM documents"):
             out[row["path"]] = (row["mtime"], row["bytes"])
@@ -268,11 +221,7 @@ class Store:
         return [(row["path"], row["reason"]) for row in rows]
 
     def forget_fingerprints(self) -> int:
-        """Quên mọi dấu vân tay, để lần quét tới đọc lại cả thư mục.
-
-        Gọi khi bộ rút chữ hoặc cách dựng văn bản nhúng đã đổi. Không có bước này thì một
-        bản vá ở tầng dưới chỉ tới được với thư viện mới.
-        """
+        """Forget every fingerprint so the next scan re-reads the whole folder; called when the extractor or the embed input changed."""
         cur = self.conn.cursor()
         cur.execute("BEGIN")
         try:
@@ -284,7 +233,7 @@ class Store:
             raise
         return changed
 
-    # -- tài liệu ---------------------------------------------------------------------
+    # -- documents ----------------------------------------------------------------------
 
     def put_document(
         self,
@@ -299,11 +248,7 @@ class Store:
         ocr_pages: list[int],
         chunks: list[Chunk],
     ) -> list[int]:
-        """Ghi một tài liệu và mọi đoạn của nó. Trả về mã đoạn theo đúng thứ tự.
-
-        Thay thế toàn bộ khi tài liệu đã có: nạp lại một tệp đã sửa phải cho ra đúng
-        trạng thái như nạp nó lần đầu, không phải trộn đoạn cũ với đoạn mới.
-        """
+        """Write a document and all its chunks, returning chunk ids in order; an existing document is fully replaced rather than merged."""
         now = int(time.time() * 1000)
         cur = self.conn.cursor()
         cur.execute("BEGIN")
@@ -334,11 +279,11 @@ class Store:
 
     @staticmethod
     def _forget_chunks(cur: sqlite3.Cursor, doc_id: str) -> None:
-        """Xoá đoạn của một tài liệu. Tường minh — xem quyết định 4 ở đầu tệp."""
+        """Delete a document's chunks. Explicit - see decision 4 at the top of the file."""
         cur.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
 
     def remove_document(self, doc_id: str) -> list[int]:
-        """Xoá một tài liệu. Trả về mã đoạn đã xoá, để người gọi dọn Qdrant theo."""
+        """Delete a document, returning the deleted chunk ids so the caller can clean Qdrant."""
         rows = self.conn.execute("SELECT id FROM chunks WHERE document_id = ?", (doc_id,))
         ids = [int(row["id"]) for row in rows]
         cur = self.conn.cursor()
@@ -391,7 +336,7 @@ class Store:
             chunks=row["n"],
         )
 
-    # -- đoạn -------------------------------------------------------------------------
+    # -- chunks -------------------------------------------------------------------------
 
     _CHUNK_SELECT = (
         "SELECT c.id, c.document_id, c.ordinal, c.section, c.page, c.body, "
@@ -430,14 +375,10 @@ class Store:
         chunks = self.conn.execute("SELECT COUNT(*) AS n FROM chunks").fetchone()["n"]
         return int(docs), int(chunks)
 
-    # -- tìm theo từ khoá -------------------------------------------------------------
+    # -- keyword search -----------------------------------------------------------------
 
     def search_keyword(self, query: str, limit: int) -> list[int]:
-        """Mã đoạn theo thứ tự BM25, tốt nhất trước.
-
-        Cân ``section`` gấp đôi ``body``: một câu hỏi khớp đúng vào tiêu đề mục gần như
-        luôn là câu hỏi về chính mục đó.
-        """
+        """Chunk ids in BM25 order, best first; `section` is weighted twice `body`, since a query matching a heading is usually about that section."""
         built = _fts_expressions(query)
         if built is None:
             return []
@@ -448,16 +389,14 @@ class Store:
         )
         hits = [int(row[0]) for row in self.conn.execute(sql, (strict, limit))]
         if not hits:
-            # Mọi từ cùng có mặt là phép lọc đúng khi nó trả về cái gì đó. Khi nó trả về
-            # rỗng — người dùng gõ cả một câu hỏi chứ không phải một cụm từ khoá — thì
-            # "có từ nào cũng được" còn hơn là không có gì.
+            # Requiring every term is the right filter when it returns anything; when it returns nothing - a whole sentence was typed - any term beats none.
             hits = [int(row[0]) for row in self.conn.execute(sql, (loose, limit))]
         return hits
 
-    # -- loại trừ ---------------------------------------------------------------------
+    # -- exclusion ----------------------------------------------------------------------
 
     def exclude(self, path: str, at: int) -> None:
-        """Đánh dấu một tệp là đã bị người dùng bỏ khỏi thư viện."""
+        """Mark a file as removed from the library by the user."""
         self.conn.execute(
             "INSERT INTO excluded (path, at) VALUES (?, ?) "
             "ON CONFLICT(path) DO UPDATE SET at = excluded.at",
@@ -465,19 +404,19 @@ class Store:
         )
 
     def allow(self, path: str) -> None:
-        """Bỏ dấu loại trừ — người dùng nạp lại tệp này một cách tường minh."""
+        """Clear the exclusion mark - the user re-ingested this file explicitly."""
         self.conn.execute("DELETE FROM excluded WHERE path = ?", (path,))
 
     def excluded(self) -> set[str]:
         return {row["path"] for row in self.conn.execute("SELECT path FROM excluded")}
 
     def clear_excluded(self) -> int:
-        """Cho phép lại mọi tệp. Dùng khi người dùng bấm xử lý lại cả thư viện."""
+        """Allow every file again. Used when the user reprocesses the whole library."""
         cur = self.conn.execute("DELETE FROM excluded")
         return cur.rowcount
 
     def integrity(self) -> None:
-        """Ném nếu chỉ mục FTS lệch khỏi bảng nội dung. Dùng trong ``pai-rag doctor``."""
+        """Raise if the FTS index has drifted from the content table. Used by `pai-rag doctor`."""
         self.conn.execute("INSERT INTO chunks_fts (chunks_fts) VALUES ('integrity-check')")
 
     def stats(self) -> dict[str, Any]:

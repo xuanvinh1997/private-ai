@@ -1,18 +1,6 @@
-//! The filesystem: one seam, one policy, five tools.
-//!
-//! Three things worth remembering:
-//!
-//! **Canonicalise first, check second.** Checking before canonicalising lets
-//! `root/../../etc/passwd` through, because at comparison time it still starts with
-//! `root/`. See [`path`].
-//!
-//! **Policy does not live inside the tools.** The read-before-edit rule is a middleware on
-//! the `pai-tools` pipeline, so `edit` does not know the rule exists, disabling it is
-//! removing a plugin, and any file-writing tool written later is covered automatically.
-//! See [`observed`].
-//!
-//! **Tools do not call `std::fs`.** They go through [`provider::Fs`], so pointing the
-//! provider at a sandbox moves all five tools with it and none of them needs editing.
+//! The filesystem: one seam, one policy, five tools. Canonicalise first, then check.
+//! Policy is middleware, not tool code, so it also covers tools written later.
+//! Tools go through [`provider::Fs`], so repointing the provider moves them all.
 
 pub mod observed;
 pub mod path;

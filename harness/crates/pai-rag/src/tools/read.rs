@@ -1,9 +1,6 @@
-//! `docs.read` — đọc liền mạch một tài liệu, theo đoạn.
-//!
-//! `docs.search` trả về những mảnh rời rạc; tool này là đường để mô hình đọc phần trước
-//! sau của một mảnh. Phân trang theo **số thứ tự đoạn** chứ không theo dòng hay theo byte,
-//! vì đoạn là đơn vị mà `docs.search` vừa trích dẫn: mô hình thấy `#12` trong kết quả tìm
-//! và hỏi tiếp từ `offset: 10` mà không phải quy đổi gì cả.
+//! `docs.read` - read one document straight through, chunk by chunk.
+//! `docs.search` returns scattered fragments; this is how the model reads around one.
+//! Paging is by chunk ordinal, the same unit `docs.search` just cited.
 
 use std::sync::Arc;
 
@@ -16,8 +13,7 @@ use serde_json::json;
 use crate::library::DocLibrary;
 use crate::tools::render;
 
-/// Sáu đoạn ~1000 ký tự một lần đọc. Đọc cả một tài liệu trăm trang trong một lời gọi thì
-/// phần đầu đã ra khỏi cửa sổ ngữ cảnh trước khi mô hình dùng tới phần cuối.
+/// Six ~1000-character chunks per read; a whole hundred-page document would fall out of the context window.
 const DEFAULT_LIMIT: usize = 6;
 const MAX_LIMIT: usize = 30;
 

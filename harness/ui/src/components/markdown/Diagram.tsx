@@ -1,24 +1,16 @@
 import { createMemo, createResource, createSignal, Match, Switch } from "solid-js";
+import { S, t } from "../../lib/i18n";
 import { diagramKind, isDark, renderDiagram } from "../../lib/mermaid";
 import { CopyButton } from "../primitives";
 
 type Mode = "figure" | "source";
 
-/**
- * Thẻ chứa một sơ đồ mermaid.
- *
- * Luôn có hai lối vào cùng một nội dung: **hình** và **mã nguồn**. Không phải để chiều
- * người thích đọc mã — SVG mermaid sinh ra là một đống `<path>` và `<text>` rời rạc,
- * trình đọc màn hình đi qua nó chỉ nghe được vài mẩu nhãn không thứ tự. `role="img"` cắt
- * đống đó xuống còn một nhãn duy nhất, và lối xem mã nguồn là cách trung thực nhất ta có
- * để một người không nhìn được hình vẫn đọc được sơ đồ.
- */
+/** A mermaid diagram card with two ways in, figure and source, because a mermaid SVG reads as scattered labels to a screen reader and the source view is the honest alternative. */
 export default function Diagram(props: { source: string }) {
   const [mode, setMode] = createSignal<Mode>("figure");
   const kind = createMemo(() => diagramKind(props.source));
 
-  // Đọc `isDark()` ngay trong nguồn của resource: mermaid nướng màu thẳng vào SVG, nên
-  // đổi sáng/tối là phải vẽ lại, không phải đổi một lớp CSS bên ngoài.
+  // `isDark()` is read in the resource source: mermaid bakes colours into the SVG, so a theme change redraws.
   const [result] = createResource(
     () => ({ source: props.source, dark: isDark() }),
     (input) => renderDiagram(input.source),
@@ -36,33 +28,37 @@ export default function Diagram(props: { source: string }) {
   return (
     <figure class="m-0 overflow-hidden rounded-panel border border-line bg-surface">
       <div class="flex items-center justify-between gap-sm border-b border-line px-sm py-3xs">
-        <figcaption class="min-w-0 truncate text-2xs text-muted">Sơ đồ · {kind()}</figcaption>
+        <figcaption class="min-w-0 truncate text-2xs text-muted">
+          {t(S.tools.diagram.title)} · {kind()}
+        </figcaption>
         <div class="flex items-center gap-3xs">
-          <div role="group" aria-label="Cách xem sơ đồ" class="flex items-center gap-3xs">
+          <div
+            role="group"
+            aria-label={t(S.tools.diagram.views)}
+            class="flex items-center gap-3xs"
+          >
             <ModeButton
-              label="Hình"
+              label={t(S.tools.diagram.figure)}
               active={mode() === "figure"}
               onPick={() => setMode("figure")}
             />
             <ModeButton
-              label="Mã nguồn"
+              label={t(S.tools.diagram.source)}
               active={mode() === "source"}
               onPick={() => setMode("source")}
             />
           </div>
-          <CopyButton text={() => props.source} label="Chép mã nguồn sơ đồ" />
+          <CopyButton text={() => props.source} label={t(S.tools.diagram.copySource)} />
         </div>
       </div>
 
       <Switch>
-        {/* Cú pháp hỏng thì hiện **cả** thông điệp lẫn mã nguồn, bất kể đang ở lối xem
-            nào: một ô đỏ trống không nói được mô hình sai ở dòng nào, và người dùng cần
-            đúng thông tin đó để bảo mô hình sửa. */}
+        {/* Broken syntax shows both the message and the source, whichever view is active. */}
         <Match when={failure()}>
           {(message) => (
             <div class="flex flex-col gap-2xs px-sm py-2xs">
               <p class="m-0 flex items-start gap-2xs text-2xs text-danger">
-                <span class="shrink-0">Không vẽ được:</span>
+                <span class="shrink-0">{t(S.tools.renderFailed)}</span>
                 <span class="min-w-0 whitespace-pre-wrap">{message()}</span>
               </p>
               <Source code={props.source} />
@@ -78,7 +74,7 @@ export default function Diagram(props: { source: string }) {
 
         <Match when={result.loading}>
           <p class="m-0 px-sm py-md text-2xs text-faint" aria-busy="true">
-            Đang vẽ sơ đồ…
+            {t(S.tools.diagram.drawing)}
           </p>
         </Match>
 
@@ -86,9 +82,11 @@ export default function Diagram(props: { source: string }) {
           {(markup) => (
             <div
               role="img"
-              aria-label={`${kind()} do trợ lý vẽ — chuyển sang lối xem "Mã nguồn" để đọc bằng chữ`}
-              /* Cuộn ngang nằm trong khung này, và SVG co xuống theo bề rộng khung
-                 (`useMaxWidth`): một sơ đồ hai chục đỉnh không được đẩy cả bản ghi rộng ra. */
+              aria-label={t(S.tools.diagram.alt, {
+                kind: kind(),
+                source: t(S.tools.diagram.source),
+              })}
+              /* Scrolls here and the SVG shrinks to the frame, so a wide diagram cannot widen the transcript. */
               class="overflow-x-auto px-sm py-sm [&_svg]:h-auto [&_svg]:max-w-full"
               innerHTML={markup()}
             />

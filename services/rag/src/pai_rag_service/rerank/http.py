@@ -1,22 +1,5 @@
-"""Reranker gọi ra một endpoint ``/v1/rerank``.
-
-# Chuẩn nào
-
-Hình dạng của Cohere, thứ đã thành chuẩn thực tế: gửi ``{model, query, documents,
-top_n}``, nhận ``{results: [{index, relevance_score}]}``. Text Embeddings Inference của
-HuggingFace, Infinity, vLLM, Jina và Voyage đều nói giao thức này.
-
-**Ollama, LM Studio và OpenAI thì không** — cả ba đều chưa có endpoint rerank nào tính
-đến lúc viết. Đó là lý do bản ONNX chạy trong tiến trình mới là mặc định: với một máy chỉ
-có Ollama, nó là đường duy nhất chạy được. Nhánh này dành cho khi bạn dựng thêm TEI hoặc
-Infinity, và nó sẵn sàng cho ngày Ollama thêm endpoint ấy.
-
-# Vì sao trả về đủ điểm cho mọi đoạn
-
-Endpoint nhận ``top_n`` và nhiều bản cài đặt chỉ trả về chừng ấy kết quả. Nhưng seam
-:class:`~pai_rag_service.rerank.Reranker` hứa trả **một điểm cho mỗi đoạn đưa vào** —
-người gọi ghép điểm với đoạn theo chỉ số. Nên ở đây không gửi ``top_n``, và đoạn nào máy
-chủ bỏ qua thì nhận điểm âm vô cùng: nó tụt xuống cuối thay vì lệch cả phép ghép.
+"""Reranker calling a `/v1/rerank` endpoint, in Cohere's de facto standard shape.
+`top_n` is never sent: the seam promises one score per input passage, so a skipped one gets -inf.
 """
 
 from __future__ import annotations
@@ -28,20 +11,18 @@ from pai_rag_service.errors import RerankError
 
 __all__ = ["HttpReranker"]
 
-#: Xếp hạng lại là một phép chạy nhanh trên một lô nhỏ. Chờ quá ngần này thì đằng nào
-#: người dùng cũng đã bỏ đi, và trả về thứ tự cũ còn hơn treo giao diện.
+#: Reranking is a fast pass over a small batch; past this the user has already left.
 TIMEOUT = httpx.Timeout(30.0, connect=5.0)
 
 
 class HttpReranker:
-    """Chấm điểm bằng một máy chủ rerank ngoài."""
+    """Scores with an external rerank server."""
 
     def __init__(self, config: RerankConfig) -> None:
         self.config = config
         self.url = config.url.strip().rstrip("/")
         if not self.url.endswith("/rerank"):
-            # Cấu hình khai gốc máy chủ là chuyện thường; nối đuôi hộ thay vì trả về một
-            # lỗi 404 mà người dùng phải tự đoán ra nguyên nhân.
+            # Configuring the server root is common; append the path instead of returning a 404 the user has to diagnose.
             self.url = f"{self.url}/v1/rerank"
 
     @property
@@ -72,8 +53,7 @@ class HttpReranker:
         if not isinstance(rows, list):
             raise RerankError("phản hồi rerank thiếu trường `results`")
 
-        # `-inf` chứ không phải 0: một đoạn máy chủ bỏ qua phải nằm dưới **mọi** đoạn được
-        # chấm, kể cả đoạn bị chấm điểm âm.
+        # `-inf`, not 0: a passage the server skipped must sit below every scored one, negatives included.
         scores = [float("-inf")] * len(passages)
         for row in rows:
             if not isinstance(row, dict):

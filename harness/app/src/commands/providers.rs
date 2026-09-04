@@ -1,4 +1,4 @@
-//! Nhà cung cấp mô hình: liệt kê, sửa, thử, và đổi cái đang dùng.
+//! Model providers: listing, editing, probing, and switching the active one.
 
 use pai_llm::{ProviderConfig, ProviderKind};
 use pai_providers::{ProviderInput, StoredProvider};
@@ -10,11 +10,8 @@ use crate::protocol::{
     ProviderProbe, ProviderView,
 };
 
-/// Chuỗi trên dây thành loại provider.
-///
-/// Từ chối thay vì lùi về một mặc định: một `kind` gõ sai mà lặng lẽ thành `openai` sẽ gửi
-/// request sai giao thức tới một máy chủ Ollama, và thông báo lỗi khi đó nói về JSON chứ
-/// không nói về cấu hình.
+/// Wire string to provider kind; rejected rather than defaulted, since a mistyped `kind` silently becoming
+/// `openai` would send the wrong protocol to Ollama and surface as a JSON error.
 fn kind(raw: &str) -> Result<ProviderKind, String> {
     ProviderKind::parse(raw).ok_or_else(|| format!("loại nhà cung cấp không hợp lệ: `{raw}`"))
 }
@@ -59,8 +56,7 @@ pub async fn list_providers(state: State<'_, AppState>) -> Result<Vec<ProviderVi
 
 #[tauri::command]
 pub async fn provider_presets(state: State<'_, AppState>) -> Result<Vec<ProviderPreset>, String> {
-    // Không cần harness, nhưng vẫn nhận `state` để mọi lệnh trong nhóm có cùng hình dạng —
-    // và để danh mục không trở thành thứ duy nhất trả lời được khi lõi chưa dựng nổi.
+    // No harness needed, but `state` is still taken so every command in this group has the same shape.
     let _ = state;
     Ok(pai_providers::PRESETS
         .iter()
@@ -78,11 +74,8 @@ pub async fn provider_presets(state: State<'_, AppState>) -> Result<Vec<Provider
         .collect())
 }
 
-/// Lưu một provider, rồi **áp lại cái đang hoạt động**.
-///
-/// Áp lại kể cả khi hàng vừa lưu không phải hàng đang hoạt động: sửa URL của chính
-/// provider đang chạy mà không áp lại thì mọi request tiếp theo vẫn bay tới máy chủ cũ, và
-/// không có gì trên màn hình nói rằng nó đang làm vậy.
+/// Save a provider, then reapply the active one -- even when the saved row is not active, since editing the
+/// running provider's URL without reapplying keeps sending requests to the old server, silently.
 #[tauri::command]
 pub async fn save_provider(
     input: ProviderInputWire,
@@ -94,11 +87,10 @@ pub async fn save_provider(
         .save(self::input(input)?)
         .await
         .map_err(|err| err.to_string())?;
-    // Áp lại có thể hỏng — chưa nối được máy chủ mới chẳng hạn — nhưng hàng **đã lưu**
-    // rồi, và báo lỗi ở đây sẽ khiến giao diện tưởng việc lưu thất bại rồi hiện lại giá
-    // trị cũ. Trạng thái thật của kết nối đến từ nút thử, không từ lệnh lưu.
+    // Reapplying can fail, but the row is already saved, and erroring here would make the UI revert the form.
+    // Real connection state comes from the probe button, not from saving.
     if let Err(err) = harness.apply_provider().await {
-        tracing::warn!("đã lưu nhưng chưa dùng được nhà cung cấp: {err}");
+        tracing::warn!("saved, but could not activate the provider: {err}");
     }
     Ok(view(&saved))
 }
@@ -111,10 +103,9 @@ pub async fn remove_provider(id: String, state: State<'_, AppState>) -> Result<(
         .remove(&id)
         .await
         .map_err(|err| err.to_string())?;
-    // Xoá cái đang hoạt động thì kho tự chuyển sang cái khác; áp lại để `Driver` và bộ
-    // nhúng đi theo, thay vì tiếp tục nói chuyện với một provider vừa bị xoá.
+    // Deleting the active one makes the store elect a successor; reapply so `Driver` and the embedder follow.
     if let Err(err) = harness.apply_provider().await {
-        tracing::warn!("đã xoá nhưng chưa chuyển được sang nhà cung cấp khác: {err}");
+        tracing::warn!("removed, but could not switch to another provider: {err}");
     }
     Ok(())
 }
@@ -122,8 +113,7 @@ pub async fn remove_provider(id: String, state: State<'_, AppState>) -> Result<(
 #[tauri::command]
 pub async fn set_active_provider(id: String, state: State<'_, AppState>) -> Result<(), String> {
     let harness = state.harness().await?;
-    // `None` giữ nguyên mô hình đã chọn của provider ấy. Đổi provider không được lặng lẽ
-    // đổi cả mô hình — người dùng chọn hai thứ đó riêng, và họ chỉ vừa đổi một.
+    // `None` keeps that provider's chosen model: switching providers must not silently switch models too.
     harness
         .providers
         .activate(&id, None)
@@ -147,21 +137,10 @@ pub async fn set_provider_model(
     harness.apply_provider().await
 }
 
-/// Thử một cấu hình **chưa lưu**.
-///
-/// Nhận cả cấu hình chứ không nhận một id, vì đây đúng là lúc người dùng chưa lưu: bắt họ
-/// lưu trước rồi mới thử được nghĩa là một cấu hình sai vẫn phải nằm trong kho một lúc.
-/// `api_key: None` thì mượn khoá đã lưu của cùng id — nếu không, thử một provider đã có
-/// khoá sẽ luôn báo sai khoá.
-///
-/// Năng lực trả về mang **hai mức chắc chắn khác nhau**, và giao diện phải biết mức nào là
-/// mức nào: LM Studio khai thẳng loại mô hình trong danh sách nên `chat`/`embedding` ở đó
-/// là sự thật, còn Ollama và OpenAI-compatible chỉ cho một cái tên nên lõi đoán từ tên.
-/// Cờ `tools` thì gần như luôn là phỏng đoán — một lần thử cố ý không trả tiền hỏi năng
-/// lực từng mô hình — nên đừng treo cảnh báo "không gọi được tool" lên nó; giá trị có thẩm
-/// quyền đến sau từ `list_models`. Cờ `embedding` thì ngược lại, **đáng dùng ngay**: nó
-/// chỉ để xếp mô hình nhúng lên đầu một ô chọn, và xếp trượt thì tốn một cú cuộn, còn
-/// không xếp gì thì bắt người dùng nhớ tên mô hình nhúng của máy chủ mình.
+/// Probe an unsaved configuration, taking the whole config rather than an id; `api_key: None` borrows the
+/// stored key for the same id, or probing a saved provider would always report a bad key.
+/// The returned capabilities carry two confidence levels: LM Studio declares model types, while Ollama and
+/// OpenAI-compatible are inferred from names, so never warn about `tools` from a probe.
 #[tauri::command]
 pub async fn probe_provider(
     input: ProviderInputWire,
@@ -212,16 +191,9 @@ pub async fn probe_provider(
     })
 }
 
-/// Kho mô hình của **một provider bất kỳ đã lưu**, kèm năng lực từng cái.
-///
-/// Tồn tại riêng bên cạnh `list_models` vì `list_models` chỉ hỏi provider **đang giữ vai
-/// hội thoại**, mà provider giữ vai nhúng thường là một máy chủ khác — đó chính là cấu
-/// hình mà màn hình mô hình nhúng khuyến khích: nhúng tại chỗ, trò chuyện từ xa. Không có
-/// lệnh này thì màn hình ấy không còn cách nào biết máy chủ kia có gì, và chỗ trống đó
-/// trước nay được lấp bằng một cái tên đoán sẵn.
-///
-/// Danh sách rỗng nghĩa là **không hỏi được** — máy chủ chưa bật, hoặc provider từ xa
-/// không chịu liệt kê. Không phải lỗi: giao diện vẫn phải cho nhập tay.
+/// Model catalogue for any saved provider. Separate from `list_models`, which only asks the chat-role
+/// provider, while the embedding provider is usually a different server. An empty list means "could not ask",
+/// not an error, so the UI must still allow manual entry.
 #[tauri::command]
 pub async fn provider_models(
     provider_id: String,
@@ -253,11 +225,8 @@ pub async fn provider_models(
         .collect())
 }
 
-/// Cấu hình nhúng đang có hiệu lực.
-///
-/// Ghép ở đây thay vì để giao diện tự lọc danh sách provider: câu hỏi "tài liệu của tôi
-/// đang được nhúng bằng cái gì, và nó có chạy không" là **một** câu hỏi, và trả lời nó
-/// bằng cách bắt người đọc tự dò một danh sách là bắt họ làm việc của máy.
+/// The embedding configuration currently in effect, assembled here rather than filtered by the UI, because
+/// "what embeds my documents, and does it work" is one question.
 #[tauri::command]
 pub async fn embedding_setting(state: State<'_, AppState>) -> Result<EmbeddingSetting, String> {
     let harness = state.harness().await?;
@@ -284,10 +253,8 @@ pub async fn embedding_setting(state: State<'_, AppState>) -> Result<EmbeddingSe
     })
 }
 
-/// Giao vai nhúng cho một provider, với một mô hình tường minh.
-///
-/// Không có nhánh "để lõi tự chọn": mô hình nhúng sai thì mọi lần nạp tài liệu thất bại,
-/// và một lựa chọn ngầm là một lựa chọn không ai nhớ đã làm.
+/// Grant the embedding role to a provider with an explicit model; there is no "let the core pick" branch,
+/// since a wrong embedding model fails every ingest and an implicit choice is one nobody remembers making.
 #[tauri::command]
 pub async fn set_embedding(
     provider_id: String,
@@ -304,7 +271,7 @@ pub async fn set_embedding(
     embedding_setting(state).await
 }
 
-/// Thử **nhúng thật một câu** bằng một cấu hình chưa lưu.
+/// Really embed a sentence using an unsaved configuration.
 #[tauri::command]
 pub async fn probe_embedding(
     provider_id: String,

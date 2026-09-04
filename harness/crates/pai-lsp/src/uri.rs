@@ -1,19 +1,6 @@
-//! Đường dẫn ↔ `file://` URI, hai chiều, không mất mát.
-//!
-//! Tệp này nhỏ nhưng nó là chỗ dễ sai nhất trong crate, vì sai ở đây **không nổ**. Một
-//! đường dẫn có khoảng trắng hay dấu tiếng Việt đi qua một phép nối chuỗi ngây thơ sẽ ra
-//! một URI mà language server không nhận ra; server trả về `null`, tool nói "không có
-//! định nghĩa nào", và mô hình tin rằng hàm đó không tồn tại. Một câu trả lời sai trông y
-//! hệt một câu trả lời đúng — nên phép chuyển này được viết ra thành hàm riêng và được
-//! khoá bằng bài kiểm chứng khứ hồi, thay vì rải `format!("file://{}")` khắp nơi.
-//!
-//! Hai quyết định:
-//!
-//! - **Mã hoá theo byte của UTF-8, không theo ký tự.** RFC 3986 định nghĩa phần trăm-mã
-//!   hoá trên octet; `%C6%B0` là "ư", không phải hai ký tự.
-//! - **Đường dẫn không phải UTF-8 là lỗi, không phải mất mát.** `to_string_lossy` sẽ đổi
-//!   byte lạ thành `U+FFFD`, và cái URI ra lò trỏ vào một tệp *khác* — hoặc không tệp
-//!   nào. Nói thẳng là không chuyển được thì tool trả về một câu người đọc hiểu.
+//! Path <-> `file://` URI, both ways, lossless.
+//! Small but the easiest place to be wrong, because a bad URI does not explode: the server
+//! returns `null` and the model concludes the symbol does not exist. Percent-encode UTF-8 bytes.
 
 use std::path::{Path, PathBuf};
 
@@ -29,21 +16,19 @@ pub enum UriError {
     BadEscape(String),
 }
 
-/// Ký tự được để nguyên: đúng tập `unreserved` của RFC 3986, cộng `/` vì nó là dấu ngăn
-/// đoạn chứ không phải dữ liệu.
+/// Characters left alone: RFC 3986's `unreserved` set, plus `/`, which is a separator rather than data.
 fn unreserved(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~')
 }
 
-/// `/nhà/tệp mã.rs` → `file:///nh%C3%A0/t%E1%BB%87p%20m%C3%A3.rs`.
+/// `/nha/tep ma.rs` -> `file:///nh%C3%A0/t%E1%BB%87p%20m%C3%A3.rs`.
 pub fn to_uri(path: &Path) -> Result<String, UriError> {
     let text = path
         .to_str()
         .ok_or_else(|| UriError::NotUtf8(path.to_path_buf()))?;
 
     let mut uri = String::from("file://");
-    // Windows đưa vào `C:\a\b`, không có `/` đứng đầu; URI thì luôn có. Thêm nó ở đây
-    // chứ không ở chỗ gọi, để chỗ gọi không phải biết mình đang chạy trên hệ nào.
+    // Windows hands us `C:\a\b` with no leading `/`; a URI always has one, so add it here rather than at the call site.
     if !text.starts_with('/') {
         uri.push('/');
     }
@@ -58,18 +43,14 @@ pub fn to_uri(path: &Path) -> Result<String, UriError> {
     Ok(uri)
 }
 
-/// Chiều ngược lại. Chỉ nhận authority rỗng hoặc `localhost`.
-///
-/// `file://may-khac/duong/dan` là một tệp trên máy khác. Ta không đọc được nó, và đoán
-/// rằng nó nằm ở `/duong/dan` trên máy này là cách trả về nội dung của một tệp không liên
-/// quan mà không ai biết.
+/// The reverse; only an empty authority or `localhost` is accepted, since a remote path guessed as local would silently return an unrelated file.
 pub fn from_uri(uri: &str) -> Result<PathBuf, UriError> {
     let rest = uri
         .strip_prefix("file://")
         .ok_or_else(|| UriError::NotFileUri(uri.to_string()))?;
 
     let encoded = if let Some(tail) = rest.strip_prefix("localhost/") {
-        // Bỏ `localhost` nhưng giữ lại dấu `/` mở đầu đường dẫn.
+        // Drop `localhost` but keep the `/` that opens the path.
         &rest[rest.len() - tail.len() - 1..]
     } else if rest.starts_with('/') {
         rest
@@ -96,8 +77,7 @@ pub fn from_uri(uri: &str) -> Result<PathBuf, UriError> {
     }
 
     let text = String::from_utf8(bytes).map_err(|_| UriError::BadEscape(uri.to_string()))?;
-    // `file:///C:/a` giải ra `/C:/a`; trên Windows dấu `/` đầu là của URI, không của
-    // đường dẫn. Trên Unix `/C:` là một tên thư mục hợp lệ nên không được đụng vào.
+    // `file:///C:/a` decodes to `/C:/a`; on Windows the leading `/` belongs to the URI, while on Unix `/C:` is a valid directory name.
     #[cfg(windows)]
     let text = {
         let bytes = text.as_bytes();

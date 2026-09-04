@@ -1,4 +1,4 @@
-//! Danh sách dự án và đổi dự án.
+//! Listing projects and switching between them.
 
 use pai_project::{CloneEvent, CloneRequest};
 use tauri::State;
@@ -19,11 +19,8 @@ pub async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectView
         .collect())
 }
 
-/// Đổi dự án.
-///
-/// Nặng ở phía lõi — nó tháo và cắm lại cả một nhánh plugin — nên huỷ mọi lượt đang chạy
-/// trước: một lượt đang giữa chừng khi tool dưới chân nó bị gỡ ra sẽ hỏng theo cách không
-/// giải thích được cho ai.
+/// Switch projects. Heavy on the core side -- it tears down and rebuilds a plugin branch -- so running turns
+/// are cancelled first, since a turn whose tools vanish under it fails inexplicably.
 #[tauri::command]
 pub async fn open_project(path: String, state: State<'_, AppState>) -> Result<ProjectView, String> {
     let harness = state.harness().await?;
@@ -40,12 +37,8 @@ pub async fn remove_project(id: String, state: State<'_, AppState>) -> Result<()
     state.harness().await?.forget_project(&id)
 }
 
-/// Ghi nhận một thư mục có sẵn thành dự án, với loại do người dùng nói ra.
-///
-/// Khác `open_project` ở đúng một chỗ và chỗ đó quan trọng: `open_project` dùng `touch`,
-/// vốn **giữ nguyên** loại của một dự án đã có. Đây là đường duy nhất đặt loại, vì loại là
-/// thứ quyết định tầng plugin nào được cắm — và một thư mục âm thầm đổi loại vì người dùng
-/// mở lại nó là một tập tool đổi dưới chân họ.
+/// Register an existing directory as a project with a user-declared type; this is the only path that sets the
+/// type, since `open_project` uses `touch` and preserves it, and the type decides which plugin layer loads.
 #[tauri::command]
 pub async fn create_project(
     path: String,
@@ -58,14 +51,9 @@ pub async fn create_project(
     Ok(ProjectView::new(project, current.as_deref()))
 }
 
-/// Clone một repo rồi ghi nhận nó thành dự án.
-///
-/// Tiến trình đi qua `Channel` chứ không qua `emit`, cùng lý do như luồng token: `emit`
-/// phát tới mọi cửa sổ và không có đường ghép sự kiện với lời gọi đã sinh ra nó.
-///
-/// **Thả luồng là huỷ**, và không có hàm huỷ nào khác — nên hàm này phải giữ luồng sống
-/// suốt bản clone. Người dùng bấm huỷ ở giao diện thì lệnh này bị bỏ dở, luồng bị thả, và
-/// `pai-project` giết cả nhóm tiến trình `git` rồi dọn thư mục tải dở.
+/// Clone a repository and register it as a project. Progress goes through a `Channel`, not `emit`, which
+/// would broadcast to every window. Dropping the stream is the only cancellation, so this function must hold
+/// it alive for the whole clone; dropping it kills the `git` process group and cleans the partial directory.
 #[tauri::command]
 pub async fn clone_project(
     url: String,
@@ -85,28 +73,24 @@ pub async fn clone_project(
         name,
         depth,
     };
-    // Kiểm trước khi mở luồng: một URL `ext::` bị từ chối phải là một lỗi trả về ngay, chứ
-    // không phải một sự kiện `Failed` lẫn giữa các dòng tiến trình.
+    // Validate before opening the stream: a rejected `ext::` URL should be an immediate error, not a `Failed` event lost among progress lines.
     request.validate().map_err(|err| err.to_string())?;
 
-    // Đăng ký token huỷ **trước** khi mở luồng. Một `Channel` của Tauri không nói cho
-    // phía Rust biết người dùng đã đóng hộp thoại, nên nếu không có đường huỷ tường minh
-    // thì bản clone chạy tiếp tới cùng sau khi họ đã bấm Huỷ và đi làm việc khác.
+    // Register the cancel token before opening the stream: a Tauri `Channel` never tells Rust the dialog closed,
+    // so without an explicit cancel path the clone runs to completion after the user gave up.
     let cancel = CancellationToken::new();
     *state.cloning.lock() = Some(cancel.clone());
 
     let mut stream = pai_project::clone(request);
-    // `CloneEvent` mang pha và tiến trình ở hai biến thể rời nhau, còn giao diện cần mỗi
-    // bản tin tự nói được nó thuộc pha nào. Nhớ pha ở đây, một chỗ, thay vì bắt giao diện
-    // gấp trạng thái — giao diện gấp trạng thái là giao diện có hai nguồn sự thật.
+    // `CloneEvent` splits phase and progress across variants, but the UI needs each message to name its phase;
+    // remember it here rather than making the UI fold state and hold a second source of truth.
     let mut phase = String::from("Đang chuẩn bị");
     let mut done: Option<std::path::PathBuf> = None;
 
     while let Some(event) = tokio::select! {
         biased;
-        // Nhánh huỷ đứng trước: thả `stream` là giết cả nhóm tiến trình `git` và dọn thư
-        // mục tải dở, nên chờ thêm một sự kiện nữa trước khi kiểm là chờ thêm một mảnh
-        // tải về không ai cần.
+        // Check cancellation first: dropping `stream` kills the `git` group and cleans up, so waiting for one
+        // more event means downloading one more chunk nobody wants.
         _ = cancel.cancelled() => None,
         event = stream.next() => event,
     } {
@@ -162,10 +146,9 @@ pub async fn clone_project(
             },
         };
         let failed = progress.error.clone();
-        // Giao diện mất kết nối kênh là chuyện có thật (cửa sổ đóng giữa chừng); nó không
-        // phải lý do để bỏ dở bản clone đang chạy.
+        // Losing the channel is real (the window closed), but it is no reason to abandon a running clone.
         if let Err(err) = on_progress.send(progress) {
-            tracing::debug!("không gửi được tiến trình clone: {err}");
+            tracing::debug!("could not send clone progress: {err}");
         }
         if let Some(message) = failed {
             state.cloning.lock().take();
@@ -179,8 +162,7 @@ pub async fn clone_project(
     }
 
     let path = done.ok_or_else(|| {
-        // Luồng kết thúc mà không có `Done` lẫn `Failed`: hợp đồng của `pai-project` nói
-        // điều này không xảy ra, nên nếu nó xảy ra thì im lặng là cách tệ nhất.
+        // The stream ended with neither `Done` nor `Failed`; `pai-project`'s contract says that cannot happen, so silence would be the worst response.
         "bản clone kết thúc mà không báo kết quả".to_string()
     })?;
 
@@ -189,10 +171,8 @@ pub async fn clone_project(
     Ok(ProjectView::new(project, current.as_deref()))
 }
 
-/// Huỷ bản clone đang chạy. Không có bản nào thì đây là một lệnh không làm gì.
-///
-/// Không báo lỗi khi không có gì để huỷ: người dùng bấm Huỷ đúng lúc bản clone vừa xong là
-/// một cuộc đua có thật, và một hộp lỗi ở đó nói về một chuyện đã kết thúc tốt đẹp.
+/// Cancel a running clone, or do nothing if there is none; cancelling just as a clone finishes is a real race,
+/// and an error dialog there would complain about something that went fine.
 #[tauri::command]
 pub fn cancel_clone(state: State<'_, AppState>) {
     if let Some(token) = state.cloning.lock().take() {
@@ -200,10 +180,8 @@ pub fn cancel_clone(state: State<'_, AppState>) {
     }
 }
 
-/// Đóng dự án đang mở, quay về trò chuyện thuần tuý.
-///
-/// Huỷ mọi lượt đang chạy trước, cùng lý do như `open_project`: một lượt đang giữa chừng
-/// khi tool dưới chân nó bị gỡ ra sẽ hỏng theo cách không giải thích được cho ai.
+/// Close the open project and fall back to plain conversation, cancelling running turns first for the same
+/// reason as `open_project`.
 #[tauri::command]
 pub async fn close_project(state: State<'_, AppState>) -> Result<Vec<ProjectView>, String> {
     let harness = state.harness().await?;
@@ -214,11 +192,8 @@ pub async fn close_project(state: State<'_, AppState>) -> Result<Vec<ProjectView
     list_projects(state).await
 }
 
-/// Đổi loại của một dự án.
-///
-/// Loại được đặt một lần lúc ghi nhận và `open_project` cố ý giữ nguyên nó, nên không có
-/// lệnh này thì một thư mục vào nhầm loại là một ngõ cụt: người dùng chỉ thấy trợ lý nói
-/// nó không có tool nào để đọc tệp, và không có gì trên màn hình nói vì sao.
+/// Change a project's type. The type is set once at registration and deliberately preserved by
+/// `open_project`, so without this command a mis-typed directory is a dead end with no on-screen explanation.
 #[tauri::command]
 pub async fn set_project_kind(
     id: String,
@@ -226,8 +201,7 @@ pub async fn set_project_kind(
     state: State<'_, AppState>,
 ) -> Result<Vec<ProjectView>, String> {
     let harness = state.harness().await?;
-    // Huỷ lượt đang chạy: đổi loại là tháo và cắm lại cả tầng plugin, và một lượt đang
-    // giữa chừng khi tool dưới chân nó bị gỡ ra sẽ hỏng không giải thích được cho ai.
+    // Cancel running turns: changing the type rebuilds the plugin layer under them.
     for (_, token) in state.running.lock().drain() {
         token.cancel();
     }
@@ -235,23 +209,13 @@ pub async fn set_project_kind(
     list_projects(state).await
 }
 
-/// Trần số mục trả về cho **một** thư mục.
-///
-/// Một thư mục `node_modules` có hàng chục nghìn mục, và vẽ hết chúng ra không giúp ai
-/// tìm được gì — nó chỉ làm treo cột bên phải. Cắt ở đây chứ không ở giao diện: một danh
-/// sách quá dài không nên đi qua cầu IPC ngay từ đầu.
+/// Cap on entries returned for one directory: `node_modules` has tens of thousands, and an overlong list
+/// should not cross the IPC bridge in the first place.
 const MAX_ENTRIES: usize = 500;
 
-/// Một tầng của cây thư mục dự án.
-///
-/// **Chỉ một tầng.** Đọc đệ quy cả cây lúc mở bảng là đọc cả `node_modules` và `.git` cho
-/// một người dùng chỉ định mở một thư mục — nên mỗi lần bung một nhánh là một lời gọi, và
-/// nhánh chưa bung thì chưa tốn gì.
-///
-/// Không lọc bỏ tệp ẩn. `.gitignore`, `.env`, `.github` là những tệp người ta thật sự cần
-/// mở, và một cây tự giấu bớt là một cây khiến người dùng kết luận tệp của họ không có ở
-/// đó. `.git` cũng vẫn hiện, nhưng vì cây đọc theo từng tầng nên nó không tốn gì cho tới
-/// khi có người cố ý bung nó ra.
+/// One level of the project tree. Only one: recursing on open would read `node_modules` and `.git` for someone
+/// who wanted a single folder, so each expansion is a call. Hidden files are not filtered -- `.gitignore`,
+/// `.env` and `.github` are files people actually open, and a self-hiding tree makes users doubt their own disk.
 #[tauri::command]
 pub async fn list_dir(
     path: String,
@@ -260,15 +224,13 @@ pub async fn list_dir(
     use std::path::Path;
 
     let harness = state.harness().await?;
-    // Không có dự án thì không có cây. Trả rỗng chứ không lỗi: đóng dự án trong lúc bảng
-    // còn mở là một thao tác hợp lệ, và một hộp lỗi ở đó là phạt người dùng vì đã đóng.
+    // No project, no tree. Empty rather than an error: closing a project with the panel open is legitimate.
     let Some(open) = harness.current_project() else {
         return Ok(Vec::new());
     };
 
-    // Chỉ đọc **trong** thư mục dự án. Giao diện gửi lên một chuỗi, và một chuỗi từ giao
-    // diện là thứ duy nhất ngăn lệnh này thành một đường đọc cả ổ đĩa. So sau khi
-    // `canonicalize` để `..` và symlink không lách qua được.
+    // Read only inside the project directory; the UI sends a string, so compare after `canonicalize` or `..`
+    // and symlinks turn this into a whole-disk reader.
     let root = Path::new(&open.path)
         .canonicalize()
         .map_err(|err| format!("không đọc được thư mục dự án: {err}"))?;
@@ -284,9 +246,7 @@ pub async fn list_dir(
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().to_string();
-            // `file_type` rẻ hơn `metadata` và không đi theo symlink — một symlink trỏ ra
-            // ngoài dự án vì thế hiện ra như một mục thường, và bung nó ra thì phép so
-            // `starts_with` ở trên chặn lại.
+            // `file_type` is cheaper than `metadata` and does not follow symlinks; expanding one is stopped by the `starts_with` check above.
             let is_dir = entry.file_type().ok()?.is_dir();
             Some(crate::protocol::DirEntryView {
                 name,
@@ -296,8 +256,7 @@ pub async fn list_dir(
         })
         .collect();
 
-    // Thư mục trước, rồi xếp theo tên không phân biệt hoa thường. Thứ tự của `read_dir`
-    // là thứ tự của hệ tệp, tức là không có thứ tự nào cả với người đọc.
+    // Directories first, then case-insensitive by name: `read_dir` order is filesystem order, which is no order at all to a reader.
     entries.sort_by(|a, b| {
         b.is_dir
             .cmp(&a.is_dir)

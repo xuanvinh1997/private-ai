@@ -1,13 +1,6 @@
-//! Is the Linux confinement real.
-//!
-//! Like the macOS tests, these **run real commands** rather than compare argument strings: a
-//! policy built with correct syntax but wrong semantics passes every string comparison and
-//! confines nothing.
-//!
-//! Running them needs a kernel with Landlock **and** no seccomp filter blocking the syscall.
-//! In default Docker it is blocked — and that is not a reason to skip, it is a test case:
-//! the provider then has to report `None` with a reason rather than quietly letting things
-//! through.
+//! Is the Linux confinement real. Like the macOS tests, these run real commands rather than
+//! compare argument strings. They need a kernel with Landlock and no seccomp filter over the
+//! syscall; where it is blocked, the provider must report `None` with a reason.
 
 #![cfg(target_os = "linux")]
 
@@ -26,8 +19,7 @@ fn provider() -> Landlock {
     Landlock::with_runner(RUNNER)
 }
 
-/// Can this kernel confine. If not, the test skips rather than going red — a suite that goes
-/// red because of the environment is a suite nobody trusts any more.
+/// Can this kernel confine; if not the test skips rather than going red on the environment.
 fn can_confine() -> bool {
     match provider().enforcement() {
         Enforcement::None(reason) => {
@@ -79,10 +71,7 @@ fn workspace_write_blocks_writes_outside_the_workspace() {
     let root = workspace.path().canonicalize().expect("canonicalises");
     let policy = Policy::workspace_write(&root);
 
-    // Do **not** use a `TempDir` or `/var/tmp` as the "outside" location: `writable_roots`
-    // deliberately allows writing both `/tmp` and `/var/tmp`, so a file there sits inside
-    // the allowed area and the test would wrongly conclude the sandbox does not confine.
-    // The user's home directory really is outside.
+    // Not a `TempDir` or `/var/tmp` as the outside location: both are deliberately writable.
     let home = std::env::var("HOME").expect("HOME is set");
     let target = Path::new(&home).join(format!("pai-must-not-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&target);
@@ -113,9 +102,7 @@ fn read_only_blocks_writes_even_inside_the_workspace() {
         &policy,
         &format!("echo x > {}/a.txt", root.display())
     ));
-    // But reading still has to work: a read-only agent that cannot read is useless. This
-    // command also tests the `/dev/null` hole — nearly every command opens it to discard
-    // output.
+    // Reading must still work, and this command also exercises the `/dev/null` hole.
     assert!(runs(&policy, "/bin/ls / > /dev/null"));
 }
 
@@ -125,9 +112,7 @@ fn danger_full_access_wraps_nothing() {
     let policy = Policy::danger_full_access(workspace.path());
     let argv = vec!["/bin/echo".to_string(), "hello".to_string()];
 
-    // This mode is the *absence* of a sandbox; wrapping it would build an empty boundary
-    // that then has to be maintained. This test runs even on a kernel without Landlock — it
-    // never touches the kernel.
+    // The absence of a sandbox, so nothing is wrapped; this never touches the kernel.
     assert_eq!(
         provider().wrap(argv.clone(), &policy).expect("wraps"),
         argv
@@ -139,22 +124,16 @@ fn danger_full_access_wraps_nothing() {
 fn without_confinement_it_refuses_to_run_rather_than_running_bare() {
     let workspace = TempDir::new().expect("temp dir");
     let policy = Policy::workspace_write(workspace.path());
-    // A runner that does not exist ⇒ `enforcement()` is `None` ⇒ `wrap` has to **refuse**.
+    // A missing runner makes `enforcement()` `None`, so `wrap` has to refuse.
     let broken = Landlock::with_runner("/no-such-file");
     let err = broken
         .wrap(vec!["/bin/echo".into(), "hello".into()], &policy)
         .expect_err("no confinement means nothing runs");
-    // Returning bare argv here silently drops the boundary at exactly the moment the user
-    // believes it is there.
+    // Returning bare argv would drop the boundary just when the user believes in it.
     assert!(err.to_string().contains("không giam được"), "{err}");
 }
 
-/// Opt-in network confinement really blocks a TCP connect.
-///
-/// Written the same way as the macOS twin: connect to a port opened by the test itself, not
-/// to a name on the internet. A container with no outbound route would make an internet
-/// probe "pass" for entirely the wrong reason, and that is how a security test quietly stops
-/// testing anything.
+/// Opt-in network confinement really blocks a TCP connect, to a port this test opened itself.
 #[test]
 fn deny_network_really_blocks_a_tcp_connection() {
     if !can_confine() {
@@ -176,8 +155,7 @@ fn deny_network_really_blocks_a_tcp_connection() {
         }
     });
 
-    // dash has no `/dev/tcp`, so the probe goes through python3 when it exists and skips
-    // otherwise — better to test nothing than to test something else by accident.
+    // dash has no `/dev/tcp`, so the probe uses python3 when present and skips otherwise.
     let probe = format!(
         "command -v python3 >/dev/null || exit 111; \
          python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(2); \
@@ -197,11 +175,7 @@ fn deny_network_really_blocks_a_tcp_connection() {
     );
 }
 
-/// Denying the network must **not** weaken the file confinement.
-///
-/// Both go into the same ruleset, and adding a `handle_access` for the network is exactly
-/// where the filesystem half can be dropped by accident — the ruleset still builds, still
-/// enforces, and simply stops blocking writes.
+/// Denying the network must not weaken file confinement: both share one ruleset.
 #[test]
 fn denying_the_network_leaves_file_confinement_intact() {
     if !can_confine() || !provider().network_confinable() {
@@ -210,10 +184,7 @@ fn denying_the_network_leaves_file_confinement_intact() {
     let workspace = TempDir::new().expect("temp dir");
     let root = workspace.path().canonicalize().expect("canonicalises");
 
-    // The same trap `workspace_write_blocks_writes_outside_the_workspace` already recorded:
-    // `writable_roots` **deliberately** allows both `/tmp` and `/var/tmp`, so a second
-    // `TempDir` sits *inside* the permitted area and the test would wrongly conclude the
-    // confinement is broken. The home directory really is outside.
+    // `/tmp` and `/var/tmp` are deliberately writable, so the outside path is under home.
     let home = std::env::var("HOME").expect("HOME is set");
     let blocked = Path::new(&home).join(format!("pai-net-must-not-{}.txt", std::process::id()));
     let _ = std::fs::remove_file(&blocked);

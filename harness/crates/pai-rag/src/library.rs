@@ -1,23 +1,6 @@
-//! Seam thư viện tài liệu: những kiểu mà tầng trên nhìn thấy, và hợp đồng của chúng.
-//!
-//! # Chỗ này từng là gì
-//!
-//! Trước đây module này **là** thư viện: quét thư mục, rút chữ, cắt đoạn, nhúng, tìm —
-//! khoảng một nghìn năm trăm dòng. Giờ nó chỉ còn là hợp đồng, còn phần thi hành nằm ở
-//! `services/rag/`, một tiến trình Python nói MCP qua stdio.
-//!
-//! Đổi như vậy vì ba việc mà Rust ở đây không làm nổi ở mức đáng dùng: đọc DOCX/XLSX/PPTX
-//! (markitdown), OCR bản quét bằng mô hình vision, và xếp hạng lại bằng cross-encoder.
-//! Xem `services/rag/README.md`.
-//!
-//! # Vì sao mọi phương thức đều `async`
-//!
-//! Bản cũ để `documents`, `chunks`, `stats` và `remove` đồng bộ, vì chúng chỉ là vài câu
-//! truy vấn SQLite trong cùng tiến trình. Giờ mỗi cái là một vòng gọi tới một tiến trình
-//! khác. Giữ chúng đồng bộ thì bản cài đặt buộc phải `block_on` bên trong — chặn một
-//! thread của runtime, và trong runtime của Tauri thì đó là đường thẳng tới deadlock.
-//!
-//! Mọi chỗ gọi đã nằm trong lệnh Tauri `async`, nên cái giá thật sự chỉ là thêm `.await`.
+//! Document library seam: the types the layers above see, and their contract.
+//! The implementation moved to `services/rag/` (Python over MCP stdio), so every method
+//! is `async`: a sync one would have to `block_on` a runtime thread and deadlock Tauri.
 
 use std::path::PathBuf;
 
@@ -30,20 +13,16 @@ use crate::error::RagError;
 use crate::format::Format;
 use crate::search::MatchedBy;
 
-/// Bao nhiêu tệp một lần quét chịu nạp.
-///
-/// Giữ ở đây dù việc thi hành nằm bên Python: giao diện nói ra con số này khi một lần
-/// quét chạm trần, và hai bản sao của cùng một con số ở hai ngôn ngữ thì sớm muộn lệch
-/// nhau. Bên Python đọc nó từ cấu hình do phía này ghi ra.
+/// How many files one scan will ingest; kept here because the UI names the number and Python reads it from config written by this side.
 pub const MAX_FILES: usize = 5_000;
 
-/// Một tài liệu như tầng trên thấy nó. Chuyển sang `DocumentView` phía `app/` một-một.
+/// A document as the layers above see it. Maps one-to-one onto `DocumentView` in `app/`.
 #[derive(Clone, Debug)]
 pub struct Document {
     pub id: String,
-    /// Tệp thật trong thư mục dự án. Đây là chỗ người dùng mở được bằng Explorer.
+    /// The real file in the project folder; this is what the user can open in a file browser.
     pub path: PathBuf,
-    /// Chỗ tệp đến từ đó. Bằng `path` với tệp vốn đã nằm trong thư mục dự án.
+    /// Where the file came from. Equal to `path` for files already inside the project folder.
     pub origin: String,
     pub title: String,
     pub format: Format,
@@ -51,23 +30,22 @@ pub struct Document {
     pub chunks: u32,
     pub embedded: bool,
     pub added_at: i64,
-    /// `None` cộng `embedded == false` nghĩa là **đang xếp hàng**, không phải hỏng.
+    /// `None` plus `embedded == false` means queued, not broken.
     pub error: Option<String>,
-    /// Số trang, khi định dạng có khái niệm ấy.
+    /// Page count, when the format has such a notion.
     pub pages: u32,
-    /// Trang nào phải đọc bằng OCR. Giao diện nói "12/40 trang đọc bằng OCR" từ đây, và
-    /// đó là câu giải thích vì sao một tệp nạp lâu hơn hẳn những tệp khác.
+    /// Which pages needed OCR; the UI says "12/40 pages via OCR", which explains a slow ingest.
     pub ocr_pages: Vec<u32>,
 }
 
-/// Một lượt quét đang chạy, đủ để giao diện nói "đang quét 12/240 tệp".
+/// A scan in flight, enough for the UI to say "scanning 12/240 files".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Scanning {
     pub done: u32,
     pub total: u32,
 }
 
-/// Sức khoẻ của thư viện. Chuyển sang `LibraryStats` phía `app/` một-một.
+/// Library health. Maps one-to-one onto `LibraryStats` in `app/`.
 #[derive(Clone, Debug)]
 pub struct Stats {
     pub documents: u32,
@@ -75,23 +53,20 @@ pub struct Stats {
     pub embedded_chunks: u32,
     pub embedder: Option<String>,
     pub semantic_ready: bool,
-    /// Câu tiếng Việt giải thích khi `semantic_ready` là `false`. Đây là chỗ duy nhất
-    /// người dùng biết được vì sao kết quả của họ chỉ có từ khoá — hoặc vì sao thư viện
-    /// trống trong khi thư mục thì không.
+    /// Explanation shown when `semantic_ready` is false; the only place the user learns why results are keyword-only.
     pub reason: Option<String>,
-    /// Thư mục tài liệu của người dùng. Giao diện phải chỉ ra được nó: câu hỏi "vì sao
-    /// không thấy tệp nào" bắt đầu bằng việc người dùng kiểm lại họ đã chỉ vào đâu.
+    /// The user's document folder; the UI must be able to show it when no files turn up.
     pub root: PathBuf,
     pub files_seen: u32,
     pub files_skipped: u32,
-    /// Số tệp đã thử đọc và không đọc được.
+    /// Files that were tried and could not be read.
     pub unreadable: u32,
     pub excluded: u32,
     pub scanned_at: Option<i64>,
     pub scanning: Option<Scanning>,
 }
 
-/// Một đoạn khớp. Chuyển sang `DocumentHit` phía `app/` một-một.
+/// A matching chunk. Maps one-to-one onto `DocumentHit` in `app/`.
 #[derive(Clone, Debug)]
 pub struct Hit {
     pub document_id: String,
@@ -102,27 +77,23 @@ pub struct Hit {
     pub text: String,
     pub score: f32,
     pub matched_by: MatchedBy,
-    /// Trang chứa đoạn này, `0` khi định dạng không có trang. Đi vào trích dẫn: một câu
-    /// trả lời chỉ được ra trang mấy thì người dùng kiểm chứng được trong vài giây.
+    /// Page holding this chunk, `0` when the format has no pages; it goes into the citation.
     pub page: u32,
 }
 
-/// Giai đoạn của một tệp trong lúc nạp. Chuyển sang `IngestProgress.stage`.
+/// Stage of a file during ingest. Maps onto `IngestProgress.stage`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IngestStage {
     Reading,
     Stored,
     Failed,
-    /// Tệp bị bỏ qua **có lý do**: quá lớn, hoặc nằm ngoài trần số tệp. Tách khỏi
-    /// `Failed` vì đây không phải một tệp hỏng — nó lành lặn, thư viện mới là bên từ chối.
+    /// Skipped for a reason: too large, or past the file cap. Distinct from `Failed` - the file is fine, the library refused it.
     Skipped,
     Removed,
-    /// Đợt nhúng bù ở cuối mỗi lượt. Không thuộc về tệp nào; tách khỏi `Failed` để giao
-    /// diện không đếm nó vào danh sách *tệp* hỏng: "1 tệp không nạp được" là một câu sai
-    /// khi mọi tệp đều đã vào và chỉ có máy chủ nhúng là chưa trả lời.
+    /// Catch-up embedding pass at the end of a run; kept out of `Failed` so the UI does not count it as a broken *file*.
     Embedding,
-    /// Cả mẻ đã xong. Luôn là sự kiện cuối cùng của dòng.
+    /// The whole batch is done. Always the last event of a stream.
     Finished,
 }
 
@@ -140,7 +111,7 @@ impl IngestStage {
     }
 }
 
-/// Một mốc tiến trình. Chuyển sang `IngestProgress` phía `app/`.
+/// One progress tick. Maps onto `IngestProgress` in `app/`.
 #[derive(Clone, Debug)]
 pub struct IngestEvent {
     pub path: String,
@@ -149,25 +120,16 @@ pub struct IngestEvent {
     pub total: u32,
     pub finished: bool,
     pub error: Option<String>,
-    /// Tài liệu vừa xong. Có để giao diện thêm được một hàng mà không phải hỏi lại cả
-    /// danh sách sau mỗi tệp — với hai trăm tệp thì đó là hai trăm lần vẽ lại.
+    /// The document just finished, so the UI can append a row without refetching the whole list.
     pub document: Option<Document>,
 }
 
-/// Cái mà tool và tầng trên nhìn thấy.
-///
-/// # Vì sao `sync`, `ingest` và `remove` nằm ở đây
-///
-/// Chúng là **lệnh của giao diện**, không phải tool của mô hình — không có tool nào nạp
-/// hay xoá tài liệu, và đó là có chủ ý (xem [`crate::tools`]). Nhưng chúng vẫn phải nằm
-/// trên seam, vì thiếu chúng thì tầng trên chỉ cầm được một `Arc<dyn DocLibrary>` và
-/// buộc phải mở một đường thứ hai tới service để quét — hai đường tới cùng một thư viện
-/// là hai chỗ để cấu hình lệch nhau.
+/// What the tools and the layers above see; `sync`, `ingest` and `remove` are UI commands rather than model tools, but they stay on the seam so there is only one path to the service.
 #[async_trait]
 pub trait DocLibrary: Send + Sync + 'static {
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>, RagError>;
     async fn documents(&self) -> Result<Vec<Document>, RagError>;
-    /// Đọc liền mạch một tài liệu theo đoạn.
+    /// Read a document straight through, chunk by chunk.
     async fn chunks(
         &self,
         document_id: &str,
@@ -175,18 +137,17 @@ pub trait DocLibrary: Send + Sync + 'static {
         limit: usize,
     ) -> Result<Vec<Hit>, RagError>;
     async fn stats(&self) -> Result<Stats, RagError>;
-    /// Bắt kịp thư mục dự án. Đường vào chính của một dự án tài liệu.
+    /// Catch up with the project folder. The main entry point for a document project.
     fn sync(&self) -> BoxStream<'_, IngestEvent>;
-    /// Nạp một danh sách tệp cụ thể. Dòng mượn `&self`, nên nó không sống lâu hơn thư
-    /// viện — một dòng còn chạy sau khi kết nối đã đóng là một dòng ghi vào chỗ trống.
+    /// Ingest a specific list of files; the stream borrows `&self` so it cannot outlive the library.
     fn ingest(&self, paths: Vec<PathBuf>) -> BoxStream<'_, IngestEvent>;
-    /// Quên mọi dấu vân tay rồi đọc lại cả thư mục.
+    /// Forget every fingerprint and read the whole folder again.
     fn reprocess(&self) -> BoxStream<'_, IngestEvent>;
-    /// Bỏ một tài liệu khỏi thư viện. **Không** xoá tệp trên đĩa.
+    /// Drop a document from the library. Does *not* delete the file on disk.
     async fn remove(&self, id: &str) -> Result<(), RagError>;
 }
 
-/// Seam thư viện tài liệu.
+/// Document library seam.
 pub enum Docs {}
 impl ServiceKey for Docs {
     type Api = dyn DocLibrary;

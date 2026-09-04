@@ -1,7 +1,6 @@
-//! Bộ ráp khối: gấp một luồng chunk thành một message.
-//!
-//! Bài quan trọng nhất của cả crate. Nếu bộ ráp sai thì mọi tool call đều sai, và nó sai
-//! im lặng — mô hình xin gọi `read(path="a\"b")` mà ta gọi `read(path="a")`.
+//! Block assembler: folding a chunk stream into a message.
+//! The most important test in the crate - a wrong assembler breaks every tool call,
+//! and does it silently.
 
 use pai_llm::assembler::BlockAssembler;
 use pai_llm::message::{ContentBlock, Message};
@@ -16,11 +15,7 @@ fn tool_delta(index: u32, arguments: &str) -> StreamChunk {
     }
 }
 
-/// Tham số tool đến làm mười mảnh, và **một điểm cắt rơi vào giữa một escape `\"`**.
-///
-/// Đây là hình dạng thật của OpenAI streaming. Mọi cách cài đặt cố parse từng mảnh đều
-/// hỏng ở đúng chỗ này: mảnh `{"path":"a\` không phải JSON hợp lệ, và cũng không phải
-/// một chuỗi đã kết thúc.
+/// Tool arguments arrive in ten fragments, with one split landing inside an escaped `\"` - the real shape of OpenAI streaming, where per-fragment parsing fails.
 #[test]
 fn tham_so_tool_rap_tu_nhieu_manh() {
     let mut assembler = BlockAssembler::new();
@@ -34,11 +29,11 @@ fn tham_so_tool_rap_tu_nhieu_manh() {
         name: Some("read".into()),
         arguments: String::new(),
     });
-    // Chuỗi đích: {"path":"bao/cao \"quy 4\".md","dong":12}
+    // Target string: {"path":"bao/cao \"quy 4\".md","dong":12}
     for piece in [
         "{\"pa",
         "th\":\"bao/cao ",
-        // Điểm cắt nằm giữa dấu chéo ngược và dấu nháy kép của escape.
+        // The split falls between the backslash and the quote of the escape.
         "\\",
         "\"quy 4\\",
         "\".md\",",
@@ -68,8 +63,7 @@ fn tham_so_tool_rap_tu_nhieu_manh() {
     assert_eq!(parsed["dong"], 12);
 }
 
-/// Hai tool call song song, delta xen kẽ nhau. OpenAI làm đúng như vậy khi mô hình xin
-/// gọi nhiều tool trong một lượt.
+/// Two parallel tool calls with interleaved deltas, exactly as OpenAI streams multi-tool turns.
 #[test]
 fn hai_tool_call_xen_ke_khong_lan_nhau() {
     let mut assembler = BlockAssembler::new();
@@ -147,11 +141,11 @@ fn van_ban_va_suy_luan_thanh_hai_khoi_rieng() {
             ]
         }
     );
-    // `text()` chỉ trả câu trả lời: suy luận không phải thứ hiện ra như lời của trợ lý.
+    // `text()` returns the answer only: reasoning is not shown as the assistant speaking.
     assert_eq!(message.text(), "Xin chào");
 }
 
-/// Bất biến: `Usage` đứng trước `Finish`, và **không gì đứng sau `Finish`**.
+/// Invariant: `Usage` precedes `Finish`, and nothing follows `Finish`.
 #[test]
 fn khong_gi_duoc_ghi_nhan_sau_finish() {
     let mut assembler = BlockAssembler::new();
@@ -173,7 +167,7 @@ fn khong_gi_duoc_ghi_nhan_sau_finish() {
     assembler.push(&StreamChunk::Finish {
         reason: FinishReason::Stop,
     });
-    // Máy chủ phá luật.
+    // The server breaks the rule.
     assembler.push(&StreamChunk::TextDelta {
         index: 0,
         text: " thêm".into(),
@@ -188,7 +182,7 @@ fn khong_gi_duoc_ghi_nhan_sau_finish() {
     assert!(assembler.is_finished());
 }
 
-/// Tool không tham số: OpenAI gửi `"arguments": ""`, mà chuỗi rỗng không parse được.
+/// A no-argument tool: OpenAI sends `"arguments": ""`, and an empty string does not parse.
 #[test]
 fn tham_so_rong_thanh_object_rong() {
     let mut assembler = BlockAssembler::new();
@@ -206,7 +200,7 @@ fn tham_so_rong_thanh_object_rong() {
     assert!(calls[0].parse_arguments().is_ok());
 }
 
-/// Ollama không phát id tool call. Bộ ráp phải sinh một cái ổn định để lượt sau đối chiếu.
+/// Ollama emits no tool call id, so the assembler must mint a stable one for the next round.
 #[test]
 fn thieu_id_thi_sinh_theo_index() {
     let mut assembler = BlockAssembler::new();
@@ -222,7 +216,7 @@ fn thieu_id_thi_sinh_theo_index() {
     assert_eq!(assembler.tool_calls()[0].id, "call_3");
 }
 
-/// Khối văn bản rỗng không được lọt vào sổ tay: Ollama mở một message rỗng ở dòng `done`.
+/// Empty text blocks must not reach the log: Ollama opens an empty message on the `done` line.
 #[test]
 fn khoi_rong_bi_loai() {
     let mut assembler = BlockAssembler::new();

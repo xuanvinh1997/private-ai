@@ -1,8 +1,5 @@
-//! Hỏi người dùng có cho chạy một tool hay không.
-//!
-//! Luật duy nhất đáng nhớ: **không trả lời được là từ chối.** Webview chết, người dùng
-//! đóng cửa sổ, kênh đứt, hết giờ — tất cả đều ra cùng một kết quả. Hạn giờ trong hộp
-//! thoại chỉ là lớp thứ hai; nếu lõi tin vào nó thì một webview chết sẽ treo cả lượt.
+//! Asking the user whether a tool may run. The one rule: no answer means denial -- a dead webview, a closed
+//! window, a broken channel and a timeout all end the same way. The dialog's own timer is only a second layer.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -14,7 +11,7 @@ use tokio::sync::oneshot;
 
 use crate::protocol::{AgentEvent, ApprovalDecision};
 
-/// Bao lâu thì coi như người dùng đã bỏ đi. Một hộp thoại đứng mãi chặn cả lượt.
+/// How long before we assume the user walked away; a dialog left open blocks the whole turn.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Default)]
@@ -23,8 +20,7 @@ pub struct Approvals {
 }
 
 impl Approvals {
-    /// Hỏi, rồi chờ. Trả về quyết định — không bao giờ trả lỗi, vì mọi đường hỏng đều
-    /// quy về `Rejected`.
+    /// Ask, then wait. Always returns a decision, never an error: every failure path collapses to `Rejected`.
     pub async fn ask(
         self: &Arc<Self>,
         channel: &Channel<AgentEvent>,
@@ -46,34 +42,29 @@ impl Approvals {
             timeout_ms: Some(DEFAULT_TIMEOUT.as_millis() as u64),
         });
         if sent.is_err() {
-            // Kênh đã đứt: không ai nghe câu hỏi, nên không ai trả lời được.
+            // The channel is gone: nobody hears the question, so nobody can answer it.
             self.pending.lock().remove(&request_id);
             return ApprovalDecision::Rejected;
         }
 
         let decision = match tokio::time::timeout(DEFAULT_TIMEOUT, rx).await {
             Ok(Ok(decision)) => decision,
-            // Hết giờ, hoặc đầu gửi bị thả vì lượt đã huỷ.
+            // Timed out, or the sender was dropped because the turn was cancelled.
             _ => ApprovalDecision::Rejected,
         };
         self.pending.lock().remove(&request_id);
         decision
     }
 
-    /// Giao diện trả lời. Câu trả lời cho một yêu cầu đã hết hạn bị bỏ qua trong im
-    /// lặng — nó không còn chỗ nào để đi.
+    /// The UI answers; a reply to an expired request is dropped silently, since it has nowhere to go.
     pub fn resolve(&self, request_id: &str, decision: ApprovalDecision) {
         if let Some(tx) = self.pending.lock().remove(request_id) {
             let _ = tx.send(decision);
         }
     }
 
-    /// Huỷ mọi câu hỏi đang treo. Thả đầu gửi làm bên chờ tỉnh dậy ngay với `Rejected`.
-    /// Rút lại mọi câu hỏi đang treo.
-    ///
-    /// Nhận một hàm gửi chứ không nhận `Channel`: sự kiện của một lượt phải đi qua **đúng
-    /// một** đường ra, và đường đó là bộ gộp. Gửi thẳng vào `Channel` ở đây là chen ngang
-    /// trước những token còn trong bộ đệm, và thứ tự sai thì giao diện đóng nhầm khối.
+    /// Withdraw every pending question; takes a send function rather than a `Channel`, because a turn's events
+    /// must all leave through the coalescer or they overtake buffered tokens and the UI closes the wrong block.
     pub fn cancel_all(&self, send: impl Fn(AgentEvent)) {
         for (request_id, tx) in self.pending.lock().drain() {
             drop(tx);
@@ -82,20 +73,9 @@ impl Approvals {
     }
 }
 
-/// Cầu nối giữa seam [`Approval`] của lõi và hộp thoại trong cửa sổ.
-///
-/// Phải dựng **theo từng lượt**, không dựng một lần lúc khởi động: câu hỏi duyệt đi ra
-/// bằng chính `Channel` của lượt đã sinh ra nó. Một cầu nối dùng chung sẽ phải chọn xem
-/// gửi câu hỏi tới cửa sổ nào khi hai lượt chạy song song, và mọi cách chọn đều sai.
-///
-/// # Vì sao tệp này từng vô dụng
-///
-/// `Approvals` có đủ hai nửa — hỏi và trả lời — nhưng **không ai cắm nó vào seam
-/// `Approval`**. Đường ống tool thì fail-closed: không có provider nghĩa là mọi lời xin
-/// duyệt đều bị từ chối. Nên `bash` chưa từng chạy được một lần nào trong sản phẩm thật,
-/// và triệu chứng lại giống hệt "mô hình không biết gọi tool". Đúng luật 10 của
-/// `docs/CONTRACT.md`, ở dạng tệ nhất: một khả năng có mặt trong danh sách tool, có mặt
-/// trong giao diện, và không tồn tại.
+/// Bridge between the core [`Approval`] seam and the window's dialog. Built per turn, not once at startup,
+/// because a prompt must leave through the `Channel` of the turn that raised it. It exists because
+/// `Approvals` was once never wired into the seam, and fail-closed approval made `bash` silently unusable.
 pub struct TurnApprover {
     approvals: Arc<Approvals>,
     channel: Channel<AgentEvent>,

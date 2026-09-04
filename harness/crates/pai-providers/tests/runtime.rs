@@ -1,8 +1,6 @@
-//! Đường đổi provider, chạy từ đầu đến cuối.
-//!
-//! Không có mạng: adapter được **dựng** chứ không được gọi, và cái bài này hỏi là "sau khi
-//! ghim một provider khác thì `Driver` có thực sự cầm adapter mới không" — đúng cái bước
-//! mà một đường đổi provider viết rời rạc hay quên.
+//! The provider-switch path, end to end and offline: adapters are built, never called.
+//! The question asked is whether `Driver` really holds the new adapter after a switch --
+//! exactly the step a hand-rolled switch path forgets.
 
 use std::sync::Arc;
 
@@ -57,8 +55,7 @@ async fn ghim_mot_provider_thi_driver_cam_adapter_cua_no() {
         .await
         .expect("lưu OpenAI");
 
-    // Cái đầu tiên được ghim ngay lúc lưu, và mô hình rơi về mặc định của mục danh mục
-    // cùng địa chỉ vì người dùng chưa chọn gì.
+    // The first one is pinned on save, and the model falls back to the catalogue default for that address.
     assert_eq!(driver.llm().id(), ollama.id());
     assert_eq!(driver.model(), "qwen3:8b");
 
@@ -69,7 +66,7 @@ async fn ghim_mot_provider_thi_driver_cam_adapter_cua_no() {
     assert_eq!(driver.llm().id(), openai.id());
     assert_eq!(driver.model(), "gpt-4o-mini");
 
-    // Xoá cái đang hoạt động: người kế nhiệm phải đã nằm trong `Driver` khi lời gọi trả về.
+    // Deleting the active one: the successor must already be in `Driver` when the call returns.
     runtime.remove(openai.id()).await.expect("xoá OpenAI");
     assert_eq!(driver.llm().id(), ollama.id());
     assert_eq!(
@@ -95,9 +92,7 @@ async fn sua_dia_chi_thi_adapter_cu_bi_vut_di() {
         .expect("lưu");
     let dau_tien = driver.llm();
 
-    // Cùng id, khác URL: cache của `pai-llm` đánh khoá theo chữ ký chứ không theo id, nên
-    // adapter phải là một cái khác — nếu không thì mọi request tiếp theo vẫn bay tới máy
-    // chủ cũ mà không có gì báo động.
+    // Same id, different URL: `pai-llm` caches by signature, not id, so the adapter must be a new one.
     runtime
         .save(
             ProviderInput::create(

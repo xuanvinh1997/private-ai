@@ -1,52 +1,34 @@
-//! Thử một cấu hình **trước khi** lưu nó.
-//!
-//! Người dùng đang đứng chờ một cái nút, nên hai luật:
-//!
-//! 1. **Thời hạn ngắn.** Một máy chủ cục bộ chưa bật thường từ chối kết nối ngay, nhưng
-//!    một địa chỉ gõ sai thành một host không tồn tại thì treo tới khi DNS bỏ cuộc. Bốn
-//!    giây là ngưỡng: đủ cho một chuyến đi vòng qua Đại Tây Dương, không đủ để người dùng
-//!    tưởng ứng dụng chết.
-//! 2. **Ba tình huống, ba câu khác nhau**, vì chúng đòi ba hành động khác nhau: bật máy
-//!    chủ lên, sửa khoá, hoặc tải một mô hình về. Một câu "không kết nối được" chung chung
-//!    cho cả ba là một câu vô dụng.
-//!
-//! [`probe_embedding`] là phép thử của vai nhúng, và nó làm một việc khác hẳn: nó **nhúng
-//! thật một câu** thay vì liệt kê mô hình. Lý do nằm ở chính doc của nó.
+//! Try a configuration before saving it, with someone waiting on a button: short timeouts, and three
+//! distinct messages for the three situations, since each demands a different action.
+//! [`probe_embedding`] differs -- it actually embeds a sentence rather than listing models.
 
 use std::time::Duration;
 
 use pai_llm::{Capabilities, LlmErrorCode, ProviderConfig, ProviderKind, openai_base_url};
 use serde_json::Value;
 
-/// Người dùng chờ được bao lâu trước khi nghĩ là ứng dụng treo.
+/// How long a user waits before assuming the app has hung.
 const TIMEOUT: Duration = Duration::from_secs(4);
 
-/// Một mô hình mà máy chủ khai là nó có.
+/// A model the server claims to have.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProbeModel {
     pub id: String,
-    /// **Phỏng đoán từ tên**, không phải sự thật: một lần thử không trả tiền cho một lượt
-    /// `/api/show` trên từng mô hình. Giá trị có thẩm quyền đến sau, từ
-    /// [`pai_llm::LlmAdapter::capabilities`], khi provider đã được chọn thật.
+    /// Guessed from the name, not verified: a probe will not pay for `/api/show` per model. Authority comes later.
     pub tools: bool,
-    /// Trò chuyện được. Cùng mức chắc chắn với [`ProbeModel::tools`].
+    /// Chat-capable, with the same confidence as [`ProbeModel::tools`].
     pub chat: bool,
-    /// Nhúng được.
-    ///
-    /// Cũng là phỏng đoán ở Ollama và OpenAI-compatible — nhưng là một phỏng đoán **đáng
-    /// hiện ra**: biểu mẫu dùng nó để xếp mô hình nhúng lên đầu ô chọn, và một thứ tự sai
-    /// chỉ tốn của người dùng một cú cuộn, trong khi không có thứ tự nào bắt họ phải nhớ
-    /// tên mô hình nhúng của máy chủ mình. Ở LM Studio thì cờ này **có** thẩm quyền: kho
-    /// của nó khai thẳng `type: "embeddings"`.
+    /// Embedding-capable: a guess on Ollama and OpenAI-compatible, but a useful one for sorting the picker,
+    /// where a wrong order costs a scroll. On LM Studio it is authoritative, from `type: "embeddings"`.
     pub embedding: bool,
     pub context_window: Option<u64>,
 }
 
-/// Kết quả một lần thử.
+/// The result of one probe.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProbeResult {
     pub ok: bool,
-    /// Một câu tiếng Việt nói **phải làm gì tiếp theo**, không phải nói lỗi gì.
+    /// One sentence saying what to do next, not what went wrong.
     pub message: String,
     pub models: Vec<ProbeModel>,
 }
@@ -61,20 +43,15 @@ impl ProbeResult {
     }
 }
 
-/// Gọi endpoint liệt kê mô hình của một cấu hình.
-///
-/// Không đi qua [`pai_llm::AdapterRegistry`]: cấu hình đang thử **chưa được lưu**, và
-/// nhét nó vào cache adapter nghĩa là một URL gõ sai vẫn nằm lại đó sau khi người dùng
-/// đã bỏ hộp thoại đi.
+/// Call a config's model-listing endpoint, bypassing [`pai_llm::AdapterRegistry`] so an unsaved, mistyped URL
+/// does not linger in the adapter cache after the dialog is dismissed.
 pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResult {
     let (url, authorized) = match config.kind {
         ProviderKind::Ollama => (
             format!("{}/api/tags", config.base_url.trim_end_matches('/')),
             false,
         ),
-        // `/api/v0/models` chứ không phải `/v1/models`: cùng một máy chủ, nhưng bản kia
-        // chỉ trả về id. Người dùng bấm "thử kết nối" là để biết mình sắp dùng cái gì,
-        // và ở LM Studio thì câu trả lời đầy đủ nằm sau đúng một đường dẫn khác.
+        // `/api/v0/models`, not `/v1/models`: same server, but the latter returns only ids.
         ProviderKind::LmStudio => (
             format!("{}/api/v0/models", pai_llm::lmstudio::server_root(&config.base_url)),
             !config.api_key.is_empty(),
@@ -93,9 +70,7 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
     let response = match request.send().await {
         Ok(response) => response,
         Err(err) => {
-            // Nhóm **không nối được**: chưa có ai nghe ở địa chỉ này. Khoá đúng hay sai
-            // chưa hề được hỏi tới, nên đừng nhắc tới khoá ở đây — đó là cách người dùng
-            // đi sửa nhầm chỗ trong nửa tiếng.
+            // Not-connected group: nothing is listening yet, and the key was never asked about, so do not mention it.
             let detail = if err.is_timeout() {
                 "máy chủ không trả lời kịp"
             } else {
@@ -113,7 +88,7 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
         let body = response.text().await.unwrap_or_default();
         let err = pai_llm::LlmError::from_status(status, &body);
         return ProbeResult::fail(match err.code {
-            // Nhóm **sai khoá**: máy chủ có đó, nói chuyện được, và từ chối ta.
+            // Bad-key group: the server is there, talking, and refusing us.
             LlmErrorCode::Auth if config.api_key.is_empty() => {
                 format!("Máy chủ ở {url} đòi khoá API mà cấu hình này chưa có khoá.")
             }
@@ -145,8 +120,7 @@ pub async fn probe(config: &ProviderConfig, http: &reqwest::Client) -> ProbeResu
     };
 
     if models.is_empty() {
-        // Nhóm **rỗng**: nối được, xác thực xong, nhưng không có gì để chạy. Việc phải làm
-        // là kéo một mô hình về, không phải sửa cấu hình — nên câu chữ phải nói ra điều đó.
+        // Empty group: connected and authenticated but nothing to run, so the fix is pulling a model, not editing config.
         return ProbeResult::fail(match config.kind {
             ProviderKind::Ollama => format!(
                 "Kết nối được tới {url}, nhưng máy chủ chưa có mô hình nào. Tải một mô hình về \
@@ -174,12 +148,8 @@ fn status_ok(status: u16) -> bool {
     (200..300).contains(&status)
 }
 
-/// Đọc `/api/v0/models` của LM Studio.
-///
-/// Đây là chỗ duy nhất trong tệp này mà cờ `tools` **có** thẩm quyền: LM Studio khai loại
-/// mô hình và (ở bản đủ mới) cả năng lực tool, ngay trong danh sách, không tốn thêm một
-/// lời gọi nào cho mỗi mô hình như Ollama phải trả. Tài liệu của [`ProbeModel::tools`]
-/// vẫn đúng cho hai loại provider kia.
+/// Read LM Studio's `/api/v0/models`, the one place where `tools` is authoritative: the listing already
+/// declares model type and capabilities, with no per-model call.
 fn parse_lmstudio(payload: &Value) -> Vec<ProbeModel> {
     payload
         .get("data")
@@ -232,27 +202,19 @@ fn parse_names(payload: &Value, array: &str, field: &str) -> Vec<ProbeModel> {
         .unwrap_or_default()
 }
 
-/// Bao lâu cho một lần thử nhúng.
-///
-/// Dài hơn [`TIMEOUT`] vì lần nhúng đầu tiên của một máy chủ cục bộ còn phải nạp mô hình
-/// vào VRAM, và một lần thử hỏng vì hết giờ trong khi máy chủ vẫn đang nạp là một câu trả
-/// lời sai. Vẫn ngắn, vì vẫn có người đang đứng chờ một cái nút.
+/// Budget for one embedding probe; longer than [`TIMEOUT`] because a local server's first embed also loads the model into VRAM.
 const EMBED_TIMEOUT: Duration = Duration::from_secs(8);
 
-/// Câu đem đi nhúng thử.
-///
-/// Tiếng Việt có dấu, cố ý: một máy chủ nhúng cấu hình sai bộ token hoá vẫn nuốt trôi
-/// `hello` nhưng chết ở đây, và biết điều đó ngay lúc bấm nút thì tốt hơn nhiều so với
-/// biết sau khi đã nạp cả thư viện tài liệu.
+/// The sample sentence to embed; accented Vietnamese on purpose, since a mis-tokenised server swallows `hello` but fails here.
 const EMBED_SAMPLE: &str = "Một câu tiếng Việt ngắn để thử.";
 
-/// Kết quả một lần thử **nhúng thật**.
+/// The result of one real embedding probe.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EmbeddingProbeResult {
     pub ok: bool,
-    /// Một câu tiếng Việt nói **phải làm gì tiếp theo**.
+    /// One sentence saying what to do next.
     pub message: String,
-    /// Số chiều đo được từ vector thật trả về.
+    /// Dimensions measured from the vector actually returned.
     pub dimensions: Option<usize>,
 }
 
@@ -266,15 +228,9 @@ impl EmbeddingProbeResult {
     }
 }
 
-/// Gửi một câu đi nhúng và đo số chiều của vector trả về.
-///
-/// **Không liệt kê mô hình.** Liệt kê không trả lời được câu hỏi thật: `/api/tags` của
-/// Ollama trả về *mọi* mô hình và không có gì trong đó nói cái nào nhúng được, nên một danh
-/// sách đẹp vẫn để người dùng chọn nhầm `llama3` rồi ngồi nhìn mọi lần nạp tài liệu thất
-/// bại. Cách duy nhất biết chắc là gửi một câu đi và xem có vector về không.
-///
-/// Bốn tình huống, bốn câu khác nhau, vì chúng đòi bốn hành động khác nhau: bật máy chủ,
-/// sửa khoá, kéo mô hình về, hay đổi sang một mô hình nhúng thật.
+/// Embed a sentence and measure the returned vector. Listing cannot answer the real question -- Ollama's
+/// `/api/tags` says nothing about which models embed -- so the only certainty is sending text and looking
+/// for a vector. Four situations, four messages, because each demands a different action.
 pub async fn probe_embedding(config: &ProviderConfig, model: &str) -> EmbeddingProbeResult {
     let model = model.trim();
     if model.is_empty() {
@@ -285,7 +241,7 @@ pub async fn probe_embedding(config: &ProviderConfig, model: &str) -> EmbeddingP
     }
     let (url, authorized) = match config.kind {
         ProviderKind::Ollama => (format!("{}/api/embed", embed_root(&config.base_url)), false),
-        // Nhúng thì LM Studio đúng là một máy chủ OpenAI: `/v1/embeddings`, thân y hệt.
+        // For embedding, LM Studio is simply an OpenAI server: `/v1/embeddings`, identical body.
         ProviderKind::LmStudio | ProviderKind::OpenAiCompatible => {
             match openai_base_url(&config.base_url) {
                 Ok(root) => (format!("{root}/embeddings"), !config.api_key.is_empty()),
@@ -294,8 +250,7 @@ pub async fn probe_embedding(config: &ProviderConfig, model: &str) -> EmbeddingP
         }
     };
 
-    // Client dựng tại chỗ: cấu hình đang thử có thể chưa từng được lưu, và một lần bấm nút
-    // không đáng để kéo theo một tham số client qua cả chuỗi lời gọi ở tầng trên.
+    // A client built on the spot: the config may never have been saved, and one button press is not worth threading a client through.
     let http = reqwest::Client::builder()
         .timeout(EMBED_TIMEOUT)
         .build()
@@ -311,8 +266,7 @@ pub async fn probe_embedding(config: &ProviderConfig, model: &str) -> EmbeddingP
     let response = match request.send().await {
         Ok(response) => response,
         Err(err) => {
-            // Nhóm **không nối được**, cùng luật với [`probe`]: khoá chưa hề được hỏi tới,
-            // nên đừng nhắc tới khoá ở đây.
+            // Not-connected group, same rule as [`probe`]: the key was never asked about, so do not mention it.
             let detail = if err.is_timeout() {
                 "máy chủ không trả lời kịp"
             } else {
@@ -342,8 +296,7 @@ pub async fn probe_embedding(config: &ProviderConfig, model: &str) -> EmbeddingP
     };
 
     match first_vector(config.kind, &payload) {
-        // Nhóm **tồn tại nhưng không nhúng được** ở dạng khó chịu nhất: máy chủ trả 200 và
-        // một thân rỗng. Coi đó là thành công thì cả thư viện được nạp bằng vector rỗng.
+        // Exists-but-cannot-embed in its nastiest form: HTTP 200 with an empty body, which if trusted indexes the whole library as empty vectors.
         None | Some(0) => EmbeddingProbeResult::fail(format!(
             "Máy chủ ở {url} nhận `{model}` nhưng không trả về vector nào. Đây thường là \
              một mô hình trò chuyện, không phải mô hình nhúng."
@@ -356,8 +309,7 @@ pub async fn probe_embedding(config: &ProviderConfig, model: &str) -> EmbeddingP
     }
 }
 
-/// Gốc máy chủ cho `/api/embed`: giống [`crate::embed`], một đuôi `/v1` lạc vào đây thành
-/// một URL không tồn tại.
+/// Host root for `/api/embed`; as in [`crate::embed`], a stray `/v1` suffix would make a nonexistent URL.
 fn embed_root(base_url: &str) -> String {
     let value = base_url.trim().trim_end_matches('/');
     let tail = value.rsplit('/').next().unwrap_or_default();
@@ -370,11 +322,8 @@ fn embed_root(base_url: &str) -> String {
     }
 }
 
-/// Một mã lỗi và một thân trả về thành câu nói phải làm gì.
-///
-/// Ba nhóm ở đây — sai khoá, mô hình không tồn tại, mô hình không nhúng được — chỉ phân
-/// biệt được bằng cách đọc cả thân: Ollama trả 400 cho cả "chưa kéo mô hình về" lẫn "mô
-/// hình này không có endpoint embed", và hai chuyện đó là hai việc phải làm khác hẳn nhau.
+/// Turn a status and body into a next-action sentence; bad key, missing model and non-embedding model are
+/// only distinguishable by reading the body, since Ollama returns 400 for the last two alike.
 fn explain(config: &ProviderConfig, model: &str, url: &str, status: u16, body: &str) -> String {
     let err = pai_llm::LlmError::from_status(status, body);
     let lowered = body.to_lowercase();
@@ -420,7 +369,7 @@ fn explain(config: &ProviderConfig, model: &str, url: &str, status: u16, body: &
     )
 }
 
-/// Số chiều của vector đầu tiên, theo hình dạng thân của từng bên.
+/// Dimensions of the first vector, per each side's body shape.
 fn first_vector(kind: ProviderKind, payload: &Value) -> Option<usize> {
     let row = match kind {
         ProviderKind::Ollama => payload.get("embeddings")?.as_array()?.first()?,

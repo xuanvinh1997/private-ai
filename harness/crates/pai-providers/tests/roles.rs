@@ -1,10 +1,6 @@
-//! Hai vai trên một danh sách provider.
-//!
-//! Bài quan trọng nhất ở đây là [`hai_vai_tro_vao_hai_provider_khac_nhau`]: nó là toàn bộ
-//! lý do của việc tách vai. Bài còn lại canh hai chỗ hỏng đắt tiền — một lần migrate làm
-//! bay khoá API của người dùng, và một con trỏ còn trỏ vào hàng vừa bị xoá.
-//!
-//! Không bài nào chạm mạng.
+//! Two roles over one provider list. The central test is [`hai_vai_tro_vao_hai_provider_khac_nhau`], the
+//! whole reason roles are split; the rest guard two expensive failures -- a migration losing API keys, and
+//! a pointer left aimed at a deleted row. Nothing here touches the network.
 
 use pai_llm::ProviderKind;
 use pai_providers::{ProviderInput, ProviderStore, Role, SqliteProviderStore, StoredProvider};
@@ -16,8 +12,7 @@ fn them(store: &SqliteProviderStore, name: &str, kind: ProviderKind, url: &str) 
         .expect("lưu")
 }
 
-/// Lược đồ đúng như bản trước khi có hai vai: một cột trạng thái duy nhất, và bảng
-/// `providers` chưa có `embedding_model`.
+/// The exact pre-roles schema: a single state column, and `providers` without `embedding_model`.
 const LUOC_DO_CU: &str = "
 CREATE TABLE providers (
   id         TEXT    PRIMARY KEY,
@@ -55,15 +50,14 @@ fn tep_cua_ban_cu_len_lam_vai_hoi_thoai_va_khong_mat_khoa() {
     let store = SqliteProviderStore::open(&path).expect("mở kho đã nâng cấp");
     let rows = store.list().expect("liệt kê");
 
-    // Hàng còn nguyên, **kể cả khoá**: đây là thứ người dùng gõ vào và không lấy lại được
-    // nếu mất.
+    // Rows intact, keys included: this is hand-typed data that cannot be recovered if lost.
     assert_eq!(rows.len(), 2, "{rows:?}");
     let openai = rows.iter().find(|row| row.id() == "hai").expect("còn hàng");
     assert_eq!(openai.config.api_key, "sk-khoa-that-cua-nguoi-dung");
     assert_eq!(openai.config.name, "OpenAI");
     assert_eq!(openai.model.as_deref(), Some("gpt-4o-mini"));
 
-    // Hàng đang hoạt động của bản cũ luôn là hàng dùng để trò chuyện.
+    // The old build's active row was always the chat row.
     assert!(openai.active_chat);
     assert_eq!(
         store
@@ -73,8 +67,7 @@ fn tep_cua_ban_cu_len_lam_vai_hoi_thoai_va_khong_mat_khoa() {
         Some("hai".to_string())
     );
 
-    // Vai nhúng bắt đầu từ chỗ trống: người dùng chưa từng được hỏi tài liệu của họ sẽ
-    // được gửi đi đâu, nên không ai được trả lời thay.
+    // The embedding role starts empty: the user was never asked where their documents go, so nobody answers for them.
     assert!(rows.iter().all(|row| !row.active_embedding), "{rows:?}");
     assert!(store.active(Role::Embedding).expect("đọc").is_none());
     assert!(rows.iter().all(|row| row.embedding_model.is_none()));
@@ -96,7 +89,7 @@ fn hai_vai_tro_vao_hai_provider_khac_nhau() {
         "https://api.openai.com/v1",
     );
 
-    // Ghép chéo: nhúng tại chỗ, trò chuyện từ xa.
+    // Cross-wired: embed locally, chat remotely.
     store
         .activate(Role::Embedding, ollama.id(), Some("nomic-embed-text"))
         .expect("trao vai nhúng");
@@ -116,8 +109,7 @@ fn hai_vai_tro_vao_hai_provider_khac_nhau() {
     assert_eq!(nhung.id(), ollama.id());
     assert_ne!(chat.id(), nhung.id());
 
-    // Mỗi vai ghi vào cột mô hình của riêng nó. Trộn hai cột lại là gửi `gpt-4o-mini` tới
-    // `/api/embed`, hoặc `nomic-embed-text` vào một lượt trò chuyện.
+    // Each role writes its own model column; mixing them would send `gpt-4o-mini` to `/api/embed`.
     assert_eq!(chat.model.as_deref(), Some("gpt-4o-mini"));
     assert_eq!(chat.embedding_model, None);
     assert_eq!(nhung.embedding_model.as_deref(), Some("nomic-embed-text"));
@@ -149,8 +141,7 @@ fn xoa_provider_giu_ca_hai_vai_thi_khong_vai_nao_con_tro_vao_id_chet() {
 
     store.remove(ca_hai.id()).expect("xoá");
 
-    // Hội thoại có người kế nhiệm — ứng dụng phải trả lời được. Nhúng thì không: gửi tài
-    // liệu tới một máy chủ người dùng chưa chọn còn tệ hơn là không nhúng.
+    // Chat gets a successor because the app must answer; embedding does not, since an unchosen server is worse than none.
     let chat = store
         .active(Role::Chat)
         .expect("đọc")

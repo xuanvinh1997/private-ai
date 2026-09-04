@@ -1,12 +1,6 @@
-//! Surface: phần sổ mà mô hình nhìn thấy.
-//!
-//! Sổ là chỉ-ghi-thêm, nên nén ngữ cảnh không được phép xoá. Thay vào đó nó ghi thêm một
-//! sự kiện mang thao tác `replace(start, end)` che một dải node cũ. Bản ghi vẫn đủ để
-//! phát lại nguyên vẹn; chỉ **phép chiếu** thấy dải đó biến mất.
-//!
-//! `start`/`end` là **vị trí trong danh sách node surface**, không phải `seq`. Sau một
-//! lần replace, thứ tự node đã đổi, nên đánh địa chỉ bằng seq sẽ trỏ vào chỗ khác với
-//! thứ mô hình đang thấy. Danh sách node là sự thật; `source_event_seqs` là dấu vết.
+//! Surface: the part of the log the model sees. Compaction never deletes; it appends a
+//! `replace(start, end)` that shadows a range, so replay stays intact and only the projection changes.
+//! `start`/`end` are positions in the node list, not seqs, because replace reorders nodes.
 
 use serde::de::{self, Deserializer};
 use serde::ser::{SerializeMap, Serializer};
@@ -15,11 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::error::{Result, SessionError};
 use crate::event::Seq;
 
-/// Node mới vào cuối, hay che một dải node đã có.
+/// Either a new node at the end, or a shadow over an existing range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SurfaceOp {
     Append,
-    /// Nửa mở: `start..end`. `start == end` là một phép chèn, hợp lệ nhưng vô nghĩa.
+    /// Half-open `start..end`; `start == end` is an insert -- legal but pointless.
     Replace {
         start: usize,
         end: usize,
@@ -65,12 +59,11 @@ impl<'de> Deserialize<'de> for SurfaceOp {
     }
 }
 
-/// Thứ tự node theo đúng cách mô hình nhìn thấy.
+/// Node order exactly as the model sees it.
 #[derive(Clone, Debug, Default)]
 pub struct Surface {
     nodes: Vec<Seq>,
-    /// Tăng mỗi lần có `replace`. Bộ nhớ đệm của phép chiếu chỉ cần so con số này để biết
-    /// nó phải dựng lại từ đầu hay chỉ gấp thêm phần đuôi.
+    /// Bumped on every `replace`; the projection cache compares it to decide rebuild versus fold-the-tail.
     generation: u64,
 }
 
@@ -91,7 +84,7 @@ impl Surface {
         self.nodes.is_empty()
     }
 
-    /// Seq của những node mà một `replace(start, end)` sẽ che.
+    /// Seqs of the nodes a `replace(start, end)` would shadow.
     pub fn shadowed(&self, start: usize, end: usize) -> Result<Vec<Seq>> {
         if start > end || end > self.nodes.len() {
             return Err(SessionError::SurfaceRangeOutOfBounds {
@@ -103,11 +96,8 @@ impl Surface {
         Ok(self.nodes[start..end].to_vec())
     }
 
-    /// Gấp một sự kiện surface vào danh sách node.
-    ///
-    /// `sources` bắt buộc phải kê đủ node bị che: đó là dấu vết duy nhất còn lại để biết
-    /// bản tóm tắt đã nuốt những gì. Kê thừa thì được — một lần nén có thể trích dẫn cả
-    /// những sự kiện log-only mà nó đã đọc.
+    /// Fold a surface event into the node list. `sources` must cite every shadowed node -- the only
+    /// remaining trace of what the summary swallowed -- but may cite more, such as log-only events read.
     pub fn apply(&mut self, seq: Seq, op: SurfaceOp, sources: Option<&[Seq]>) -> Result<()> {
         match op {
             SurfaceOp::Append => self.nodes.push(seq),

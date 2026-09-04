@@ -1,19 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 """PyInstaller recipe for the macOS bundle.
-
-Two things here are not boilerplate and are worth reading before editing.
-
-**The excludes are the build.** PySide6 ships every Qt module Qt has — 1.2 GB, of which
-QtWebEngine alone is about half. This app imports five (:mod:`QtCore`, :mod:`QtGui`,
-:mod:`QtWidgets`, :mod:`QtSvg`, :mod:`QtMultimedia`), so everything else is named as an
-exclude rather than left to the analysis to maybe notice. A stray import of QtQml
-somewhere would otherwise quietly add hundreds of megabytes to every future build.
-
-**Some imports are invisible to static analysis.** ``markitdown`` finds its converters
-through entry points, ``tiktoken`` loads encodings through a plugin module it names as a
-string, and ``lightrag`` imports storage backends by name. None of that is a real import
-statement, so each is either collected wholesale or listed by hand below.
-"""
+The excludes are the build: PySide6 ships 1.2 GB of Qt and this app imports five modules.
+Some imports are invisible to static analysis, so they are collected or listed by hand."""
 
 from pathlib import Path
 
@@ -27,27 +15,17 @@ BUNDLE_IDENTIFIER = "com.vinhpx.private-ai"
 AUTHOR = "vinhpx"
 VERSION = "0.2.0"
 
-# Data the application reads off disk at runtime. Both are the package's own files, and
-# an install missing either is an install that silently loses a feature: no fonts means
-# the shell falls back to system faces, no SKILL.md means the agent has no skills at all.
+# Data the app reads off disk at runtime; missing either silently loses a feature - no fonts, or no skills at all.
 datas = [
     (str(SRC / "private_ai" / "ui" / "assets"), "private_ai/ui/assets"),
     (str(SRC / "private_ai" / "agent" / "skills" / "builtin"), "private_ai/agent/skills/builtin"),
 ]
 binaries = []
 
-# The application's own modules, all of them, whether or not anything imports them with an
-# import statement. Two registries in this codebase name their modules as strings —
-# ``VIEW_SPECS`` in ``ui/main_window.py`` maps a screen to a dotted path, and
-# ``BUILTIN_SERVERS`` in ``mcp/client.py`` does the same for the MCP servers — and both
-# swallow an ImportError by design so a half-built app still starts. The first bundled
-# build did start: with five placeholder screens and no tools at all, and nothing in the
-# log that a user would read as fatal. Collecting the package wholesale is the only fix
-# that does not rot the next time a view is added.
+# The app's own modules, all of them: two registries name modules as strings and swallow ImportError, so a half-collected build starts with placeholder screens and no tools.
 hiddenimports = collect_submodules("private_ai")
 
-# Packages whose contents cannot be discovered by following imports: plugin registries,
-# lazily named modules, and data files that live beside the code.
+# Packages whose contents cannot be found by following imports: plugin registries, lazily named modules, data files beside the code.
 COLLECT_WHOLE = (
     "lightrag",
     "markitdown",
@@ -73,8 +51,7 @@ for package in COLLECT_WHOLE:
     binaries += package_binaries
     hiddenimports += package_hidden
 
-# Distribution metadata, because several of these read their own version — or find their
-# plugins — through ``importlib.metadata`` at import time and raise without it.
+# Distribution metadata: several of these read their own version through `importlib.metadata` at import time and raise without it.
 for distribution in ("markitdown", "lightrag-hku", "langchain", "langchain-core", "openai", "mcp"):
     try:
         datas += copy_metadata(distribution, recursive=True)
@@ -84,8 +61,7 @@ for distribution in ("markitdown", "lightrag-hku", "langchain", "langchain-core"
 # tiktoken names this module as a string when it looks for BPE encodings.
 hiddenimports += ["tiktoken_ext.openai_public", "tiktoken_ext"]
 
-# Every Qt module the app does not import. QtWebEngineCore is the expensive one; the rest
-# are listed so that adding an accidental dependency on them fails loudly at build time.
+# Every Qt module the app does not import; QtWebEngineCore is the expensive one, the rest are listed so an accidental dependency fails loudly at build time.
 UNUSED_QT = (
     "Qt3DAnimation", "Qt3DCore", "Qt3DExtras", "Qt3DInput", "Qt3DLogic", "Qt3DRender",
     "QtBluetooth", "QtCanvasPainter", "QtCharts", "QtDataVisualization", "QtDesigner",
@@ -171,16 +147,12 @@ app = BUNDLE(
         "CFBundleVersion": VERSION,
         "NSHumanReadableCopyright": f"© 2026 {AUTHOR}",
         "LSApplicationCategoryType": "public.app-category.productivity",
-        # A floor, replaced by build.sh with the highest ``minos`` any Mach-O in the
-        # finished bundle actually requires. Typing a number here is how a bundle ends up
-        # promising macOS 12 while its Qt libraries demand 15 and its Python demands 26.
+        # A floor, replaced by build.sh with the highest `minos` any Mach-O actually requires; a typed number is how a bundle promises macOS 12 and dies on launch.
         "LSMinimumSystemVersion": "12.0",
         "NSHighResolutionCapable": True,
-        # Without this macOS forces the light appearance on a bundled app, and the dark
-        # theme would render on a light window frame.
+        # Without this macOS forces the light appearance and the dark theme renders in a light frame.
         "NSRequiresAquaSystemAppearance": False,
-        # The prompt the user actually reads the first time dictation is used. macOS
-        # denies the microphone outright — with no dialog — when this key is absent.
+        # The prompt shown the first time dictation is used; macOS denies the microphone outright, with no dialog, when this key is absent.
         "NSMicrophoneUsageDescription": (
             "Private AI dùng micro để chuyển giọng nói thành văn bản. "
             "Âm thanh được xử lý ngay trên máy này và không gửi đi đâu cả."

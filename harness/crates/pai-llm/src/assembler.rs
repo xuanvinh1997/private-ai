@@ -1,13 +1,6 @@
-//! Gấp một luồng [`StreamChunk`] thành một [`Message`] hoàn chỉnh.
-//!
-//! Thay cho phép `+` trên `AIMessageChunk` của LangChain (`agent/graph.py:347-350`).
-//! Toàn bộ giá trị của mô-đun này nằm ở một câu: **tham số tool là chuỗi, và chuỗi chỉ
-//! được nối, không được parse cho tới khi luồng đóng.** Mọi bug tool-calling mà người ta
-//! gặp khi tự viết adapter đều là biến thể của việc vi phạm câu đó.
-//!
-//! Bộ ráp cố tình **khoan dung**: một máy chủ phát ra delta cho khối chưa mở, hay phát
-//! thêm chunk sau `Finish`, thì bị ghi log chứ không làm hỏng lượt. Nghiêm khắc ở đây
-//! nghĩa là một máy chủ OpenAI-compatible hơi lệch chuẩn sẽ giết cả câu trả lời.
+//! Folds a [`StreamChunk`] stream into a finished [`Message`].
+//! One rule carries the module: tool arguments are strings, and they are only
+//! concatenated, never parsed until the stream closes. Off-spec chunks are logged, not fatal.
 
 use std::collections::BTreeMap;
 
@@ -16,7 +9,7 @@ use tracing::warn;
 use crate::message::{ContentBlock, Message, ToolCall};
 use crate::stream::{BlockKind, FinishReason, StreamChunk, TokenUsage};
 
-/// Một khối đang được ráp dở.
+/// A block still being assembled.
 #[derive(Clone, Debug)]
 enum Partial {
     Text(String),
@@ -50,11 +43,7 @@ impl Partial {
     }
 }
 
-/// Gom chunk lại thành khối, rồi thành message.
-///
-/// Khối được giữ trong `BTreeMap` chứ không `Vec`: thứ tự xuất hiện của `index` do máy
-/// chủ quyết định, và OpenAI đánh số tool call theo một dãy riêng, tách khỏi khối văn
-/// bản. `BTreeMap` cho thứ tự theo `index` mà không cần adapter hứa hẹn gì thêm.
+/// Collects chunks into blocks, then into a message; blocks live in a `BTreeMap` because the server picks the `index` order and OpenAI numbers tool calls separately.
 #[derive(Debug, Default)]
 pub struct BlockAssembler {
     blocks: BTreeMap<u32, Partial>,
@@ -67,15 +56,11 @@ impl BlockAssembler {
         Self::default()
     }
 
-    /// Nuốt một chunk.
-    ///
-    /// Không trả `Result`: không có chunk nào là lỗi chí mạng của bộ ráp. Lỗi thật của
-    /// luồng đến dưới dạng `Err` từ chính cái stream, và người gọi thấy nó trước.
+    /// Swallow one chunk; no `Result`, because no chunk is fatal here - real stream errors arrive as `Err` from the stream itself.
     pub fn push(&mut self, chunk: &StreamChunk) {
         if self.finish.is_some() {
-            // Bất biến: không gì đứng sau `Finish`. Máy chủ phá luật thì ta ghi log và bỏ
-            // qua — nhận thêm vào sẽ cho ra một message mà không ai tái dựng lại được.
-            warn!(?chunk, "chunk đến sau Finish, bỏ qua");
+            // Invariant: nothing follows `Finish`. Accepting more would build a message nobody can reconstruct.
+            warn!(?chunk, "chunk arrived after Finish, ignoring");
             return;
         }
         match chunk {
@@ -106,8 +91,7 @@ impl BlockAssembler {
                     arguments: buffer,
                 }) = self.slot(*index, BlockKind::ToolUse)
                 {
-                    // Id và tên chỉ đến ở delta đầu; delta sau gửi `None`. Đã có rồi thì
-                    // giữ nguyên — một máy chủ lặp lại id không được phép làm nó nhân đôi.
+                    // Id and name only arrive on the first delta; keep what we have so a repeat cannot duplicate it.
                     if slot_id.is_none()
                         && let Some(value) = id
                     {
@@ -118,38 +102,32 @@ impl BlockAssembler {
                     {
                         value.clone_into(slot_name);
                     }
-                    // Đây là dòng quan trọng nhất của cả mô-đun: nối thuần, không parse.
+                    // The most important line in the module: plain concatenation, no parsing.
                     buffer.push_str(arguments);
                 }
             }
             StreamChunk::BlockEnd { .. } => {
-                // Không phải làm gì: khối đã nằm trong bản đồ và không nhận thêm delta
-                // nào nữa vì adapter không phát nữa. Giữ `BlockEnd` trên giao thức là để
-                // giao diện biết lúc nào đóng con trỏ nhấp nháy.
+                // Nothing to do; `BlockEnd` stays on the protocol so the UI knows when to stop the caret.
             }
             StreamChunk::Usage { usage } => self.usage = Some(*usage),
             StreamChunk::Finish { reason } => self.finish = Some(*reason),
         }
     }
 
-    /// Ô của một khối, mở mới nếu chưa có.
-    ///
-    /// Trả `None` khi `index` đã thuộc về một loại khối khác. Chuyện đó nghĩa là máy chủ
-    /// dùng lại một số thứ tự cho hai mục đích; ghi đè khối cũ sẽ làm mất văn bản đã
-    /// nhận, nên bỏ mảnh mới đi là hư hại nhỏ hơn.
+    /// The slot for a block, opened if absent; `None` when `index` already belongs to another block kind, in which case dropping the new fragment loses less than overwriting.
     fn slot(&mut self, index: u32, kind: BlockKind) -> Option<&mut Partial> {
         let slot = self
             .blocks
             .entry(index)
             .or_insert_with(|| Partial::for_kind(kind));
         if slot.kind() != kind {
-            warn!(index, ?kind, actual = ?slot.kind(), "khối đổi loại giữa chừng, bỏ qua delta");
+            warn!(index, ?kind, actual = ?slot.kind(), "block changed kind mid-stream, dropping delta");
             return None;
         }
         Some(slot)
     }
 
-    /// Đã thấy `Finish` chưa.
+    /// Has `Finish` been seen?
     pub fn is_finished(&self) -> bool {
         self.finish.is_some()
     }
@@ -162,12 +140,7 @@ impl BlockAssembler {
         self.usage
     }
 
-    /// Các khối đã ráp, theo thứ tự `index`.
-    ///
-    /// Khối văn bản rỗng bị loại: một máy chủ mở khối rồi không gửi gì là chuyện thường
-    /// (Ollama phát một message rỗng ở dòng `done`), và một `Text { text: "" }` trong sổ
-    /// tay chỉ là rác. Lời gọi tool **không tên** cũng bị loại — không có tên thì không
-    /// có gì để gọi.
+    /// The assembled blocks in `index` order; empty text blocks and unnamed tool calls are dropped, since neither carries anything to act on.
     pub fn blocks(&self) -> Vec<ContentBlock> {
         self.blocks
             .iter()
@@ -182,8 +155,7 @@ impl BlockAssembler {
                     name,
                     arguments,
                 } => Some(ContentBlock::ToolUse {
-                    // Ollama không phát id. Sinh từ `index` để nó ổn định trong một lượt
-                    // và khớp được với message vai `tool` gửi ở vòng sau.
+                    // Ollama emits no id. Derive one from `index` so it is stable within a turn and matches the `tool` role message next round.
                     id: id.clone().unwrap_or_else(|| format!("call_{index}")),
                     name: name.clone(),
                     arguments: normalize_arguments(arguments),
@@ -192,7 +164,7 @@ impl BlockAssembler {
             .collect()
     }
 
-    /// Message của trợ lý, ráp từ mọi khối đã nhận.
+    /// The assistant message, assembled from every block received.
     pub fn message(&self) -> Message {
         Message::Assistant {
             content: self.blocks(),
@@ -203,17 +175,17 @@ impl BlockAssembler {
         self.message()
     }
 
-    /// Mọi lời gọi tool đã ráp xong. Vòng lặp agent phân nhánh trên cái này.
+    /// Every finished tool call. The agent loop branches on this.
     pub fn tool_calls(&self) -> Vec<ToolCall> {
         self.message().tool_calls()
     }
 
-    /// Văn bản trả lời, nối liền. Không gồm reasoning.
+    /// Answer text, concatenated. Excludes reasoning.
     pub fn text(&self) -> String {
         self.message().text()
     }
 
-    /// Dọn để dùng lại cho vòng sau. Rẻ hơn dựng mới khi vòng lặp agent chạy nhiều vòng.
+    /// Clear for reuse next round. Cheaper than building a new one across many agent loops.
     pub fn reset(&mut self) {
         self.blocks.clear();
         self.usage = None;
@@ -221,11 +193,7 @@ impl BlockAssembler {
     }
 }
 
-/// Tham số rỗng thành object rỗng.
-///
-/// OpenAI gửi `"arguments": ""` cho tool không tham số, và `serde_json` không đọc chuỗi
-/// rỗng thành gì cả. Chuẩn hoá ở đây chứ không ở chỗ parse, để cái nằm trong sổ tay đã
-/// là JSON hợp lệ ngay từ đầu.
+/// Empty arguments become an empty object: OpenAI sends `"arguments": ""` for a no-parameter tool, and `serde_json` reads nothing from an empty string.
 fn normalize_arguments(raw: &str) -> String {
     if raw.trim().is_empty() {
         "{}".to_string()

@@ -1,18 +1,13 @@
-//! Tầng dây, kiểm trên chuỗi byte cố định — **không cần mạng**.
-//!
-//! Mọi bài ở đây mô phỏng cùng một sự thật: một lần đọc socket không phải một đơn vị của
-//! giao thức. Điểm cắt được đặt vào đúng những chỗ khó nhất: giữa một event SSE, giữa một
-//! dòng NDJSON, giữa `\r` và `\n`, và giữa hai byte của một ký tự tiếng Việt.
+//! Wire layer, checked against fixed byte strings - no network needed.
+//! Every case models one fact: a socket read is not a protocol unit, so splits land in
+//! the hardest places - mid SSE event, mid NDJSON line, between `\r` and `\n`, mid UTF-8.
 
 use pai_llm::assembler::BlockAssembler;
 use pai_llm::stream::{FinishReason, StreamChunk};
 use pai_llm::wire::pump::FrameDecoder;
 use pai_llm::wire::{LineDecoder, SseDecoder};
 
-/// Đẩy một thân phản hồi qua bộ giải mã, cắt thành từng lát `size` byte.
-///
-/// Cắt theo **byte**, không theo ký tự: đó chính là điều TCP làm, và là điều mọi bộ giải
-/// mã đệm chuỗi thay vì đệm byte sẽ hỏng.
+/// Push a response body through a decoder in `size`-byte slices; sliced by *byte*, exactly as TCP does.
 fn feed<D: FrameDecoder>(decoder: &mut D, body: &[u8], size: usize) -> Vec<StreamChunk> {
     let mut out = Vec::new();
     for slice in body.chunks(size) {
@@ -29,11 +24,11 @@ fn feed<D: FrameDecoder>(decoder: &mut D, body: &[u8], size: usize) -> Vec<Strea
 #[test]
 fn sse_bi_cat_giua_event() {
     let mut decoder = SseDecoder::new();
-    // Nửa đầu: chưa có dòng trống, nên **chưa được phát gì cả**.
+    // First half: no blank line yet, so nothing may be emitted.
     assert!(decoder.push(b"data: {\"a\":1").is_empty());
     assert!(decoder.push(b"}").is_empty());
     assert!(decoder.push(b"\n").is_empty());
-    // Dòng trống mới là thứ phát ra event.
+    // The blank line is what emits the event.
     let events = decoder.push(b"\n");
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].data, "{\"a\":1}");
@@ -81,10 +76,7 @@ fn ndjson_bi_cat_giua_dong() {
 
 // --- Ollama /api/chat ---------------------------------------------------------------
 
-/// Điểm cắt rơi vào **giữa một ký tự UTF-8 nhiều byte**.
-///
-/// "chào" và "🌍" chiếm nhiều byte; cắt mỗi 5 byte đảm bảo có lát dừng giữa chừng. Bộ
-/// giải mã đệm byte nên ghép lại đúng; nếu nó đệm `String` thì chỗ này ra dấu hỏi.
+/// A split landing inside a multi-byte UTF-8 character; a decoder that buffered `String` instead of bytes would produce replacement characters here.
 #[test]
 fn ollama_ky_tu_nhieu_byte_bi_cat_giua_chung() {
     let body = concat!(
@@ -109,9 +101,7 @@ fn ollama_ky_tu_nhieu_byte_bi_cat_giua_chung() {
     }
 }
 
-/// Ollama gửi tool call nguyên khối với `arguments` là object, và vẫn báo
-/// `done_reason: "stop"`. Lý do dừng phải là `ToolCalls`, nếu không vòng lặp agent sẽ
-/// kết thúc lượt trong lúc mô hình đang chờ kết quả.
+/// Ollama sends whole tool calls yet still reports `done_reason: "stop"`, so the finish reason must be `ToolCalls` or the agent loop ends the turn early.
 #[test]
 fn ollama_tool_call_doi_ly_do_dung() {
     let body = concat!(
@@ -136,7 +126,7 @@ fn ollama_tool_call_doi_ly_do_dung() {
     );
 }
 
-/// Ollama báo lỗi *bên trong* luồng, với HTTP 200 ở ngoài.
+/// Ollama reports errors *inside* the stream, with HTTP 200 outside.
 #[test]
 fn ollama_loi_giua_luong_thanh_err() {
     let mut decoder = pai_llm::ollama::ChatDecoder::new();
@@ -147,7 +137,7 @@ fn ollama_loi_giua_luong_thanh_err() {
     assert!(err.message.contains("khong-co"));
 }
 
-/// Kết nối đứt giữa câu: bộ giải mã **không** được giả vờ là đã xong.
+/// Connection dropped mid-sentence: the decoder must not pretend the turn finished.
 #[test]
 fn ollama_dut_giua_chung_khong_bao_da_xong() {
     let mut decoder = pai_llm::ollama::ChatDecoder::new();
@@ -162,8 +152,7 @@ fn ollama_dut_giua_chung_khong_bao_da_xong() {
 
 // --- OpenAI /v1/chat/completions ----------------------------------------------------
 
-/// Tham số tool nhỏ giọt qua nhiều event SSE, và cả thân phản hồi bị cắt thành từng lát
-/// byte tuỳ ý. Hai tầng cắt vụn chồng lên nhau — đúng như trên dây thật.
+/// Tool arguments dripped across SSE events while the body is also sliced into arbitrary bytes - two layers of fragmentation, as on the real wire.
 #[test]
 fn openai_tham_so_tool_rap_qua_nhieu_event() {
     let body = concat!(
@@ -191,7 +180,7 @@ fn openai_tham_so_tool_rap_qua_nhieu_event() {
         assert_eq!(calls.len(), 1, "lát {size} byte");
         assert_eq!(calls[0].id, "call_1");
         assert_eq!(calls[0].name, "edit");
-        // Mảnh thứ hai kết thúc bằng `\"a\` — cắt ngay giữa một escape.
+        // The second fragment ends with `\"a\` - split inside an escape.
         assert_eq!(calls[0].arguments, "{\"cu\":\"a\\\"b\",\"moi\":\"c\"}");
         let parsed = calls[0].parse_arguments().expect("JSON hợp lệ sau khi ráp");
         assert_eq!(parsed["cu"], "a\"b");
@@ -231,7 +220,7 @@ fn openai_van_ban_thuong_va_thu_tu_usage_truoc_finish() {
     assert_eq!(assembler.text(), "Chào bạn");
 }
 
-/// Máy chủ đóng kết nối sau `finish_reason` mà không gửi `[DONE]` — vẫn là một lượt xong.
+/// The server closes after `finish_reason` without sending `[DONE]`; still a finished turn.
 #[test]
 fn openai_thieu_done_van_dong_luong_tu_te() {
     let body =

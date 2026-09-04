@@ -1,25 +1,6 @@
-//! `list_dir` — what is in this directory.
-//!
-//! This is the first tool a model reaches for in an unfamiliar repo, and before it existed
-//! that question had no answer: `glob` wants a **name pattern** the model has to guess, and
-//! `grep` wants a **string** it also has to guess. In a project it knows nothing about both
-//! are shots in the dark, and a missed guess returns empty — which a model very easily reads
-//! as "there is nothing here".
-//!
-//! Three decisions worth writing down:
-//!
-//! **Protected paths are hidden from the listing**, not merely blocked from reading — rule 3
-//! of the repo. Naming a file and then refusing to open it has already told the model
-//! something is there.
-//!
-//! **`require_git(false)`.** The `ignore` crate only reads `.gitignore` when inside a git
-//! repo by default. A directory the user never ran `git init` in can still have a
-//! `.gitignore`, and honouring it there is as correct as honouring it in a repo. Dropping
-//! this line makes the `.gitignore` test pass in the repo and fail in a temp directory —
-//! this repo hit exactly that bug once.
-//!
-//! **Sizes are included.** Without them the model picks files to read by name, and it will
-//! open a 2 MB lockfile because the name sounded plausible.
+//! `list_dir`: what is in this directory, the first tool to reach for in an unfamiliar repo,
+//! since `glob` and `grep` both need a guess. Protected paths are hidden rather than refused,
+//! `.gitignore` is honoured outside git repos too, and sizes are shown so reads stay cheap.
 
 use std::path::{Path, PathBuf};
 
@@ -34,8 +15,7 @@ use serde_json::json;
 
 use crate::path::FileRoots;
 
-/// Going deeper than one level is the caller's decision, and it needs a ceiling: `depth: 99`
-/// on `node_modules` is a way of writing "read the whole disk" that nobody meant to write.
+/// Ceiling on caller-chosen depth: `depth: 99` on `node_modules` means reading the whole disk.
 const MAX_DEPTH: usize = 8;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -67,10 +47,7 @@ struct Entry {
     bytes: u64,
 }
 
-/// A size for a reader, not for a computer.
-///
-/// `1.2 KB` costs fewer tokens than `1234` and answers the only question the model is
-/// asking: is this file worth opening.
+/// A size for a reader: `1.2 KB` answers "is this worth opening" more cheaply than `1234`.
 fn human(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["B", "KB", "MB", "GB"];
     let mut size = bytes as f64;
@@ -101,8 +78,7 @@ impl Tool for ListDir {
     }
 
     fn meta(&self) -> ToolMeta {
-        // File names are chosen by other people, so they are data and not instructions —
-        // a directory named `ignore all previous rules` is still just a name.
+        // File names are written by other people, so they are data and never instructions.
         ToolMeta::read_only().untrusted().concurrency_safe(true)
     }
 
@@ -136,10 +112,9 @@ impl Tool for ListDir {
             let mut entries: Vec<Entry> = Vec::new();
             let walk = WalkBuilder::new(&walk_base)
                 .max_depth(Some(depth))
-                // Hidden files are what a model most needs to see in an unfamiliar repo:
-                // `.github`, `.env.example`, `.gitignore` all say how this project runs.
+                // Hidden files say how a project runs: `.github`, `.env.example`, `.gitignore`.
                 .hidden(false)
-                // See the note at the top of the file.
+                // Honour `.gitignore` outside a git repo too, not only inside one.
                 .require_git(false)
                 .build();
             for entry in walk.flatten() {
@@ -169,9 +144,7 @@ impl Tool for ListDir {
         .await
         .map_err(|err| ToolError::Failed(err.to_string()))?;
 
-        // Directories first, then by name. `WalkBuilder`'s order is the filesystem's order,
-        // which is to say no order at all — two calls give two different listings, and the
-        // model reads that difference as a change on disk.
+        // Directories first, then by name: `WalkBuilder` order is unstable across calls.
         entries.sort_by(|a, b| (!a.dir, &a.rel).cmp(&(!b.dir, &b.rel)));
 
         if entries.is_empty() {
@@ -203,8 +176,7 @@ impl Tool for ListDir {
             "Gọi lại với `path` trỏ vào một thư mục con, hoặc `depth` nhỏ hơn.".to_string()
         });
 
-        // Reuse `glob`'s `paths` shape: the UI already knows how to draw it, and a second
-        // shape for the same thing is a shape that will drift out of sync.
+        // Reuse `glob`'s `paths` shape; a second shape for the same thing would drift.
         let meta = json!({
             "shape": "paths",
             "truncated": folded.truncated,

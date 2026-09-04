@@ -1,10 +1,6 @@
-//! Một đường duy nhất để đổi nhà cung cấp.
-//!
-//! Đổi provider chạm vào ba thứ: hàng trên đĩa, cache adapter, và cái `Driver` đang cầm
-//! adapter. Nếu mỗi chỗ gọi tự làm ba bước đó thì sớm muộn có một chỗ quên bước thứ ba,
-//! và triệu chứng là "đã bấm đổi rồi mà vẫn chạy máy chủ cũ" — một lỗi không để lại dấu
-//! vết nào trong log. Nên [`ProviderRuntime`] không phải một tiện ích: nó là chỗ duy nhất
-//! biết cả ba, cùng tinh thần với `Harness::open_project`.
+//! The single path for switching providers. A swap touches three things -- the stored row, the adapter
+//! cache, and the `Driver` holding the adapter -- and any caller doing it by hand will eventually skip
+//! the third, giving "I switched but it still uses the old server" with nothing in the log.
 
 use std::sync::Arc;
 
@@ -16,17 +12,13 @@ use crate::presets;
 use crate::probe::{EmbeddingProbeResult, ProbeResult, probe, probe_embedding};
 use crate::store::{ProviderInput, ProviderStore, Role, StoredProvider};
 
-/// Một mô hình mà một provider đang có, kèm năng lực của nó.
-///
-/// Tách khỏi [`crate::probe::ProbeModel`] vì hai thứ trả lời hai câu hỏi khác nhau và
-/// mang hai mức chắc chắn khác nhau: `ProbeModel` là cái máy chủ *khai* trong một lần thử
-/// kết nối, còn đây là cái đã được hỏi tới nơi khi hỏi được.
+/// A model a provider offers, with its capabilities; distinct from [`crate::probe::ProbeModel`], which is
+/// only what a server claimed during a connection test.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelListing {
     pub id: String,
     pub chat: bool,
-    /// Nhúng được. Đây là trường mà màn hình mô hình nhúng đọc để khỏi phải đoán một cái
-    /// tên mặc định.
+    /// Embedding-capable; the field the embedding screen reads so it need not guess a default name.
     pub embedding: bool,
     pub tools: bool,
     pub context_window: Option<u64>,
@@ -66,34 +58,26 @@ impl ProviderRuntime {
         self.store.list()
     }
 
-    /// Provider đang giữ vai hội thoại.
+    /// The provider holding the chat role.
     pub fn active(&self) -> Result<Option<StoredProvider>> {
         self.store.active(Role::Chat)
     }
 
-    /// Provider đang giữ vai nhúng. `None` là trạng thái thường gặp và hợp lệ: chưa ai
-    /// được hỏi câu "tài liệu của tôi được nhúng ở đâu", nên chưa ai trả lời.
+    /// The provider holding the embedding role; `None` is common and valid, because nobody has been asked yet.
     pub fn embedding(&self) -> Result<Option<StoredProvider>> {
         self.store.active(Role::Embedding)
     }
 
-    /// Trao vai nhúng, kèm mô hình nhúng nếu người dùng vừa chọn.
-    ///
-    /// Không đụng tới `Driver`: bộ nhúng không nằm trong đường chạy một lượt hội thoại.
-    /// Nhưng vẫn đi qua [`ProviderRuntime::resync`] như mọi lối sửa khác — một đường áp
-    /// lại duy nhất là cả lý do runtime này tồn tại, và một ngoại lệ "chỗ này thì không
-    /// cần" là chỗ để quên mất một bước khi luật đổi.
+    /// Hand over the embedding role, with a model if one was picked; it never touches `Driver`, but still goes
+    /// through [`ProviderRuntime::resync`], since one reapply path is the whole point of this runtime.
     pub async fn set_embedding(&self, id: &str, model: Option<&str>) -> Result<StoredProvider> {
         let active = self.store.activate(Role::Embedding, id, model)?;
         self.resync().await;
         Ok(active)
     }
 
-    /// Lưu một biểu mẫu rồi đồng bộ lại đường chạy.
-    ///
-    /// Cả khi hàng vừa sửa **không** phải cái đang hoạt động: sửa xong vẫn phải đi qua
-    /// [`ProviderRuntime::apply_active`], vì luật chọn có ba tầng dự phòng và một cú tắt
-    /// `enabled` đủ để đổi người thắng.
+    /// Save a form and resync, even when the edited row is not the active one: selection has three fallback
+    /// tiers, so toggling `enabled` can change the winner.
     pub async fn save(&self, input: ProviderInput) -> Result<StoredProvider> {
         let saved = self.store.save(input)?;
         self.resync().await;
@@ -106,23 +90,16 @@ impl ProviderRuntime {
         Ok(())
     }
 
-    /// Trao vai hội thoại.
+    /// Hand over the chat role.
     pub async fn activate(&self, id: &str, model: Option<&str>) -> Result<StoredProvider> {
         let active = self.store.activate(Role::Chat, id, model)?;
-        // Đây là lần đổi mà người dùng thực sự yêu cầu, nên lỗi phải nổi lên tới họ chứ
-        // không chìm vào một dòng log như ở `resync`.
+        // This is the switch the user actually asked for, so errors surface instead of sinking into a log line as in `resync`.
         self.apply_active().await?;
         Ok(active)
     }
 
-    /// Dựng adapter từ provider đang giữ **vai hội thoại** và đẩy nó vào [`Driver`].
-    ///
-    /// Chỉ vai hội thoại: `Driver` chạy một lượt nói chuyện, và provider giữ vai nhúng có
-    /// thể là một máy chủ hoàn toàn khác — thường thì đúng là thế.
-    ///
-    /// `async` vì đây là điểm hẹn cho mọi việc cần mạng khi đổi provider — hâm nóng kết
-    /// nối, hỏi năng lực mô hình — và đổi chữ ký một hàm đã có mười chỗ gọi thì đắt hơn
-    /// nhiều so với giữ sẵn một `await` không tốn gì.
+    /// Build an adapter from the chat-role provider and push it into [`Driver`]; the embedding provider may be
+    /// a different server entirely. `async` reserves room for network work here without resigning ten call sites.
     pub async fn apply_active(&self) -> Result<()> {
         let Some(active) = self.store.active(Role::Chat)? else {
             return Err(ProviderError::Llm(pai_llm::registry::no_provider()));
@@ -136,36 +113,20 @@ impl ProviderRuntime {
             provider = %active.config.name,
             on_device = active.config.on_device(),
             model = %self.driver.model(),
-            "đã đổi nhà cung cấp"
+            "switched active provider"
         );
         Ok(())
     }
 
-    /// Thử một cấu hình chưa lưu.
+    /// Probe an unsaved configuration.
     pub async fn probe(&self, config: &ProviderConfig) -> ProbeResult {
         probe(config, &self.http).await
     }
 
-    /// Kho mô hình của **một provider đã lưu**, kèm năng lực từng cái.
-    ///
-    /// Khác [`ProviderRuntime::probe`] ở đúng chỗ giao diện cần: `probe` trả lời câu hỏi
-    /// "nối được không", nên nó cố ý không trả tiền hỏi năng lực từng mô hình. Hàm này
-    /// trả lời câu hỏi "máy chủ này có mô hình nào **nhúng được**", và câu đó không trả
-    /// lời nổi bằng một cái tên đoán sẵn: người dùng có thể đã kéo về `mxbai-embed-large`,
-    /// `bge-m3`, hay một bản fine-tune tự đặt tên.
-    ///
-    /// Hai nguồn, theo thứ tự của [`pai_llm::capabilities`]: hỏi máy chủ trước
-    /// ([`pai_llm::ModelAdmin::list`], thứ đọc `capabilities` từ chính tệp GGUF), đoán
-    /// theo tên sau — và nhánh đoán chỉ chạy cho provider từ xa, thứ không có nửa vòng
-    /// đời mô hình để mà hỏi.
-    ///
-    /// Danh sách rỗng nghĩa là **không hỏi được**, không phải "không có mô hình nào". Nơi
-    /// gọi phải giữ được lối nhập tay cho trường hợp đó, nếu không thì một máy chủ im
-    /// lặng biến thành một màn hình không cấu hình được.
-    ///
-    /// Chỉ nhận cấu hình **đã lưu**: nó đi qua cache adapter của registry, và nhét một URL
-    /// gõ dở vào đó là để lại rác sau khi người dùng đã bỏ hộp thoại đi. Cấu hình chưa lưu
-    /// thì dùng `probe`.
+    /// Model catalogue for a saved provider, with per-model capabilities. Unlike `probe`, which only answers
+    /// "can I connect", this answers "which models here can embed" -- unanswerable from a guessed name.
+    /// Ask the server first, fall back to name inference; an empty list means "could not ask", so callers must
+    /// keep a manual entry path. Saved configs only, since this goes through the registry's adapter cache.
     pub async fn models(&self, config: &ProviderConfig) -> Vec<ModelListing> {
         if let Ok(admin) = self.registry.admin(config) {
             match admin.list().await {
@@ -181,12 +142,10 @@ impl ProviderRuntime {
                         })
                         .collect();
                 }
-                // Rơi xuống nhánh liệt kê thay vì trả rỗng: `/api/show` hỏng không có
-                // nghĩa là `/api/tags` cũng hỏng, và một danh sách đoán theo tên vẫn hơn
-                // hẳn một ô trống.
+                // Fall through to listing rather than returning empty: a broken `/api/show` says nothing about `/api/tags`.
                 Err(err) => tracing::warn!(
                     provider = %config.name,
-                    "không đọc được kho mô hình, quay sang liệt kê: {err}"
+                    "could not read the model catalogue, falling back to listing: {err}"
                 ),
             }
         }
@@ -195,9 +154,7 @@ impl ProviderRuntime {
             .await
             .models
             .into_iter()
-            // Mọi cờ giữ nguyên như `probe` đã tính, không đoán lại: luật "hỏi được thì
-            // dùng cái máy chủ khai, không thì đoán theo tên" nằm gọn trong `probe`, và
-            // một bản sao thứ hai của nó ở đây là một bản sao sẽ lệch.
+            // Keep every flag as `probe` computed it: a second copy of that rule here would drift from the first.
             .map(|model| ModelListing {
                 id: model.id,
                 chat: model.chat,
@@ -208,7 +165,7 @@ impl ProviderRuntime {
             .collect()
     }
 
-    /// Thử **nhúng thật một câu** bằng một mô hình, trên một cấu hình có thể chưa lưu.
+    /// Really embed a sentence with a model, on a possibly unsaved configuration.
     pub async fn probe_embedding(
         &self,
         config: &ProviderConfig,
@@ -217,24 +174,17 @@ impl ProviderRuntime {
         probe_embedding(config, model).await
     }
 
-    /// Đồng bộ sau một thay đổi mà bản thân nó đã thành công.
-    ///
-    /// Nuốt lỗi thành một dòng log, cố ý: xoá provider cuối cùng là một thao tác hợp lệ và
-    /// nó *phải* thành công, dù sau đó chẳng còn gì để dựng adapter. Báo lỗi ở đây làm
-    /// người dùng tưởng cú xoá không ăn.
+    /// Resync after a change that already succeeded; errors become a log line, because deleting the last provider
+    /// is valid and must succeed even though nothing is left to build an adapter from.
     async fn resync(&self) {
         if let Err(err) = self.apply_active().await {
-            tracing::warn!("không áp dụng được nhà cung cấp đang hoạt động: {err}");
+            tracing::warn!("could not apply the active provider: {err}");
         }
     }
 }
 
-/// Mô hình nào cho provider này: cái người dùng đã chọn, nếu không thì mặc định của mục
-/// danh mục cùng địa chỉ.
-///
-/// `None` nghĩa là **giữ nguyên tên mô hình đang dùng**. Đó là lựa chọn ít tệ nhất: đặt
-/// một tên bịa ra thì lượt sau hỏng chắc chắn, còn giữ tên cũ thì vẫn có cơ hội đúng —
-/// nhiều máy chủ tự vận hành nhận bất cứ tên nào cũng trả về mô hình duy nhất nó đang nạp.
+/// Which model for this provider: the user's choice, else the catalogue default for the same address.
+/// `None` means keep the current model name -- inventing one guarantees failure, keeping it may still work.
 fn model_for(provider: &StoredProvider) -> Option<String> {
     provider.model.clone().or_else(|| {
         presets::matching(&provider.config.base_url)

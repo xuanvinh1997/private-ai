@@ -1,8 +1,6 @@
-//! Cắm MCP vào cây.
-//!
-//! Một plugin cho cả hai chiều, vì cả hai chiều đứng và ngã cùng nhau: gỡ nó ra là đóng
-//! mọi kết nối ra ngoài *và* đóng cái cổng vào trong. Tách làm hai plugin thì có một trạng
-//! thái mà không ai muốn — cổng còn mở trong khi client đã tắt, hoặc ngược lại.
+//! Mount MCP into the tree.
+//! One plugin for both directions, because they stand and fall together: two plugins would
+//! allow the gate to stay open after the client side is gone, or the reverse.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -21,17 +19,16 @@ use crate::serve::{serve_http, serve_stdio};
 use crate::store::{McpStore, apply, merge};
 use crate::token::{McpToken, token_path};
 
-/// Phơi sổ đăng ký ra ngoài ở đâu.
+/// Where the registry gets exposed.
 #[derive(Clone, Debug)]
 pub struct ExposeOptions {
-    /// Nơi đặt `mcp-token`. **Phải** được thêm vào danh sách đường dẫn được bảo vệ của
-    /// `pai-fs` — xem [`crate::token`].
+    /// Where `mcp-token` lives; must be in `pai-fs`'s protected paths — see [`crate::token`].
     pub data_dir: PathBuf,
-    /// Nói MCP trên stdin/stdout của chính tiến trình này.
+    /// Speak MCP over this process's own stdin/stdout.
     pub stdio: bool,
-    /// Địa chỉ HTTP. Phải là loopback, nếu không [`serve_http`] từ chối.
+    /// HTTP address; must be loopback or [`serve_http`] refuses.
     pub http: Option<SocketAddr>,
-    /// `Origin` được chấp nhận. Rỗng = từ chối mọi request có mang `Origin`.
+    /// Accepted `Origin`s; empty rejects every request that carries one.
     pub allowed_origins: Vec<String>,
 }
 
@@ -62,11 +59,7 @@ impl McpPlugin {
         }
     }
 
-    /// Chỗ đặt kho server người dùng tự quản.
-    ///
-    /// Tuỳ chọn, và phải tuỳ chọn: một `patch.yaml` đang khai sẵn server phải chạy y như
-    /// trước dù chưa ai bật màn hình quản lý MCP lên bao giờ. Có kho thì kho được **hợp
-    /// nhất** với hàng cấu hình — xem [`merge`] — chứ không thay thế nó.
+    /// Where the user-managed server store lives; optional, and merged with the config rows rather than replacing them.
     pub fn storing(mut self, path: impl Into<PathBuf>) -> McpPlugin {
         self.store = Some(path.into());
         self
@@ -94,9 +87,7 @@ impl Plugin for McpPlugin {
                 .defer_async("mcp/hub", move || async move { hub.shutdown().await });
         }
 
-        // Kho được cắm làm seam trước khi nối bất cứ thứ gì: màn hình quản lý MCP phải mở
-        // ra được ngay cả khi mọi server đều đang hỏng, và danh sách người dùng khai không
-        // phụ thuộc vào việc có nối được hay không.
+        // The store is provided before anything dials: the MCP screen must open even when every server is broken.
         let store = match &self.store {
             Some(path) => {
                 let store = Arc::new(McpStore::open(path.clone()));
@@ -106,13 +97,7 @@ impl Plugin for McpPlugin {
             None => None,
         };
 
-        // Nối server bên thứ ba **trong nền**. Mỗi cái được phép ngốn tới hai mươi giây
-        // trước khi bị coi là không có ở đó, và cộng dồn lại thì cửa sổ ứng dụng đứng im
-        // chờ những server không phải của ta — đúng cái mà "best-effort" tồn tại để tránh.
-        //
-        // Lượt khởi động đi qua đúng đường mà mọi thay đổi sau này đi: [`apply`], tức là
-        // [`McpHub::reload`]. Một đường riêng cho lượt đầu là một đường không ai chạy lại,
-        // và nó sẽ trôi ra khỏi đường kia mà không ai nhận ra.
+        // Dial in the background, through the same [`apply`] path every later change takes, so startup never blocks the window.
         let rows = self.servers.clone();
         let hub_for_mount = hub.clone();
         tokio::spawn(async move {
@@ -120,9 +105,8 @@ impl Plugin for McpPlugin {
                 Some(store) => match apply(&hub_for_mount, store, &rows).await {
                     Ok(report) => report,
                     Err(err) => {
-                        // Kho hỏng không được kéo theo hàng cấu hình: người dùng vẫn phải
-                        // có những server mà bản cài đặt mồi sẵn cho họ.
-                        tracing::warn!(%err, "không đọc được kho MCP, chỉ dùng hàng cấu hình");
+                        // A broken store must not take the config rows with it.
+                        tracing::warn!(%err, "could not read the MCP store, using config rows only");
                         hub_for_mount.reload(merge(rows, Vec::new())).await
                     }
                 },
@@ -131,12 +115,12 @@ impl Plugin for McpPlugin {
             for (name, result) in report {
                 match result {
                     Ok(Mount::Connected { tools }) => {
-                        tracing::info!(server = %name, tools, "đã cắm MCP server");
+                        tracing::info!(server = %name, tools, "mounted MCP server");
                     }
                     Ok(Mount::Unavailable { reason }) => {
-                        tracing::warn!(server = %name, %reason, "MCP server chưa dùng được");
+                        tracing::warn!(server = %name, %reason, "MCP server not usable yet");
                     }
-                    Err(err) => tracing::warn!(server = %name, %err, "cấu hình MCP server sai"),
+                    Err(err) => tracing::warn!(server = %name, %err, "invalid MCP server config"),
                 }
             }
         });
@@ -145,8 +129,7 @@ impl Plugin for McpPlugin {
             return Ok(());
         };
 
-        // Đường ống dựng từ `ctx` của plugin, nên phạm vi của nó là phạm vi gốc: một
-        // client bên ngoài không phải một agent con và không thừa hưởng hạn chế của ai.
+        // The pipeline is built from the plugin's `ctx`, so its scope is the root: an outside client inherits no limits.
         let pipeline = Arc::new(ToolPipeline::new(ctx, registry));
         let token = McpToken::load_or_create(&token_path(&options.data_dir))?;
 
@@ -170,7 +153,7 @@ impl Plugin for McpPlugin {
             let stop = ct.clone();
             let handle = tokio::spawn(async move {
                 if let Err(err) = serve_stdio(server, ct).await {
-                    tracing::warn!(%err, "MCP stdio dừng");
+                    tracing::warn!(%err, "MCP stdio stopped");
                 }
             });
             ctx.effects().defer_async("mcp/stdio", move || async move {

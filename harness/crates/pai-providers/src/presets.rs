@@ -1,59 +1,35 @@
-//! Danh mục dựng sẵn.
-//!
-//! Lý do danh mục này tồn tại: `base_url` là chỗ người dùng gõ sai nhiều nhất, và cái giá
-//! của một chữ sai là một thông báo lỗi mạng không nói được nguyên nhân. Mỗi mục ở đây là
-//! một cặp URL + mô hình mặc định đã biết chắc đúng.
-//!
-//! **Chỉ có ba adapter, không phải mười.** Mọi mục dưới đây trừ Ollama và LM Studio đều
-//! nói giao thức OpenAI, kể cả Anthropic: họ chạy một tầng tương thích ngay trên
-//! `api.anthropic.com/v1`, nên `OpenAiAdapter` nói chuyện được với Claude mà không cần
-//! một bản cài đặt thứ ba — và không cần ta nuôi thêm một wire format nữa qua từng bản
-//! phát hành.
-//!
-//! LM Studio là adapter thứ ba, và nó **không** phải một wire format nữa: phần hội thoại
-//! của nó đúng là dây của OpenAI, dùng lại nguyên vẹn. Nó tách ra vì nửa còn lại — kho
-//! mô hình ở `/api/v0` — nói được điều mà `/v1/models` không nói được: mô hình nào đang
-//! nạp, mô hình nào gọi được tool, cửa sổ ngữ cảnh bao nhiêu.
-//!
-//! `base_url` viết đúng dạng mà [`pai_llm::openai_base_url`] mong đợi: đuôi `/v1` được
-//! giữ nguyên, thiếu thì nó tự thêm. Ollama và LM Studio là ngoại lệ — hai adapter ấy
-//! nhận **gốc máy chủ** rồi tự nối đuôi, vì mỗi cái nói hai đường dẫn khác nhau trên
-//! cùng một host.
+//! Built-in catalogue of known-good `base_url` + default-model pairs, because a mistyped URL only ever
+//! surfaces as an unexplained network error. Three adapters, not ten: everything but Ollama and LM Studio
+//! speaks the OpenAI protocol, and those two take a bare host root since they use two paths on it.
 
 use pai_llm::{ProviderConfig, ProviderKind};
 
-/// Một mục trong danh mục.
+/// One catalogue entry.
 pub struct Preset {
     pub id: &'static str,
     pub name: &'static str,
     pub kind: ProviderKind,
     pub base_url: &'static str,
     pub needs_key: bool,
-    /// Chạy ngay trên máy này. Trùng với [`ProviderConfig::on_device`] nhưng có mặt ở đây
-    /// để giao diện lọc được danh mục **trước khi** người dùng tạo ra cấu hình nào.
+    /// Runs on this machine; duplicated from [`ProviderConfig::on_device`] so the UI can filter before any config exists.
     pub on_device: bool,
-    /// Chỉ là **gợi ý cho ô nhập**, không phải một khẳng định rằng mô hình này còn tồn
-    /// tại. Danh sách có thẩm quyền đến từ [`crate::probe`] khi người dùng bấm thử kết
-    /// nối; tên ở đây già đi theo từng bản phát hành của nhà cung cấp, và một hằng số
-    /// trong mã nguồn thì không tự cập nhật được. Giao diện phải hiện nó như một giá trị
-    /// điền sẵn sửa được, không phải như một lựa chọn đã chốt.
+    /// A form prefill, not a claim the model still exists: the authoritative list comes from [`crate::probe`],
+    /// and a hard-coded name ages with every provider release, so the UI must show it as editable.
     pub default_model: Option<&'static str>,
-    /// Chỗ lấy khoá, hoặc chỗ tải máy chủ về.
+    /// Where to get a key, or where to download the server.
     pub homepage: &'static str,
-    /// Một câu người dùng cần biết **trước khi** chọn.
+    /// The one sentence a user needs before choosing.
     pub hint: &'static str,
 }
 
 impl Preset {
-    /// Dựng một cấu hình từ mục này. `id` của cấu hình do kho đặt, nên ở đây dùng tạm id
-    /// của mục — đủ để thử một phát trước khi lưu.
+    /// Build a config from this entry; the store assigns the real `id`, so the preset id stands in for a pre-save probe.
     pub fn config(&self) -> ProviderConfig {
         ProviderConfig::new(self.id, self.name, self.kind, self.base_url)
     }
 }
 
-/// Mục mang đúng `base_url` này, nếu có. Dùng để đoán mô hình mặc định cho một provider
-/// người dùng đã lưu mà chưa chọn mô hình.
+/// The entry with this exact `base_url`, used to guess a default model for a saved provider that has none.
 pub fn matching(base_url: &str) -> Option<&'static Preset> {
     let needle = base_url.trim().trim_end_matches('/');
     PRESETS.iter().find(|preset| {
@@ -81,8 +57,7 @@ pub const PRESETS: &[Preset] = &[
         id: "lmstudio",
         name: "LM Studio",
         kind: ProviderKind::LmStudio,
-        // Gốc máy chủ, không có `/v1`: `LmStudioAdapter` nói cả `/v1` lẫn `/api/v0` nên
-        // nó phải nhận gốc. Một cấu hình cũ còn đuôi `/v1` vẫn chạy — adapter cắt đuôi.
+        // Host root without `/v1`: `LmStudioAdapter` speaks both `/v1` and `/api/v0`; an older config keeping `/v1` still works.
         base_url: "http://localhost:1234",
         needs_key: false,
         on_device: true,

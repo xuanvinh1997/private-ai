@@ -8,6 +8,7 @@ import {
   saveMcpServer,
   setMcpEnabled,
 } from "../../lib/mcp";
+import { S, t, tn, type Msg } from "../../lib/i18n";
 import type { McpCatalogEntry, McpServer, McpServerInput, McpState } from "../../lib/protocol";
 import Icon from "./../Icon";
 import { IconButton } from "./../primitives";
@@ -22,29 +23,14 @@ type Sheet =
   | { kind: "form"; server: McpServer | null }
   | { kind: "delete"; server: McpServer };
 
-const STATE_LABEL: Record<McpState, string> = {
-  connected: "đã nối",
-  connecting: "đang nối",
-  failed: "hỏng",
-  disabled: "đang tắt",
+const STATE_LABEL: Record<McpState, Msg> = {
+  connected: S.mcp.state.connected,
+  connecting: S.mcp.state.connecting,
+  failed: S.mcp.state.failed,
+  disabled: S.mcp.state.disabled,
 };
 
-/**
- * Màn hình server MCP.
- *
- * MCP là chỗ người dùng tự tay mở rộng năng lực của trợ lý, nên nó cũng là chỗ họ tự tay
- * mở rộng bề mặt tấn công. Ba quyết định dưới đây đều đến từ chỗ đó:
- *
- *   - Câu về **nội dung không đáng tin** đứng trên đầu trang và không gập lại được. Nó là
- *     chính sách của lõi, không phải một lời khuyên; giấu nó sau một chú giải là để người
- *     dùng cắm một server lạ mà không biết mình đang cho ai nói vào cuộc hội thoại.
- *   - Server `failed` hiện `error` **nguyên văn ngay trong hàng**. Một server hỏng mà
- *     không nói vì sao là một server không sửa được, và người dùng sẽ xoá nó đi thay vì
- *     cài Node.
- *   - Danh sách tool hiện **tên đã mang tiền tố** `ext.<server>.`. Đó là tên mô hình thật
- *     sự thấy và là tên xuất hiện trong bản ghi; hiện tên từ xa thì bảng này không tra
- *     ngược được từ một lượt gọi đã xảy ra.
- */
+/** MCP server screen: the untrusted-content notice is core policy and never collapses, a failed server shows its error verbatim in the row, and tool names are listed with the prefix the model actually sees. */
 export default function McpView() {
   const [servers, setServers] = createSignal<McpServer[]>([]);
   const [catalog, setCatalog] = createSignal<McpCatalogEntry[]>([]);
@@ -65,14 +51,15 @@ export default function McpView() {
     })();
   });
 
-  const act = async (what: string, run: () => Promise<void>) => {
+  // `what` is a whole sentence with a `{msg}` slot, not a prefix: clause order differs per language.
+  const act = async (what: Msg, run: () => Promise<void>) => {
     setBusy(true);
     setError(null);
     try {
       await run();
       setServers(await listMcpServers());
     } catch (err) {
-      setError(`${what}: ${err instanceof Error ? err.message : String(err)}`);
+      setError(t(what, { msg: err instanceof Error ? err.message : String(err) }));
     } finally {
       setBusy(false);
     }
@@ -84,7 +71,9 @@ export default function McpView() {
     try {
       setServers(await reloadMcpServers());
     } catch (err) {
-      setError(`Không nạp lại được: ${err instanceof Error ? err.message : String(err)}`);
+      setError(
+        t(S.mcp.errors.reload, { msg: err instanceof Error ? err.message : String(err) }),
+      );
     } finally {
       setReloading(false);
     }
@@ -104,7 +93,7 @@ export default function McpView() {
     }
   };
 
-  // Bóc tách kiểu hợp nhất một lần, thay vì lồng hai `<Show>` chỉ để thu hẹp kiểu.
+  // Narrow the union once here, instead of nesting two `<Show>` blocks just for the types.
   const formSheet = () => {
     const current = sheet();
     return current.kind === "form" ? current : null;
@@ -125,35 +114,39 @@ export default function McpView() {
     <div class="flex flex-col gap-2xl">
       <SectionHead
         icon="plug"
-        title="Server đang cắm"
-        desc="Cắm công cụ ngoài: kho mã, cơ sở dữ liệu."
+        title={t(S.mcp.title)}
+        desc={t(S.mcp.desc)}
         actions={() => (
           <>
             <Button
-              label={reloading() ? "Đang nạp lại…" : "Nạp lại"}
+              label={reloading() ? t(S.mcp.reloading) : t(S.common.refresh)}
               variant="outline"
               icon="refresh"
               busy={reloading()}
               onClick={() => void reload()}
             />
-            <Button label="Thêm server" icon="plus" onClick={() => setSheet({ kind: "catalog" })} />
+            <Button
+              label={t(S.mcp.add)}
+              icon="plus"
+              onClick={() => setSheet({ kind: "catalog" })}
+            />
           </>
         )}
       />
 
-      {/* Không gập lại được, và không phải một chú giải. Đây là chính sách của lõi. */}
+      {/* Not collapsible and not a footnote: this is core policy. */}
       <Banner
         tone="warn"
         icon="warn"
-        title="Server MCP trả về nội dung không đáng tin"
-        more="Mọi thứ một server MCP trả về đều được lõi đóng khung là dữ liệu bên ngoài, và mọi tool của nó luôn bị coi là có thể thay đổi trạng thái — nên chúng đi qua bước hỏi duyệt, kể cả khi tên tool nghe như chỉ đọc. Cắm một server là cho tác giả của nó nói vào cuộc hội thoại của bạn; chỉ cắm cái bạn tin."
+        title={t(S.mcp.trust.title)}
+        more={t(S.mcp.trust.more)}
       >
-        Chỉ cắm server bạn tin.
+        {t(S.mcp.trust.body)}
       </Banner>
 
       <Show when={error()}>
         {(message) => (
-          <Banner tone="danger" icon="warn" role="alert" title="Không làm được">
+          <Banner tone="danger" icon="warn" role="alert" title={t(S.mcp.errors.actionTitle)}>
             {message()}
           </Banner>
         )}
@@ -164,16 +157,17 @@ export default function McpView() {
           when={servers().length > 0}
           fallback={
             <div class="flex flex-col items-start gap-md rounded-card border border-dashed border-line bg-surface-soft px-(--card-pad-x) py-2xl">
-              <p class="m-0 max-w-[52ch] text-xs text-muted">
-                Chưa cắm server nào — MCP thêm tool ngoài dự án.
-              </p>
-              <Button label="Mở danh mục" icon="plug" onClick={() => setSheet({ kind: "catalog" })} />
+              <p class="m-0 max-w-[52ch] text-xs text-muted">{t(S.mcp.empty)}</p>
+              <Button
+                label={t(S.mcp.openCatalog)}
+                icon="plug"
+                onClick={() => setSheet({ kind: "catalog" })}
+              />
             </div>
           }
         >
           <RowGroup>
-            {/* Keyed theo tên: danh sách được nạp lại sau mỗi thao tác, và `<For>` khớp
-                theo vị trí sẽ dựng lại mọi hàng — công tắc đang giữ tiêu điểm mất nó. */}
+            {/* Keyed by name: the list reloads after every action, and index keying would drop focus. */}
             <Key each={servers()} by="name">
               {(entry) => (
                 <ServerRow
@@ -182,7 +176,7 @@ export default function McpView() {
                   open={open().has(entry().name)}
                   onToggleOpen={() => toggleOpen(entry().name)}
                   onToggle={(next) =>
-                    void act("Không đổi được trạng thái", () => setMcpEnabled(entry().name, next))
+                    void act(S.mcp.errors.toggle, () => setMcpEnabled(entry().name, next))
                   }
                   onEdit={() => {
                     setFormError(null);
@@ -225,14 +219,14 @@ export default function McpView() {
       <Show when={deleteTarget()} keyed>
         {(target) => (
           <ConfirmDialog
-            title={`Xoá server ${target.name}?`}
-            body={`Xoá hẳn cấu hình, biến môi trường và ${target.tools.length} tool.`}
-            more={`Cấu hình và mọi biến môi trường của nó bị xoá khỏi máy, và ${target.tools.length} tool biến mất khỏi trợ lý. Không hoàn tác được.`}
+            title={t(S.mcp.remove.title, { name: target.name })}
+            body={t(S.mcp.remove.body, { n: target.tools.length })}
+            more={t(S.mcp.remove.more, { n: target.tools.length })}
             detail={target.target}
-            confirmLabel="Xoá server"
+            confirmLabel={t(S.mcp.remove.confirm)}
             busy={busy()}
             onConfirm={() =>
-              void act("Không xoá được server", async () => {
+              void act(S.mcp.errors.remove, async () => {
                 await removeMcpServer(target.name);
                 setSheet({ kind: "none" });
               })
@@ -245,24 +239,17 @@ export default function McpView() {
   );
 }
 
-/**
- * Chấm trạng thái.
- *
- * Không dùng `StateDot` của `primitives.tsx` vì bảng trạng thái ở đây có bốn giá trị và
- * cái thứ tư — `disabled` — không có trong ba giá trị của nó. Ép `disabled` thành "ok"
- * hay "warn" sẽ vẽ một server đang nằm im bằng cùng một màu với một server đang chạy.
- */
+/** A local state dot: `primitives.tsx` has three states and this needs a fourth, `disabled`. */
 function StateDot(props: { state: McpState }) {
   return (
     <span
       role="img"
-      aria-label={STATE_LABEL[props.state]}
-      title={STATE_LABEL[props.state]}
+      aria-label={t(STATE_LABEL[props.state])}
+      title={t(STATE_LABEL[props.state])}
       class="size-2 shrink-0 rounded-pill"
       classList={{
         "bg-success": props.state === "connected",
-        // Đang nối thì thở nhẹ: một server treo và một server đã xong trông giống hệt
-        // nhau nếu chấm đứng im.
+        // Connecting pulses: a stalled server and a finished one look alike when the dot is still.
         "bg-muted motion-safe:animate-pulse": props.state === "connecting",
         "bg-danger": props.state === "failed",
         "bg-line-strong": props.state === "disabled",
@@ -291,15 +278,22 @@ function ServerRow(props: {
       control={() => (
         <>
           <Toggle
-            label={`${props.server.enabled ? "Tắt" : "Bật"} server ${props.server.name}`}
+            label={t(props.server.enabled ? S.mcp.turnOff : S.mcp.turnOn, {
+              name: props.server.name,
+            })}
             checked={props.server.enabled}
             busy={props.busy}
             onChange={props.onToggle}
           />
-          <IconButton icon="pencil" label={`Sửa ${props.server.name}`} size="sm" onClick={props.onEdit} />
+          <IconButton
+            icon="pencil"
+            label={t(S.mcp.editServer, { name: props.server.name })}
+            size="sm"
+            onClick={props.onEdit}
+          />
           <IconButton
             icon="trash"
-            label={`Xoá ${props.server.name}`}
+            label={t(S.mcp.deleteServer, { name: props.server.name })}
             size="sm"
             danger
             onClick={props.onDelete}
@@ -322,12 +316,12 @@ function ServerRow(props: {
                   props.server.state !== "connected" && props.server.state !== "failed",
               }}
             >
-              {STATE_LABEL[props.server.state]}
+              {t(STATE_LABEL[props.server.state])}
             </span>
             <Show when={props.server.state === "connected"}>
               <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs tabular-nums text-muted">
                 <Icon name="tools" size={10} />
-                {count()} tool
+                {tn(count(), S.mcp.toolsOne, S.mcp.toolsMany)}
               </span>
             </Show>
             <span class="min-w-0 truncate font-mono text-2xs text-faint" title={props.server.target}>
@@ -335,9 +329,7 @@ function ServerRow(props: {
             </span>
           </div>
 
-          {/* Lỗi hiện ngay trong hàng, không nằm sau cú bấm mở rộng: thứ duy nhất người
-              dùng cần khi thấy một chấm đỏ là câu trả lời "vì sao". Trong bố cục hàng gọn
-              nó còn gánh thêm việc của cái viền đỏ cũ — nó là dấu hiệu duy nhất còn lại. */}
+          {/* The error sits in the row, not behind an expander: a red dot needs its reason beside it. */}
           <Show when={props.server.state === "failed" && props.server.error}>
             {(message) => (
               <p
@@ -349,16 +341,11 @@ function ServerRow(props: {
             )}
           </Show>
 
-          {/* Nối được mà không có tool nào là một trạng thái im lặng: chấm xanh, không
-              lỗi, và tuyệt đối không thêm gì cho trợ lý. Nói ra, nếu không người dùng sẽ
-              đi tìm lý do ở phía mô hình. */}
+          {/* Connected with no tools is a silent state: green dot, no error, and nothing gained. */}
           <Show when={props.server.state === "connected" && count() === 0}>
             <p class="m-0 inline-flex items-center gap-2xs text-2xs text-muted">
-              Nối được nhưng không có tool nào.
-              <InfoDot
-                label="Vì sao server không có tool"
-                text="Server nối được nhưng không khai báo tool nào, nên nó chưa thêm gì cho trợ lý. Kiểm tra lại tham số dòng lệnh hoặc quyền của token."
-              />
+              {t(S.mcp.noTools)}
+              <InfoDot label={t(S.mcp.noToolsLabel)} text={t(S.mcp.noToolsMore)} />
             </p>
           </Show>
 
@@ -375,14 +362,14 @@ function ServerRow(props: {
                   size={12}
                   class={`transition-transform duration-[var(--dur-fast)] ${props.open ? "rotate-90" : ""}`}
                 />
-                {props.open ? "Ẩn danh sách tool" : `Xem ${count()} tool đã cắm`}
+                {props.open
+                  ? t(S.mcp.hideTools)
+                  : tn(count(), S.mcp.showToolsOne, S.mcp.showToolsMany)}
               </button>
 
               <Show when={props.open}>
                 <div class="overflow-x-auto rounded-panel border border-line bg-surface-soft p-sm">
-                  <p class="m-0 mb-2xs text-2xs text-faint">
-                    Đây là tên mô hình thấy, và tên trong bản ghi.
-                  </p>
+                  <p class="m-0 mb-2xs text-2xs text-faint">{t(S.mcp.toolNames)}</p>
                   <ul class="m-0 flex list-none flex-col gap-3xs p-0">
                     <For each={props.server.tools}>
                       {(tool) => (

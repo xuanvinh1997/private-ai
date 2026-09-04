@@ -1,29 +1,19 @@
-//! Hợp đồng giữa lõi và giao diện.
-//!
-//! Bản sao TypeScript nằm ở `ui/src/lib/protocol.ts`. Hai đầu khớp bằng tay cho tới khi
-//! có bước sinh mã, nên **mọi thay đổi ở đây phải kèm thay đổi bên kia trong cùng một
-//! commit** — lệch nhau thì hỏng lúc chạy chứ không lúc biên dịch.
-//!
-//! `rename_all = "snake_case"` chỉ đổi tên *biến thể*; tên trường vốn đã snake_case nên
-//! đi thẳng qua wire. Riêng những kiểu giao diện đọc bằng camelCase thì khai báo rõ.
+//! The contract between core and UI; the TypeScript copy lives in `ui/src/lib/protocol.ts` and is matched by
+//! hand, so every change here needs the matching change there in the same commit -- a mismatch fails at
+//! runtime, not at compile time. `rename_all = "snake_case"` renames variants only.
 
-// Đây là hợp đồng nối dây, không phải mã ứng dụng: một biến thể chưa có nơi dựng nghĩa
-// là phần lõi tương ứng chưa được nối vào, chứ không phải nó thừa. Giao diện đã đọc đủ
-// cả hình dạng này rồi, nên cắt bớt ở đây chỉ làm hai đầu lệch nhau.
+// A wire contract, not application code: an unconstructed variant means that core path is not wired up yet, not that it is dead.
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
 
-/// Một hunk diff.
-///
-/// `old_text: None` nghĩa là **tệp mới**, không phải "không có gì đổi".
+/// One diff hunk; `old_text: None` means a new file, not "nothing changed".
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DiffHunk {
     pub path: String,
     pub old_text: Option<String>,
     pub new_text: String,
-    /// Số dòng đầu trong tệp thật. Vắng thì giao diện đánh số từ 1, và đó là số *trong
-    /// hunk* chứ không phải trong tệp — một sai lệch âm thầm. Tính được thì gửi kèm.
+    /// First line number in the real file; without it the UI numbers from 1, which is the line within the hunk.
     pub old_start: Option<u32>,
     pub new_start: Option<u32>,
 }
@@ -41,10 +31,8 @@ pub struct ReadMeta {
     pub lines: Vec<ReadLine>,
     pub total_lines: u32,
     pub lang: Option<String>,
-    /// Đã cắt bớt để vừa ngân sách. `SearchMeta` có trường này từ đầu; `ReadMeta` thì
-    /// không, nên giao diện không phân biệt được "đọc hết tệp" với "đọc phần đầu và phần
-    /// cuối" — và một tệp bị cắt mà không nói ra thì người đọc kết luận "hết rồi" ở đúng
-    /// chỗ lõi ngừng đọc.
+    /// Truncated to fit the budget; without this the UI cannot tell a whole file from its head and tail, and a
+    /// reader concludes "that is all" exactly where the core stopped.
     #[serde(default)]
     pub truncated: bool,
 }
@@ -71,7 +59,7 @@ pub enum SearchShape {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchMeta {
     pub shape: SearchShape,
-    /// Kết quả bị cắt bớt để hiển thị. Bản đầy đủ nằm trong spill store, không mất.
+    /// Result truncated for display; the full version is in the spill store, not lost.
     pub truncated: bool,
     pub total: u32,
     pub groups: Option<Vec<SearchGroup>>,
@@ -83,29 +71,22 @@ pub struct TerminalMeta {
     pub command: String,
     pub cwd: Option<String>,
     pub output: String,
-    /// Chạy nền thì chưa có mã thoát — điều đó không có nghĩa là treo.
+    /// A background job has no exit code yet, which does not mean it hung.
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
     pub background: bool,
     pub job_id: Option<String>,
 }
 
-/// Phần đi kèm kết quả tool để giao diện vẽ thẻ giàu.
-///
-/// dsh khai báo `presentCall`/`presentResult` ở phía host nhưng bản web **không dùng**:
-/// nó đọc thẳng `meta`. Chép đúng chỗ đó — giao diện tự render từ sự kiện thô, không có
-/// API trình bày nào ở giữa để lệch pha.
+/// What rides along with a tool result so the UI can draw a rich card; the UI renders from the raw event with
+/// no presentation API in between to drift.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolMeta {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub diffs: Option<Vec<DiffHunk>>,
-    /// Vé lấy lại toàn văn khi output đã bị cắt cho vừa ngân sách token.
-    ///
-    /// Mô hình lấy lại bằng tool `spill_read`; giao diện dùng nó để vẽ một lối xem đầy đủ.
-    /// Thiếu trường này thì serde vứt lặng lẽ khoá `spill` mà tool đã ghi, và cả hai bên
-    /// đều mất đường tới bản đầy đủ — mô hình thì còn `spill_read`, người dùng thì không
-    /// còn gì.
+    /// The ticket for retrieving full output truncated to fit the token budget; the model uses `spill_read`,
+    /// the UI draws a full view. Without this field serde silently drops the key the tool wrote.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub spill: Option<SpillMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -116,12 +97,12 @@ pub struct ToolMeta {
     pub terminal: Option<TerminalMeta>,
 }
 
-/// Vé lấy lại toàn văn. Mirror của `pai_tools::SpillRef`.
+/// The full-text retrieval ticket; mirrors `pai_tools::SpillRef`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SpillMeta {
     pub id: String,
     pub tool: String,
-    /// Kích thước toàn văn, tính bằng ký tự Unicode.
+    /// Full-text size, in Unicode characters.
     pub chars: u64,
     pub lines: u64,
 }
@@ -142,8 +123,7 @@ pub struct TodoItem {
     pub status: TodoStatus,
 }
 
-/// Quyết định duyệt. Đúng hai giá trị: **không có "nhớ lựa chọn"** trong từ vựng này.
-/// Một lần đồng ý là một lần, không phải một chính sách.
+/// An approval decision, with exactly two values: there is no "remember this" here, since one yes is one yes, not a policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
@@ -151,36 +131,25 @@ pub enum ApprovalDecision {
     Rejected,
 }
 
-/// Quyền tool mà người dùng cấp cho **một lượt**.
-///
-/// Đi kèm từng tin nhắn chứ không phải là một thiết lập lưu lại, và đó là một quyết định
-/// chứ không phải một thiếu sót: hạ quyền cho đúng một câu hỏi rồi nâng lại là cách người
-/// ta thật sự dùng bộ chọn này, còn một thiết lập dính là thứ người dùng quên mất mình đã
-/// đặt — rồi hoặc ngạc nhiên vì trợ lý không làm được gì, hoặc tưởng mình đang được che
-/// chắn trong khi không.
-///
-/// Thứ tự các biến thể là thứ tự **nới dần**, và phép ánh xạ sang hạn chế thật nằm ở
-/// `crate::scope`.
+/// Tool permissions the user grants for one turn: sent with each message rather than stored, because lowering
+/// privilege for a single question is how the picker is actually used and a sticky setting is one people forget.
+/// Variants are ordered from most to least restrictive; the mapping lives in `crate::scope`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolScope {
-    /// Chỉ tool tự khai `mutating: false`.
+    /// Only tools that declare `mutating: false`.
     Read,
-    /// Thêm tool sửa tệp; không có tool chạy lệnh.
+    /// Adds file-editing tools; no command execution.
     Write,
-    /// Toàn bộ, kể cả quyền thi hành lệnh trên máy này.
+    /// Everything, including executing commands on this machine.
     Shell,
 }
 
-/// Một sự kiện trong đời một lượt.
+/// One event in the life of a turn.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentEvent {
-    /// Một mẩu văn bản của trợ lý.
-    ///
-    /// Đây là sự kiện dày nhất, và mỗi lần vượt biên IPC của Tauri đắt hơn hẳn một
-    /// signal của Qt — nên token được **gộp ở phía Rust** trước khi gửi, không phát
-    /// từng cái một.
+    /// A fragment of assistant text; the densest event here, so tokens are coalesced on the Rust side before crossing IPC.
     Token {
         text: String,
     },
@@ -199,26 +168,23 @@ pub enum AgentEvent {
     ToolEnd {
         call_id: String,
         name: String,
-        /// Lỗi cấp tool — mô hình đọc được. Không phải panic.
+        /// A tool-level error the model can read. Not a panic.
         is_error: bool,
         preview: String,
-        // Đóng hộp vì nó lớn hơn mọi biến thể khác cộng lại, mà `Token` mới là cái
-        // được dựng hàng nghìn lần một lượt. Trên dây không có gì đổi.
+        // Boxed because it outweighs every other variant combined while `Token` is the one built thousands of times; the wire is unchanged.
         meta: Option<Box<ToolMeta>>,
     },
-    /// Diff *dự kiến*, phát ngay khi tool bắt đầu: người dùng thấy thay đổi trước khi
-    /// nó xảy ra. Giao diện cũng tự suy được từ `args`, nên đây chỉ là đường tắt cho
-    /// tool mà args không đủ để dựng diff.
+    /// The intended diff, emitted as the tool starts so the user sees a change before it happens; a shortcut for
+    /// tools whose `args` are not enough to derive one.
     Diff {
         call_id: String,
         diffs: Vec<DiffHunk>,
     },
-    /// Toàn bộ danh sách việc, mỗi lần một bản đầy đủ — giao diện không phải gấp trạng
-    /// thái, và không có cách nào để hai bên lệch nhau.
+    /// The whole todo list, sent complete each time, so the UI never folds state and the two ends cannot diverge.
     Todo {
         items: Vec<TodoItem>,
     },
-    /// Lõi hỏi ngược giao diện. Không trả lời được là từ chối.
+    /// The core asks the UI; no answer means denial.
     ApprovalRequest {
         request_id: String,
         call_id: String,
@@ -227,16 +193,13 @@ pub enum AgentEvent {
         reason: Option<String>,
         timeout_ms: Option<u64>,
     },
-    /// Rút lại câu hỏi vì lượt đã bị huỷ. Giao diện đóng hộp thoại.
+    /// Withdraw the question because the turn was cancelled; the UI closes the dialog.
     ApprovalCancel {
         request_id: String,
     },
-    /// Token của bước vừa xong, kèm cửa sổ ngữ cảnh của mô hình đang chạy.
-    ///
-    /// Có nó thì giao diện vẽ được **áp lực ngữ cảnh** trong lúc nó còn đang tăng, chứ
-    /// không đợi tới lúc nén đã cắt mất phần đầu rồi mới báo. `contextWindow` là `None`
-    /// khi không hỏi được mô hình — và khi ấy giao diện chỉ hiện con số, không hiện tỉ lệ:
-    /// một thanh đầy vơi không có mẫu số là một hình vẽ không nói gì.
+    /// Tokens for the step just finished, plus the running model's context window, so the UI can show context
+    /// pressure while it rises. `contextWindow` is `None` when the model cannot be asked, and a bar without a
+    /// denominator says nothing.
     Usage {
         input_tokens: u64,
         output_tokens: u64,
@@ -250,16 +213,15 @@ pub enum AgentEvent {
     },
 }
 
-/// Một phiên trong thanh bên.
+/// One session in the sidebar.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionSummary {
     pub id: String,
     pub title: String,
-    /// Epoch mili-giây.
+    /// Epoch milliseconds.
     pub updated_at: i64,
-    /// Câu cuối cùng đã nói trong phiên. `None` khi phiên chưa nói gì — và `None` phải
-    /// làm hàng đó **một dòng**, không phải hai dòng với dòng dưới trống.
+    /// The last thing said in the session; `None` must render as a one-line row, not two with a blank second line.
     pub preview: Option<String>,
 }
 
@@ -274,8 +236,7 @@ impl SessionSummary {
     ) -> SessionSummary {
         SessionSummary {
             preview,
-            // Phiên chưa có tiêu đề vẫn phải hiện được trong danh sách; một dòng trống là
-            // một dòng không bấm được.
+            // An untitled session must still appear in the list; a blank row is an unclickable row.
             title: header.title.unwrap_or_else(|| "Phiên mới".to_string()),
             id: header.id,
             updated_at: header.updated_at,
@@ -283,10 +244,8 @@ impl SessionSummary {
     }
 }
 
-/// Một node trong bản ghi đã lưu, dựng lại từ sổ tay phiên.
-///
-/// Cùng từ vựng `kind` với `ConversationNode` bên giao diện, nên sổ đăng ký renderer
-/// dùng lại nguyên vẹn — bản ghi nạp lại và lượt đang chạy vẽ bằng cùng một mã.
+/// A node in a stored transcript, rebuilt from the session log; it shares the `kind` vocabulary with the UI's
+/// `ConversationNode`, so a reloaded transcript and a live turn render through the same code.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HistoryNode {
@@ -307,39 +266,30 @@ pub enum HistoryNode {
         args: serde_json::Value,
         is_error: bool,
         preview: String,
-        // Đóng hộp vì cùng lý do như `AgentEvent::ToolEnd`: nó lớn hơn hai biến thể kia
-        // cộng lại, mà một bản ghi dài thì phần lớn là message chứ không phải thẻ tool.
+        // Boxed for the same reason as `AgentEvent::ToolEnd`: it outweighs the other two, and a long transcript is mostly messages.
         meta: Option<Box<ToolMeta>>,
         created_at: i64,
     },
 }
 
-/// Một mô hình mà máy chủ đang có.
+/// A model the server currently offers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelChoice {
     pub id: String,
-    /// Gọi được tool không. Mô hình không gọi được tool thì coding agent vô dụng, nên
-    /// giao diện phải nói ra trước khi người dùng chọn nhầm.
+    /// Whether it can call tools; a coding agent is useless without that, so the UI must say so before a wrong choice.
     pub tools: bool,
-    /// Trò chuyện được.
+    /// Chat-capable.
     pub chat: bool,
-    /// Nhúng được.
-    ///
-    /// Hai cờ này không loại trừ nhau, và đó là lý do có hai cờ chứ không phải một enum:
-    /// `embedding == true && chat == false` là thứ **chỉ** nhúng được, và chỉ nhóm đó mới
-    /// bị giấu khỏi bộ chọn mô hình hội thoại. Lọc theo `chat == true` thì chặt hơn nhưng
-    /// sai hướng: một máy chủ Ollama đời cũ không có trường `capabilities` sẽ để lõi phải
-    /// đoán theo tên, và một lần đoán trượt khi ấy làm biến mất một mô hình dùng được.
+    /// Embedding-capable. Two flags rather than an enum because they are not exclusive: only
+    /// `embedding && !chat` is hidden from the chat picker, since filtering on `chat` would erase usable models
+    /// on older Ollama servers where capability has to be inferred.
     pub embedding: bool,
     pub context_window: Option<u64>,
 }
 
-/// Một dự án trong thanh bên.
-///
-/// `is_current` là thứ giao diện cần mà [`pai_project::Project`] không có: kho không biết
-/// dự án nào đang mở, và nhét trạng thái lúc chạy vào một hàng đã lưu là cách nó bị ghi
-/// xuống đĩa rồi sai ở lần khởi động sau.
+/// One project in the sidebar; `is_current` is UI-only because the store does not know which project is open,
+/// and runtime state in a stored row ends up written to disk and wrong next launch.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectView {
@@ -349,14 +299,12 @@ pub struct ProjectView {
     pub last_opened_at: i64,
     pub is_current: bool,
     pub kind: ProjectKind,
-    /// URL đã clone về. `None` là thư mục vốn có sẵn trên máy.
+    /// The URL it was cloned from; `None` means a directory that already existed locally.
     pub origin: Option<String>,
 }
 
 impl ProjectView {
-    /// `current` là `None` khi **chưa mở dự án nào** — một trạng thái hợp lệ, không phải
-    /// một chỗ chưa điền. Truyền chuỗi rỗng thay cho nó thì mọi dự án đều không phải dự án
-    /// đang mở, điều đó đúng, nhưng nó đúng vì tình cờ chứ không vì ai viết ra ý ấy.
+    /// `current` is `None` when no project is open -- a valid state; an empty string would give the right answer by accident.
     pub fn new(project: pai_project::Project, current: Option<&str>) -> ProjectView {
         ProjectView {
             is_current: current.is_some_and(|id| id == project.id),
@@ -370,11 +318,8 @@ impl ProjectView {
     }
 }
 
-/// Hai enum cùng chuỗi wire, ở hai tầng.
-///
-/// Kho không được phép biết về giao diện, và giao diện không được phép phụ thuộc vào hình
-/// dạng của kho — nên loại dự án tồn tại hai lần, và chỗ này là cây cầu. Một `From` mười
-/// dòng rẻ hơn hẳn việc `pai-project` phải kéo theo `serde(rename_all)` của tầng trình bày.
+/// Two enums with the same wire strings, one per layer: the store must not know about the UI, so the project
+/// kind exists twice and this is the bridge.
 impl From<pai_project::ProjectKind> for ProjectKind {
     fn from(kind: pai_project::ProjectKind) -> ProjectKind {
         match kind {
@@ -393,21 +338,11 @@ impl From<ProjectKind> for pai_project::ProjectKind {
     }
 }
 
-// ───────────────────────────────────────────────────────────────────────────────
-// Dự án hai loại, thư viện tài liệu, provider, và MCP.
-//
-// Bốn nhóm dưới đây được thêm cùng một lượt vì chúng là **một** thay đổi về sản phẩm:
-// một dự án giờ có thể là mã nguồn hoặc tài liệu, và cái loại đó quyết định tool nào
-// được cắm, màn hình nào mở ra, và mô hình nào trả lời. Tách chúng ra thành bốn đợt
-// nghĩa là có một khoảng thời gian giao diện biết về `kind` mà lõi thì chưa.
-// ───────────────────────────────────────────────────────────────────────────────
+// Project kinds, document library, providers and MCP: four groups added together because they are one product
+// change -- a project is now code or documents, and that decides tools, screens and models.
 
-/// Một dự án là mã nguồn, hay là một chồng tài liệu.
-///
-/// Đây không phải một nhãn để lọc danh sách: nó chọn **tầng plugin** nào được cắm. Dự án
-/// mã nguồn có `fs`/`shell`/`index`/`lsp`/`terminal`; dự án tài liệu có `rag` và không có
-/// gì chạy được lệnh. Một dự án tài liệu không cần `bash`, và cấp cho nó `bash` "cho
-/// tiện" là mở một đường thi hành lệnh vào một thư mục toàn tệp người ngoài gửi tới.
+/// Whether a project is source code or a pile of documents; not a filter label but the choice of plugin layer.
+/// Document projects get `rag` and nothing that executes, since their files came from other people.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectKind {
@@ -415,49 +350,45 @@ pub enum ProjectKind {
     Docs,
 }
 
-/// Tiến trình `git clone`, phát trên một `Channel` trong lúc lệnh đang chạy.
-///
-/// Một bản clone vài trăm megabyte không có thời hạn hợp lý nào, nên giao diện phải thấy
-/// nó đang nhúc nhích. `percent` vắng mặt ở những pha mà git không đếm được — và một
-/// thanh tiến trình đứng im ở 0% thì tệ hơn hẳn một dòng chữ nói "đang phân giải delta".
+/// `git clone` progress, emitted on a `Channel` while the command runs; `percent` is absent in phases git
+/// cannot count, where a frozen 0% bar is worse than a line of text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloneProgress {
-    /// Pha do git tự đặt tên: "Đang đếm đối tượng", "Đang nhận", "Đang phân giải delta".
+    /// The phase, named by git itself: counting objects, receiving, resolving deltas.
     pub phase: String,
     pub percent: Option<u8>,
-    /// Dòng thô, giữ lại cho khung "chi tiết" khi có sự cố.
+    /// The raw line, kept for the details pane when something goes wrong.
     pub line: Option<String>,
     pub finished: bool,
-    /// Thư mục đã clone xong. Chỉ có ở sự kiện cuối, và chỉ khi thành công.
+    /// The finished directory; present only on the last event, and only on success.
     pub path: Option<String>,
     pub error: Option<String>,
 }
 
-/// Một tài liệu trong thư viện của dự án tài liệu.
+/// One document in a document project's library.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentView {
     pub id: String,
-    /// Đường dẫn tới bản sao trong kho của dự án, không phải chỗ người dùng lấy nó.
+    /// Path to the copy in the project's store, not where the user got it from.
     pub path: String,
     pub title: String,
     /// `pdf`, `docx`, `markdown`, `text`, `html`, `csv`, `code`.
     pub format: String,
     pub bytes: u64,
     pub chunks: u32,
-    /// Đã có vector chưa. `false` mà không có `error` nghĩa là **đang xếp hàng**, không
-    /// phải hỏng: tìm bằng từ khoá vẫn chạy trong lúc chờ.
+    /// Whether vectors exist; `false` with no `error` means queued, not broken, and keyword search still works.
     pub embedded: bool,
     pub added_at: i64,
     pub error: Option<String>,
 }
 
-/// Tiến trình nạp tài liệu vào thư viện.
+/// Progress of ingesting documents into the library.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IngestProgress {
-    /// Tệp đang xử lý.
+    /// The file being processed.
     pub path: String,
     pub stage: String,
     pub done: u32,
@@ -466,36 +397,29 @@ pub struct IngestProgress {
     pub error: Option<String>,
 }
 
-/// Sức khoẻ của thư viện tài liệu, đủ để giao diện nói **vì sao** câu trả lời kém.
+/// Document library health, enough for the UI to explain why answers are poor.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryStats {
     pub documents: u32,
     pub chunks: u32,
     pub embedded_chunks: u32,
-    /// Mô hình nhúng đang dùng. `None` = chưa cấu hình được, và khi đó tìm kiếm lùi về
-    /// **chỉ từ khoá** thay vì trả về rỗng.
+    /// The embedding model in use; `None` means unconfigured, and search falls back to keywords rather than returning nothing.
     pub embedder: Option<String>,
     pub semantic_ready: bool,
-    /// Câu tiếng Việt giải thích khi `semantic_ready` là `false`, **hoặc** khi thư viện
-    /// trống trong lúc thư mục thì không.
+    /// The explanation shown when `semantic_ready` is false, or when the library is empty while the directory is not.
     pub reason: Option<String>,
-    /// Thư mục tài liệu của người dùng.
-    ///
-    /// Giao diện phải chỉ ra được nó. Câu hỏi "vì sao không thấy tệp nào" bắt đầu bằng
-    /// việc người dùng kiểm lại họ đã chỉ vào đâu, và một màn hình không nói ra thư mục
-    /// nào đang được quét thì không trả lời được câu ấy.
+    /// The user's document directory, which the UI must show: "why are there no files" starts with checking where they pointed.
     pub root: String,
     pub files_seen: u32,
-    /// Bỏ qua vì chạm trần — kích thước tệp hoặc trần số tệp.
+    /// Skipped for hitting a limit -- file size or file count.
     pub files_skipped: u32,
     pub unreadable: u32,
-    /// Còn trong thư mục nhưng người dùng đã bỏ khỏi thư viện.
+    /// Still in the directory but removed from the library by the user.
     pub excluded: u32,
-    /// Lần quét gần nhất, epoch mili-giây. `None` là **chưa quét lần nào** — khác hẳn
-    /// "quét rồi và không có gì", và giao diện phải phân biệt hai câu đó.
+    /// Last scan, epoch milliseconds; `None` means never scanned, which differs from scanned-and-empty.
     pub scanned_at: Option<i64>,
-    /// Đang quét: `(xong, tổng)`. `None` là không có lượt quét nào đang chạy.
+    /// Scan in progress as `(done, total)`; `None` means no scan is running.
     pub scanning: Option<ScanProgress>,
 }
 
@@ -506,32 +430,21 @@ pub struct ScanProgress {
     pub total: u32,
 }
 
-/// Nguyên liệu để giao diện dựng gợi ý câu hỏi cho màn hình trống.
-///
-/// Chỉ **sự thật về dự án đang mở**, không một chữ nào của câu gợi ý. Ranh giới đó là có
-/// chủ ý: câu chữ tiếng Việt nằm cạnh những bộ gợi ý tĩnh trong `ui/src/lib/prompts.ts`, còn ở
-/// đây là thứ duy nhất lõi biết mà giao diện không biết — trong repo này có ký hiệu nào,
-/// thư mục nào, tài liệu nào. Trả về câu hoàn chỉnh từ Rust là để hai chỗ cùng viết một
-/// giọng, và một ngày nào đó chúng lệch nhau.
-///
-/// Rỗng cả ba trường là trạng thái **hợp lệ**, không phải lỗi: chưa mở dự án, chỉ mục
-/// chưa quét lần nào, hay thư viện chưa có tài liệu. Giao diện lùi về bộ gợi ý tĩnh.
+/// Material the UI turns into empty-screen suggestions: facts about the open project only, never phrasing,
+/// which lives with the static sets in `ui/src/lib/prompts.ts`. All three fields empty is a valid state, and
+/// the UI falls back to the static set.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PromptSeeds {
-    /// Ký hiệu nhiều quan hệ nhất, nhiều trước — cùng thứ tự `code.overview` dùng.
-    ///
-    /// Chỉ tên, không kèm đường dẫn: gợi ý là một con chip rộng vài chữ, và
-    /// `crates/pai-index/src/graph.rs:144 CentralSymbol` trong một con chip thì không đọc
-    /// được mà cũng không bấm được.
+    /// Most-connected symbols first, in `code.overview` order; names only, since a chip a few words wide cannot hold a path.
     pub symbols: Vec<String>,
-    /// Thư mục nhiều ký hiệu nhất, nhiều trước.
+    /// Directories with the most symbols first.
     pub directories: Vec<String>,
-    /// Tên tài liệu trong thư viện. Chỉ dự án tài liệu mới có.
+    /// Document names in the library; document projects only.
     pub documents: Vec<String>,
 }
 
-/// Một đoạn khớp, đủ để dựng thẻ trích dẫn.
+/// One matching passage, enough to build a citation card.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocumentHit {
@@ -541,110 +454,82 @@ pub struct DocumentHit {
     pub ordinal: u32,
     pub text: String,
     pub score: f32,
-    /// `keyword`, `semantic`, hoặc `both` — người đọc cần biết vì sao đoạn này được chọn.
+    /// `keyword`, `semantic` or `both`; the reader needs to know why this passage was chosen.
     pub matched_by: String,
 }
 
-/// Một provider đã cấu hình, như giao diện thấy nó. **Không mang khoá API.**
-///
-/// `has_key` thay cho chính cái khoá: giao diện chỉ cần biết ô nhập nên hiện "đã đặt" hay
-/// hiện trống, và một khoá đi qua IPC là một khoá nằm trong log của mọi công cụ gỡ lỗi
-/// đang mở.
+/// A configured provider as the UI sees it, carrying no API key: `has_key` is enough to decide whether the
+/// field shows "set", and a key crossing IPC is a key in every open debugging tool's log.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderView {
     pub id: String,
     pub name: String,
-    /// `ollama` hoặc `openai`.
+    /// `ollama` or `openai`.
     pub kind: String,
     pub base_url: String,
     pub has_key: bool,
     pub enabled: bool,
-    /// Endpoint không rời loopback: dữ liệu không đi đâu cả, và giao diện nói ra điều đó.
+    /// The endpoint never leaves loopback: nothing goes anywhere, and the UI says so.
     pub on_device: bool,
-    /// Đang dùng để **trò chuyện**.
+    /// Currently used for chat.
     pub active_chat: bool,
-    /// Đang dùng để **nhúng tài liệu**.
-    ///
-    /// Hai vai tách hẳn nhau, và đó không phải một tuỳ chọn cho người thích nghịch: mô
-    /// hình nhúng và mô hình hội thoại là hai loại mô hình khác nhau, chạy trên hai
-    /// endpoint khác nhau, và cách ghép hợp lý nhất trong thực tế lại chính là ghép chéo —
-    /// nhúng bằng một mô hình nhỏ chạy tại chỗ (miễn phí, không gửi tài liệu đi đâu) trong
-    /// khi trò chuyện bằng một mô hình lớn từ xa. Buộc chúng dùng chung một provider là
-    /// loại bỏ đúng cấu hình mà phần lớn người dùng muốn.
+    /// Currently used for embedding documents. The roles are fully separate because embedding and chat are
+    /// different models on different endpoints, and the most useful pairing is cross-wired: embed locally while
+    /// chatting with a large remote model.
     pub active_embedding: bool,
-    /// Mô hình hội thoại đang chọn cho provider này.
+    /// The chat model chosen for this provider.
     pub model: Option<String>,
-    /// Mô hình nhúng đang chọn cho provider này.
+    /// The embedding model chosen for this provider.
     pub embedding_model: Option<String>,
 }
 
-/// Cấu hình nhúng đang có hiệu lực, gộp từ provider và mô hình.
-///
-/// Một kiểu riêng thay vì bắt giao diện tự ghép từ danh sách provider: câu hỏi "tài liệu
-/// của tôi đang được nhúng bằng cái gì, và nó có chạy không" là một câu hỏi, và trả lời nó
-/// bằng cách bắt người đọc tự lọc một danh sách là bắt họ làm việc của máy.
+/// The embedding configuration in effect, provider and model combined, because "what embeds my documents, and does it work" is one question.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingSetting {
     pub provider_id: Option<String>,
     pub provider_name: Option<String>,
     pub model: Option<String>,
-    /// Tài liệu không rời khỏi máy này khi nhúng.
+    /// Documents never leave this machine while embedding.
     pub on_device: bool,
-    /// Câu tiếng Việt nói vì sao chưa dùng được, khi chưa dùng được.
+    /// The sentence explaining why it is unavailable, when it is.
     pub reason: Option<String>,
 }
 
-/// Cấu hình xếp hạng lại.
-///
-/// # Vì sao nó không nằm trong sổ provider
-///
-/// Reranker mặc định **không phải một endpoint**: nó là một tệp `.onnx` tải từ
-/// HuggingFace và chạy trong tiến trình service. Không có base URL, không có khoá, không
-/// health check được bằng một request. Nhét nó vào bảng `providers` sẽ cho người dùng
-/// một ô "địa chỉ máy chủ" không có nghĩa gì.
-///
-/// Ngoại lệ là `backend: "http"` — khi ấy nó đúng là một endpoint, và `model` mang tên mô
-/// hình mà máy chủ ấy phục vụ.
+/// Reranking configuration, kept out of the provider list because the default reranker is an `.onnx` file
+/// running inside the service, with no base URL, key or health check. The exception is `backend: "http"`,
+/// where it really is an endpoint and `model` names what that server serves.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RerankSetting {
-    /// Tắt thì truy hồi vẫn chạy — chỉ kém đi. Xem `reason`.
+    /// Off still retrieves, just less well. See `reason`.
     pub enabled: bool,
-    /// `onnx` chạy trong tiến trình service; `http` gọi ra một endpoint `/v1/rerank`.
+    /// `onnx` runs inside the service; `http` calls out to a `/v1/rerank` endpoint.
     pub backend: String,
-    /// Tên repo HuggingFace với `onnx`, hoặc tên mô hình với `http`.
+    /// A HuggingFace repo name for `onnx`, or a model name for `http`.
     pub model: String,
-    /// Lấy về bao nhiêu ứng viên để chấm lại.
-    ///
-    /// Đây là **nút chỉnh độ trễ**. Đo trên CPU với `bge-reranker-v2-m3`: khoảng 0,4 giây
-    /// mỗi đoạn, nên 30 ứng viên là hơn mười giây cho mỗi câu hỏi. Trên GPU thì con số ấy
-    /// nhỏ tới mức không cần nghĩ tới.
+    /// How many candidates to fetch for rescoring -- the latency dial: roughly 0.4 s per passage on CPU with
+    /// `bge-reranker-v2-m3`, negligible on GPU.
     pub candidates: u32,
-    /// Giữ lại bao nhiêu sau khi chấm.
+    /// How many to keep after scoring.
     pub top_n: u32,
-    /// Câu tiếng Việt nói ra cái giá đang phải trả, khi có. Giao diện hiện nó cạnh công
-    /// tắc để người dùng biết tắt đi thì mất gì và bật lên thì chậm bao nhiêu.
+    /// The sentence stating the current cost, shown next to the toggle so the trade is visible.
     pub reason: Option<String>,
 }
 
-/// Kết quả thử **nhúng thật một câu**, không phải liệt kê mô hình.
-///
-/// Liệt kê mô hình không trả lời được câu hỏi thật: `/api/tags` của Ollama trả về mọi mô
-/// hình, và không có gì trong đó nói mô hình nào nhúng được. Cách duy nhất biết chắc là
-/// gửi một câu đi và xem có vector trả về không — nên phép thử này làm đúng thế, và báo
-/// lại số chiều.
+/// The result of really embedding a sentence, not of listing models: listing cannot say which model embeds,
+/// so this sends text and reports the dimensions that come back.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmbeddingProbe {
     pub ok: bool,
     pub message: String,
-    /// Số chiều đo được từ vector thật trả về.
+    /// Dimensions measured from the vector actually returned.
     pub dimensions: Option<usize>,
 }
 
-/// Một mục dựng sẵn trong danh mục provider.
+/// One built-in entry in the provider catalogue.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderPreset {
@@ -655,12 +540,12 @@ pub struct ProviderPreset {
     pub needs_key: bool,
     pub on_device: bool,
     pub default_model: Option<String>,
-    /// Chỗ lấy khoá, hoặc chỗ tải máy chủ về.
+    /// Where to get a key, or where to download the server.
     pub homepage: String,
     pub hint: String,
 }
 
-/// Kết quả thử một cấu hình provider **trước khi lưu nó**.
+/// The result of probing a provider configuration before saving it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProbe {
@@ -669,35 +554,35 @@ pub struct ProviderProbe {
     pub models: Vec<ModelChoice>,
 }
 
-/// Một server MCP như giao diện thấy nó.
+/// One MCP server as the UI sees it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpServerView {
     pub name: String,
-    /// `stdio` hoặc `http`.
+    /// `stdio` or `http`.
     pub transport: String,
-    /// Dòng lệnh hoặc URL, rút gọn để hiện trên một dòng.
+    /// Command line or URL, shortened to fit one line.
     pub target: String,
     pub enabled: bool,
     /// `connected`, `connecting`, `failed`, `disabled`.
     pub state: String,
-    /// Tên tool đã cắm, đã mang tiền tố `ext.<name>.`.
+    /// Attached tool names, already prefixed with `ext.<name>.`.
     pub tools: Vec<String>,
     pub error: Option<String>,
 }
 
-/// Một biến môi trường mà một mục danh mục cần người dùng điền.
+/// An environment variable a catalogue entry needs the user to fill in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpEnvVar {
     pub key: String,
     pub label: String,
     pub required: bool,
-    /// Che khi gõ, và không gửi ngược ra giao diện sau khi lưu.
+    /// Masked while typing, and never sent back to the UI after saving.
     pub secret: bool,
 }
 
-/// Một server dựng sẵn mà người dùng cắm bằng một cú bấm.
+/// A built-in server the user attaches with one click.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct McpCatalogEntry {
@@ -708,18 +593,14 @@ pub struct McpCatalogEntry {
     pub args: Vec<String>,
     pub env: Vec<McpEnvVar>,
     pub homepage: String,
-    /// Cần gì có sẵn trên máy: `node`, `python`, `docker`. Giao diện cảnh báo trước khi
-    /// người dùng bấm cắm rồi nhìn một server `failed` mà không hiểu vì sao.
+    /// What must exist locally (`node`, `python`, `docker`); the UI warns before the click, not after a `failed` server.
     pub requires: Vec<String>,
-    /// Endpoint của một server **chạy từ xa**, nếu mục này là loại đó.
-    ///
-    /// Có nó thì `command`, `args` và `requires` đều rỗng và không có tiến trình con nào
-    /// được dựng. Giao diện phải nói ra điều đó: "không cần cài gì" là lý do chính người
-    /// dùng chọn một mục từ xa thay cho bản chạy tại chỗ của cùng một dịch vụ.
+    /// The endpoint of a remotely hosted server, if this entry is one; then `command`, `args` and `requires` are
+    /// empty and no child process is spawned, which the UI must say -- "nothing to install" is why people pick it.
     pub url: Option<String>,
 }
 
-/// Một đỉnh trong đồ thị mã nguồn.
+/// One node in the source graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphNodeView {
@@ -732,7 +613,7 @@ pub struct GraphNodeView {
     pub line: u32,
 }
 
-/// Một cạnh. `kind`: `calls`, `imports`, `contains`, `implements`, `extends`, `references`.
+/// One edge; `kind` is `calls`, `imports`, `contains`, `implements`, `extends` or `references`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphEdgeView {
@@ -741,42 +622,38 @@ pub struct GraphEdgeView {
     pub kind: String,
 }
 
-/// Một lát cắt của đồ thị, đủ nhỏ để vẽ.
+/// A slice of the graph, small enough to draw.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GraphView {
     pub nodes: Vec<GraphNodeView>,
     pub edges: Vec<GraphEdgeView>,
-    /// Đã cắt bớt để vẽ được. Một đỉnh có bốn trăm cạnh thì vẽ ra là một quả cầu đen.
+    /// Truncated to stay drawable: a node with four hundred edges renders as a black blob.
     pub truncated: bool,
 }
 
-/// Tình trạng chỉ mục mã nguồn.
+/// Source index status.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexStats {
     pub files: u32,
     pub symbols: u32,
     pub edges: u32,
-    /// `(ngôn ngữ, số tệp)`, nhiều trước.
+    /// `(language, file count)`, largest first.
     pub languages: Vec<(String, u32)>,
-    /// Lần quét gần nhất, epoch mili-giây.
+    /// Last scan, epoch milliseconds.
     pub scanned_at: Option<i64>,
 }
 
-/// Cấu hình provider **gửi lên từ giao diện**.
-///
-/// `api_key` mang một ngữ nghĩa ba trạng thái mà kiểu `Option<String>` nói đúng nhưng
-/// người đọc dễ lướt qua: `None` là **giữ nguyên khoá cũ**, `Some("")` là **xoá khoá**, và
-/// `Some(k)` là đặt khoá mới. Giao diện không bao giờ nhận lại khoá, nên nó không thể gửi
-/// lại khoá — và một `save` làm mất khoá mỗi lần người dùng sửa tên provider là lỗi chắc
-/// chắn xảy ra nếu chỗ này gộp `None` với `Some("")`.
+/// A provider configuration sent up from the UI. `api_key` is three-state: `None` keeps the stored key,
+/// `Some("")` clears it, `Some(k)` sets it. The UI never receives the key back, so merging the first two cases
+/// would drop it on every rename.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderInputWire {
     pub id: Option<String>,
     pub name: String,
-    /// `ollama` hoặc `openai`.
+    /// `ollama` or `openai`.
     pub kind: String,
     pub base_url: String,
     pub api_key: Option<String>,
@@ -785,12 +662,12 @@ pub struct ProviderInputWire {
     pub embedding_model: Option<String>,
 }
 
-/// Một server MCP gửi lên từ giao diện.
+/// An MCP server sent up from the UI.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct McpServerInputWire {
     pub name: String,
-    /// `stdio` hoặc `http`.
+    /// `stdio` or `http`.
     pub transport: String,
     pub command: String,
     pub args: Vec<String>,
@@ -801,49 +678,40 @@ pub struct McpServerInputWire {
     pub enabled: bool,
 }
 
-/// Vòng giam tiến trình, như giao diện thấy nó.
-///
-/// Cùng tinh thần với [`pai_sandbox::Enforcement`]: đây là **báo cáo sự thật, không phải
-/// lời hứa**. `mode` nói kernel đang thi hành tới đâu, `reason` nói nó thủng ở chỗ nào khi
-/// nó thủng. Một màn hình quyền hạn im lặng về chuyện này dạy người dùng tin vào một
-/// ranh giới có thể không tồn tại trên máy của họ.
+/// The process sandbox as the UI sees it: a report, not a promise. `mode` says how much the kernel enforces
+/// and `reason` says where it leaks, because a silent permissions screen teaches trust in a boundary that may not exist.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SandboxStatus {
-    /// `full`, `partial`, hoặc `none`.
+    /// `full`, `partial` or `none`.
     pub mode: String,
-    /// Vì sao chỉ thủng hoặc vì sao không có gì. `None` khi `mode` là `full`.
+    /// Why it leaks, or why there is nothing; `None` when `mode` is `full`.
     pub reason: Option<String>,
-    /// Thư mục lệnh được phép ghi vào.
+    /// The directory commands may write to.
     pub writable_roots: Vec<String>,
-    /// `macos`, `linux`, `windows` — mức giam khác nhau theo nền tảng, và người đọc cần
-    /// biết họ đang đứng trên nền nào để hiểu con số kia.
+    /// `macos`, `linux` or `windows`: confinement differs per platform, and the reader needs to know which one they are on.
     pub platform: String,
 }
 
-/// Một hook đang cài, chỉ đọc.
+/// One installed hook, read-only.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HookRow {
     pub command: String,
-    /// Tool mà hook này áp vào. Rỗng = mọi tool.
+    /// The tools this hook applies to; empty means all of them.
     pub tools: Vec<String>,
-    /// Hạn giờ riêng, giây. `None` = dùng mặc định của lõi.
+    /// Its own timeout in seconds; `None` uses the core default.
     pub timeout_secs: Option<u64>,
-    /// Lớp cấu hình đã khai nó — bản dựng sẵn hay tệp vá của người dùng.
+    /// The configuration layer that declared it: built-in, or the user's patch file.
     pub origin: String,
 }
 
-/// Một mục trong cây thư mục của dự án.
-///
-/// Không mang kích thước hay ngày sửa: cây này để **đi tới một tệp**, không phải để kiểm
-/// kê đĩa, và mỗi cột thêm vào là một cột phải cắt bớt trong một bảng rộng 300px.
+/// One entry in the project tree; no size or mtime, because this tree is for reaching a file, not auditing a disk.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DirEntryView {
     pub name: String,
-    /// Đường dẫn tuyệt đối. Giao diện gửi lại nguyên văn khi mở một thư mục con, nên nó
-    /// không được là đường dẫn tương đối với bất cứ cái gì.
+    /// An absolute path; the UI sends it back verbatim when expanding a subdirectory, so it must be relative to nothing.
     pub path: String,
     pub is_dir: bool,
 }

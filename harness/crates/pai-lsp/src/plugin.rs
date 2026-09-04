@@ -1,23 +1,6 @@
-//! Cắm LSP vào cây — và **không** cắm nó khi không có gì để cắm.
-//!
-//! Đây là toàn bộ chỗ khác biệt giữa crate này và mọi crate tool khác trong harness.
-//! `read`, `grep`, `bash` luôn dùng được vì hệ tệp và shell luôn có mặt. Language server
-//! thì không: `rust-analyzer`, `typescript-language-server`, `pyright` đều là thứ người
-//! dùng phải tự cài, và trên một máy vừa cài ứng dụng thì thường không có cái nào.
-//!
-//! Luật ở đây, và nó là luật cứng:
-//!
-//! > **Không dò được server nào thì không tool nào được đăng ký**, chứ không phải đăng ký
-//! > rồi hỏng lúc gọi.
-//!
-//! Một tool có trong danh sách mà lần nào gọi cũng lỗi không chỉ vô dụng — nó **dạy mô
-//! hình bỏ qua danh sách**. Sau vài lần `lsp` trả về "không có provider", mô hình học
-//! rằng danh sách tool là một lời gợi ý chứ không phải một hợp đồng, và cái nó học được
-//! áp cho cả `read` lẫn `bash`. Cái giá của luật này là mô tả tool đổi theo máy; cái giá
-//! của việc không có nó là một mô hình hoài nghi mọi thứ ta nói với nó.
-//!
-//! Và việc dò diễn ra **một lần**, ở đây, chứ không phải mỗi lần gọi — xem
-//! [`crate::launch::locate`].
+//! Plugs LSP into the tree - and deliberately does not when there is nothing to plug in.
+//! Hard rule: if no server is found, no tool is registered, because a tool that always
+//! fails teaches the model to ignore the whole tool list. Detection happens once, here.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,8 +24,7 @@ pub struct LspPlugin {
 }
 
 impl LspPlugin {
-    /// `roots` và `protected` nên là **cùng bộ** đã cấp cho `FsPlugin`: một tool đọc được
-    /// mã ở chỗ `read` không với tới là một đường vòng quanh chính ranh giới đó.
+    /// `roots` and `protected` should be the same set given to `FsPlugin`; anything else is a way around that boundary.
     pub fn new(
         roots: impl IntoIterator<Item = PathBuf>,
         protected: impl IntoIterator<Item = PathBuf>,
@@ -56,7 +38,7 @@ impl LspPlugin {
         }
     }
 
-    /// Thay cả bảng ngôn ngữ. Thay cả khối chứ không trộn, cùng luật với cấu hình theo lớp.
+    /// Replace the whole language table - whole block, not merged, as with layered config.
     pub fn with_languages(mut self, languages: Vec<LanguageConfig>) -> LspPlugin {
         self.languages = languages;
         self
@@ -80,7 +62,7 @@ impl Plugin for LspPlugin {
             let Some(command) = locate(&config.command) else {
                 tracing::debug!(
                     language = %config.id, command = %config.command,
-                    "không có trên máy này; bỏ qua"
+                    "not present on this machine; skipping"
                 );
                 continue;
             };
@@ -99,14 +81,13 @@ impl Plugin for LspPlugin {
         }
 
         if entries.is_empty() {
-            // Không provider, không tool, và **không lỗi**: một máy chưa cài language
-            // server nào là một máy bình thường, không phải một cấu hình hỏng.
-            tracing::info!("không dò được language server nào; tool `lsp` không được đăng ký");
+            // No provider, no tool, and no error: a machine with no language server installed is normal, not misconfigured.
+            tracing::info!("no language server detected; the `lsp` tool is not registered");
             return Ok(());
         }
         tracing::info!(
             languages = ?entries.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
-            "đã dò được language server"
+            "language servers detected"
         );
 
         let servers = Arc::new(StdioServers::new(
@@ -121,9 +102,7 @@ impl Plugin for LspPlugin {
         let tools = ctx.require::<Tools>()?;
         ctx.keep(tools.register(Arc::new(LspTool::new(seam))));
 
-        // `shutdown`/`exit` cho mọi server đang chạy. Dọn bất đồng bộ, nên nó phải là một
-        // `defer_async` chứ không phải một `Drop`: giết ống mà không nói `exit` để lại
-        // những tiến trình con sống tới hết phiên đăng nhập của người dùng.
+        // `shutdown`/`exit` for every running server; async cleanup, so it must be a `defer_async` rather than a `Drop`.
         ctx.effects()
             .defer_async("lsp/servers", move || async move {
                 servers.shutdown().await;

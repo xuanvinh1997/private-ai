@@ -1,9 +1,6 @@
-//! `symbol_search` — tìm ký hiệu theo tên.
-//!
-//! Tool này thay thế cái vòng "grep một cái tên, lọc ra khỏi hàng trăm chỗ dùng, đoán xem
-//! chỗ nào là chỗ khai báo". Chỉ mục biết chỗ nào là khai báo, nên nó trả về đúng chỗ đó
-//! kèm số dòng — và bước sau của mô hình là một lần `read` chính xác thay vì ba lần
-//! `grep` nữa.
+//! `symbol_search` — find symbols by name.
+//! Replaces the grep-then-guess-the-declaration loop: the index knows which site is the
+//! declaration, so the model's next step is one exact `read` instead of three more greps.
 
 use std::sync::Arc;
 
@@ -17,10 +14,9 @@ use crate::index::SymbolIndex;
 use crate::symbol::SymbolKind;
 use crate::tools::render;
 
-/// Bao nhiêu ký hiệu khi mô hình không nói gì.
+/// How many symbols when the model says nothing.
 const DEFAULT_LIMIT: usize = 30;
-/// Trần cứng. Mô hình xin một nghìn kết quả là mô hình đang dùng sai tool, và đưa đủ một
-/// nghìn cho nó chỉ làm cửa sổ ngữ cảnh đầy trước khi nó kịp nhận ra.
+/// Hard ceiling: asking for a thousand results is misuse, and delivering them fills the context first.
 const MAX_LIMIT: usize = 200;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -69,15 +65,13 @@ impl Tool for SymbolSearch {
             serde_json::from_value(serde_json::Value::Object(call.arguments.clone()))
                 .map_err(|err| ToolError::Invalid(err.to_string()))?;
 
-        // Đồng bộ trước mỗi lần hỏi. Với một cây không đổi đây là một loạt `stat` và
-        // không có lần parse nào — xem `index::scan`. Cái giá đó rẻ hơn nhiều so với thứ
-        // nó mua: mô hình không bao giờ đọc được một chỉ mục nói về mã của mười phút trước.
+        // Sync before every query; on an unchanged tree this is only `stat` calls — see `index::scan`.
         let report = self
             .index
             .sync()
             .await
             .map_err(|err| ToolError::Failed(err.to_string()))?;
-        tracing::debug!(?report, "đồng bộ chỉ mục trước khi tìm ký hiệu");
+        tracing::debug!(?report, "synced the index before the symbol search");
 
         let limit = args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
         let hits = self
@@ -101,9 +95,7 @@ impl Tool for SymbolSearch {
 
         let rendered = hits.iter().map(render).collect::<Vec<_>>().join("\n");
 
-        // Gom theo tệp: mười ký hiệu trong một tệp đọc dễ hơn mười dòng rời rạc lặp lại
-        // cùng một đường dẫn. Cùng hình dạng `meta.search` mà `grep` và `glob` phát ra,
-        // nên giao diện vẽ được bằng đúng cái thẻ đã có.
+        // Group by file, in the same `meta.search` shape `grep` and `glob` emit, so the UI reuses one card.
         let mut groups: Vec<serde_json::Value> = Vec::new();
         for hit in &hits {
             let entry = json!({
@@ -122,7 +114,7 @@ impl Tool for SymbolSearch {
 
         let meta = json!({
             "shape": "matches",
-            // Cắt ở đây là cắt bởi `limit`, và mô hình biết mình đã xin bao nhiêu.
+            // A cut here is the `limit`, and the model knows what it asked for.
             "truncated": hits.len() == limit,
             "total": hits.len(),
             "groups": groups,

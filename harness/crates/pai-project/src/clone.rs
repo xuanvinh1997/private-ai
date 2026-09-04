@@ -1,22 +1,6 @@
-//! Fetch a repo with `git clone`.
-//!
-//! **Use `git` as a child process, not libgit2/gix.** A Rust library can clone, but it can
-//! clone exactly the public repos. A private repo needs the user's credential helper —
-//! Keychain on macOS, `git-credential-manager` on Windows — or an ssh-agent with a loaded
-//! key, and that whole machine belongs to `git`, configured in their own `~/.gitconfig`,
-//! not something reproducible inside this process. Reimplementing it means asking for a
-//! password again for something the machine is already signed in to.
-//!
-//! The price is two traps, and both of them live here:
-//!
-//! 1. `git` **asks for passwords**. In a child process with no terminal that prompt appears
-//!    nowhere at all and the process hangs forever while the UI sees only silence. Hence
-//!    `GIT_TERMINAL_PROMPT=0` plus two empty `*_ASKPASS` variables: better to fail
-//!    immediately with "authentication required" than to hang forever.
-//! 2. `git` writes progress to **stderr**, and overwrites a line with `\r` rather than
-//!    starting a new one. Splitting on `\n` makes the entire clone **one** enormous line,
-//!    arriving exactly when everything is already done — a progress bar that sits still and
-//!    then jumps straight to 100%.
+//! Fetch a repo with `git clone`, run as a child process so the user's credential helper
+//! and ssh-agent work. The two traps handled here: password prompts hang a terminal-less
+//! child (hence `GIT_TERMINAL_PROMPT=0`), and progress goes to stderr separated by `\r`.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -72,13 +56,7 @@ pub struct CloneRequest {
     pub depth: Option<u32>,
 }
 
-/// What the UI sees while a clone runs.
-///
-/// `Phase` is emitted only when the phase **changes**; `Progress` is emitted on every tick
-/// git reports. `Line` is for lines that are not progress — warnings, authentication
-/// errors, `Cloning into` — which are exactly the lines to read when something goes wrong.
-/// Emitting the raw line for every progress tick as well would fill the detail pane with a
-/// few hundred identical lines and make it unreadable.
+/// What the UI sees while a clone runs; `Phase` only on change, `Line` only for non-progress output such as warnings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloneEvent {
     Phase { label: String },
@@ -95,8 +73,7 @@ impl CloneRequest {
             Some(ten) => ten.to_string(),
             None => name_from_url(&self.url)?,
         };
-        // Validate the derived name too, not just the one the user typed: a URL ending in
-        // `/../` pushes the destination outside `parent` exactly as a hand-typed name would.
+        // Validate the derived name too: a URL ending in `/../` escapes `parent` just as a typed name would.
         check_name(&ten)?;
         Ok(self.parent.join(ten))
     }
@@ -109,18 +86,7 @@ impl CloneRequest {
     }
 }
 
-/// Three checks, and the first is the most important thing in this file.
-///
-/// **`ext::` is a command-execution hole.** `git clone "ext::sh -c 'anything'"` downloads
-/// nothing: it tells `git` to run `sh -c 'anything'` as the transport program. A URL pasted
-/// from somewhere else into a "clone" box is therefore a command line, and it runs with the
-/// user's full privileges. Block **every** `<something>::`, not only `ext::` — the helper
-/// list is extensible, and a blocklist is always a step behind.
-///
-/// The second check: a URL starting with `-` gets swallowed by `git` as a flag
-/// (`--upload-pack=...`, for instance, which is command execution again). The command line
-/// below always puts `--` before the URL, so this is the second layer — two layers because
-/// the first is the kind of thing a hurried edit deletes.
+/// Blocks command execution: any `<x>::` transport helper (`ext::sh -c ...` runs a command) and any URL starting with `-`.
 fn check_url(url: &str) -> Result<(), CloneError> {
     let url = url.trim();
     if url.is_empty() {
@@ -131,8 +97,7 @@ fn check_url(url: &str) -> Result<(), CloneError> {
     }
     if let Some(vi_tri) = url.find("::") {
         let dau = &url[..vi_tri];
-        // `https://host/a::b` is not a helper — the `::` sits inside the path. A helper is
-        // the form with `::` **before** the first slash, exactly as `git` parses it.
+        // `https://host/a::b` is not a helper: the `::` must come before the first slash, as `git` parses it.
         if !dau.contains('/') {
             return Err(CloneError::TransportHelper(dau.to_string()));
         }
@@ -148,15 +113,12 @@ fn check_url(url: &str) -> Result<(), CloneError> {
         return Ok(());
     }
 
-    // The scp form: `[user@]host:path`. No scheme; distinguished from an ordinary path by
-    // having a colon with no slash before it.
+    // The scp form `[user@]host:path`: no scheme, told apart by a colon with no slash before it.
     match url.split_once(':') {
         Some((truoc, sau)) if !truoc.is_empty() && !truoc.contains('/') && !sau.is_empty() => {
             Ok(())
         }
-        // A bare local path (`/home/repo`) lands here. Refused deliberately:
-        // `file:///home/repo` states the intent, whereas a string with no scheme is
-        // indistinguishable from a typo.
+        // A bare local path lands here and is refused: `file://` states the intent, a schemeless string looks like a typo.
         _ => Err(CloneError::Scheme(url.to_string())),
     }
 }
@@ -205,15 +167,7 @@ fn check_destination(dich: &Path) -> Result<(), CloneError> {
     }
 }
 
-/// The progress stream of one clone. **Dropping the stream cancels the clone.**
-///
-/// Cancellation here is not a courtesy: an abandoned `git clone` leaves a whole process
-/// tree (`git` spawns `git-remote-https`, which spawns `ssh`) still downloading, still
-/// writing into the destination directory. So the child sits in its own process group and
-/// signals go to the whole group — same reason and same method as `pai-shell`.
-///
-/// Must be called inside a Tokio runtime: the real work runs on a background task, and that
-/// task learns the stream was dropped when the channel's sending end closes.
+/// Progress stream of one clone; dropping it cancels the whole `git` process group. Needs a Tokio runtime.
 pub fn clone(req: CloneRequest) -> BoxStream<'static, CloneEvent> {
     let (tx, rx) = mpsc::channel(64);
     tokio::spawn(run_clone(req, tx));
@@ -238,9 +192,7 @@ async fn run_clone(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
             return;
         }
     };
-    // Remember the state before running so that on cancellation we know what git created.
-    // `validate` just asserted this place is empty or absent, so anything appearing after
-    // this point came from git.
+    // `validate` just asserted the destination is empty or absent, so anything later came from git.
     let da_co_san = dich.is_dir();
 
     let mut lenh = Command::new("git");
@@ -248,16 +200,13 @@ async fn run_clone(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
     if let Some(depth) = req.depth {
         lenh.arg("--depth").arg(depth.to_string());
     }
-    // `--` before the URL: the second layer after `check_url`, for the case where a later
-    // edit loosens that check and forgets this one.
+    // `--` before the URL: a second layer in case a later edit loosens `check_url`.
     lenh.arg("--").arg(req.url.trim()).arg(&dich);
     lenh.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
-        // Without these three variables a private repo hangs the child forever: git opens
-        // a password prompt onto a terminal that does not exist, and the UI sees only a
-        // silent stream that never ends.
+        // Without these three, a private repo hangs forever on a password prompt aimed at a nonexistent terminal.
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_ASKPASS", "")
         .env("SSH_ASKPASS", "");
@@ -285,8 +234,7 @@ async fn run_clone(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
         return;
     };
 
-    // One tick immediately: DNS resolution and authentication can take seconds before
-    // git's first line, and a dialog that does not move looks exactly like a hung one.
+    // One tick immediately: DNS and auth can take seconds before git's first line.
     if tx
         .send(CloneEvent::Phase {
             label: "Đang tạo bản sao".to_string(),
@@ -300,9 +248,7 @@ async fn run_clone(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
 
     let mut cuoi = VecDeque::new();
     let ket = tokio::select! {
-        // `closed()` is what notices the stream being dropped while git waits silently on
-        // the network. Relying only on `send` failing means a stalled clone is never
-        // cancelled.
+        // `closed()` catches a dropped stream while git waits on the network and sends nothing.
         _ = tx.closed() => Ket::Huy,
         ket = pump(&mut con, stderr, &tx, &mut cuoi) => ket,
     };
@@ -310,9 +256,7 @@ async fn run_clone(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
     match ket {
         Ket::Huy => {
             kill_group(&mut con).await;
-            // Clean up the partial download: leaving a half-finished directory makes the
-            // next attempt hit the "destination not empty" check above, and the user is
-            // stuck.
+            // Remove the partial download, or the next attempt trips the not-empty check.
             let _ = std::fs::remove_dir_all(&dich);
             if da_co_san {
                 let _ = std::fs::create_dir_all(&dich);
@@ -330,8 +274,7 @@ async fn run_clone(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
                 .code()
                 .map(|ma| ma.to_string())
                 .unwrap_or_else(|| "bị tín hiệu dừng".to_string());
-            // Include git's last few lines: "exit 128" on its own cannot distinguish a
-            // mistyped URL from missing read access to the repo.
+            // Include git's last lines: "exit 128" alone cannot tell a typo from a missing permission.
             let chi_tiet: Vec<String> = cuoi.into_iter().collect();
             let message = if chi_tiet.is_empty() {
                 format!("`git clone` thất bại ({ma})")
@@ -343,12 +286,7 @@ async fn run_clone(req: CloneRequest, tx: mpsc::Sender<CloneEvent>) {
     }
 }
 
-/// Read stderr in chunks and translate it into events.
-///
-/// Reads bytes, not lines: `AsyncBufReadExt::lines` splits on `\n`, and git overwrites a
-/// progress line with `\r`. Accumulating chunks into a byte buffer before splitting is also
-/// deliberate — a Vietnamese character can straddle two reads, and cutting through one
-/// produces a replacement character in the detail pane.
+/// Read stderr as bytes and turn it into events: git separates progress with `\r`, and a multi-byte char can straddle two reads.
 async fn pump(
     con: &mut Child,
     mut stderr: ChildStderr,
@@ -397,8 +335,7 @@ fn remember(cuoi: &mut VecDeque<String>, text: &str) {
 }
 
 fn translate_line(text: &str, pha: &mut String) -> Vec<CloneEvent> {
-    // `remote: ` prefixes lines counted by the server; strip it so the rest parses like a
-    // local line.
+    // Strip the server's `remote: ` prefix so the rest parses like a local line.
     let sach = text.strip_prefix("remote: ").unwrap_or(text).trim();
     match parse_progress(sach) {
         Some((goc, percent)) => {
@@ -437,10 +374,7 @@ fn parse_progress(dong: &str) -> Option<(String, u8)> {
     Some((dau.trim().to_string(), phan_tram.min(100) as u8))
 }
 
-/// Git's phase names, rendered in Vietnamese for the UI.
-///
-/// Anything untranslatable is returned verbatim: a different git build names phases
-/// differently, and swallowing that line leaves the progress bar frozen on a real phase.
+/// Git's phase names in Vietnamese for the UI; an unknown phase is returned verbatim rather than dropped.
 fn phase_label(goc: &str) -> String {
     match goc {
         "Counting objects" => "Đang đếm đối tượng",
@@ -455,11 +389,7 @@ fn phase_label(goc: &str) -> String {
     .to_string()
 }
 
-/// SIGTERM to the whole group, wait a beat, then SIGKILL.
-///
-/// Killing only `git` leaves its `git-remote-https` and `ssh` children alive, still
-/// downloading, still writing into the directory we are about to delete. A negative pid
-/// means "the whole group" — which is the entire reason for `process_group(0)` at spawn.
+/// SIGTERM then SIGKILL the whole group: killing only `git` leaves its helper children writing into the directory.
 async fn kill_group(con: &mut Child) {
     #[cfg(unix)]
     if let Some(pid) = con.id() {

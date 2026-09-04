@@ -1,14 +1,6 @@
-//! Provider SQLite cho seam [`Sessions`].
-//!
-//! Ba quyết định định hình cả tệp này:
-//!
-//! 1. **`rusqlite` là đồng bộ.** Mọi lời gọi nằm trong `spawn_blocking`; không có đường
-//!    nào từ đây chặn được runtime, kể cả khi ổ đĩa treo.
-//! 2. **Gói mảnh stream.** Một mảnh delta cỡ một token, còn vỏ JSON của nó lớn gấp hàng
-//!    chục lần. Một hàng cho mỗi mảnh là biến ổ đĩa thành nút cổ chai của việc gõ chữ,
-//!    nên nhiều mảnh liên tiếp cùng một bước đi chung một hàng.
-//! 3. **Không migrate ngầm.** Mở một tệp lạ hoặc lệch phiên bản schema là từ chối. Một
-//!    lần migrate im lặng làm hỏng sổ thì không có cách nào dựng lại.
+//! SQLite provider for the [`Sessions`] seam. `rusqlite` is synchronous, so every call runs inside
+//! `spawn_blocking`; consecutive stream chunks share one row, since a row per chunk makes the disk
+//! the typing bottleneck; and an unknown file or schema version is rejected, never migrated silently.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -24,17 +16,16 @@ use crate::message::{ContentBlock, Message};
 use crate::store::{NewSession, Origin, SessionHeader, SessionStore, new_session_id};
 use crate::surface::SurfaceOp;
 
-/// `'AGNT'`. Mở nhầm một tệp SQLite khác thì thấy ngay, thay vì thấy sau khi đã ghi vào.
+/// `'AGNT'`: opening the wrong SQLite file fails immediately instead of after writing to it.
 const APPLICATION_ID: i32 = 0x41474E54;
 const SCHEMA_VERSION: i32 = 1;
 
-/// `data` là JSON thô, một hàng một sự kiện.
+/// `data` is raw JSON, one row per event.
 const ENC_JSON: i64 = 0;
-/// `data` là một chùm mảnh stream, một hàng nhiều sự kiện.
+/// `data` is a run of stream chunks, one row for many events.
 const ENC_PACKED_CHUNKS: i64 = 2;
 
-/// Không chứa `/`, nên nó không bao giờ lẫn được với một loại sự kiện thật. Hàng này
-/// **không phải** một `SessionEvent`; nó là một chi tiết lưu trữ.
+/// Contains no `/`, so it can never collide with a real event type; this row is a storage detail, not a `SessionEvent`.
 const PACKED_TYPE: &str = "assistant-chunks";
 
 const SCHEMA: &str = r#"
@@ -94,8 +85,7 @@ const SELECT_HEADER: &str = "SELECT session_key, format_version, created_at, upd
      cwd, parent_session, seed_length, origin, delegation_depth, agent_preset FROM sessions";
 
 pub struct SqliteSessionStore {
-    /// `Connection` không `Sync`. Một khoá thật thay vì một pool: sổ phiên là chỗ ghi
-    /// tuần tự theo bản chất, và mọi lần giữ khoá đều nằm gọn trong một `spawn_blocking`.
+    /// `Connection` is not `Sync`; a real lock rather than a pool, since the log is inherently sequential.
     conn: Arc<Mutex<Connection>>,
 }
 
@@ -104,7 +94,7 @@ impl SqliteSessionStore {
         SqliteSessionStore::from_connection(Connection::open(path)?)
     }
 
-    /// Cho bài kiểm chứng, và cho phiên không cần sống qua lần khởi động sau.
+    /// For tests, and for sessions that need not survive the next start.
     pub fn open_in_memory() -> Result<SqliteSessionStore> {
         SqliteSessionStore::from_connection(Connection::open_in_memory()?)
     }
@@ -142,15 +132,12 @@ fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "mmap_size", 0)?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.pragma_update(None, "busy_timeout", 5000)?;
-    // WAL cho phép đọc trong lúc ghi — giao diện phải cuộn được transcript giữa một
-    // stream đang đổ về. Cơ sở dữ liệu trong bộ nhớ không có WAL; đó không phải lỗi.
+    // WAL lets reads run during writes so the UI can scroll mid-stream; in-memory databases have no WAL, which is fine.
     let mode: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
     if mode != "wal" {
-        tracing::debug!(mode, "không bật được WAL cho kho phiên này");
+        tracing::debug!(mode, "could not enable WAL for this session store");
     }
-    // NORMAL chứ không FULL: với WAL, `NORMAL` chỉ đánh mất các giao dịch cuối khi cả
-    // máy mất điện, không phải khi tiến trình chết. Đổi lại là một fsync mỗi lần ghi mảnh
-    // stream — cái giá sai cho thứ đến vài chục lần một giây.
+    // NORMAL, not FULL: under WAL it only loses the last transactions on power loss, and FULL would fsync per chunk write.
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     Ok(())
 }
@@ -190,9 +177,9 @@ pub(crate) fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-// --- gói và mở gói mảnh stream ---------------------------------------------------------
+// --- packing and unpacking stream chunks -------------------------------------------------
 
-/// Một hàng trong bảng `events`. Có thể đại diện một sự kiện, hoặc cả một chùm.
+/// One row of the `events` table, representing either a single event or a whole run.
 struct StoredRow {
     seq: i64,
     kind: String,
@@ -204,15 +191,14 @@ struct StoredRow {
     enc: i64,
 }
 
-/// Một mảnh chỉ gói được khi nó không mang gì ngoài payload: cờ và trích dẫn là dữ liệu
-/// riêng của từng sự kiện, và một chùm không có chỗ để giữ chúng.
+/// A chunk is packable only if it carries nothing but its payload; a run has no room for per-event flags or citations.
 fn packable(envelope: &SessionEventEnvelope) -> bool {
     envelope.surface_op.is_none()
         && envelope.source_event_seqs.is_none()
         && envelope.ignorable.is_none()
 }
 
-/// Độ dài chuỗi mảnh liên tiếp bắt đầu tại `start` mà gói chung được.
+/// Length of the consecutive packable chunk run starting at `start`.
 fn chunk_run(events: &[SessionEventEnvelope], start: usize) -> usize {
     let SessionEvent::AssistantChunk(head) = &events[start].event else {
         return 0;
@@ -268,11 +254,8 @@ fn plain_row(envelope: &SessionEventEnvelope) -> Result<StoredRow> {
     })
 }
 
-/// `dt[k]` là khoảng cách epoch-ms giữa hai mảnh liền nhau; nó có thể âm khi đồng hồ hệ
-/// thống bị chỉnh. Lưu hiệu chứ không lưu mốc tuyệt đối vì hiệu là số nhỏ.
-///
-/// Các mảnh **không** được nối lại thành một chuỗi: ranh giới token là dữ liệu, và mất nó
-/// là mất khả năng phát lại đúng cái giao diện đã hiển thị.
+/// `dt[k]` is the epoch-ms gap between adjacent chunks (negative if the clock was adjusted), stored as
+/// deltas because they are small. Chunks are never concatenated: token boundaries are data.
 fn packed_row(run: &[SessionEventEnvelope]) -> Result<StoredRow> {
     let mut chunks = Vec::with_capacity(run.len());
     let mut dt = Vec::with_capacity(run.len().saturating_sub(1));
@@ -310,8 +293,7 @@ struct PackedChunks {
     chunks: Vec<Value>,
 }
 
-/// Mở gói. Kiểm hình dạng **trước** khi bung: một hàng gói hỏng phải kêu to, vì sản phẩm
-/// của nó là những `seq` mà cả phần còn lại của hệ thống tin là liền mạch.
+/// Unpack, validating shape first: a corrupt packed row must fail loudly, since it produces seqs everything else trusts.
 fn unpack(seq0: i64, time0: i64, data: &str) -> Result<Vec<SessionEventEnvelope>> {
     let packed: PackedChunks = serde_json::from_str(data)?;
     if !packed.chunks.is_empty() && packed.dt.len() + 1 != packed.chunks.len() {
@@ -345,7 +327,7 @@ fn unpack(seq0: i64, time0: i64, data: &str) -> Result<Vec<SessionEventEnvelope>
 
 fn encode_surface_op(op: SurfaceOp) -> Result<String> {
     match op {
-        // Chuỗi trần chứ không phải JSON có nháy: cột này còn để người đọc bằng mắt.
+        // A bare string rather than quoted JSON: this column is also read by eye.
         SurfaceOp::Append => Ok("append".to_owned()),
         replace => Ok(serde_json::to_string(&replace)?),
     }
@@ -398,11 +380,8 @@ fn expand(row: StoredRow) -> Result<Vec<SessionEventEnvelope>> {
     Ok(vec![envelope])
 }
 
-/// Văn bản người đọc thấy được trong một sự kiện surface.
-///
-/// Đọc bằng chính kiểu của sổ chứ không bằng `json_extract` trong SQL: hình dạng payload
-/// thuộc về `event.rs`, và một đường dẫn JSON viết trong chuỗi SQL là một bản sao thứ hai
-/// của hình dạng đó — bản sao mà trình biên dịch không kiểm được.
+/// Human-readable text inside a surface event, decoded with the log's own types rather than SQL
+/// `json_extract`, so the payload shape lives only in `event.rs` and not in an unchecked SQL string.
 fn preview_text(kind: &str, data: &str) -> Option<String> {
     let message = match kind {
         "user/message" => serde_json::from_str::<Message>(data).ok()?,
@@ -422,8 +401,7 @@ fn preview_text(kind: &str, data: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    // Cắt ở đây chứ không ở giao diện: một câu trả lời dài đi qua wire cho mỗi hàng trong
-    // danh sách là băng thông trả cho thứ bị cắt ngay khi vẽ.
+    // Truncate here, not in the UI: shipping a long answer per list row is bandwidth spent on text cut at render time.
     let mut short: String = trimmed.chars().take(160).collect();
     if trimmed.chars().count() > 160 {
         short.push('…');
@@ -506,7 +484,7 @@ impl SessionStore for SqliteSessionStore {
                     row.origin.map(Origin::as_str),
                     row.delegation_depth.map(i64::from),
                     row.agent_preset,
-                    // Mới mỗi lần một tiến trình mở phiên: hai bản cùng ghi thì thấy ngay.
+                    // Fresh each time a process opens the session, so two writers are detected immediately.
                     uuid::Uuid::now_v7().to_string(),
                 ],
             )?;
@@ -557,8 +535,7 @@ impl SessionStore for SqliteSessionStore {
                 .optional()?
                 .ok_or_else(|| SessionError::NotFound(id.clone()))?;
 
-            // Chốt chặn cuối cho "seq liền mạch": lô phải nối đúng vào chỗ đang dở, và
-            // bên trong lô cũng không được hở.
+            // Last defence of gapless seq: the batch must join exactly where the log left off, with no hole inside it.
             let expected = (last_seq + 1) as Seq;
             if events[0].seq != expected {
                 return Err(SessionError::SeqGap {
@@ -640,9 +617,7 @@ impl SessionStore for SqliteSessionStore {
         }
         let ids = ids.to_vec();
         self.with_conn(move |conn| {
-            // Một lần lấy khoá, một statement dùng lại cho cả lô. Index `events_by_type`
-            // phủ đúng `(session_id, type, seq)` nên mỗi lượt là một lần tìm trong index,
-            // không phải một lần quét.
+            // One lock, one reused statement for the batch; `events_by_type` covers `(session_id, type, seq)` so each pass is a seek.
             let mut stmt = conn.prepare_cached(
                 "SELECT e.type, e.data
                    FROM events e
@@ -671,9 +646,7 @@ impl SessionStore for SqliteSessionStore {
     async fn delete(&self, id: &str) -> Result<()> {
         let id = id.to_owned();
         self.with_conn(move |conn| {
-            // Chỉ xoá hàng phiên: `events.session_id` khai `ON DELETE CASCADE` và
-            // `foreign_keys` bật, nên sự kiện đi theo. Xoá tay thêm một lần nữa là dựng
-            // một bản sao thứ hai của cùng một luật, và hai bản sao thì trôi ra khỏi nhau.
+            // Delete only the session row: `ON DELETE CASCADE` plus `foreign_keys` takes the events with it.
             let touched =
                 conn.execute("DELETE FROM sessions WHERE session_key = ?1", params![id])?;
             if touched == 0 {

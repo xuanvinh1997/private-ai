@@ -1,33 +1,23 @@
 import { Show } from "solid-js";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
+import { S, t } from "../../lib/i18n";
 import Icon from "./../Icon";
 import { InfoDot } from "../settings/FormKit";
 
-/**
- * Hộp thoại xác nhận một việc không hoàn tác được.
- *
- * Đặt ở đây thay vì ở `components/` vì đợt việc này chỉ sở hữu hai thư mục `providers/`
- * và `mcp/`; màn hình MCP mượn lại chính tệp này thay vì chép ra bản thứ hai, vì hai bản
- * sao của một hộp thoại là hai bản sao của luật bàn phím, và bản thứ hai luôn là bản quên
- * cập nhật. Lúc tích hợp thì nâng nó lên `components/ConfirmDialog.tsx`.
- *
- * Nút huỷ được focus đầu tiên và Esc đóng: khi người dùng chỉ đập Enter cho xong thì thứ
- * họ chạm vào phải là lựa chọn không mất gì.
- */
+/** Confirmation dialog for an irreversible action, shared with the MCP screen so the keyboard rules exist once; Cancel takes focus first and Esc closes, so a reflex Enter costs nothing. */
 export default function ConfirmDialog(props: {
   title: string;
   body: string;
-  /** Đoạn giải thích dài đằng sau câu hỏi, cất trong `InfoDot` cạnh tiêu đề. */
+  /** The long explanation behind the question, kept in an `InfoDot` next to the title. */
   more?: string;
-  /** Dòng phụ mang chi tiết máy móc — đường dẫn, dòng lệnh, tên. Hiện bằng font mono. */
+  /** A secondary line of machine detail (path, command, name), shown in a mono font. */
   detail?: string;
   confirmLabel: string;
   busy?: boolean;
   onConfirm: () => void;
   onClose: () => void;
 }) {
-  // Không kéo tiêu điểm về đâu cả: nút đầu tiên trong khung *là* nút Huỷ, nên mặc định
-  // của bẫy tiêu điểm đã trỏ đúng chỗ an toàn rồi.
+  // No focus steering needed: the first button in the panel is Cancel, which is the safe default.
   let panel: HTMLDivElement | undefined;
 
   useFocusTrap(() => panel, props.onClose);
@@ -53,7 +43,7 @@ export default function ConfirmDialog(props: {
             <Icon name="warn" size={16} />
           </span>
           <div class="flex min-w-0 flex-col gap-3xs">
-            <h2 id="confirm-title" class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
+            <h2 id="confirm-title" class="m-0 flex items-center gap-2xs text-md font-medium text-ink">
               {props.title}
               <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
             </h2>
@@ -75,16 +65,16 @@ export default function ConfirmDialog(props: {
           <button
             type="button"
             onClick={props.onClose}
-            class="h-(--control-h) rounded-btn border border-line-strong px-md text-xs font-medium text-text transition-colors duration-[var(--dur-fast)] hover:bg-surface-hover"
+            class="pai-btn pai-btn-secondary text-xs"
           >
-            Huỷ
+            {t(S.common.cancel)}
           </button>
           <button
             type="button"
             disabled={props.busy}
             aria-busy={props.busy}
             onClick={props.onConfirm}
-            class="h-(--control-h) rounded-btn bg-danger px-md text-xs font-medium text-on-accent transition-colors duration-[var(--dur-fast)] enabled:hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            class="pai-btn pai-btn-danger text-xs"
           >
             {props.confirmLabel}
           </button>

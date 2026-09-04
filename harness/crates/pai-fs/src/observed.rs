@@ -1,14 +1,6 @@
-//! Read before edit.
-//!
-//! The rule: `edit` and `write` on an **existing** file only run if that file has been
-//! `read` this session. It blocks exactly one failure: the model guessing the contents of a
-//! file it never opened, then overwriting with what it imagined.
-//!
-//! Where the rule lives matters as much as what the rule says. It is **a middleware on the
-//! pipeline**, not a field in a tool schema. So: the `edit` tool does not know this rule
-//! exists, turning it off is removing a plugin rather than editing a tool, and any
-//! file-writing tool written later is covered automatically with its author having to
-//! remember nothing.
+//! Read before edit: `edit` and `write` on an existing file require a `read` this session,
+//! so the model cannot overwrite a file it only guessed at. The rule is pipeline middleware,
+//! not tool code, so disabling it removes a plugin and later tools are covered for free.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -63,8 +55,7 @@ impl Middleware<PreExecute> for ReadBeforeEdit {
                 return next.run(req).await;
             };
             let Ok(resolved) = self.roots.resolve_write(Path::new(raw)) else {
-                // A broken path is the roots layer's business, not this rule's. Delegate
-                // so it reports the real reason rather than "not read yet".
+                // A broken path is the roots layer's business; delegate so it reports the real reason.
                 return next.run(req).await;
             };
             // A file that does not exist yet has no contents to guess wrongly.

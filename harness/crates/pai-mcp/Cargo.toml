@@ -19,18 +19,13 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }
 
-# Bốn crate dưới đây cố tình **không** lên `[workspace.dependencies]`: chúng chỉ phục vụ
-# một việc của riêng crate này — dựng cái vỏ HTTP quanh tower service mà `rmcp` đưa ra —
-# và không crate nào khác trong workspace nói HTTP phía server. Đưa lên trên chỉ mời crate
-# khác dùng ké một thứ mà kiến trúc muốn giữ ở đúng một chỗ. Cả bốn đã có sẵn trong cây
-# phụ thuộc qua `reqwest`, nên chúng không thêm gì vào bản dựng.
+# Kept out of `[workspace.dependencies]` on purpose: only this crate speaks server-side HTTP, and `reqwest` already pulls them in.
 http = "1"
 http-body-util = "0.1"
 bytes = "1"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "service"] }
-# Bí mật thì phải lấy từ CSPRNG của hệ điều hành. `uuid` v7 của workspace là dấu thời gian
-# cộng một ít ngẫu nhiên — đủ cho một khoá chính, không đủ cho một cái chìa.
+# Secrets must come from the OS CSPRNG; the workspace's uuid v7 is a timestamp plus a little randomness.
 rand = "0.10"
 
 [dev-dependencies]

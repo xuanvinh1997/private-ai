@@ -16,11 +16,7 @@ fn request(url: &str, parent: &Path) -> CloneRequest {
     }
 }
 
-/// `git clone "ext::sh -c '...'"` downloads nothing — it runs that command on the user's
-/// machine.
-///
-/// This is why `validate()` exists. Without this check, a URL pasted into a "clone" box is
-/// a command line.
+/// `git clone "ext::sh -c '...'"` runs that command; without this check a pasted URL is a command line.
 #[test]
 fn a_transport_helper_is_blocked_because_it_is_command_execution() {
     let dir = TempDir::new().expect("temp dir");
@@ -29,7 +25,7 @@ fn a_transport_helper_is_blocked_because_it_is_command_execution() {
         .expect_err("must be blocked");
     assert!(err.to_string().contains("ext"), "the error must say why: {err}");
 
-    // Not just `ext::` — every helper, because the helper list is extensible.
+    // Not just `ext::`: every helper, because the helper list is extensible.
     assert!(request("other::something", dir.path()).validate().is_err());
     // But `::` inside an ordinary URL's path is not a helper.
     assert!(
@@ -151,8 +147,7 @@ fn source_repo(root: &Path) -> Option<String> {
     if !git(&source, &["add", "."]) {
         return None;
     }
-    // A CI machine may have no identity configured; set it inline so the commit asks
-    // nothing.
+    // A CI machine may have no identity configured; set it inline so the commit asks nothing.
     let committed = git(
         &source,
         &[
@@ -216,10 +211,7 @@ async fn a_real_clone_emits_progress_and_ends_with_done() {
     );
 }
 
-/// A blocked URL has to end the stream with `Failed`, not with silence.
-///
-/// A stream that never emits anything looks exactly like a slow clone, and the UI spins
-/// forever.
+/// A blocked URL must end the stream with `Failed`: silence looks exactly like a slow clone.
 #[tokio::test]
 async fn a_bad_url_ends_the_stream_with_failed_rather_than_hanging() {
     let dir = TempDir::new().expect("temp dir");

@@ -1,9 +1,5 @@
-//! `grep` — search file contents.
-//!
-//! Uses `grep-searcher` + `grep-regex` + `ignore` directly — ripgrep's own internals as a
-//! library. No process is spawned, so there is no external binary to package and maintain
-//! across releases, and no dependency on whether the user's machine has `rg`. This is where
-//! Rust wins most decisively over the Python version.
+//! `grep`: search file contents through ripgrep's internals (`grep-searcher`, `grep-regex`,
+//! `ignore`) as a library, so no process is spawned and no `rg` binary has to be shipped.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -26,19 +22,10 @@ use crate::path::FileRoots;
 /// How many matches are collected into `meta` for the UI to draw.
 const DISPLAY_CAP: usize = 250;
 
-/// A hard cap on matches collected.
-///
-/// Without it, a pattern like `.` over a repo of a few hundred thousand files pulls tens of
-/// millions of lines into memory before anyone can say anything. This cap bites at
-/// *collection*, not at display: it stops the walk, rather than scanning everything and then
-/// throwing it away.
+/// Hard cap on matches collected; it stops the walk rather than scanning all then discarding.
 const MATCH_CAP: usize = 5_000;
 
-/// A time cap on the walk.
-///
-/// A large repo on a network drive can take longer to scan than the tool's own deadline, and
-/// the model then gets a line saying "over 120 seconds" instead of the matches already
-/// found. Partial results that say they are partial are useful; a silent timeout is not.
+/// Time cap on the walk: partial results that say they are partial beat a tool-level timeout.
 const SEARCH_DEADLINE: Duration = Duration::from_secs(20);
 
 /// Why the walk stopped early.
@@ -124,9 +111,7 @@ impl Tool for Grep {
                 }
 
                 let mut searcher = SearcherBuilder::new()
-                    // A NUL byte abandons the whole file: a binary file matching the
-                    // regex emits thousands of junk lines and pushes every real result out
-                    // of view.
+                    // A NUL byte abandons the file: binary matches bury every real result.
                     .binary_detection(BinaryDetection::quit(0))
                     .line_number(true)
                     .build();
@@ -135,10 +120,7 @@ impl Tool for Grep {
                 let mut hits: Vec<Hit> = Vec::new();
                 let mut stopped = None;
                 for entry in walk.build().flatten() {
-                    // The match cap stops the walk, but the conclusion is **not** drawn
-                    // here: it is drawn after the loop, because a single file can hit the
-                    // cap on its own and then the loop ends without ever reaching this
-                    // point.
+                    // Cap stops the walk here, but is reported after the loop: one file can hit it.
                     if hits.len() >= MATCH_CAP {
                         break;
                     }
@@ -162,15 +144,12 @@ impl Tool for Grep {
                                 line,
                                 text: text.trim_end().to_string(),
                             });
-                            // `false` stops this file immediately: one generated file can
-                            // blow the cap by itself.
+                            // `false` stops this file at once: one generated file can blow the cap.
                             Ok(hits.len() < MATCH_CAP)
                         }),
                     );
                 }
-                // Hitting the cap is hitting the cap, whether the loop ended on the cap
-                // or on running out of files: once there are `MATCH_CAP` matches there is
-                // no way to know what else is out there.
+                // At `MATCH_CAP` matches the result is incomplete however the loop ended.
                 if stopped.is_none() && hits.len() >= MATCH_CAP {
                     stopped = Some(Stopped::MatchCap);
                 }
@@ -193,8 +172,7 @@ impl Tool for Grep {
             .collect::<Vec<_>>()
             .join("\n");
 
-        // Grouped by file for display: ten matches inside one file read more easily than
-        // ten loose lines repeating the same path.
+        // Grouped by file for display, rather than loose lines repeating the same path.
         let mut groups: Vec<serde_json::Value> = Vec::new();
         for hit in hits.iter().take(DISPLAY_CAP) {
             let entry = json!({ "line": hit.line, "text": hit.text });
@@ -214,12 +192,7 @@ impl Tool for Grep {
                 .to_string()
         });
 
-        // The cap notice is appended **after** folding, not before.
-        //
-        // Appended before, it lands in the middle section that gets cut, and the model
-        // receives a truncated list that looks exactly like a complete one — precisely the
-        // mistake this cap exists to warn about. A warning swallowed by the very mechanism
-        // it describes is worse than no warning.
+        // Append the cap notice after folding, or folding cuts the very warning it needs.
         let mut content = folded.content;
         match stopped {
             Some(Stopped::MatchCap) => content.push_str(&format!(

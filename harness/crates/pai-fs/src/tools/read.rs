@@ -1,8 +1,5 @@
-//! `read` — read a file, with line numbers.
-//!
-//! The line numbers are not decoration: `edit` matches on literal strings, so the model needs
-//! to know which line it is looking at to quote the right stretch. Without numbers it counts,
-//! and it counts wrong.
+//! `read`: read a file with line numbers, which `edit` needs so the model can quote the
+//! right stretch instead of counting lines itself and getting it wrong.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -19,12 +16,7 @@ use crate::observed::ReadLedger;
 use crate::path::FileRoots;
 use crate::provider::FsProvider;
 
-/// Reading too many lines at once pushes the head out of the context window before the model
-/// gets to it. Two thousand is where dsh stopped, and there is no reason to differ.
-///
-/// This is the **caller's default**, not a ceiling. The ceiling is the token budget, and the
-/// two are independent: a 100-line minified JSON file blows the budget while a sparse
-/// 2000-line Rust file does not, so `limit` is no substitute for measuring.
+/// Caller default, not a ceiling: the token budget is the real ceiling and is independent.
 const DEFAULT_LIMIT: usize = 2000;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -76,8 +68,7 @@ impl Tool for Read {
     }
 
     fn meta(&self) -> ToolMeta {
-        // File contents are the user's data, not instructions to the model — including
-        // when the file contains a sentence that looks very much like an instruction.
+        // File contents are data, never instructions, however much they read like one.
         ToolMeta::read_only().untrusted().concurrency_safe(true)
     }
 
@@ -115,12 +106,10 @@ impl Tool for Read {
             rendered = format!("(tệp có {total} dòng; không có dòng nào trong khoảng đã hỏi)\n");
         }
 
-        // Recorded *after* a successful read: a failed read does not unlock `edit`.
+        // Recorded after a successful read: a failed read does not unlock `edit`.
         self.ledger.note_read(&resolved);
 
-        // The budget applies **after** `offset`/`limit`: those two are the caller's intent,
-        // while the budget is a ceiling on the result. The next offset counts whole lines in
-        // the head — a line cut in half does not count as read.
+        // Budget applies after `offset`/`limit`, and the next offset counts whole head lines only.
         let folded = self.overflow.fold(&call.name, rendered, |split| {
             format!(
                 "Đọc tiếp bằng `read` với `file_path` như cũ và `offset: {}`.",

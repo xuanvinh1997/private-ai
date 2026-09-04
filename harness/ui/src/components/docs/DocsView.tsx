@@ -8,8 +8,10 @@ import {
   syncLibrary,
   pickDocuments,
   removeDocument,
+  stageLabel,
 } from "../../lib/docs";
 import { demoDocuments, demoIngestFrames, demoLibraryStats } from "../../lib/fixtures/docs";
+import { S, t, tn } from "../../lib/i18n";
 import type { DocumentView, IngestProgress, LibraryStats } from "../../lib/protocol";
 import Icon from "../Icon";
 import { InfoDot } from "../settings/FormKit";
@@ -24,32 +26,11 @@ interface Failure {
   error: string;
 }
 
-/**
- * Màn hình thư viện tài liệu. Chỉ có nghĩa khi dự án đang mở là loại `docs`.
- *
- * Ba quyết định định hình cả màn hình này, cả ba đều về việc **nói đúng chuyện đang xảy
- * ra** thay vì nói cho gọn:
- *
- * **Một tệp hỏng không làm hỏng cả lô.** Nạp hai mươi tệp mà một tệp là bản quét không
- * rút được chữ thì mười chín tệp kia vẫn vào thư viện. Một dòng "nạp thất bại" cho cả lô
- * sẽ khiến người dùng nạp lại mười chín tệp đã nằm sẵn trong đó — nên tệp hỏng được gom
- * riêng, kèm lý do, cạnh con số nói rõ bao nhiêu tệp đã vào.
- *
- * **`semanticReady === false` không phải là hỏng.** Tìm bằng từ khoá vẫn chạy, và thư
- * viện vẫn trả lời được ngay. Dải trạng thái nói cả hai vế — lý do *và* việc thư viện
- * vẫn dùng được — vì nói mỗi vế đầu là đuổi người dùng đi chờ một thứ họ không cần chờ.
- *
- * **Trích đoạn là chữ của người ngoài.** Xem `SearchProbe`.
- *
- * **Và có một nút cho việc mà máy đáng ra tự làm.** Lượt quét lúc mở màn hình là lượt
- * tăng dần — tệp không đổi thì không đọc lại, tệp từng đọc hỏng cũng không. Một tệp hỏng
- * vì lý do đã qua vì thế nằm mãi ở đó: nó không đổi một byte nên không lượt quét nào chạm
- * lại vào nó, và người dùng không có câu nào để nói "thử lại đi". `Xử lý lại` là câu đó.
- */
+/** Document library screen for a `docs` project: one bad file never fails the batch, and semantic search being unready still leaves keyword search working. */
 export default function DocsView(props: {
-  /** Đổi giá trị là đổi dự án: vứt sạch trạng thái cũ rồi nạp lại từ đầu. */
+  /** A new value means a new project: drop all state and reload from scratch. */
   resetKey: string;
-  /** Tên thư viện để đặt tiêu đề; vắng thì dùng chữ chung. */
+  /** Library name for the heading; absent falls back to the generic title. */
   name?: string;
 }) {
   const [docs, setDocs] = createSignal<DocumentView[]>([]);
@@ -70,31 +51,26 @@ export default function DocsView(props: {
       setLoading(false);
       return;
     }
-    // Hiện ngay cái đã biết, rồi mới quét. Chờ quét xong mới vẽ gì cả là để người dùng
-    // nhìn một màn hình trống trong lúc thư mục vài trăm tệp chạy qua.
+    // Show what is known first, then scan, or the screen stays blank through a large folder.
     const [list, health] = await Promise.all([listDocuments(), libraryStats()]);
     setDocs(list);
     setStats(health);
     setLoading(false);
 
-    // Rồi đồng bộ với thư mục. **Đây là chỗ trả lời câu "chọn folder mà không thấy tệp
-    // nào"**: thư mục dự án là thư viện, nên mở màn hình ra là quét, không đợi ai bấm.
-    // Lõi bỏ qua tệp không đổi, nên lần mở thứ hai gần như không tốn gì.
+    // Then sync with the folder: the project folder is the library, so opening it scans.
     try {
       const sau = await syncLibrary(note);
       setDocs(sau);
       setStats(await libraryStats());
     } catch (err) {
-      // Quét hỏng không được xoá mất danh sách vừa hiện: những gì đã nạp lần trước vẫn
-      // tìm được, và đó vẫn là một thư viện dùng được.
-      setError(`Không quét được thư mục: ${err}`);
+      // A failed scan must not erase the list: what was ingested before is still searchable.
+      setError(t(S.docs.error.scan, { err: String(err) }));
     } finally {
       setIngest(null);
     }
   };
 
-  // Nạp lại khi đổi dự án. Không dùng `onMount` vì component sống qua nhiều dự án khác
-  // nhau: giữ lại danh sách cũ là hiện tài liệu của thư viện vừa rời khỏi.
+  // Reload on project change, not `onMount`: this component outlives one project.
   createEffect(
     on(
       () => props.resetKey,
@@ -114,9 +90,7 @@ export default function DocsView(props: {
     setIngest(frame);
     const reason = frame.error;
     if (reason === null) return;
-    // Đợt nhúng bù hỏng **không** phải một tệp hỏng: mọi tệp đã vào thư viện, chỉ có máy
-    // chủ nhúng là chưa trả lời. Đếm nó vào danh sách tệp hỏng là bảo người dùng đi sửa
-    // tệp của họ trong khi thứ cần bật lại nằm ở chỗ khác.
+    // A failed embedding pass is not a failed file: the files landed, the embedder did not answer.
     if (frame.stage === "embedding") {
       setError(reason);
       return;
@@ -139,15 +113,21 @@ export default function DocsView(props: {
     setError(null);
     setFailures([]);
     setAdded(0);
-    setIngest({ path: paths[0] ?? "", stage: "Đang chuẩn bị", done: 0, total: paths.length, finished: false, error: null });
+    setIngest({
+      path: paths[0] ?? "",
+      stage: "preparing",
+      done: 0,
+      total: paths.length,
+      finished: false,
+      error: null,
+    });
     try {
       const next = isDemo() ? await runDemoIngest(paths) : await addDocuments(paths, note);
       setDocs(next);
       setAdded(paths.length - failures().length);
       if (!isDemo()) setStats(await libraryStats());
     } catch (err) {
-      // Chỉ tới đây khi **cả lô** không chạy được. Tệp hỏng lẻ đi qua `note`, không qua
-      // đường này — gộp hai thứ lại là báo động nhầm cho mười chín tệp đã vào.
+      // Only reached when the whole batch fails; single bad files come through `note`.
       setError(String(err));
     } finally {
       setIngest(null);
@@ -155,20 +135,21 @@ export default function DocsView(props: {
     }
   };
 
-  /**
-   * Xử lý lại cả thư viện.
-   *
-   * Dùng chung đường tiến trình với lúc nạp: cùng thanh chạy, cùng danh sách tệp hỏng.
-   * Người dùng bấm nút này vì có gì đó kẹt, nên thứ họ cần thấy là **từng tệp một đang
-   * chạy** — không phải một con quay không nói gì rồi biến mất.
-   */
+  /** Reprocess the whole library through the same progress path as ingest, file by file. */
   const reprocess = async () => {
     if (busy()) return;
     setBusy(true);
     setError(null);
     setFailures([]);
     setAdded(0);
-    setIngest({ path: stats()?.root ?? "", stage: "Đang chuẩn bị", done: 0, total: 0, finished: false, error: null });
+    setIngest({
+      path: stats()?.root ?? "",
+      stage: "preparing",
+      done: 0,
+      total: 0,
+      finished: false,
+      error: null,
+    });
     try {
       if (isDemo()) {
         await runDemoIngest(demoDocuments().map((doc) => doc.path));
@@ -178,7 +159,7 @@ export default function DocsView(props: {
         setStats(await libraryStats());
       }
     } catch (err) {
-      setError(`Không xử lý lại được thư viện: ${err}`);
+      setError(t(S.docs.error.reprocess, { err: String(err) }));
     } finally {
       setIngest(null);
       setBusy(false);
@@ -190,7 +171,7 @@ export default function DocsView(props: {
     try {
       await addFiles(await pickDocuments());
     } catch (err) {
-      setError(`Không mở được hộp thoại chọn tệp: ${err}`);
+      setError(t(S.docs.error.pick, { err: String(err) }));
     }
   };
 
@@ -203,7 +184,7 @@ export default function DocsView(props: {
       setDocs((all) => all.filter((entry) => entry.id !== doc.id));
       if (!isDemo()) setStats(await libraryStats());
     } catch (err) {
-      setError(`Không xoá được "${doc.title}": ${err}`);
+      setError(t(S.docs.error.remove, { title: doc.title, err: String(err) }));
     } finally {
       setBusy(false);
     }
@@ -218,13 +199,11 @@ export default function DocsView(props: {
               <Icon name="library" size={15} />
             </span>
             <div class="flex min-w-0 flex-col gap-3xs">
-              <h2 class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
-                {props.name ?? "Thư viện tài liệu"}
-                <InfoDot text="Trợ lý không sửa tệp và không chạy lệnh trong dự án loại này." />
+              <h2 class="m-0 flex items-center gap-2xs text-md font-medium text-ink">
+                {props.name ?? t(S.docs.title)}
+                <InfoDot text={t(S.docs.titleMore)} />
               </h2>
-              <p class="m-0 text-xs text-muted">
-                Trợ lý đọc tài liệu ở đây để trả lời.
-              </p>
+              <p class="m-0 text-xs text-muted">{t(S.docs.subtitle)}</p>
             </div>
           </div>
 
@@ -253,7 +232,7 @@ export default function DocsView(props: {
               >
                 <div class="flex items-baseline justify-between gap-sm">
                   <span class="min-w-0 truncate text-xs text-text">
-                    {frame().stage}: <span class="font-mono text-2xs">{fileName(frame().path)}</span>
+                    {stageLabel(frame().stage)}: <span class="font-mono text-2xs">{fileName(frame().path)}</span>
                   </span>
                   <span class="shrink-0 text-2xs text-muted tabular-nums">
                     {frame().done}/{frame().total}
@@ -264,7 +243,7 @@ export default function DocsView(props: {
                   aria-valuenow={frame().done}
                   aria-valuemin={0}
                   aria-valuemax={frame().total}
-                  aria-label="Tiến trình nạp tài liệu"
+                  aria-label={t(S.docs.ingest.progressLabel)}
                   class="h-1.5 overflow-hidden rounded-pill bg-[var(--overlay-faint)]"
                 >
                   <div
@@ -278,9 +257,7 @@ export default function DocsView(props: {
             )}
           </Show>
 
-          {/* Tệp hỏng đứng riêng khỏi lỗi của cả lô, và câu đầu tiên nói về những tệp đã
-              **vào được**. Người đọc một danh sách lỗi luôn cho rằng mọi thứ đã hỏng trừ
-              khi có ai đó nói ngược lại ngay dòng đầu. */}
+          {/* Failed files stand apart from a batch error, and the first line counts what landed. */}
           <Show when={failures().length > 0}>
             <div class="flex flex-col gap-2xs rounded-card border border-line bg-warn-soft px-(--card-pad-x) py-(--card-pad-y)">
               <div class="flex items-start gap-sm">
@@ -289,16 +266,16 @@ export default function DocsView(props: {
                 </span>
                 <p class="m-0 flex flex-1 flex-wrap items-center gap-2xs text-xs text-text">
                   <span>
-                    <Show when={added() > 0} fallback={<>Không tệp nào nạp được.</>}>
-                      {added()} tệp đã vào, {failures().length} tệp không nạp được.
+                    <Show when={added() > 0} fallback={<>{t(S.docs.failures.none)}</>}>
+                      {t(S.docs.failures.some, { ok: added(), bad: failures().length })}
                     </Show>
                   </span>
-                  <InfoDot text="Thư viện vẫn dùng bình thường với phần còn lại." />
+                  <InfoDot text={t(S.docs.failures.more)} />
                 </p>
                 <button
                   type="button"
                   onClick={() => setFailures([])}
-                  aria-label="Ẩn danh sách tệp không nạp được"
+                  aria-label={t(S.docs.failures.dismiss)}
                   class="shrink-0 rounded-icon p-3xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
                 >
                   <Icon name="x" size={13} />
@@ -337,7 +314,7 @@ export default function DocsView(props: {
 
           <Show when={loading()}>
             <p class="m-0 text-xs text-muted" role="status" aria-live="polite">
-              Đang đọc thư viện…
+              {t(S.docs.loadingDocs)}
             </p>
           </Show>
         </section>
@@ -351,11 +328,11 @@ export default function DocsView(props: {
         {(doc) => (
           <ConfirmDialog
             icon="trash"
-            title={`Xoá "${doc().title}" khỏi thư viện?`}
-            body="Tệp gốc trên đĩa vẫn nguyên."
-            more="Tài liệu và toàn bộ đoạn đã cắt từ nó bị bỏ khỏi thư viện, nên trợ lý sẽ không còn tìm thấy nội dung này nữa. Tệp gốc trên đĩa vẫn nguyên — nạp lại được bất cứ lúc nào."
+            title={t(S.docs.remove.title, { title: doc().title })}
+            body={t(S.docs.remove.body)}
+            more={t(S.docs.remove.more)}
             detail={doc().path}
-            confirmLabel="Xoá khỏi thư viện"
+            confirmLabel={t(S.docs.remove.confirm)}
             onClose={() => setRemoving(null)}
             onConfirm={() => void confirmRemove(doc())}
           />
@@ -365,13 +342,7 @@ export default function DocsView(props: {
   );
 }
 
-/**
- * Dải sức khoẻ thư viện.
- *
- * Khi `semanticReady === false`, câu quan trọng nhất không phải lý do mà là vế thứ hai:
- * **tìm bằng từ khoá vẫn đang chạy**. Một người đọc "chưa sẵn sàng" mà không đọc được vế
- * đó sẽ ngồi đợi, hoặc tệ hơn là bỏ cuộc — trong khi thư viện đã trả lời được rồi.
- */
+/** Library health strip; when semantic search is not ready, say that keyword search still works. */
 function StatsStrip(props: {
   stats: LibraryStats | null;
   loading: boolean;
@@ -383,20 +354,23 @@ function StatsStrip(props: {
       when={props.stats}
       fallback={
         <p class="m-0 rounded-card border border-line bg-surface px-(--card-pad-x) py-(--card-pad-y) text-xs text-muted">
-          {props.loading ? "Đang đọc tình trạng thư viện…" : "Chưa có thông tin thư viện."}
+          {props.loading ? t(S.docs.stats.loading) : t(S.docs.stats.unknown)}
         </p>
       }
     >
       {(stats) => (
         <div class="flex flex-col gap-sm rounded-card border border-line bg-surface px-(--card-pad-x) py-(--card-pad-y)">
           <dl class="m-0 flex flex-wrap gap-x-2xl gap-y-sm">
-            <Stat label="Tài liệu" value={String(stats().documents)} />
-            <Stat label="Đoạn" value={String(stats().chunks)} />
+            <Stat label={t(S.docs.stats.documents)} value={String(stats().documents)} />
+            <Stat label={t(S.docs.stats.chunks)} value={String(stats().chunks)} />
             <Stat
-              label="Đã nhúng"
+              label={t(S.docs.stats.embedded)}
               value={`${stats().embeddedChunks}/${stats().chunks}`}
             />
-            <Stat label="Bộ nhúng" value={stats().embedder ?? "chưa có"} />
+            <Stat
+              label={t(S.docs.stats.embedder)}
+              value={stats().embedder ?? t(S.docs.stats.embedderNone)}
+            />
           </dl>
 
           <Show
@@ -404,7 +378,7 @@ function StatsStrip(props: {
             fallback={
               <p class="m-0 flex items-center gap-2xs text-2xs text-success">
                 <Icon name="check" size={12} />
-                Tìm theo ngữ nghĩa và từ khoá đều đang chạy.
+                {t(S.docs.stats.ready)}
               </p>
             }
           >
@@ -417,29 +391,30 @@ function StatsStrip(props: {
                   <Show when={stats().reason}>
                     {(reason) => <>{reason()} </>}
                   </Show>
-                  Tìm bằng <strong class="font-medium">từ khoá vẫn chạy</strong>, dùng
-                  được ngay.
+                  <strong class="font-medium">{t(S.docs.stats.keywordOn)}</strong>{" "}
+                  {t(S.docs.stats.keywordOnTail)}
                 </span>
-                <InfoDot text="Câu trả lời sẽ bắt được nhiều cách diễn đạt hơn khi phần nhúng chạy xong." />
+                <InfoDot text={t(S.docs.stats.keywordOnMore)} />
               </p>
             </div>
           </Show>
 
-          {/* Nút này luôn có mặt, kể cả khi mọi thứ đang xanh. Một nút chỉ hiện ra lúc
-              hỏng là một nút người dùng phải học thuộc chỗ nó *sẽ* xuất hiện, và họ tới
-              đây vì đang không hiểu chuyện gì xảy ra — đó là lúc tệ nhất để đi tìm. */}
+          {/* Always present, even when healthy: a button that only appears on failure is one to hunt for. */}
           <div class="flex flex-wrap items-center justify-between gap-sm border-t border-line pt-sm">
             <p class="m-0 flex max-w-[52ch] flex-wrap items-center gap-2xs text-2xs text-muted">
               <span>
                 <Show
                   when={stats().chunks > stats().embeddedChunks}
-                  fallback={<>Đọc lại mọi tệp, kể cả tệp lần trước hỏng.</>}
+                  fallback={<>{t(S.docs.reprocess.hint)}</>}
                 >
-                  Còn {stats().chunks - stats().embeddedChunks} đoạn chờ nhúng — bấm để
-                  nhúng nốt.
+                  {tn(
+                    stats().chunks - stats().embeddedChunks,
+                    S.docs.reprocess.pendingOne,
+                    S.docs.reprocess.pendingOther,
+                  )}
                 </Show>
               </span>
-              <InfoDot text="Đọc lại mọi tệp trong thư mục, kể cả tệp lần trước đọc hỏng và tệp không đổi từ lần quét trước." />
+              <InfoDot text={t(S.docs.reprocess.more)} />
             </p>
             <Button
               variant="outline"
@@ -447,7 +422,7 @@ function StatsStrip(props: {
               disabled={props.busy}
               onClick={props.onReprocess}
             >
-              {props.busy ? "Đang xử lý…" : "Xử lý lại"}
+              {props.busy ? t(S.docs.reprocess.busy) : t(S.docs.reprocess.action)}
             </Button>
           </div>
         </div>
@@ -465,7 +440,7 @@ function Stat(props: { label: string; value: string }) {
   );
 }
 
-/** Tên tệp cho dòng tiến trình: đường dẫn đầy đủ đẩy con số done/total ra khỏi màn hình. */
+/** File name for the progress row: a full path pushes the done/total counter off screen. */
 function fileName(path: string): string {
   return path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || path;
 }

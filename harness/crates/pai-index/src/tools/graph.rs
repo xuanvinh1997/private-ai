@@ -1,9 +1,6 @@
-//! `code.graph` — lân cận của một ký hiệu.
-//!
-//! Câu hỏi nó thay thế là câu hỏi mà `symbol_search` không trả lời được: không phải "hàm
-//! này ở đâu" mà "sửa hàm này thì đụng vào cái gì". Không có nó, mô hình phải `grep` tên
-//! hàm rồi tự lọc chỗ khai báo khỏi chỗ dùng, một lần cho mỗi bước — và nó thường dừng
-//! lại sau bước thứ nhất.
+//! `code.graph` — the neighbourhood of one symbol.
+//! Answers what `symbol_search` cannot: not "where is this function" but "what does
+//! changing it touch", which otherwise costs one `grep` and one manual filter per hop.
 
 use std::sync::Arc;
 
@@ -15,8 +12,7 @@ use serde::Deserialize;
 use crate::index::{DEFAULT_NODES, MAX_DEPTH, SymbolIndex};
 use crate::tools::{render_graph, warn_line};
 
-/// Một bước là "ai chạm vào tôi"; hai bước đã là "ai chạm vào cái chạm vào tôi", và đó
-/// gần như luôn là đủ để quyết định có phải đọc tiếp hay không.
+/// One hop is "who touches me", two is "who touches those" — nearly always enough to decide whether to read on.
 const DEFAULT_DEPTH: u32 = 2;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -63,8 +59,7 @@ impl Tool for CodeGraph {
             serde_json::from_value(serde_json::Value::Object(call.arguments.clone()))
                 .map_err(|err| ToolError::Invalid(err.to_string()))?;
 
-        // Đồng bộ trước mỗi lần hỏi, cùng lý do với `symbol_search`: một đồ thị nói về mã
-        // của mười phút trước là một đồ thị dẫn mô hình đi sai chỗ.
+        // Sync before every query, as `symbol_search` does: a stale graph sends the model to the wrong place.
         self.index
             .sync()
             .await

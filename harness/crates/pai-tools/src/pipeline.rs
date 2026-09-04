@@ -1,27 +1,6 @@
-//! Đường ống thi hành, có canh gác.
-//!
-//! ```text
-//! tool/call
-//!   → tools/pre-execute   waterfall: hook, quyền, sandbox → allow | deny | ask
-//!       ask → phê duyệt, một lần duy nhất; không trả lời được → deny
-//!   → guards              đơn điệu: chỉ deny hoặc bỏ qua
-//!   → tools/execute       waterfall bao quanh: timeout, retry, đo đạc
-//!       → thân tool
-//!   → tools/post-execute  waterfall: nhận | chặn | thay | thêm ngữ cảnh
-//!   → finalize            đồng bộ, chỉ đụng content
-//!   → tools/result        đóng băng, thông báo
-//! ```
-//!
-//! Ba tính chất của cách sắp xếp này đáng được nói thẳng ra, vì cả ba đều là lý do chứ
-//! không phải hệ quả:
-//!
-//! 1. **Canh gác chạy sau phê duyệt.** Người dùng bấm "cho phép" không mở được cái mà
-//!    chính sách đã đóng — phê duyệt là điều kiện cần, không phải điều kiện đủ.
-//! 2. **Lối bị từ chối vẫn đi qua post-execute.** Một lần từ chối là một sự kiện mà giao
-//!    diện và sổ phiên phải thấy, không phải một lối thoát sớm im lặng.
-//! 3. **`execute` ở biên ngoài cùng không trả `Result`.** Mọi thứ, kể cả panic và hết
-//!    giờ, ra khỏi đây dưới dạng [`ToolOutcome`] đọc được. Một `Err` lọt lên trên chỉ kết
-//!    thúc lượt mà không nói gì với mô hình.
+//! The guarded execution pipeline: pre-execute, approval, guards, execute, post-execute,
+//! finalize, result. Guards run after approval so a click cannot open what policy closed,
+//! refusals still pass through post-execute, and the outer `execute` never returns `Result`.
 
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
@@ -40,38 +19,31 @@ use crate::schema::ToolMeta;
 use crate::seam::{Approval, Elicitation};
 use crate::tool::{Invocation, Tool, ToolOutcome};
 
-/// Bao lâu thì một câu hỏi phê duyệt không được trả lời bị coi là "không".
-///
-/// Có một thời hạn là bắt buộc: không có nó, một hộp thoại bị che khuất sau cửa sổ khác
-/// giữ cả lượt lại vô hạn, và cách người dùng thoát ra sẽ là giết ứng dụng.
+/// How long an unanswered approval counts as "no"; without a deadline a hidden dialog holds the turn forever.
 pub const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 
-// --- quyết định ------------------------------------------------------------------------
+// --- decisions ---------------------------------------------------------------------------
 
-/// Kết quả của `tools/pre-execute`.
+/// The `tools/pre-execute` result.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PreDecision {
     Allow,
-    /// Lý do đi thẳng tới mô hình, nên nó phải nói được cho mô hình biết phải làm gì khác.
+    /// The reason goes straight to the model, so it has to say what to do instead.
     Deny(String),
-    /// Đẩy quyết định cho người dùng.
+    /// Hand the decision to the user.
     Ask {
         reason: String,
     },
 }
 
-/// Kết quả của `tools/post-execute`.
-///
-/// Việc **thay** kết quả không nằm trong enum này mà làm bằng cách sửa `req.outcome`: hai
-/// đường cùng mang kết quả thì tầng sau phải chọn tin đường nào, và mọi lựa chọn đều là
-/// một chỗ để mất bản sửa của tầng trước.
+/// The `tools/post-execute` result; replacing an outcome happens through `req.outcome`, not a second path here.
 #[derive(Clone, Debug, PartialEq)]
 pub enum PostDecision {
     Accept { additional_context: Vec<String> },
     Block { reason: String },
 }
 
-// --- sự kiện ---------------------------------------------------------------------------
+// --- events ------------------------------------------------------------------------------
 
 pub struct PreRequest {
     pub name: ToolName,
@@ -87,7 +59,7 @@ pub struct PostRequest {
     pub outcome: ToolOutcome,
 }
 
-/// Kết quả đã đóng băng.
+/// A frozen result.
 pub struct ResolvedCall {
     pub name: ToolName,
     pub call_id: String,
@@ -122,26 +94,18 @@ impl Notify for ToolResult {
     type Payload = ResolvedCall;
 }
 
-// --- canh gác --------------------------------------------------------------------------
+// --- guards ------------------------------------------------------------------------------
 
-/// Canh gác đơn điệu.
-///
-/// **Không có nhánh cho phép, và đó là toàn bộ ý nghĩa của trait này.** Một canh gác trả
-/// `Some(lý do)` để từ chối, hoặc `None` để bỏ qua. Vì không ai nói "cho phép" được, thứ
-/// tự đăng ký không thể biến một lệnh từ chối thành cho phép: kết quả là phép **hoặc**
-/// của các lời từ chối, mà phép hoặc thì giao hoán.
-///
-/// Đây là chỗ để chính sách của chủ sở hữu — cái không được phép bị sắp xếp lại. Chính
-/// sách thương lượng được thì cắm vào `tools/pre-execute`, nơi có cả ba nhánh.
+/// A monotonic guard with no allow branch, so registration order cannot turn a refusal into a pass.
 #[async_trait]
 pub trait ToolGuard: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
-    /// `Some(lý do)` = từ chối. `None` = không có ý kiến.
+    /// `Some(reason)` refuses; `None` has no opinion.
     async fn check(&self, call: &Invocation, meta: &ToolMeta) -> Option<String>;
 }
 
-// --- phê duyệt -------------------------------------------------------------------------
+// --- approval ----------------------------------------------------------------------------
 
 pub struct ApprovalRequest {
     pub name: ToolName,
@@ -151,33 +115,20 @@ pub struct ApprovalRequest {
     pub meta: ToolMeta,
 }
 
-/// Hỏi người dùng cho phép, **một lần cho một lần gọi**.
-///
-/// Trait cố tình chỉ trả `bool` chứ không có biến thể "nhớ lựa chọn": một câu trả lời
-/// được ghi nhớ là một câu trả lời cho một câu hỏi mà người dùng chưa nghe. Ngữ cảnh của
-/// lần gọi sau khác lần gọi này — đường dẫn khác, nội dung khác, và có thể là một tài
-/// liệu vừa được nạp vào đang cố lái mô hình. Muốn bớt hỏi thì nới chính sách ở
-/// `tools/pre-execute`, nơi việc nới được viết ra và đọc lại được.
+/// Ask the user, once per call; only a `bool`, because a remembered answer answers a question the user never heard.
 #[async_trait]
 pub trait Approver: Send + Sync + 'static {
     async fn approve(&self, request: &ApprovalRequest) -> bool;
 }
 
-// --- đường ống -------------------------------------------------------------------------
+// --- the pipeline ------------------------------------------------------------------------
 
-/// Văn bản mô hình đọc khi nó gọi một tool nó không được gọi.
-///
-/// Cùng một câu cho "bị cấm" và cho "không tồn tại", cố ý: hai câu khác nhau biến hàm gọi
-/// thành một máy dò, cho phép mô hình liệt kê những tool bị giấu bằng cách đoán tên. Sự
-/// khác biệt vẫn được giữ, nhưng ở `meta` — chỗ chỉ host đọc.
+/// What the model reads when it calls a tool it may not; one sentence for both "denied" and "unknown", so it cannot probe.
 pub fn not_available(name: &ToolName) -> String {
     format!("Tool `{name}` không khả dụng với agent này.")
 }
 
-/// Ép một closure vào đúng ràng buộc higher-ranked mà `Context::waterfall` đòi ở tail.
-///
-/// Không có nó, trình suy diễn gán cho closure một lifetime cụ thể thay vì `for<'r>`, và
-/// lỗi báo ra là một dòng "one type is more general than the other" chẳng chỉ vào đâu cả.
+/// Coerce a closure into the higher-ranked bound the waterfall tail needs; inference otherwise picks a concrete lifetime.
 fn tail<E: Waterfall, F>(f: F) -> F
 where
     F: for<'r> Fn(&'r mut E::Req) -> BoxFuture<'r, E::Out> + Send + Sync,
@@ -189,15 +140,13 @@ pub struct ToolPipeline {
     ctx: Context,
     registry: Arc<ToolRegistry>,
     scope: Option<ScopeKey>,
-    /// Ngân sách tính bằng token xấp xỉ, không bằng dòng và không bằng ký tự. Xem
-    /// [`crate::budget`].
+    /// The budget in approximate tokens, not lines or characters. See [`crate::budget`].
     budget: usize,
     approval_timeout: Duration,
 }
 
 impl ToolPipeline {
-    /// Phạm vi lấy từ chính `ctx`: một đường ống dựng trong ngữ cảnh của agent nào thì
-    /// chịu hạn chế của agent đó, không có cách nào dựng nhầm.
+    /// The scope comes from `ctx`, so a pipeline always carries the restrictions of the agent that built it.
     pub fn new(ctx: &Context, registry: Arc<ToolRegistry>) -> ToolPipeline {
         ToolPipeline {
             scope: ctx.scope_key(),
@@ -208,8 +157,7 @@ impl ToolPipeline {
         }
     }
 
-    /// Ngân sách tính bằng **token xấp xỉ**. Đây là trần cuối cùng, áp cho cả những tool
-    /// không tự áp — tool MCP của bên thứ ba chẳng hạn.
+    /// The budget in approximate tokens; the final ceiling, applied even to tools that apply none themselves.
     pub fn with_token_budget(mut self, tokens: usize) -> ToolPipeline {
         self.budget = tokens.max(1);
         self
@@ -224,10 +172,9 @@ impl ToolPipeline {
         &self.registry
     }
 
-    /// Biên ngoài cùng. **Không trả `Result`** — xem ghi chú đầu module.
+    /// The outer edge; returns no `Result` — see the module header.
     pub async fn execute(&self, call_id: &str, raw_name: &str, arguments: Value) -> ToolOutcome {
-        // Tầng lọc thứ hai. Chạy trên tên đã giải mã, trước khi chạm vào bất cứ thứ gì
-        // thuộc về tool: một mô hình đoán ra tên trên wire dừng lại đúng ở dòng này.
+        // The second filter, on the decoded name and before anything tool-owned: a guessed wire name stops here.
         let (tool, name) = match self.registry.resolve(self.scope, raw_name) {
             Resolution::Found(tool, name) => (tool, name),
             Resolution::Denied(name) => {
@@ -266,7 +213,7 @@ impl ToolPipeline {
             .await
     }
 
-    /// pre-execute → phê duyệt → canh gác. `Some(lý do)` nghĩa là thân tool không chạy.
+    /// pre-execute, then approval, then guards; `Some(reason)` means the tool body never runs.
     async fn gate(
         &self,
         name: &ToolName,
@@ -286,9 +233,7 @@ impl ToolPipeline {
             .await;
 
         *args = std::mem::take(&mut pre.arguments);
-        // Ghim lại sau waterfall: một middleware được phép sửa tham số, nhưng không được
-        // phép gỡ ghim. Nếu bỏ dòng này thì một hook vô hại trở thành đường vòng qua đúng
-        // cái ràng buộc mà ghim tồn tại để giữ.
+        // Re-pin after the waterfall: middleware may edit arguments but must not unpin, or a harmless hook becomes a bypass.
         self.registry.apply_pins(self.scope, args);
 
         match decision {
@@ -308,23 +253,20 @@ impl ToolPipeline {
             PreDecision::Allow => {}
         }
 
-        // Canh gác chạy **sau** phê duyệt: một cái "cho phép" của người dùng không mở
-        // được cái mà chính sách đã đóng.
+        // Guards run after approval: a user's "allow" cannot open what policy closed.
         let probe = Invocation::new(name.clone(), call_id, args.clone());
         for guard in self.registry.guards(self.scope) {
             let checking = AssertUnwindSafe(guard.check(&probe, meta)).catch_unwind();
             match checking.await {
                 Ok(None) => {}
                 Ok(Some(reason)) => {
-                    // Dừng ở lời từ chối đầu tiên. Chạy nốt phần còn lại không đổi được
-                    // câu trả lời, vì không canh gác nào nói "cho phép" được.
-                    tracing::info!(tool = %name, guard = guard.name(), "canh gác từ chối");
+                    // Stop at the first refusal; the rest cannot change the answer, since no guard can allow.
+                    tracing::info!(tool = %name, guard = guard.name(), "guard refused");
                     return Some(reason);
                 }
                 Err(_) => {
-                    // Một canh gác hoảng loạn là một canh gác không kết luận được, và
-                    // "không kết luận được" phải nghiêng về phía từ chối.
-                    tracing::error!(tool = %name, guard = guard.name(), "canh gác hoảng loạn");
+                    // A panicking guard reached no conclusion, and no conclusion has to mean refuse.
+                    tracing::error!(tool = %name, guard = guard.name(), "guard panicked");
                     return Some(format!(
                         "Canh gác `{}` không kiểm tra được `{name}`, nên lệnh gọi bị từ chối.",
                         guard.name()
@@ -335,28 +277,27 @@ impl ToolPipeline {
         None
     }
 
-    /// Hỏi phê duyệt. Fail-closed ở cả ba nhánh: không có ai để hỏi, hết giờ, hoặc bên
-    /// hỏi hoảng loạn — cả ba đều là "không".
+    /// Ask for approval; fail-closed on all three branches: nobody to ask, timed out, or the approver panicked.
     async fn ask(&self, request: &ApprovalRequest) -> bool {
         let Some(approver) = self.ctx.get::<Approval>() else {
-            tracing::warn!(tool = %request.name, "không có approver nào cắm vào: từ chối");
+            tracing::warn!(tool = %request.name, "no approver is mounted: refusing");
             return false;
         };
         let asking = AssertUnwindSafe(approver.approve(request)).catch_unwind();
         match tokio::time::timeout(self.approval_timeout, asking).await {
             Ok(Ok(answer)) => answer,
             Ok(Err(_)) => {
-                tracing::error!(tool = %request.name, "approver hoảng loạn: từ chối");
+                tracing::error!(tool = %request.name, "the approver panicked: refusing");
                 false
             }
             Err(_) => {
-                tracing::warn!(tool = %request.name, "phê duyệt hết giờ: từ chối");
+                tracing::warn!(tool = %request.name, "approval timed out: refusing");
                 false
             }
         }
     }
 
-    /// `tools/execute`, có timeout bao quanh.
+    /// `tools/execute`, wrapped in a timeout.
     async fn run(
         &self,
         tool: &Arc<dyn Tool>,
@@ -369,7 +310,7 @@ impl ToolPipeline {
             async move {
                 match tool.execute(&*call).await {
                     Ok(outcome) => outcome,
-                    // Thân tool được phép trả `Err`; ra tới đây thì nó thành văn bản.
+                    // A tool body may return `Err`; by this point it becomes text.
                     Err(err) => ToolOutcome::error(format!("Tool `{}` lỗi: {err}", call.name)),
                 }
             }
@@ -388,8 +329,7 @@ impl ToolPipeline {
                     .with_meta("failure", json!("panic"))
             }
             Err(_) => {
-                // Huỷ để thân tool bỏ việc dở thay vì chạy tiếp trong nền sau khi kết quả
-                // của nó đã không còn ai nhận.
+                // Cancel so the body abandons its work rather than running on for a result nobody will take.
                 cancel.cancel();
                 ToolOutcome::error(format!(
                     "Tool `{}` quá {} giây và bị dừng lại.",
@@ -401,7 +341,7 @@ impl ToolPipeline {
         }
     }
 
-    /// post-execute → finalize → tràn → thông báo.
+    /// post-execute, then finalize, then spill, then notify.
     async fn settle(
         &self,
         tool: &dyn Tool,
@@ -437,11 +377,10 @@ impl ToolPipeline {
             }
         };
 
-        // Đồng bộ, chỉ đụng content — tool không lật được `is_error` sau khi chính sách
-        // đã chạy xong.
+        // Synchronous and content-only, so a tool cannot flip `is_error` after policy has run.
         let mut content = std::mem::take(&mut outcome.content);
         if std::panic::catch_unwind(AssertUnwindSafe(|| tool.finalize(&mut content))).is_err() {
-            tracing::error!(tool = %name, "finalize hoảng loạn; giữ nguyên content");
+            tracing::error!(tool = %name, "finalize panicked; keeping the content unchanged");
         }
         outcome.content = content;
 
@@ -453,7 +392,7 @@ impl ToolPipeline {
                 .insert("additional_context".into(), json!(additional.clone()));
         }
 
-        // Đóng băng: từ đây trở đi kết quả chỉ được đọc.
+        // Frozen: from here the outcome is read-only.
         self.ctx.notify::<ToolResult>(&ResolvedCall {
             name,
             call_id: call_id.to_string(),
@@ -463,17 +402,11 @@ impl ToolPipeline {
         outcome
     }
 
-    /// Trần cuối cùng: cất phần dư vào kho thay vì cắt bỏ nó.
-    ///
-    /// Đây là lưới đỡ, không phải chỗ cắt chính. Tool nào tự áp ngân sách — `read`,
-    /// `grep`, `bash` — ra tới đây đã vừa rồi, nên hàm này không đụng vào. Cái nó bắt là
-    /// những tool không biết luật này tồn tại, mà tool MCP của bên thứ ba thì luôn vậy.
+    /// The final ceiling, a safety net for tools that budget nothing themselves, such as third-party MCP tools.
     fn spill(&self, name: &ToolName, outcome: &mut ToolOutcome) {
         let overflow = Overflow::new(&self.ctx).with_budget(self.budget);
         let full = std::mem::take(&mut outcome.content);
-        // Lời chỉ dẫn ở đây cố tình chung chung: đường ống không biết tool này phân
-        // trang bằng tham số nào. Tool nào biết thì đã tự gấp trước khi tới đây và nói
-        // được câu cụ thể hơn.
+        // The hint is deliberately vague: the pipeline does not know how this tool paginates.
         let folded = overflow.fold(name, full, |_| {
             "Gọi lại tool với tham số hẹp hơn nếu bạn chỉ cần một phần.".to_string()
         });

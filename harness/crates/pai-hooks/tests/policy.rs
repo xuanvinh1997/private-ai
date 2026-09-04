@@ -1,9 +1,5 @@
-//! Hooks can block, and a broken hook does not.
-//!
-//! The first pair of tests is the whole content of this crate. They mirror each other and
-//! stand opposite `Approver`: approval is fail-**closed** because it speaks for a person
-//! sitting there, hooks are fail-**open** because they speak for a config file. Confusing
-//! those two defaults turns a typo in the user's script into a frozen application.
+//! Hooks can block, and a broken hook does not. Approval is fail-closed since it speaks for a
+//! person; hooks are fail-open since they speak for a config file, so a typo cannot freeze the app.
 
 use std::sync::Arc;
 
@@ -72,8 +68,7 @@ async fn a_hook_saying_yes_lets_the_call_through() {
 
 #[tokio::test]
 async fn a_broken_hook_allows_rather_than_blocks() {
-    // Three ways to break, one outcome: a command that does not exist, a non-zero exit,
-    // and output that is not JSON. None of them is evidence that the call is dangerous.
+    // Three ways to break, one outcome: none of them is evidence the call is dangerous.
     for command in ["no-such-command-here", "exit 3", "echo not-json"] {
         let ctx = with_hooks(vec![hook(command, &[])]).await;
         assert!(
@@ -85,11 +80,7 @@ async fn a_broken_hook_allows_rather_than_blocks() {
 
 #[tokio::test]
 async fn a_hook_that_times_out_allows() {
-    // The deadline is **shortened for the test**, not the product's 10 seconds. An earlier
-    // version measured the wall clock against the real timeout and went red twice at
-    // random while the machine ran twenty other tests in parallel — the 20-second upper
-    // bound was blown by scheduling, not by a broken timeout. A test that goes red because
-    // the machine is busy says nothing about the code.
+    // The deadline is shortened for the test: measuring the real 10s went red under load.
     let ctx = with_hooks(vec![hook_with("sleep 30", &[], Some(1))]).await;
     let started = std::time::Instant::now();
     assert!(matches!(
@@ -97,8 +88,7 @@ async fn a_hook_that_times_out_allows() {
         PreDecision::Allow
     ));
     let waited = started.elapsed();
-    // What is under test: `sleep 30` does **not** run for 30 seconds. The upper bound is
-    // generous because it only has to rule out "the timeout cut nothing", not measure.
+    // Under test: `sleep 30` does not run for 30 seconds; the bound only rules out no cut.
     assert!(
         waited < std::time::Duration::from_secs(15),
         "the timeout did not cut: {waited:?}"
@@ -117,8 +107,7 @@ async fn a_hook_only_runs_for_the_tools_it_declares() {
         decide(&ctx, "bash", json!({})).await,
         PreDecision::Deny(_)
     ));
-    // Every hook call is a process spawn; filtering here keeps the cheapest calls from
-    // paying for a policy that does not talk about them.
+    // Every hook call is a spawn, so the cheapest calls must not pay for an unrelated policy.
     assert!(matches!(
         decide(&ctx, "read", json!({})).await,
         PreDecision::Allow
@@ -127,8 +116,7 @@ async fn a_hook_only_runs_for_the_tools_it_declares() {
 
 #[tokio::test]
 async fn the_hook_reads_the_tool_name_and_arguments_on_stdin() {
-    // The hook only blocks when it sees the command it cares about — which means it really
-    // did read the payload.
+    // The hook blocks only when it sees the command it cares about, so it did read stdin.
     let ctx = with_hooks(vec![hook(
         r#"grep -q 'rm -rf' && echo '{"decision":"deny","reason":"lệnh xoá"}' || echo '{"decision":"allow"}'"#,
         &[],

@@ -1,23 +1,6 @@
-"""Cấu hình lúc chạy: service này lấy đâu ra endpoint, model và đường dẫn dự án.
-
-# Ba nguồn, theo thứ tự ưu tiên tăng dần
-
-1. **Mặc định trong mã.** Đủ để ``pai-rag doctor`` chạy được trên một máy vừa cài Ollama
-   mà chưa ai cấu hình gì. Không có bước này thì lỗi đầu tiên người dùng gặp là một
-   ``KeyError``, thứ không nói được gì.
-2. **Tệp JSON do ứng dụng Rust ghi ra**, trỏ tới bằng ``PAI_RAG_CONFIG``. Đây là nguồn
-   chính: người dùng chọn model nhúng, model rerank và model vision ở màn hình Cài đặt,
-   và ứng dụng ghi lựa chọn đó xuống đây.
-3. **Biến môi trường.** Đè lên cả hai. Có để gỡ lỗi và để chạy trong bài kiểm chứng mà
-   không phải dựng cả một tệp cấu hình.
-
-# Vì sao đọc lại tệp ở mỗi lần gọi
-
-Người dùng đổi model nhúng trong Cài đặt lúc service đang chạy là chuyện thường. Đọc một
-lần lúc khởi động rồi giữ trong bộ nhớ nghĩa là lựa chọn mới chỉ có hiệu lực sau khi tắt
-bật lại ứng dụng — và không có gì nói cho họ biết điều đó. :func:`load` vì thế soi
-``mtime`` và nạp lại khi tệp đổi; chi phí là một lần ``stat`` cho mỗi lời gọi tool.
-"""
+"""Runtime configuration: where this service gets endpoints, models and project paths.
+Three sources in rising priority: code defaults, the JSON file the Rust app writes
+(`PAI_RAG_CONFIG`), then environment variables. Reloaded on `mtime` change per call."""
 
 from __future__ import annotations
 
@@ -46,59 +29,30 @@ __all__ = [
 
 ProviderKind = Literal["ollama", "openai"]
 
-#: Ollama trên máy, cổng mặc định. Đây là cấu hình mà phần lớn người dùng sẽ có.
+#: Local Ollama on its default port. The setup most users will have.
 DEFAULT_OLLAMA = "http://127.0.0.1:11434"
-#: Đúng model mà GOAL.md đã chọn, và đúng lý do: nó đa ngữ thật, mạnh với tiếng Việt.
-#: ``nomic-embed-text`` — mặc định của tầng Rust — thiên về tiếng Anh, trong khi cả thư
-#: viện tài liệu ở đây là tiếng Việt.
+#: Genuinely multilingual and strong on Vietnamese; `nomic-embed-text` leans English.
 DEFAULT_EMBED_MODEL = "qwen3-embedding:4b"
 DEFAULT_VISION_MODEL = "qwen2.5vl:7b"
 DEFAULT_CHAT_MODEL = "qwen3:8b"
-#: Reranker mặc định: ``bge-reranker-v2-m3``, bản ONNX.
-#:
-#: # Vì sao không phải ``bge-reranker-base``, dù nó là artifact chính chủ của BAAI
-#:
-#: Vì đo rồi: trên bộ câu hỏi tiếng Việt dùng để kiểm chứng, ``bge-reranker-base`` **làm
-#: kết quả tệ đi** — nó đảo đúng thành sai ở những câu cần suy luận ngữ nghĩa thay vì
-#: khớp từ (top-1 5/7, MRR 0.810), trong khi chỉ dùng RRF không rerank đạt 7/7. Một bước
-#: "làm tốt hơn" mà làm tệ đi thì tệ hơn cả việc không có nó. ``v2-m3`` đạt 7/7 và sửa
-#: đúng hai câu ``base`` làm hỏng.
-#:
-#: # Cái giá phải nói ra
-#:
-#: Repo chính thức của v2-m3 **không có** ONNX; đây là bản export của cộng đồng. Đó là
-#: một rủi ro nguồn cung thật — repo có thể biến mất, và không ai ký nó. Đổi lại là một
-#: reranker thực sự đọc được tiếng Việt. Nếu bạn cần chắc chắn hơn, hãy nhân bản repo này
-#: về tài khoản của mình rồi trỏ ``rerank.model`` vào bản nhân bản đó.
-#:
-#: Trọng số nằm ở tệp ``model.onnx_data`` tách rời, 2,27 GB — xem
-#: ``OnnxReranker._fetch_external_data`` và lệnh ``pai-rag doctor`` để tải sẵn.
+#: Default reranker, ONNX build of `bge-reranker-v2-m3`: measured on the Vietnamese eval set `bge-reranker-base` made results *worse* (5/7) while v2-m3 scores 7/7. Its ONNX is a community export - a real supply risk - and the 2.27 GB weights sit in a separate `model.onnx_data`.
 DEFAULT_RERANK_MODEL = "viplao5/bge-reranker-v2-m3-onnx"
-#: Tệp ONNX bên trong repo mặc định. Repo chính chủ của BAAI đặt ở ``onnx/model.onnx``;
-#: bản export này đặt ở gốc. Hai chỗ khác nhau nên nó phải là một tuỳ chọn, không phải
-#: một hằng số ngầm.
+#: The ONNX file inside the default repo; BAAI puts it under `onnx/`, this export at the root, so it must be an option.
 DEFAULT_RERANK_ONNX_FILE = "model.onnx"
 
 
 class ProviderConfig(BaseModel):
-    """Một endpoint nói giao thức Ollama hoặc giao thức OpenAI."""
+    """An endpoint speaking either the Ollama or the OpenAI protocol."""
 
     kind: ProviderKind = "ollama"
     base_url: str = DEFAULT_OLLAMA
     api_key: str = ""
     model: str = ""
-    #: Số chiều, khi cấu hình biết. ``None`` là hợp lệ: nhiều máy chủ chỉ nói ra số
-    #: chiều bằng cách trả về một vector, và bắt biết trước thì phải gọi thử một lần chỉ
-    #: để hỏi.
+    #: Dimension when config knows it; `None` is valid, since many servers only reveal it by returning a vector.
     dim: int | None = None
 
     def root(self) -> str:
-        """Gốc máy chủ, đã cắt đuôi ``/v1`` nếu có.
-
-        Kho cấu hình phía Rust lưu URL theo dạng tầng hội thoại mong đợi, và phần lớn
-        mục có đuôi ``/v1``. Để nguyên thì mọi request nhúng bay tới
-        ``/v1/v1/embeddings`` và trả về 404 mà không ai đoán ra vì sao.
-        """
+        """Server root with any `/v1` suffix stripped, or embedding requests would hit `/v1/v1/embeddings` and 404 inexplicably."""
         value = self.base_url.strip().rstrip("/")
         tail = value.rsplit("/", 1)[-1]
         if tail.startswith("v") and len(tail) > 1 and tail[1:].isdigit():
@@ -107,49 +61,46 @@ class ProviderConfig(BaseModel):
 
 
 class RerankConfig(BaseModel):
-    """Xếp hạng lại. Tắt được, và tắt thì truy hồi vẫn chạy — chỉ kém đi."""
+    """Reranking. Can be turned off, and retrieval still works - just worse."""
 
     enabled: bool = True
-    #: ``onnx`` chạy trong tiến trình này; ``http`` gọi ra một endpoint ``/rerank``.
+    #: `onnx` runs in this process; `http` calls out to a `/rerank` endpoint.
     backend: Literal["onnx", "http"] = "onnx"
     model: str = DEFAULT_RERANK_MODEL
-    #: Đường dẫn tệp ONNX bên trong repo HuggingFace. Khác nhau giữa các repo —
-    #: xem :data:`DEFAULT_RERANK_ONNX_FILE`.
+    #: Path of the ONNX file inside the HuggingFace repo; differs per repo - see :data:`DEFAULT_RERANK_ONNX_FILE`.
     onnx_file: str = DEFAULT_RERANK_ONNX_FILE
-    #: Chỗ giữ model đã tải. ``None`` là dùng cache mặc định của huggingface-hub.
+    #: Where downloaded models are kept. `None` uses huggingface-hub's default cache.
     cache_dir: str | None = None
-    #: Lấy về bao nhiêu ứng viên trước khi xếp lại, và giữ lại bao nhiêu sau đó.
+    #: How many candidates to fetch before rescoring, and how many to keep after.
     candidates: int = 30
     top_n: int = 8
-    #: Chỉ dùng khi ``backend == "http"``.
+    #: Only used when `backend == "http"`.
     url: str = ""
     api_key: str = ""
 
 
 class VectorConfig(BaseModel):
-    """Qdrant. Chạy ngoài tiến trình — xem ``services/rag/deploy/``."""
+    """Qdrant. Runs out of process - see `services/rag/deploy/`."""
 
     url: str = "http://127.0.0.1:6333"
     api_key: str = ""
-    #: Mỗi dự án một collection. Dùng chung một collection thì một câu hỏi trong dự án
-    #: này trả về đoạn của dự án khác — trông y hệt một câu trả lời sai bình thường, nên
-    #: không ai lần ra nguyên nhân.
+    #: One collection per project; sharing one would return another project's chunks, which looks exactly like an ordinary wrong answer.
     collection_prefix: str = "pai_docs"
 
 
 class GraphConfig(BaseModel):
-    """Neo4j. Tắt được: chiến lược graph vắng mặt thì ``auto`` lùi về ``hybrid``."""
+    """SurrealDB, embedded in this process, and optional: without it `auto` falls back to `hybrid`. A directory on disk rather than a server, one store per project."""
 
     enabled: bool = True
-    uri: str = "bolt://127.0.0.1:7687"
-    user: str = "neo4j"
-    password: str = ""
-    database: str = "neo4j"
+    #: Connection string. Empty means embedded; `ws://127.0.0.1:<port>` when the app owns a `surreal` process, since `surrealkv` locks the directory exclusively.
+    url: str = ""
+    namespace: str = "pai"
+    #: Empty means the project id. Two libraries sharing one database answer for each other.
+    database: str = ""
 
 
 class ChunkConfig(BaseModel):
-    """Đơn vị là **ký tự**, không phải byte: một trần tính bằng byte khiến đoạn tiếng
-    Việt ngắn hơn đoạn tiếng Anh khoảng một phần ba, mà cửa sổ ngữ cảnh thì đếm token."""
+    """Sizes are in *characters*, not bytes: a byte cap would make Vietnamese chunks about a third shorter."""
 
     size: int = 1400
     overlap: int = 180
@@ -157,28 +108,16 @@ class ChunkConfig(BaseModel):
 
 class OcrConfig(BaseModel):
     enabled: bool = True
-    #: Số ký tự trung bình mỗi trang, dưới ngưỡng này thì lớp chữ của PDF không đáng tin
-    #: và cascade OCR tiếp quản. Một trang chữ in chạy tới vài nghìn ký tự; một trang
-    #: quét cho ra gần như không gì. 200 nằm xa dưới mọi trang chữ thật và xa trên một
-    #: trang trống, nên một bài báo nhiều hình vẫn được tính là dày chữ.
+    #: Average characters per page below which a PDF's text layer is untrustworthy and the OCR cascade takes over.
     min_chars_per_page: int = 200
-    #: Trần số trang đưa qua VLM cho một tệp. Một cuốn sách 800 trang quét sẽ chạy hàng
-    #: giờ và chiếm hết GPU; trần này cắt ở chỗ vẫn còn dùng được.
+    #: Cap on pages sent to the VLM per file; an 800-page scan would run for hours and occupy the GPU.
     max_pages: int = 120
-    #: Độ phân giải dựng ảnh trang. 2.0 ≈ 144 DPI — đủ để VLM đọc chữ nhỏ, chưa tới mức
-    #: một trang thành vài megabyte base64.
+    #: Page render scale. 2.0 is about 144 DPI: enough for small print, short of megabytes of base64 per page.
     scale: float = 2.0
 
 
 class ProjectConfig(BaseModel):
-    """Một dự án tài liệu: thư mục người dùng chọn, và một mã ổn định để đặt tên
-    collection cùng nhãn graph.
-
-    Service chạy **trên máy người dùng**, không trong container, nên ở đây chỉ có một
-    đường dẫn: thứ ứng dụng thấy và thứ service đọc là cùng một chỗ. Đó là lý do chính
-    khiến bản stdio đơn giản hơn hẳn bản chạy trong container — không có phép ánh xạ
-    đường dẫn nào phải giữ đúng ở hai đầu.
-    """
+    """A document project: the folder the user picked, plus a stable id for collection names and graph labels; the service runs on the user's machine, so there is only one path."""
 
     id: str
     name: str = ""
@@ -190,7 +129,7 @@ class ProjectConfig(BaseModel):
 
 class RagConfig(BaseModel):
     version: int = 1
-    #: Chỗ service đặt cơ sở dữ liệu siêu dữ liệu của nó.
+    #: Where the service keeps its metadata database.
     data_dir: str = ""
     projects: list[ProjectConfig] = Field(default_factory=list)
     active_project: str = ""
@@ -210,11 +149,7 @@ class RagConfig(BaseModel):
     ocr: OcrConfig = Field(default_factory=OcrConfig)
 
     def project(self, key: str = "") -> ProjectConfig:
-        """Dự án theo mã, hoặc dự án đang mở khi không nói mã.
-
-        Ném :class:`ConfigError` kèm **danh sách mã có thật** thay vì chỉ nói không tìm
-        thấy: mô hình gọi tool này và cần biết nó gõ được gì ở lần sau.
-        """
+        """The project by id, or the active one; raises with the list of real ids, because the model calling this needs to know what it may type next time."""
         wanted = (key or self.active_project).strip()
         if not wanted:
             raise ConfigError(
@@ -228,16 +163,27 @@ class RagConfig(BaseModel):
         raise ConfigError(f"không có dự án `{wanted}`. Đang có: {known}")
 
     def store_path(self, project: ProjectConfig) -> Path:
-        """Tệp SQLite giữ tài liệu, đoạn và chỉ mục từ khoá của một dự án."""
+        """The SQLite file holding a project's documents, chunks and keyword index."""
         base = Path(self.data_dir) if self.data_dir else default_data_dir()
         return base / project.id / "rag.sqlite"
+
+    def graph_path(self, project: ProjectConfig) -> Path:
+        """The SurrealDB directory for a project's entity graph when embedded; beside `rag.sqlite`, so deleting a project stays a directory delete."""
+        return self.store_path(project).parent / "graph"
+
+    def graph_url(self, project: ProjectConfig) -> str:
+        """How to reach a project's graph. The app sets `graph.url` when it runs its own `surreal`; without it the service opens the directory in-process. Same SDK, same store class - only this string differs."""
+        return self.graph.url or f"surrealkv://{self.graph_path(project)}"
+
+    def graph_database(self, project: ProjectConfig) -> str:
+        return self.graph.database or project.id
 
     def collection(self, project: ProjectConfig) -> str:
         return f"{self.vectors.collection_prefix}_{project.id}"
 
 
 def default_data_dir() -> Path:
-    """Chỗ đặt dữ liệu khi không ai nói, theo quy ước của từng hệ điều hành."""
+    """Where data goes when nobody says, per OS convention."""
     if os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
         return Path(base) / "private-ai" / "rag"
@@ -248,12 +194,7 @@ def default_data_dir() -> Path:
 
 
 def _apply_env(data: dict[str, Any]) -> dict[str, Any]:
-    """Đè biến môi trường lên cấu hình đã đọc từ tệp.
-
-    Chỉ những khoá thật sự cần chỉnh từ ngoài: điểm cuối hạ tầng và bí mật. Phơi cả cây
-    cấu hình ra thành biến môi trường là dựng một giao diện thứ hai phải bảo trì song
-    song với tệp JSON.
-    """
+    """Overlay environment variables onto the file config; only infrastructure endpoints and secrets, not the whole tree."""
 
     def put(section: str, key: str, value: str | None) -> None:
         if not value:
@@ -262,10 +203,9 @@ def _apply_env(data: dict[str, Any]) -> dict[str, Any]:
 
     put("vectors", "url", os.environ.get("PAI_RAG_QDRANT_URL"))
     put("vectors", "api_key", os.environ.get("PAI_RAG_QDRANT_API_KEY"))
-    put("graph", "uri", os.environ.get("PAI_RAG_NEO4J_URI"))
-    put("graph", "user", os.environ.get("PAI_RAG_NEO4J_USER"))
-    put("graph", "password", os.environ.get("PAI_RAG_NEO4J_PASSWORD"))
-    put("graph", "database", os.environ.get("PAI_RAG_NEO4J_DATABASE"))
+    put("graph", "url", os.environ.get("PAI_RAG_GRAPH_URL"))
+    put("graph", "namespace", os.environ.get("PAI_RAG_GRAPH_NAMESPACE"))
+    put("graph", "database", os.environ.get("PAI_RAG_GRAPH_DATABASE"))
     put("embedding", "base_url", os.environ.get("PAI_RAG_EMBED_URL"))
     put("embedding", "model", os.environ.get("PAI_RAG_EMBED_MODEL"))
     put("vision", "base_url", os.environ.get("PAI_RAG_VISION_URL"))
@@ -290,8 +230,7 @@ def _apply_env(data: dict[str, Any]) -> dict[str, Any]:
         data["active_project"] = project
     root = os.environ.get("PAI_RAG_PROJECT_ROOT")
     if root and project:
-        # Một dự án khai bằng biến môi trường. Đường dùng cho CLI và cho bài kiểm chứng:
-        # chạy được mà không cần ứng dụng Rust ghi tệp cấu hình ra trước.
+        # A project declared purely through the environment: the path for the CLI and the tests, with no config file written first.
         projects = [item for item in data.get("projects", []) if item.get("id") != project]
         projects.append({"id": project, "name": Path(root).name, "root": root})
         data["projects"] = projects
@@ -303,14 +242,14 @@ _cached: tuple[Path | None, float, RagConfig] | None = None
 
 
 def reset_cache() -> None:
-    """Quên cấu hình đã nhớ. Bài kiểm chứng gọi cái này giữa hai trường hợp."""
+    """Forget the cached config. The tests call this between cases."""
     global _cached
     with _lock:
         _cached = None
 
 
 def load(path: str | Path | None = None) -> RagConfig:
-    """Cấu hình hiện hành, nạp lại khi tệp trên đĩa đã đổi."""
+    """The current config, reloaded when the file on disk has changed."""
     global _cached
     target = Path(path) if path else None
     if target is None:

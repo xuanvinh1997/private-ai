@@ -1,17 +1,7 @@
 import type { McpCatalogEntry, McpServer, McpServerInput } from "../protocol";
 
-/**
- * Server MCP giả cho `?demo=1`.
- *
- * Bốn hàng, đúng bốn trạng thái của `McpState`: `connected` với một rổ tool thật,
- * `failed` kèm thông điệp lỗi nguyên văn, `disabled`, và `connecting`. Ba trong bốn cái
- * đó chỉ tồn tại trong vài giây hoặc chỉ khi máy người dùng thiếu một thứ gì đó — nghĩa
- * là không dựng ra ở đây thì không có cách nào nhìn thấy chúng trước khi phát hành.
- *
- * Tên tool mang sẵn tiền tố `ext.<server>.`: đó là tên **mô hình thật sự thấy**, và cũng
- * là tên xuất hiện trong bản ghi khi một lượt gọi tới nó. Hiện tên từ xa thay vào đó sẽ
- * dựng một danh sách không tra cứu ngược được từ bản ghi.
- */
+/** Fake MCP servers for `?demo=1`: four rows, one per `McpState`. Tool names carry the `ext.<server>.` prefix,
+ * because that is the name the model sees and the name that appears in the transcript. */
 
 let store: McpServer[] | null = null;
 
@@ -40,9 +30,7 @@ function seed(): McpServer[] {
       enabled: true,
       state: "failed",
       tools: [],
-      // Lỗi thật của một máy chưa cài Node, viết đúng như lõi sẽ đưa ra: có tên lệnh, có
-      // mã lỗi hệ thống, và có việc phải làm. Một câu chung chung ở đây là một server
-      // hỏng vĩnh viễn.
+      // A real "Node not installed" failure as the core would word it: command, errno, and the action to take.
       error: "spawn npx ENOENT — không tìm thấy `npx` trong PATH. Cài Node.js (hoặc sửa đường dẫn lệnh) rồi bấm Nạp lại.",
     },
     {
@@ -75,7 +63,7 @@ export function demoMcpServers(): McpServer[] {
   return all().map((entry) => ({ ...entry, tools: [...entry.tools] }));
 }
 
-/** Rút gọn để hiện trên một dòng — lõi làm việc này, bản mẫu phải làm giống. */
+/** Shortened to one line; the core does this, so the fixture must match. */
 function targetOf(input: McpServerInput): string {
   return input.transport === "http"
     ? input.url
@@ -89,9 +77,7 @@ export function demoSaveMcpServer(input: McpServerInput): McpServer {
     transport: input.transport,
     target: targetOf(input),
     enabled: input.enabled,
-    // Server mới cắm luôn bắt đầu ở `connecting`: lõi thật cũng không biết kết quả trước
-    // khi tiến trình con trả lời, và một hàng nhảy thẳng sang `connected` sẽ dạy người
-    // dùng rằng trạng thái đó là tức thời.
+    // A newly added server always starts at `connecting`; jumping straight to `connected` would teach a lie.
     state: input.enabled ? "connecting" : "disabled",
     tools: [],
     error: null,
@@ -113,16 +99,14 @@ export function demoSetMcpEnabled(name: string, enabled: boolean): void {
   if (enabled) {
     hit.state = "connecting";
   } else {
-    // Tắt là gỡ tool khỏi mô hình, nên danh sách tool phải rỗng đi theo. Giữ lại danh
-    // sách cũ sẽ vẽ ra một server đang tắt mà vẫn "có 6 tool" — không đúng với cái mô
-    // hình nhìn thấy.
+    // Disabling removes the tools from the model, so the tool list must empty out too.
     hit.state = "disabled";
     hit.tools = [];
     hit.error = null;
   }
 }
 
-/** Nạp lại: server `connecting` chốt lại thành `connected`, `failed` được thử lần nữa. */
+/** Reload: `connecting` servers settle to `connected`, and `failed` ones get another attempt. */
 export function demoReloadMcp(): McpServer[] {
   for (const entry of all()) {
     if (!entry.enabled) continue;
@@ -190,8 +174,7 @@ export function demoMcpCatalog(): McpCatalogEntry[] {
       args: ["mcp-server-sentry"],
       env: [
         { key: "SENTRY_AUTH_TOKEN", label: "Auth token", required: true, secret: true },
-        // Một biến bắt buộc *không* bí mật, cạnh một biến bí mật: hai ô phải trông khác
-        // nhau, và chỉ có bộ mẫu này mới bày được cả hai cạnh nhau.
+        // A required non-secret variable beside a secret one; the two fields must look different.
         { key: "SENTRY_ORG", label: "Tên tổ chức", required: true, secret: false },
         { key: "SENTRY_PROJECT", label: "Tên dự án (tuỳ chọn)", required: false, secret: false },
       ],

@@ -1,9 +1,6 @@
-//! `docs.search` — tìm đoạn trong thư viện tài liệu.
-//!
-//! Đây là tool mà mô hình gọi trước khi trả lời gần như mọi câu hỏi trong một dự án tài
-//! liệu. Mô tả của nó nói thẳng rằng tìm kiếm là **lai ghép** và có thể đang chạy thiếu
-//! nửa ngữ nghĩa, vì một mô hình biết mình chỉ có từ khoá sẽ hỏi lại bằng từ khoá thay vì
-//! kết luận rằng tài liệu không nhắc tới chuyện đó.
+//! `docs.search` - find chunks in the document library.
+//! The tool the model calls before answering almost anything in a document project; its
+//! description says search is hybrid and may be running without the semantic half.
 
 use std::sync::Arc;
 
@@ -16,10 +13,9 @@ use serde_json::json;
 use crate::library::DocLibrary;
 use crate::tools::render;
 
-/// Bao nhiêu đoạn khi mô hình không nói gì. Tám đoạn ~1000 ký tự là khoảng 2500 token —
-/// đủ để trả lời một câu hỏi, chưa đủ để đẩy phần còn lại của hội thoại ra ngoài cửa sổ.
+/// Default chunk count. Eight ~1000-character chunks is about 2500 tokens: enough to answer, not enough to evict the conversation.
 const DEFAULT_LIMIT: usize = 8;
-/// Trần cứng. Xin ba mươi đoạn là đang dùng tool này thay cho `docs.read`.
+/// Hard cap. Asking for thirty chunks means using this tool instead of `docs.read`.
 const MAX_LIMIT: usize = 30;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -78,9 +74,7 @@ impl Tool for DocsSearch {
             .map_err(|err| ToolError::Failed(err.to_string()))?;
 
         if hits.is_empty() {
-            // Nói ra vì sao rỗng. "Không tìm thấy" trong một thư viện chưa nhúng xong là
-            // một câu trả lời khác hẳn với "không tìm thấy" trong một thư viện đầy đủ, và
-            // mô hình chỉ hỏi lại đúng cách khi nó biết mình đang ở trường hợp nào.
+            // Say why the result is empty: "nothing found" in a half-embedded library is a different answer from "nothing found" in a complete one.
             let mut text = format!(
                 "Không có đoạn nào khớp `{}` trong {} tài liệu của thư viện.",
                 args.query, stats.documents

@@ -1,18 +1,6 @@
-//! Một phiên PTY: cái shell, cái vòng đệm, và cây tiến trình đằng sau nó.
-//!
-//! Bài học đắt nhất của `pai-shell` được chép nguyên sang đây: **cái ta chạy là một cây
-//! tiến trình, không phải một tiến trình.** Nhưng một phiên bền còn có thêm một cách để
-//! làm sai mà một lần chạy `bash` không có — **job control**.
-//!
-//! Một shell tương tác bật `monitor mode`, và monitor mode đặt mỗi công việc chạy nền vào
-//! một **nhóm tiến trình riêng**. Lúc đó `kill(-pgid_của_shell)` chỉ giết cái shell; cái
-//! `npm run dev` vừa bấm `&` vẫn giữ cổng 3000 và vẫn ghi vào thư mục làm việc, còn bộ đệm
-//! của nó thì không còn ai đọc. Trông thì mọi thứ vẫn chạy — đúng cái hình dạng của lỗi mà
-//! `pai-shell` cảnh báo.
-//!
-//! Nên phiên được **mồi** bằng `set +m` ngay sau khi mở, trước khi ai kịp gửi gì vào. Từ
-//! đó mọi thứ con cháu sinh ra nằm trong đúng một nhóm tiến trình, và một tín hiệu gửi cho
-//! cả nhóm là đủ — cùng cơ chế, cùng dòng mã, cùng bảo đảm như `pai-shell`.
+//! One PTY session: the shell, the ring buffer, and the process tree behind it.
+//! What we run is a process tree, not a process, and an interactive shell's job control would put each
+//! background job in its own group -- so the session is primed with `set +m` and signalled group-wide.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -25,16 +13,13 @@ use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system}
 use crate::buffer::{Page, Ring};
 use crate::seam::{Owner, SessionInfo, Signal, TerminalError};
 
-/// Cho cái shell bao lâu để in xong lời nhắc đầu tiên trước khi ta xoá phần mồi đi.
-///
-/// Ngắn thì phần mồi lọt vào bộ đệm và mô hình đọc được một dòng nó không gõ; dài thì mỗi
-/// lần mở phiên đứng lại chừng đó. Đây là một sự đánh đổi chứ không phải một hằng số đúng.
+/// How long the shell gets to print its first prompt before we wipe the priming; a trade-off, not a correct constant.
 const PRIME_SETTLE: Duration = Duration::from_millis(250);
 
-/// Chờ bao lâu cho cây tiến trình tự dọn trước khi ép.
+/// How long the process tree gets to exit on its own before we force it.
 const CLOSE_GRACE: Duration = Duration::from_millis(500);
 
-/// Nhịp hỏi lại "chết chưa".
+/// Poll interval for "has it exited yet".
 const POLL: Duration = Duration::from_millis(25);
 
 pub struct Session {
@@ -43,8 +28,7 @@ pub struct Session {
     pub backend: String,
     pub cwd: PathBuf,
     pub owner: Owner,
-    /// Nhóm tiến trình của phiên. Trên Unix, `portable-pty` gọi `setsid()` trong tiến
-    /// trình con nên nó vừa là session leader vừa là group leader: pid chính là pgid.
+    /// The session's process group; on Unix `portable-pty` calls `setsid()` in the child, so pid is the pgid.
     pid: Option<u32>,
     master: Mutex<Box<dyn MasterPty>>,
     writer: Mutex<Box<dyn Write + Send>>,
@@ -53,10 +37,7 @@ pub struct Session {
     buffer: Arc<Mutex<Ring>>,
 }
 
-/// Mọi thứ cần biết để mở một phiên, gom thành một chỗ.
-///
-/// Một struct chứ không phải chín tham số: chín tham số cùng kiểu chuỗi là chín cơ hội để
-/// hoán vị hai cái mà trình biên dịch không nói gì.
+/// Everything needed to open a session; a struct, because nine same-typed parameters are nine chances to swap two.
 pub struct Spec {
     pub id: String,
     pub name: String,
@@ -69,11 +50,7 @@ pub struct Spec {
 }
 
 impl Session {
-    /// Mở một phiên.
-    ///
-    /// `argv` đã đi qua vòng giam nếu có ai cắm vòng giam — việc bọc thuộc về
-    /// [`crate::provider`], vì nó là chỗ giữ `Context` và chỉ nó mới hỏi được seam sandbox
-    /// **tại thời điểm mở**.
+    /// Open a session. `argv` is already sandbox-wrapped by [`crate::provider`], the only place holding a `Context`.
     pub fn open(spec: Spec, argv: &[String]) -> Result<Arc<Session>, TerminalError> {
         let (program, args) = argv
             .split_first()
@@ -93,16 +70,14 @@ impl Session {
         let mut command = CommandBuilder::new(program);
         command.args(args);
         command.cwd(cwd);
-        // Một `TERM` có nghĩa là nửa còn lại của lời hứa "đây là terminal thật": không có
-        // nó thì `isatty` trả về đúng nhưng mọi thư viện curses vẫn từ chối vẽ.
+        // A meaningful `TERM` is the other half of "a real terminal": without it curses libraries still refuse to draw.
         command.env("TERM", "xterm-256color");
 
         let child = pair
             .slave
             .spawn_command(command)
             .map_err(|err| TerminalError::Spawn(err.to_string()))?;
-        // Thả đầu slave ngay: chừng nào ta còn giữ nó, đầu master không bao giờ thấy EOF,
-        // và luồng bơm sẽ chờ mãi một mẩu byte không bao giờ tới sau khi con cháu đã chết.
+        // Drop the slave end now: while we hold it the master never sees EOF and the pump thread waits forever.
         drop(pair.slave);
 
         let mut reader = pair
@@ -116,9 +91,7 @@ impl Session {
 
         let buffer = Arc::new(Mutex::new(Ring::new(spec.max_lines)));
         {
-            // Đọc PTY là một lời gọi chặn không huỷ được, nên nó thuộc về một luồng của hệ
-            // điều hành chứ không phải một task: một `spawn_blocking` treo ở đây là một ô
-            // vĩnh viễn bị chiếm trong bể luồng dùng chung của cả ứng dụng.
+            // Reading a PTY is an uncancellable blocking call, so it gets an OS thread rather than a shared blocking-pool slot.
             let sink = buffer.clone();
             std::thread::spawn(move || {
                 let mut chunk = [0u8; 8192];
@@ -147,10 +120,7 @@ impl Session {
         Ok(session)
     }
 
-    /// Tắt job control rồi xoá dấu vết của chính việc đó.
-    ///
-    /// Tách khỏi [`Session::open`] vì nó cần `await`, và vì lý do của nó nằm ở đầu module
-    /// chứ không ở đây.
+    /// Turn job control off, then erase the trace of doing so. Separate from [`Session::open`] because it awaits.
     pub async fn prime(&self) {
         #[cfg(unix)]
         {
@@ -159,8 +129,7 @@ impl Session {
             }
         }
         tokio::time::sleep(PRIME_SETTLE).await;
-        // Bộ đệm bắt đầu từ đây. Một dòng mô hình không gõ ra là một dòng nó sẽ cố giải
-        // thích.
+        // The buffer starts here: a line the model did not type is a line it will try to explain.
         self.buffer.lock().reset();
     }
 
@@ -193,7 +162,7 @@ impl Session {
         self.buffer.lock().page(offset, count)
     }
 
-    /// Mốc để hỏi "có gì mới kể từ đây".
+    /// Mark for asking "what is new since here".
     pub fn mark(&self) -> u64 {
         self.buffer.lock().produced()
     }
@@ -221,10 +190,7 @@ impl Session {
         Ok(())
     }
 
-    /// Nhóm tiến trình đang ở tiền cảnh, và nó có phải chính cái shell của phiên không.
-    ///
-    /// Câu hỏi thứ hai mới là câu quan trọng: `SIGKILL` vào đúng cái shell bỏ lại một cây
-    /// tiến trình mồ côi, nên nó bị từ chối ở [`Session::signal`].
+    /// The foreground process group, and whether it is the session shell itself -- `SIGKILL` on the shell is refused.
     #[cfg(unix)]
     fn foreground(&self) -> (Option<u32>, bool) {
         let leader = self
@@ -263,19 +229,14 @@ impl Session {
         ))
     }
 
-    /// Đóng phiên và chờ cây tiến trình biến mất.
-    ///
-    /// Tín hiệu gửi cho **cả nhóm**, đúng như `pai-shell`: giết cái shell mà bỏ lại con
-    /// cháu là bỏ lại những tiến trình giữ cổng và giữ khoá tệp mà không ai còn nhớ để dọn.
+    /// Close the session and wait for its process tree to vanish; signals go to the whole group, as in `pai-shell`.
     pub async fn close(&self) {
         self.signal_all(sigterm());
         if self.wait_gone(CLOSE_GRACE).await {
             return;
         }
         self.signal_all(sigkill());
-        // Cây tiến trình đã nhận `SIGKILL` thì phần chờ này chỉ còn là việc gặt xác con;
-        // không đặt hạn giờ ở đây sẽ treo mãi nếu một tiến trình nằm trong trạng thái
-        // không giết được, nên vẫn có hạn.
+        // After `SIGKILL` this wait is just reaping, but it stays bounded in case a process is unkillable.
         self.wait_gone(CLOSE_GRACE).await;
         let _ = self.child.lock().kill();
     }
@@ -286,7 +247,7 @@ impl Session {
         }
     }
 
-    /// `true` nếu tiến trình đã thoát trong khoảng chờ.
+    /// `true` if the process exited within the budget.
     async fn wait_gone(&self, budget: Duration) -> bool {
         let deadline = std::time::Instant::now() + budget;
         loop {
@@ -301,8 +262,7 @@ impl Session {
     }
 }
 
-/// Gửi tín hiệu cho cả nhóm tiến trình. Số âm nghĩa là "cả nhóm" — đây là toàn bộ lý do
-/// phần mồi `set +m` tồn tại.
+/// Signal a whole process group; the negative pid means "the group", which is the entire reason `set +m` is primed.
 #[cfg(unix)]
 fn signal_group(pid: u32, signal: i32) {
     unsafe { libc::kill(-(pid as i32), signal) };
@@ -310,8 +270,7 @@ fn signal_group(pid: u32, signal: i32) {
 
 #[cfg(not(unix))]
 fn signal_group(_pid: u32, _signal: i32) {
-    // Windows không có nhóm tiến trình theo nghĩa này; việc tương ứng là Job Object và nó
-    // thuộc về `pai-sandbox`. Cùng lời hẹn, cùng chỗ, như `pai-shell`.
+    // Windows has no process groups in this sense; the equivalent is a Job Object and belongs to `pai-sandbox`.
 }
 
 #[cfg(unix)]

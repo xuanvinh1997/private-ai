@@ -1,13 +1,6 @@
-//! Provider đã cấu hình, và cache adapter dựng từ chúng.
-//!
-//! Port `llm/registry.py` + phần cache của `llm/router.py`. Ở đây **không có SQLite**:
-//! crate này nhận `ProviderConfig` đã đọc sẵn. Tách như vậy vì lưu ở đâu là chuyện của
-//! tầng lưu trữ, còn "dựng adapter nào cho cấu hình này" là chuyện của tầng mô hình, và
-//! trộn hai thứ lại là lý do bản Python phải chuyền một `Database` xuống tận `ModelRouter`.
-//!
-//! Cái phải giữ nguyên từ bản gốc là **cache đánh khoá theo chữ ký, không theo id**
-//! (`router.py:158-167`). Người dùng sửa URL của một provider mà id giữ nguyên: nếu cache
-//! khoá theo id thì mọi request tiếp theo vẫn bay tới máy chủ cũ, và không có gì báo động.
+//! Configured providers, plus a cache of the adapters built from them.
+//! No SQLite here: the crate takes an already-loaded `ProviderConfig`, because storage is
+//! another layer's job. The cache is keyed by signature, not id, so an edited URL rebuilds.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -19,17 +12,14 @@ use crate::ollama::OllamaAdapter;
 use crate::openai::OpenAiAdapter;
 use crate::seam::{LlmAdapter, ModelAdmin};
 
-/// Loại máy chủ.
+/// Server kind.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     Ollama,
-    /// LM Studio. Nói giao thức OpenAI ở phần hội thoại, nhưng có **kho mô hình riêng**
-    /// ở `/api/v0` — xem [`crate::lmstudio`]. Tách thành một loại riêng vì đó đúng là
-    /// khác biệt mà người dùng cảm thấy: cùng một máy chủ, một bên biết mô hình nào đang
-    /// nạp và làm được gì, một bên chỉ đọc được cái tên.
+    /// LM Studio: OpenAI protocol for chat, but its own model store at `/api/v0` - see [`crate::lmstudio`].
     LmStudio,
-    /// Bất cứ thứ gì nói giao thức OpenAI: llama.cpp, vLLM, OpenAI thật.
+    /// Anything speaking the OpenAI protocol: llama.cpp, vLLM, real OpenAI.
     OpenAiCompatible,
 }
 
@@ -52,10 +42,7 @@ impl ProviderKind {
     }
 }
 
-/// Mọi thứ mà một adapter đã dựng phụ thuộc vào.
-///
-/// `Debug` được viết tay để **không in khoá API**: cấu trúc này lọt vào log lỗi, và một
-/// khoá trong log là một khoá đã rò rỉ.
+/// Everything a built adapter depends on; `Debug` is hand-written so it never prints the API key, which would leak it into error logs.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ProviderSignature {
     pub id: String,
@@ -82,7 +69,7 @@ impl fmt::Debug for ProviderSignature {
     }
 }
 
-/// Một máy chủ đã cấu hình.
+/// One configured server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderConfig {
     pub id: String,
@@ -124,9 +111,7 @@ impl ProviderConfig {
         }
     }
 
-    /// Provider chạy ngay trên máy này khi endpoint không rời interface loopback.
-    /// Port `runs_on_device` (`registry.py:41-45`) — giao diện dùng nó để nói với người
-    /// dùng rằng dữ liệu không đi đâu cả.
+    /// True when the endpoint never leaves the loopback interface; the UI uses it to tell the user the data stays put.
     pub fn on_device(&self) -> bool {
         const LOOPBACK: [&str; 5] = ["localhost", "127.0.0.1", "::1", "[::1]", "0.0.0.0"];
         let without_scheme = self
@@ -135,7 +120,7 @@ impl ProviderConfig {
             .nth(1)
             .unwrap_or(self.base_url.as_str());
         let authority = without_scheme.split('/').next().unwrap_or_default();
-        // Cắt cổng, nhưng chừa `[::1]` vốn có dấu hai chấm bên trong ngoặc vuông.
+        // Strip the port, but leave `[::1]`, which has colons inside the brackets.
         let host = if let Some(rest) = authority.strip_prefix('[') {
             rest.split(']')
                 .next()
@@ -148,12 +133,7 @@ impl ProviderConfig {
     }
 }
 
-/// Provider đang được chọn.
-///
-/// Port `ProviderRegistry.active_config` (`registry.py:140-153`), giữ nguyên cả ba tầng
-/// dự phòng: cái được ghim, rồi cái đầu tiên còn bật, rồi cái đầu tiên bất kể. Tầng chót
-/// là cố ý — một provider bị tắt vẫn tốt hơn một thông báo "chưa cấu hình gì cả" khi
-/// người dùng rõ ràng đã cấu hình.
+/// The currently selected provider; three fallbacks in order - the pinned one, the first enabled one, then the first at all, because a disabled provider still beats "nothing configured".
 pub fn active_config<'a>(
     configs: &'a [ProviderConfig],
     selected_id: &str,
@@ -168,11 +148,7 @@ pub fn active_config<'a>(
         .or_else(|| configs.first())
 }
 
-/// Dựng adapter, và giữ lại cái đã dựng.
-///
-/// Dựng một adapter không đắt bằng `ChatOllama` của Python, nhưng cache vẫn cần: nó là
-/// nơi giữ connection pool của `reqwest`, và một adapter mới mỗi lượt nghĩa là bắt tay
-/// TLS lại từ đầu mỗi lượt.
+/// Builds adapters and keeps them; the cache holds `reqwest`'s connection pool, so a fresh adapter per turn would mean a fresh TLS handshake per turn.
 pub struct AdapterRegistry {
     http: reqwest::Client,
     cache: Mutex<HashMap<ProviderSignature, Arc<dyn LlmAdapter>>>,
@@ -186,7 +162,7 @@ impl AdapterRegistry {
         }
     }
 
-    /// Adapter cho một cấu hình, dựng nếu chưa có.
+    /// The adapter for a config, built if absent.
     pub fn adapter(&self, config: &ProviderConfig) -> Result<Arc<dyn LlmAdapter>, LlmError> {
         let signature = config.signature();
         {
@@ -215,17 +191,13 @@ impl AdapterRegistry {
             )?),
         };
         let mut cache = self.lock();
-        // Vứt mọi thứ dựng từ một hình dạng cũ của **chính provider này**. Provider khác
-        // không bị đụng: chúng có id khác, và cái đang chạy trên chúng vẫn hợp lệ.
+        // Drop everything built from an older shape of *this* provider; others keep their entries.
         cache.retain(|key, _| key.id != signature.id);
         cache.insert(signature, adapter.clone());
         Ok(adapter)
     }
 
-    /// Nửa vòng đời của một provider.
-    ///
-    /// Port `ModelAdmin.provider` (`admin.py:62-68`): provider từ xa trả lời bằng một câu
-    /// tiếng Việt nói rõ *vì sao* không áp dụng, chứ không phải một `None` câm lặng.
+    /// The lifecycle half of a provider; a remote provider answers with a sentence saying why it does not apply rather than a silent `None`.
     pub fn admin(&self, config: &ProviderConfig) -> Result<Arc<dyn ModelAdmin>, LlmError> {
         self.adapter(config)?.admin().ok_or_else(|| {
             LlmError::read_only(format!(
@@ -235,14 +207,12 @@ impl AdapterRegistry {
         })
     }
 
-    /// Số adapter đang giữ. Dành cho bài test và cho `--dump-config`.
+    /// How many adapters are held. For tests and `--dump-config`.
     pub fn cached(&self) -> usize {
         self.lock().len()
     }
 
-    /// Khoá bị nhiễm độc nghĩa là một luồng khác đã hoảng khi đang giữ nó. Dữ liệu bên
-    /// trong vẫn nhất quán — chỉ là một `HashMap` — nên lấy lại mà dùng, thay vì lan
-    /// truyền một cú hoảng nữa. Không `unwrap()` trên đường chạy thật.
+    /// A poisoned lock only means another thread panicked while holding it; the `HashMap` is still consistent, so recover instead of panicking again.
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<ProviderSignature, Arc<dyn LlmAdapter>>> {
         self.cache
             .lock()
@@ -250,7 +220,7 @@ impl AdapterRegistry {
     }
 }
 
-/// Không còn provider nào. Tách thành hàm để thông điệp chỉ có một bản.
+/// No providers left. A function so the message exists in exactly one place.
 pub fn no_provider() -> LlmError {
     LlmError::new(
         LlmErrorCode::NoProviderConfigured,

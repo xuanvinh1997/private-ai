@@ -1,7 +1,6 @@
-//! Những bất biến mà chỉ mục sai thì mô hình đi đọc nhầm chỗ.
-//!
-//! Mỗi bài ở đây khoá một câu đã viết trong tài liệu crate. Nếu một bài đỏ thì hoặc mã
-//! sai, hoặc câu trong tài liệu đã hết đúng — không có khả năng thứ ba.
+//! Invariants whose failure sends the model to the wrong file.
+//! Each test locks down one sentence of the crate docs: a red test means either the code
+//! is wrong or that sentence is no longer true, and there is no third option.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -106,8 +105,7 @@ fn call(name: &str, args: Value) -> Invocation {
     Invocation::new(ToolName::from(name), "c1", map)
 }
 
-/// Grammar và core lệch ABI thì hỏng **lúc chạy**, không lúc biên dịch. Bài này là chỗ
-/// duy nhất phát hiện ra điều đó trước khi người dùng làm.
+/// A grammar/core ABI mismatch fails at runtime, not compile time; this test is the only thing that catches it first.
 #[test]
 fn truy_van_cua_moi_ngon_ngu_deu_bien_dich_duoc() {
     Extractor::new().expect("mọi truy vấn trong bảng ngôn ngữ phải biên dịch được");
@@ -130,13 +128,12 @@ async fn trich_dung_ky_hieu_tu_mot_tep_rust() {
     assert_eq!(find(&symbols, "NGUONG").kind, SymbolKind::Constant);
     assert_eq!(find(&symbols, "tu_do").kind, SymbolKind::Function);
 
-    // Khoảng dòng phải bao trọn khối, không chỉ dòng khai báo.
+    // The line range must span the whole block, not just the declaration line.
     let mo = find(&symbols, "mo");
     assert!(mo.end_line > mo.start_line, "{mo:#?}");
     assert!(mo.signature.contains("pub fn mo"), "{mo:#?}");
 
-    // `impl KhoLuu` là scope chứ không phải ký hiệu: `KhoLuu` chỉ được kể **một lần**,
-    // nếu không chỉ mục nói dối về số lượng kiểu trong repo.
+    // `impl KhoLuu` is a scope, not a symbol: `KhoLuu` is counted once, or the index misreports the type count.
     assert_eq!(
         symbols
             .iter()
@@ -146,7 +143,7 @@ async fn trich_dung_ky_hieu_tu_mot_tep_rust() {
         "{symbols:#?}"
     );
 
-    // `doc` khai trong trait, `dong` khai trong impl — cả hai đều phải có cha.
+    // `doc` is declared in the trait and `dong` in the impl; both must have a parent.
     assert_eq!(find(&symbols, "doc").parent.as_deref(), Some("DocDuoc"));
     assert_eq!(find(&symbols, "dong").parent.as_deref(), Some("KhoLuu"));
     assert_eq!(find(&symbols, "tu_do").parent, None);
@@ -169,24 +166,24 @@ async fn trich_dung_ky_hieu_tu_mot_tep_typescript() {
     assert_eq!(find(&symbols, "SoDangKy").kind, SymbolKind::Type);
     assert_eq!(find(&symbols, "GIOI_HAN").kind, SymbolKind::Constant);
 
-    // Phương thức của class mang tên class làm cha.
+    // A class method takes the class name as its parent.
     assert_eq!(find(&symbols, "them").kind, SymbolKind::Function);
     assert_eq!(find(&symbols, "them").parent.as_deref(), Some("SoDangKy"));
 
-    // `export const f = () => {}` khớp cả mẫu hàm lẫn mẫu hằng; thang hạng phải chọn hàm.
+    // `export const f = () => {}` matches both patterns; the ranking must pick the function.
     assert_eq!(find(&symbols, "dungSo").kind, SymbolKind::Function);
 
-    // Một hàm không export vẫn là một khai báo người ta đi tìm.
+    // A non-exported function is still a declaration people search for.
     assert_eq!(find(&symbols, "noiBo").kind, SymbolKind::Function);
 
-    // `private hang: HopDong[]` là trường của class, không phải hằng của module.
+    // `private hang: HopDong[]` is a class field, not a module constant.
     assert!(
         !symbols.iter().any(|symbol| symbol.name == "hang"),
         "{symbols:#?}"
     );
 }
 
-/// Bất biến trung tâm của cả crate: quét lại một cây không đổi **không** parse lại gì.
+/// The crate's central invariant: rescanning an unchanged tree parses nothing.
 #[tokio::test]
 async fn tep_khong_doi_thi_khong_parse_lai() {
     let (dir, index) = bench(&[("a.rs", RUST_SOURCE), ("b.ts", TS_SOURCE)]);
@@ -201,7 +198,7 @@ async fn tep_khong_doi_thi_khong_parse_lai() {
     assert_eq!(second.parsed, 0, "nhưng không được parse lại tệp nào");
     assert_eq!(index.parse_count(), 2);
 
-    // Sửa một tệp thì đúng một tệp được parse lại, không phải cả hai.
+    // Editing one file re-parses exactly one file, not both.
     std::fs::write(
         root.join("a.rs"),
         format!("{RUST_SOURCE}\npub fn them_moi() {{}}\n"),
@@ -230,7 +227,7 @@ async fn tep_bi_xoa_thi_ky_hieu_cua_no_bien_mat() {
         index.search("KhoLuu", None, 10).await.unwrap().is_empty(),
         "ký hiệu của một tệp đã xoá vẫn còn trong chỉ mục"
     );
-    // Và hàng FTS cũng phải đi theo, không chỉ hàng `symbols`.
+    // The FTS rows must follow too, not only the `symbols` rows.
     assert_eq!(index.symbol_count().unwrap(), 0);
     assert!(index.outline(&root.join("kho.rs")).await.unwrap().is_none());
 }
@@ -247,7 +244,7 @@ async fn symbol_search_tim_duoc_ky_hieu_long_nhau_kem_dung_cha() {
     assert!(dong.path.ends_with("kho.rs"), "{dong:#?}");
     assert!(dong.start_line > 1);
 
-    // Lọc theo loại phải cắt đúng, không cắt nhầm.
+    // The kind filter must cut the right rows and no others.
     let types = index
         .search("KhoLuu", Some(SymbolKind::Type), 10)
         .await
@@ -259,8 +256,7 @@ async fn symbol_search_tim_duoc_ky_hieu_long_nhau_kem_dung_cha() {
         .unwrap();
     assert!(traits.is_empty());
 
-    // Hỏi bằng nửa sau của một tên là chuyện người ta làm suốt, và FTS5 một mình không
-    // trả lời được — lượt `LIKE` tồn tại vì chỗ này.
+    // Searching by the tail of a name is common and FTS5 alone cannot do it; the `LIKE` pass exists for this.
     let giua = index.search("Dang", None, 10).await.unwrap();
     assert!(
         giua.iter().any(|symbol| symbol.name == "SoDangKy"),
@@ -282,7 +278,7 @@ async fn tep_cu_phap_hong_khong_lam_hong_ca_lan_quet() {
         .expect("một tệp hỏng không được làm gãy lần quét");
     assert_eq!(report.scanned, 3);
 
-    // Và tệp lành vẫn phải vào chỉ mục đầy đủ.
+    // The healthy file must still be indexed in full.
     let hits = index.search("KhoLuu", None, 10).await.unwrap();
     assert_eq!(
         hits[0].name, "KhoLuu",
@@ -318,8 +314,7 @@ async fn gitignore_duoc_ton_trong_ke_ca_khi_chua_git_init() {
     assert_eq!(index.search("that", None, 10).await.unwrap().len(), 1);
 }
 
-/// Luật "chuẩn hoá trước, kiểm tra sau" áp cho đường dẫn của `outline` y hệt như cho
-/// `read`: một chỉ mục kể được cấu trúc của tệp ngoài gốc là một đường vòng quanh gốc.
+/// `outline` resolves then checks its path exactly as `read` does; otherwise the index bypasses the roots.
 #[tokio::test]
 async fn outline_khong_ra_khoi_goc_va_phat_dung_hinh_dang_meta() {
     let dir = TempDir::new().unwrap();
@@ -349,7 +344,7 @@ async fn outline_khong_ra_khoi_goc_va_phat_dung_hinh_dang_meta() {
         .await
         .expect("tệp trong gốc thì được");
     assert!(ok.content.contains("KhoLuu"), "{}", ok.content);
-    // Thụt đầu dòng là cách duy nhất người đọc thấy `dong` nằm trong `KhoLuu`.
+    // Indentation is the only way a reader sees that `dong` sits inside `KhoLuu`.
     assert!(ok.content.contains("\n  "), "{}", ok.content);
 
     let meta = ok.meta.get("search").expect("phải có meta.search");
@@ -359,7 +354,7 @@ async fn outline_khong_ra_khoi_goc_va_phat_dung_hinh_dang_meta() {
     assert!(meta["groups"][0]["matches"][0]["text"].is_string());
 }
 
-/// Tên ký hiệu do người dùng đặt, nên chúng là dữ liệu chứ không phải chỉ dẫn.
+/// Symbol names are user-authored, so they are data rather than instructions.
 #[test]
 fn ca_hai_tool_deu_chi_doc_va_khong_dang_tin() {
     let roots = FileRoots::new([std::env::temp_dir()], []);
@@ -378,8 +373,7 @@ fn ca_hai_tool_deu_chi_doc_va_khong_dang_tin() {
     }
 }
 
-/// Đường dẫn lưu trong chỉ mục phải là đường đã phân giải, y hệt thứ `read` nhận vào —
-/// nếu không, mô hình chép số dòng sang một đường dẫn mà `read` từ chối.
+/// Stored paths must be resolved, exactly what `read` accepts, or the model copies line numbers to a rejected path.
 #[tokio::test]
 async fn duong_dan_tra_ve_dung_bang_duong_ma_read_nhan() {
     let (dir, index) = bench(&[("con/kho.rs", RUST_SOURCE)]);
@@ -411,9 +405,7 @@ async fn trich_dung_ky_hieu_tu_mot_tep_python() {
     assert_eq!(find(&symbols, "tu_do").parent, None);
 }
 
-/// Chỉ mục sống qua lần khởi động sau. Không có bài này thì "tăng dần" chỉ đúng trong
-/// một phiên, và mở lại ứng dụng là parse lại cả repo — đúng cái giá mà cả crate này
-/// sinh ra để khỏi phải trả.
+/// The index survives a restart; without this, "incremental" holds only within one session.
 #[tokio::test]
 async fn chi_muc_tren_dia_song_qua_lan_mo_lai() {
     let dir = TempDir::new().unwrap();
@@ -438,8 +430,7 @@ async fn chi_muc_tren_dia_song_qua_lan_mo_lai() {
     assert!(!second.search("KhoLuu", None, 5).await.unwrap().is_empty());
 }
 
-/// Đường vào thật của sản phẩm là plugin, không phải `CodeIndex::new`. Bài này giữ cho
-/// nó chạy được: dựng cây, cắm chỉ mục, và thấy đủ năm tool xuất hiện trong sổ đăng ký.
+/// The real entry point is the plugin, not `CodeIndex::new`: build the tree, mount it, see all five tools registered.
 #[tokio::test]
 async fn plugin_cam_dung_nam_tool_va_mot_provider() {
     let dir = TempDir::new().unwrap();
@@ -471,8 +462,7 @@ async fn plugin_cam_dung_nam_tool_va_mot_provider() {
         assert!(names.iter().any(|name| name == wanted), "{names:?}");
     }
 
-    // Tên tệp chỉ mục được suy từ thư mục làm việc, nên hai workspace không dùng chung
-    // một kho — triệu chứng của việc đó là kết quả của một dự án khác.
+    // The index filename is derived from the working directory, so two workspaces never share one store.
     let files: Vec<String> = std::fs::read_dir(kho.path())
         .unwrap()
         .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().to_string()))
@@ -480,7 +470,7 @@ async fn plugin_cam_dung_nam_tool_va_mot_provider() {
         .collect();
     assert_eq!(files.len(), 1, "{files:?}");
 
-    // Và seam phải dùng được từ ngoài, không chỉ từ hai tool bên trong.
+    // The seam must also be usable from outside, not only by the two tools within.
     let index = ctx.require::<Index>().unwrap();
     index.sync().await.unwrap();
     assert!(!index.search("KhoLuu", None, 5).await.unwrap().is_empty());

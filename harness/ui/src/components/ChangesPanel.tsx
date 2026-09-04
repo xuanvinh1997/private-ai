@@ -1,32 +1,17 @@
 import { createSignal, For, Show } from "solid-js";
 import { baseName, dirName, type ChangedFile } from "../lib/changes";
+import { S, t, tn } from "../lib/i18n";
 import DiffBlock from "./DiffBlock";
 import Icon from "./Icon";
 import { IconButton } from "./primitives";
 
-/**
- * Bảng "tệp đã đổi trong phiên" — thứ một coding agent cần mà một chatbot thì không.
- *
- * Một lượt sửa mã sinh ra hàng chục khối trong bản ghi, và tệp bị đụng ba lần thì nằm ở
- * ba chỗ cách xa nhau. Bảng này gấp tất cả lại thành *một hàng cho mỗi tệp*, và bấm vào
- * hàng đó thì cuộn tới lần đụng gần nhất — nghĩa là nó không phải một khung nhìn thứ hai
- * của cùng dữ liệu, mà là mục lục của khung nhìn thứ nhất.
- */
-export default function ChangesPanel(props: {
+/** The "files changed this session" panel: one row per file, folded out of the transcript, acting as its index. */
+export function ChangesPanelContent(props: {
   files: ChangedFile[];
   onReveal: (nodeId: string) => void;
-  onClose: () => void;
 }) {
   return (
-    <aside
-      aria-label="Tệp đã thay đổi"
-      class="flex w-(--changes-col-w) shrink-0 flex-col border-l border-line bg-sidebar"
-    >
-      <header class="flex h-(--header-h) shrink-0 items-center gap-sm border-b border-line px-md">
-        <h2 class="m-0 flex-1 text-xs font-semibold text-ink">Tệp đã thay đổi</h2>
-        <IconButton icon="x" label="Đóng bảng thay đổi" size="sm" onClick={props.onClose} />
-      </header>
-
+    <div class="flex min-h-0 flex-1 flex-col">
       <Show
         when={props.files.length > 0}
         fallback={
@@ -34,7 +19,7 @@ export default function ChangesPanel(props: {
             <span class="mt-3xs shrink-0">
               <Icon name="diff" size={13} />
             </span>
-            Phiên này chưa đụng vào tệp nào.
+            {t(S.chat.changes.empty)}
           </p>
         }
       >
@@ -61,10 +46,14 @@ export default function ChangesPanel(props: {
                         {baseName(file.path)}
                       </span>
                       <Show when={file.created}>
-                        <span class="shrink-0 text-2xs text-success">tệp mới</span>
+                        <span class="shrink-0 text-2xs text-success">
+                          {t(S.chat.changes.created)}
+                        </span>
                       </Show>
                       <Show when={file.pending}>
-                        <span class="shrink-0 text-2xs text-warn">dự kiến</span>
+                        <span class="shrink-0 text-2xs text-warn">
+                          {t(S.chat.changes.pending)}
+                        </span>
                       </Show>
                     </span>
                     <Show when={dirName(file.path)}>
@@ -82,22 +71,11 @@ export default function ChangesPanel(props: {
           </For>
         </ul>
       </Show>
-    </aside>
+    </div>
   );
 }
 
-/**
- * Màn hình thay đổi ở dạng trang đầy — bố cục review của Codex.
- *
- * Khác cột phải ở đúng một chỗ, và chỗ đó là toàn bộ lý do nó tồn tại: bấm vào một hàng
- * **mở diff ngay tại đó** thay vì ném người đọc ngược về bản ghi. Cột phải là mục lục để
- * liếc trong lúc đang chat; trang này là chỗ ngồi xuống đọc lại toàn bộ những gì trợ lý
- * vừa làm, và một mục lục không mở ra được thì không đọc lại được cái gì.
- *
- * Mọi hàng mở sẵn ở lần đầu: sau một lượt sửa mã, câu hỏi đầu tiên luôn là "nó đã làm gì",
- * và bắt người dùng bấm mở từng tệp để trả lời câu đó là bắt họ trả tiền cho một cú gập
- * mà chưa ai xin.
- */
+/** Full-page changes view: unlike the side panel, a row expands its diff in place, and every row starts open. */
 export function ChangesBoard(props: {
   files: ChangedFile[];
   onReveal: (nodeId: string) => void;
@@ -110,7 +88,7 @@ export function ChangesBoard(props: {
           fallback={
             <p class="m-0 flex items-center gap-2xs text-sm text-faint">
               <Icon name="diff" size={14} />
-              Phiên này chưa đụng vào tệp nào.
+              {t(S.chat.changes.empty)}
             </p>
           }
         >
@@ -127,8 +105,7 @@ function FileReview(props: { file: ChangedFile; onReveal: (nodeId: string) => vo
   return (
     <section class="overflow-hidden rounded-card border border-line bg-surface">
       <div class="flex items-center gap-sm px-(--card-pad-x) py-(--card-pad-y)">
-        {/* Cả dải tên tệp là công tắc gập, đúng như review pane của Codex: đích bấm lớn
-            nhất trong hàng nên là việc làm nhiều nhất, chứ không phải một mũi tên 12px. */}
+        {/* The whole filename strip is the toggle: the largest hit target should be the most common action. */}
         <button
           type="button"
           onClick={() => setOpen((v) => !v)}
@@ -149,28 +126,26 @@ function FileReview(props: { file: ChangedFile; onReveal: (nodeId: string) => vo
             <bdi>{props.file.path}</bdi>
           </span>
           <Show when={props.file.created}>
-            <span class="shrink-0 text-2xs text-success">tệp mới</span>
+            <span class="shrink-0 text-2xs text-success">{t(S.chat.changes.created)}</span>
           </Show>
           <Show when={props.file.pending}>
-            <span class="shrink-0 text-2xs text-warn">dự kiến</span>
+            <span class="shrink-0 text-2xs text-warn">{t(S.chat.changes.pending)}</span>
           </Show>
           <Counts added={props.file.added} removed={props.file.removed} />
         </button>
 
-        {/* Lối về bản ghi vẫn còn, chỉ là không còn là hành động chính nữa: nó trả lời một
-            câu khác — "trợ lý nói gì lúc nó sửa chỗ này". */}
+        {/* The route back to the transcript remains, but is no longer primary; it answers a different question. */}
         <IconButton
           icon="chat"
           size="sm"
-          label={`Xem lúc trợ lý sửa ${baseName(props.file.path)} trong bản ghi`}
+          label={t(S.chat.changes.reveal, { name: baseName(props.file.path) })}
           onClick={() => props.onReveal(props.file.nodeId)}
         />
       </div>
 
       <Show when={open() && props.file.hunks.length > 0}>
         <div class="border-t border-line p-(--card-pad-y)">
-          {/* Hạn dòng cao hơn hẳn trong chat: ở đây diff *là* nội dung, không phải một
-              trích đoạn chen giữa hai câu trả lời. */}
+          {/* A much higher line cap than in chat: here the diff *is* the content, not an excerpt. */}
           <DiffBlock diffs={props.file.hunks} maxLines={40} />
         </div>
       </Show>
@@ -178,13 +153,15 @@ function FileReview(props: { file: ChangedFile; onReveal: (nodeId: string) => vo
   );
 }
 
-/** Dòng tổng: bao nhiêu tệp, cộng bao nhiêu, trừ bao nhiêu. */
+/** Totals row: how many files, how many lines added, how many removed. */
 function Totals(props: { files: ChangedFile[]; class?: string }) {
   const added = () => props.files.reduce((sum, file) => sum + file.added, 0);
   const removed = () => props.files.reduce((sum, file) => sum + file.removed, 0);
   return (
     <div class={`flex items-center gap-sm text-2xs tabular-nums ${props.class ?? ""}`}>
-      <span class="text-muted">{props.files.length} tệp</span>
+      <span class="text-muted">
+        {tn(props.files.length, S.chat.changes.fileOne, S.chat.changes.fileMany)}
+      </span>
       <span class="text-success">+{added()}</span>
       <span class="text-danger">−{removed()}</span>
     </div>

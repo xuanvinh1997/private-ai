@@ -1,10 +1,6 @@
-//! Vòng đời mô hình Ollama: `/api/tags`, `/api/ps`, `/api/show`, `/api/pull`, `/api/delete`.
-//!
-//! Đây là nửa mà không thư viện client nào mô hình hoá — `async-openai` không có, và
-//! LangChain cũng không, nên bản Python phải viết 273 dòng httpx thuần (`llm/admin.py`).
-//! Chính nó là lý do crate này dùng `reqwest` trực tiếp thay vì mượn một client OpenAI:
-//! nửa quan trọng nhất của một ứng dụng chạy mô hình tại chỗ nằm ở đây, không nằm ở
-//! `/v1/chat/completions`.
+//! Ollama model lifecycle: `/api/tags`, `/api/ps`, `/api/show`, `/api/pull`, `/api/delete`.
+//! No client library models this half, which is why the crate uses `reqwest` directly
+//! rather than borrowing an OpenAI client.
 
 use std::time::Duration;
 
@@ -21,24 +17,20 @@ use crate::model::{ModelDetails, ModelInfo, ModelState, PullProgress, RunningMod
 use crate::seam::ModelAdmin;
 use crate::wire::LineDecoder;
 
-/// Bao lâu thì coi như máy chủ đã chết, khi chỉ hỏi thăm sức khoẻ.
+/// How long before a health probe declares the server dead.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct OllamaAdmin {
     base_url: String,
     http: reqwest::Client,
-    /// Client riêng cho `/api/pull`, **không thời hạn**.
-    ///
-    /// Một bản tải mười gigabyte sống lâu hơn mọi ngân sách request hợp lý, nên nó không
-    /// được dùng chung client với phần còn lại. Huỷ đi bằng cách thả stream.
+    /// A separate, untimed client for `/api/pull`: a ten-gigabyte download outlives any sane request budget, and dropping the stream cancels it.
     pull_http: reqwest::Client,
 }
 
 impl OllamaAdmin {
     pub fn new(base_url: impl Into<String>, http: reqwest::Client) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
-        // `build()` chỉ hỏng khi hệ điều hành không dựng nổi TLS; khi ấy dùng lại client
-        // đã có còn hơn là ngã.
+        // `build()` only fails when the OS cannot set up TLS; reusing the existing client beats falling over.
         let pull_http = reqwest::Client::builder()
             .build()
             .unwrap_or_else(|_| http.clone());
@@ -78,7 +70,7 @@ impl OllamaAdmin {
         read_json(response).await
     }
 
-    /// `/api/show` cho một mô hình, dạng thô.
+    /// Raw `/api/show` for one model.
     async fn show_raw(&self, model: &str) -> Result<Value, LlmError> {
         self.post("/api/show", json!({ "model": model, "verbose": false }))
             .await
@@ -95,7 +87,7 @@ async fn read_json(response: reqwest::Response) -> Result<Value, LlmError> {
     serde_json::from_str(&text).map_err(LlmError::from)
 }
 
-/// Đọc năng lực từ một phản hồi `/api/show`, rơi xuống đoán theo tên khi máy chủ im lặng.
+/// Read capabilities from an `/api/show` response, falling back to name inference when the server is silent.
 fn details_from_show(model: &str, payload: &Value) -> ModelDetails {
     let context_window = payload
         .get("model_info")
@@ -112,8 +104,7 @@ fn details_from_show(model: &str, payload: &Value) -> ModelDetails {
         .map(str::to_string);
     let capabilities =
         Capabilities::from_reported(&reported, context_window).unwrap_or_else(|| {
-            // Bản Ollama cũ không có trường `capabilities`. Đoán theo tên **cộng** family,
-            // đúng như `admin.py:135-137` ghép chuỗi trước khi đoán.
+            // Older Ollama has no `capabilities` field. Guess from name *plus* family, as the Python side did.
             let mut inferred =
                 Capabilities::infer(&format!("{model} {}", family.clone().unwrap_or_default()));
             inferred.context_window = context_window;
@@ -165,13 +156,11 @@ impl ModelAdmin for OllamaAdmin {
                     .and_then(Value::as_str)
                     .is_some_and(|other| other == name)
             });
-            // Một POST `/api/show` cho mỗi mô hình. Đắt, nhưng đây là **nguồn có thẩm
-            // quyền** duy nhất: đoán theo tên sai đúng ở chỗ người dùng cần đúng nhất,
-            // là các bản fine-tune tự đặt tên.
+            // One POST `/api/show` per model. Expensive, but the only authoritative source: name guessing is wrongest for self-named fine-tunes.
             let details = match self.show_raw(&name).await {
                 Ok(payload) => details_from_show(&name, &payload),
                 Err(err) => {
-                    tracing::debug!(%err, model = %name, "/api/show không trả lời, đoán theo tên");
+                    tracing::debug!(%err, model = %name, "/api/show did not answer, guessing from the name");
                     let family = item
                         .get("details")
                         .and_then(|d| d.get("family"))
@@ -255,8 +244,7 @@ impl ModelAdmin for OllamaAdmin {
         }
         .boxed();
 
-        // Máy trạng thái nhỏ: gửi request → đọc byte → cắt dòng → giải mã. Không dùng
-        // `pump` vì `pump` nói bằng `StreamChunk`, còn ở đây đơn vị là tiến trình tải.
+        // Small state machine: send, read bytes, split lines, decode. Not `pump`, which speaks `StreamChunk` while the unit here is download progress.
         enum State {
             Connecting(futures::future::BoxFuture<'static, Result<reqwest::Response, LlmError>>),
             Reading {
@@ -332,8 +320,7 @@ impl ModelAdmin for OllamaAdmin {
     }
 
     async fn unload(&self, model: &str) -> Result<(), LlmError> {
-        // Ollama không có động từ "nhả". `keep_alive: 0` trên `/api/generate` là cách duy
-        // nhất, và nó là đường chính thức chứ không phải mẹo.
+        // Ollama has no "unload" verb; `keep_alive: 0` on `/api/generate` is the official way, not a trick.
         self.post("/api/generate", json!({ "model": model, "keep_alive": 0 }))
             .await?;
         Ok(())
@@ -361,7 +348,7 @@ fn decode_pull_line(line: &str) -> Result<Option<PullProgress>, LlmError> {
         return Ok(None);
     }
     let Ok(value) = serde_json::from_str::<Value>(trimmed) else {
-        tracing::warn!(line = trimmed, "dòng tiến trình không đọc được, bỏ qua");
+        tracing::warn!(line = trimmed, "unreadable progress line, skipping");
         return Ok(None);
     };
     if let Some(message) = value.get("error").and_then(Value::as_str) {

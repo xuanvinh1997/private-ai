@@ -1,4 +1,4 @@
-//! Server MCP: xem trạng thái, cắm thêm, và danh mục dựng sẵn.
+//! MCP servers: viewing status, adding new ones, and the built-in catalogue.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +9,7 @@ use crate::AppState;
 use crate::harness::Harness;
 use crate::protocol::{McpCatalogEntry, McpEnvVar, McpServerInputWire, McpServerView};
 
-/// Một dòng để hiện: lệnh đầy đủ, hoặc URL.
+/// One line to display: the full command, or the URL.
 fn target(transport: &McpTransport) -> String {
     match transport {
         McpTransport::Stdio { command, args, .. } => {
@@ -30,12 +30,8 @@ fn transport_name(transport: &McpTransport) -> &'static str {
     }
 }
 
-/// Gộp kho với trạng thái sống của hub.
-///
-/// Hai nguồn, và mỗi nguồn biết đúng một nửa: kho biết người dùng **muốn** gì (`enabled`,
-/// transport, đích), hub biết chuyện **thật sự** đang xảy ra (nối được chưa, cắm được bao
-/// nhiêu tool, hỏng vì sao). Một server bị tắt không xuất hiện trong `status()` — nên
-/// `"disabled"` là trạng thái suy từ kho, không phải từ hub.
+/// Merge the store with the hub's live state: the store knows what the user wants, the hub what is actually
+/// happening. A disabled server never appears in `status()`, so `"disabled"` is inferred from the store.
 async fn views(harness: &Harness) -> Result<Vec<McpServerView>, String> {
     let store = harness
         .ctx
@@ -79,7 +75,7 @@ async fn views(harness: &Harness) -> Result<Vec<McpServerView>, String> {
         .collect())
 }
 
-/// Áp cấu hình lên hub đang chạy. **Đường duy nhất.**
+/// Apply configuration to the running hub. The only path.
 async fn reapply(harness: &Harness) -> Result<(), String> {
     let store = harness
         .ctx
@@ -94,9 +90,8 @@ async fn reapply(harness: &Harness) -> Result<(), String> {
         .map_err(|err| err.to_string())?;
     for (name, outcome) in outcomes {
         if let Err(err) = outcome {
-            // Một server hỏng không làm hỏng lệnh: những server khác đã cắm xong, và
-            // giao diện đọc lý do từ `status()` ngay sau đây.
-            tracing::warn!(server = %name, "không cắm được: {err}");
+            // One broken server does not fail the command; the UI reads the reason from `status()` right after.
+            tracing::warn!(server = %name, "could not attach: {err}");
         }
     }
     Ok(())
@@ -108,11 +103,8 @@ pub async fn list_mcp_servers(state: State<'_, AppState>) -> Result<Vec<McpServe
     views(&harness).await
 }
 
-/// Danh mục dựng sẵn, kèm **kiểm điều kiện trên máy này**.
-///
-/// `requires` do `pai-mcp` khai là `node`/`python`/`docker`; việc dò xem chúng có thật hay
-/// không là của tầng này, và phải làm **trước** khi người dùng bấm cắm. Không dò thì họ
-/// bấm, chờ hai mươi giây, rồi nhìn một server `failed` không nói được vì sao.
+/// The built-in catalogue, with prerequisites checked on this machine before the user clicks; without the
+/// check they wait twenty seconds for a `failed` server that explains nothing.
 #[tauri::command]
 pub async fn mcp_catalog(state: State<'_, AppState>) -> Result<Vec<McpCatalogEntry>, String> {
     let _ = state;
@@ -146,10 +138,8 @@ pub async fn mcp_catalog(state: State<'_, AppState>) -> Result<Vec<McpCatalogEnt
         .collect())
 }
 
-/// Có lệnh này trong `PATH` không.
-///
-/// Dùng `which`/`where` thay vì tự duyệt `PATH`: chúng biết những chuyện mà một vòng lặp
-/// tự viết không biết — alias của shell, `PATHEXT` trên Windows, và bit thi hành.
+/// Whether this command is on `PATH`; `which`/`where` know about shell aliases, Windows `PATHEXT` and the
+/// execute bit, which a hand-rolled loop does not.
 fn on_path(tool: &str) -> bool {
     let finder = if cfg!(windows) { "where" } else { "which" };
     std::process::Command::new(finder)
@@ -161,8 +151,7 @@ fn on_path(tool: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Một hàng cụ thể sau khi đã áp. Vắng mặt nghĩa là kho vừa nhận nó mà `merge` lại không
-/// trả về — không nên xảy ra, và im lặng ở đó sẽ hiện thành một hàng biến mất khỏi bảng.
+/// One row after applying; absence means the store accepted it but `merge` did not return it, which would show as a vanished row.
 fn one(views: Vec<McpServerView>, name: &str) -> Result<McpServerView, String> {
     views
         .into_iter()
@@ -214,8 +203,7 @@ pub async fn remove_mcp_server(name: String, state: State<'_, AppState>) -> Resu
         .require::<McpConfig>()
         .map_err(|err| err.to_string())?;
     if !store.remove(&name).map_err(|err| err.to_string())? {
-        // Server khai trong `patch.yaml` không nằm trong kho, nên không xoá được từ đây.
-        // Nói ra chỗ phải sửa, thay vì báo "không tìm thấy" rồi để họ tự đoán.
+        // Servers declared in `patch.yaml` are not in the store, so say where to edit instead of reporting "not found".
         return Err(format!(
             "`{name}` không có trong kho — nếu nó được khai trong patch.yaml thì phải sửa ở đó"
         ));

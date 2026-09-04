@@ -1,10 +1,11 @@
 import { For, Show } from "solid-js";
+import { S, t, tn } from "../../lib/i18n";
 import type { ToolCall } from "../../lib/protocol";
 import { useTranscriptActions } from "../../lib/transcriptActions";
 import { Disclosure, FilePath } from "../primitives";
 import { ToolShell } from "./ToolCard";
 
-/** Bao nhiêu khớp hiện ngay không cần mở. Đủ để nhận ra kết quả có đúng hướng không. */
+/** How many matches show without expanding: enough to tell whether the search went the right way. */
 const PEEK = 3;
 
 function pattern(call: ToolCall): string {
@@ -14,12 +15,7 @@ function pattern(call: ToolCall): string {
   return typeof raw === "string" ? raw : "";
 }
 
-/**
- * Thẻ `grep`: nhóm theo tệp, mỗi nhóm vài dòng khớp.
- *
- * `truncated` được nói thẳng ra thay vì im lặng cắt: "không tìm thấy gì khác" và "đã
- * ngừng đếm" là hai kết luận rất khác nhau cho người đang đọc.
- */
+/** The `grep` card, grouped by file; `truncated` is stated, since "no more" and "stopped counting" differ. */
 export function GrepCard(props: { call: ToolCall }) {
   const search = () => props.call.meta?.search;
   const groups = () => search()?.groups ?? [];
@@ -33,7 +29,13 @@ export function GrepCard(props: { call: ToolCall }) {
           <Show when={search()}>
             {(meta) => (
               <span class="shrink-0 tabular-nums text-faint">
-                {meta().total} khớp · {groups().length} tệp{meta().truncated ? " · đã cắt bớt" : ""}
+                {tn(meta().total, S.tools.search.oneMatch, S.tools.search.manyMatches)}
+                {" · "}
+                {tn(groups().length, S.tools.search.oneFile, S.tools.search.manyFiles)}
+                <Show when={meta().truncated}>
+                  {" · "}
+                  {t(S.tools.search.truncated)}
+                </Show>
               </span>
             )}
           </Show>
@@ -41,7 +43,11 @@ export function GrepCard(props: { call: ToolCall }) {
       }
     >
       <Show when={groups().length > 0}>
-        <Disclosure label="Kết quả" hint={`${groups().length} tệp`} open>
+        <Disclosure
+          label={t(S.tools.card.result)}
+          hint={tn(groups().length, S.tools.search.oneFile, S.tools.search.manyFiles)}
+          open
+        >
           <ul class="flex flex-col gap-2xs">
             <For each={groups()}>
               {(group) => (
@@ -56,7 +62,7 @@ export function GrepCard(props: { call: ToolCall }) {
                   </div>
                   <Show when={group.matches.length > PEEK}>
                     <p class="mt-3xs text-2xs text-faint">
-                      còn {group.matches.length - PEEK} khớp nữa trong tệp này
+                      {t(S.tools.search.more, { n: group.matches.length - PEEK })}
                     </p>
                   </Show>
                 </li>
@@ -69,12 +75,7 @@ export function GrepCard(props: { call: ToolCall }) {
   );
 }
 
-/**
- * Một dòng khớp.
- *
- * Cả dòng bấm được chứ không chỉ đường dẫn ở trên: người ta tìm bằng grep để đi tới một
- * *chỗ*, và cái chỗ đó là dòng này chứ không phải đầu tệp.
- */
+/** One matching line; the whole row is clickable, because the place wanted is this line, not the file. */
 function MatchRow(props: { path: string; line: number; text: string }) {
   const actions = useTranscriptActions();
   const open = () => actions.openFile;
@@ -92,7 +93,7 @@ function MatchRow(props: { path: string; line: number; text: string }) {
         <button
           type="button"
           onClick={() => go()(props.path, props.line)}
-          title={`Mở ${props.path} ở dòng ${props.line}`}
+          title={t(S.tools.openFileAt, { path: props.path, n: props.line })}
           class="flex w-full items-start gap-sm rounded-btn text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
         >
           <span class="w-10 shrink-0 text-right text-faint tabular-nums select-none">{props.line}</span>
@@ -103,7 +104,7 @@ function MatchRow(props: { path: string; line: number; text: string }) {
   );
 }
 
-/** Thẻ `glob`: chỉ có danh sách đường dẫn, không có dòng nội dung nào. */
+/** The `glob` card: a list of paths only, with no content lines. */
 export function GlobCard(props: { call: ToolCall }) {
   const search = () => props.call.meta?.search;
   const paths = () => search()?.paths ?? [];
@@ -117,7 +118,11 @@ export function GlobCard(props: { call: ToolCall }) {
           <Show when={search()}>
             {(meta) => (
               <span class="shrink-0 tabular-nums text-faint">
-                {meta().total} tệp{meta().truncated ? " · đã cắt bớt" : ""}
+                {tn(meta().total, S.tools.search.oneFile, S.tools.search.manyFiles)}
+                <Show when={meta().truncated}>
+                  {" · "}
+                  {t(S.tools.search.truncated)}
+                </Show>
               </span>
             )}
           </Show>
@@ -125,7 +130,7 @@ export function GlobCard(props: { call: ToolCall }) {
       }
     >
       <Show when={paths().length > 0}>
-        <Disclosure label="Đường dẫn" hint={`${paths().length}`}>
+        <Disclosure label={t(S.tools.search.paths)} hint={`${paths().length}`}>
           <ul class="max-h-56 overflow-auto rounded-panel bg-surface px-sm py-2xs">
             <For each={paths()}>
               {(path) => (

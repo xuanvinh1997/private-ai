@@ -1,10 +1,6 @@
-//! Những bất biến của đồ thị mã nguồn.
-//!
-//! Một chỉ mục ký hiệu sai thì mô hình đọc nhầm chỗ và tự nhận ra. Một **đồ thị** sai thì
-//! tệ hơn: nó trả lời "không ai gọi hàm này" bằng một danh sách rỗng trông y hệt sự thật,
-//! và mô hình xoá hàm đi. Vì thế mỗi bài ở đây khẳng định **một cạnh cụ thể**, chứ không
-//! khẳng định "có nhiều hơn không cạnh" — một phép đếm như thế vẫn xanh khi mọi cạnh đều
-//! nối sai chỗ.
+//! Invariants of the code graph.
+//! A wrong graph answers "nobody calls this" with an empty list that looks like the truth,
+//! so every test here asserts one specific edge rather than a count of edges.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -77,7 +73,7 @@ fn bench(files: &[(&str, &str)]) -> (TempDir, CodeIndex) {
 
 type Edges = Vec<(GraphNode, EdgeKind, GraphNode)>;
 
-/// Cạnh `src —kind→ dst` có mặt không, so bằng tên.
+/// Whether the edge `src -kind-> dst` is present, matched by name.
 fn has(edges: &Edges, src: &str, kind: EdgeKind, dst: &str) -> bool {
     edges
         .iter()
@@ -96,7 +92,7 @@ fn call(name: &str, args: Value) -> Invocation {
     Invocation::new(ToolName::from(name), "c1", map)
 }
 
-/// Bài trung tâm: đúng những cạnh này, ở đúng ba ngôn ngữ.
+/// The central test: exactly these edges, in exactly these three languages.
 #[tokio::test]
 async fn trich_dung_cac_canh_cu_the_o_ba_ngon_ngu() {
     let (dir, index) = bench(&[("a.rs", A_RS), ("b.ts", B_TS), ("c.py", C_PY)]);
@@ -108,13 +104,13 @@ async fn trich_dung_cac_canh_cu_the_o_ba_ngon_ngu() {
         has(&rust, "main", EdgeKind::Calls, "helper"),
         "thiếu `main —calls→ helper`: {rust:#?}"
     );
-    // Module chứa hàm. Đỉnh module mang tên thân tệp và không bao giờ lọt ra `symbol_search`.
+    // Module contains function; the module node is named for the file stem and never leaks to `symbol_search`.
     assert!(
         has(&rust, "a", EdgeKind::Contains, "main"),
         "thiếu `a —contains→ main`: {rust:#?}"
     );
     assert!(has(&rust, "a", EdgeKind::Contains, "helper"), "{rust:#?}");
-    // `helper(x: usize) -> usize` không nhắc tới kiểu nào của kho, nên không có cạnh thừa.
+    // `helper(x: usize) -> usize` names no repo type, so there is no spurious edge.
     assert_eq!(rust.len(), 3, "{rust:#?}");
 
     let ts = index.edges_of_file(&root.join("b.ts")).unwrap();
@@ -126,7 +122,7 @@ async fn trich_dung_cac_canh_cu_the_o_ba_ngon_ngu() {
         has(&ts, "B", EdgeKind::Contains, "chay"),
         "class chứa method: {ts:#?}"
     );
-    // Phương thức của `B` gọi một hàm cùng tệp; chủ nhà phải là `chay`, không phải `B`.
+    // A method of `B` calls a same-file function; the owner must be `chay`, not `B`.
     assert!(has(&ts, "chay", EdgeKind::Calls, "tinh"), "{ts:#?}");
     assert!(
         !has(&ts, "B", EdgeKind::Calls, "tinh"),
@@ -142,8 +138,7 @@ async fn trich_dung_cac_canh_cu_the_o_ba_ngon_ngu() {
     assert!(has(&py, "chay", EdgeKind::Calls, "tinh"), "{py:#?}");
     assert!(has(&py, "c", EdgeKind::Contains, "tinh"), "{py:#?}");
 
-    // `A` và `B` có mặt trong cả `b.ts` lẫn `c.py`. Bậc "cùng tệp" phải thắng, nếu không
-    // một lớp Python kế thừa một lớp TypeScript — vô nghĩa, và trông vẫn như một cạnh thật.
+    // `A` and `B` exist in both `b.ts` and `c.py`; the same-file tier must win, or Python extends TypeScript.
     let (_, _, cha) = py
         .iter()
         .find(|(a, k, _)| a.name == "B" && *k == EdgeKind::Extends)
@@ -152,9 +147,7 @@ async fn trich_dung_cac_canh_cu_the_o_ba_ngon_ngu() {
     assert_eq!(count(&py, "B", EdgeKind::Extends, "A"), 1, "{py:#?}");
 }
 
-/// Quét lại một tệp đã sửa phải **xoá hết** cạnh cũ của nó, và không đụng tệp khác.
-///
-/// Không có bài này thì đồ thị lớn dần bằng rác, và rác trong đồ thị trông y hệt sự thật.
+/// Rescanning an edited file must drop all its old edges and touch no other file, or the graph fills with junk.
 #[tokio::test]
 async fn quet_lai_mot_tep_don_sach_canh_cu_cua_dung_tep_do() {
     let (dir, index) = bench(&[
@@ -166,7 +159,7 @@ async fn quet_lai_mot_tep_don_sach_canh_cu_cua_dung_tep_do() {
 
     let alpha = root.join("alpha.rs");
     let beta = root.join("beta.rs");
-    // Hai cạnh `contains` từ đỉnh module, một cạnh `calls`. Đếm hàng, không đếm "có".
+    // Two `contains` edges from the module node and one `calls`; count rows, not presence.
     assert_eq!(index.edges_of_file(&alpha).unwrap().len(), 3);
     assert_eq!(index.edges_of_file(&beta).unwrap().len(), 3);
     assert!(has(
@@ -196,14 +189,14 @@ async fn quet_lai_mot_tep_don_sach_canh_cu_cua_dung_tep_do() {
     assert_eq!(index.edge_count().unwrap(), 4);
 }
 
-/// Một tệp mới xuất hiện phải nối được vào cạnh đã nằm chờ từ lần quét trước.
+/// A newly appearing file must connect to edges left pending by an earlier scan.
 #[tokio::test]
 async fn canh_lien_tep_xuat_hien_khi_dich_cua_no_duoc_them_vao() {
     let (dir, index) = bench(&[("goi.rs", "pub fn goi() { dich(); }\n")]);
     let root = dir.path().canonicalize().unwrap();
     index.sync().await.unwrap();
     let goi = root.join("goi.rs");
-    // `dich` chưa tồn tại ở đâu cả, nên tham chiếu tới nó chưa thành cạnh.
+    // `dich` exists nowhere yet, so the reference to it is not an edge.
     assert!(!has(
         &index.edges_of_file(&goi).unwrap(),
         "goi",
@@ -224,10 +217,7 @@ async fn canh_lien_tep_xuat_hien_khi_dich_cua_no_duoc_them_vao() {
     );
 }
 
-/// Quyết định phân giải tên, khoá lại nguyên văn.
-///
-/// Cùng tệp thắng tuyệt đối; còn nhiều ứng viên trong một bậc thì **ghi cả n**; quá trần
-/// thì bỏ hẳn. Đổi bất kỳ vế nào trong ba vế đó cũng phải đổi bài này.
+/// The name-resolution decision, locked down: same file always wins, ties write every candidate, over the cap writes none.
 #[tokio::test]
 async fn ten_trung_o_nhieu_tep_theo_dung_bac_uu_tien() {
     let (dir, index) = bench(&[
@@ -247,8 +237,7 @@ async fn ten_trung_o_nhieu_tep_theo_dung_bac_uu_tien() {
     let root = dir.path().canonicalize().unwrap();
     index.sync().await.unwrap();
 
-    // Bậc 1 — cùng tệp: `rieng` có ba khai báo trong kho, nhưng một trong số đó ở ngay
-    // đây, nên đúng **một** cạnh được ghi và nó trỏ vào cái ở đây.
+    // Tier 1, same file: `rieng` has three declarations, but the local one wins and only that edge is written.
     let mot = index.edges_of_file(&root.join("mot/goi.rs")).unwrap();
     assert_eq!(count(&mot, "goi", EdgeKind::Calls, "rieng"), 1, "{mot:#?}");
     let (_, _, dich) = mot
@@ -258,17 +247,15 @@ async fn ten_trung_o_nhieu_tep_theo_dung_bac_uu_tien() {
     assert!(dich.path.ends_with("goi.rs"), "{dich:#?}");
     assert_eq!(count(&mot, "cuc_bo", EdgeKind::Calls, "rieng"), 1);
 
-    // Bậc 2 — cùng thư mục thì không còn; `ba/xa.rs` phải rơi xuống bậc "toàn kho", nơi
-    // `rieng` có ba ứng viên. Cả ba được ghi: bỏ hết thì mô hình đọc thành "không ai gọi",
-    // và sai theo hướng đó đắt hơn ba cạnh trong đó có một cạnh đúng.
+    // With no same-directory match, `ba/xa.rs` falls to the whole-store tier and all three candidates are written.
     let ba = index.edges_of_file(&root.join("ba/xa.rs")).unwrap();
     assert_eq!(count(&ba, "xa", EdgeKind::Calls, "rieng"), 3, "{ba:#?}");
 
-    // Quá trần bốn ứng viên thì bỏ hẳn: năm cạnh từ một chỗ gọi không thu hẹp được gì.
+    // Past four candidates the reference is dropped: five edges from one call site narrow nothing.
     assert_eq!(count(&mot, "goi", EdgeKind::Calls, "nhieu"), 0, "{mot:#?}");
 }
 
-/// `depth` và `limit` là trần cứng, và việc bị cắt phải được nói ra.
+/// `depth` and `limit` are hard ceilings, and being cut has to be reported.
 #[tokio::test]
 async fn lan_can_bi_chan_o_tran_va_noi_ra_rang_da_cat() {
     let (_dir, index) = bench(&[("a.rs", A_RS), ("b.ts", B_TS), ("c.py", C_PY)]);
@@ -284,7 +271,7 @@ async fn lan_can_bi_chan_o_tran_va_noi_ra_rang_da_cat() {
     let nhieu = index.neighborhood("main", 1, MAX_NODES + 1).await.unwrap();
     assert!(nhieu.truncated, "xin quá trần số đỉnh cũng là một lần cắt");
 
-    // Trong trần thì không được kêu bị cắt — nếu không mô hình học cách bỏ qua cờ đó.
+    // Within the caps nothing may claim truncation, or the model learns to ignore the flag.
     let vua = index.neighborhood("main", 1, 60).await.unwrap();
     assert!(!vua.truncated, "{vua:#?}");
     assert!(
@@ -299,7 +286,7 @@ async fn lan_can_bi_chan_o_tran_va_noi_ra_rang_da_cat() {
         "một cạnh có đầu nằm ngoài tập đỉnh là một cạnh không vẽ được"
     );
 
-    // Không có ký hiệu nào tên như thế thì trả về rỗng, không phải một lát cắt của ai đó.
+    // An unknown name returns empty, not somebody else's slice.
     let khong = index.neighborhood("khong_ton_tai", 2, 60).await.unwrap();
     assert!(khong.nodes.is_empty() && khong.edges.is_empty());
     assert!(!khong.truncated);
@@ -327,7 +314,7 @@ async fn truy_vet_tra_ve_duong_di_ca_hai_chieu() {
         .collect();
     assert_eq!(ten, vec![vec!["ba", "hai", "mot"]], "{ten:?}");
 
-    // Trần độ sâu cắt đường đi chứ không kéo dài nó.
+    // The depth ceiling shortens paths rather than lengthening them.
     let ngan = index.callees("mot", 1).await.unwrap();
     assert_eq!(ngan.len(), 1);
     assert_eq!(ngan[0].len(), 2, "{ngan:#?}");
@@ -363,16 +350,14 @@ async fn ban_do_kien_truc_dem_dung_va_khong_ke_dinh_module() {
     );
 }
 
-/// Đỉnh module chỉ sống trong đồ thị. Lọt ra `symbol_search` hay `outline` là chỉ mục nói
-/// dối về số lượng khai báo trong kho.
+/// Module nodes live only in the graph; leaking into `symbol_search` or `outline` misreports the declaration count.
 #[tokio::test]
 async fn dinh_module_khong_lot_ra_chi_muc_ky_hieu() {
     let (dir, index) = bench(&[("a.rs", A_RS)]);
     index.sync().await.unwrap();
     let root = dir.path().canonicalize().unwrap();
 
-    // `a` là tên đỉnh module của `a.rs`. Nó là cái tên duy nhất ở đây có thể lọt ra, nên
-    // không thấy nó trong kết quả nghĩa là bộ lọc đang chặn đúng chỗ.
+    // `a` is the module node of `a.rs`, the only name here that could leak, so its absence proves the filter.
     let hits = index.search("a", None, 20).await.unwrap();
     assert!(
         hits.iter().all(|symbol| symbol.name != "a"),
@@ -383,8 +368,7 @@ async fn dinh_module_khong_lot_ra_chi_muc_ky_hieu() {
     assert_eq!(index.symbol_count().unwrap(), 2);
 }
 
-/// Ba tool mới phải đi qua **sổ đăng ký thật**, kể cả bước giải mã tên `__`, và kết quả
-/// phải mang lời cảnh báo rằng cạnh là suy đoán.
+/// The three new tools must go through the real registry, `__` name decoding included, and carry the name-based notice.
 #[tokio::test]
 async fn ba_tool_do_thi_dang_ky_duoc_va_noi_ra_rang_canh_la_suy_doan() {
     let dir = TempDir::new().unwrap();
@@ -409,7 +393,7 @@ async fn ba_tool_do_thi_dang_ky_duoc_va_noi_ra_rang_canh_la_suy_doan() {
         assert!(names.iter().any(|name| name == wanted), "{names:?}");
     }
 
-    // Tên đi tới sổ đăng ký ở dạng wire, đúng như mô hình gửi.
+    // Names reach the registry in wire form, exactly as the model sends them.
     for (wire, args) in [
         ("code__graph", json!({ "symbol": "main" })),
         (
@@ -452,8 +436,7 @@ async fn ba_tool_do_thi_deu_chi_doc_va_khong_dang_tin() {
     }
 }
 
-/// Số đo trên chính kho này. Không phải một khẳng định về tốc độ — nó là chỗ con số được
-/// in ra để người đọc báo cáo so được với lần trước.
+/// A measurement over this repo; not a speed assertion, just where the number gets printed.
 #[tokio::test]
 async fn do_tren_chinh_kho_nay() {
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -486,17 +469,11 @@ async fn do_tren_chinh_kho_nay() {
         hai.parsed,
         lai.elapsed().as_millis()
     );
-    // Cố ý **không** khẳng định `hai.parsed == 0` ở đây, dù đó là bất biến trung tâm của
-    // crate. Bài này đo trên kho mã đang sống: bất cứ ai — một trình soạn thảo đang mở,
-    // một `cargo fmt`, một tiến trình khác — chạm vào một tệp giữa hai lần quét là bài
-    // này đỏ vì một lý do không liên quan gì tới thứ nó đo. Bất biến ấy đã được khoá ở
-    // `tests/index.rs`, trên một cây trong tempdir mà không ai khác chạm vào; khoá nó hai
-    // lần chỉ thêm một nguồn nhiễu.
+    // Deliberately no `hai.parsed == 0` here: this runs on the live repo, where anything touching a file makes it flaky.
     assert!(report.scanned > 100, "{report:?}");
     assert!(stats.edges > 0);
 
-    // Riêng `crates/`: đây là cái so được với số của bộ chỉ mục phẳng trước đây, vì lúc
-    // đó `app/` và `ui/` chưa nằm trong phép đo.
+    // `crates/` alone, the only figure comparable with the earlier flat indexer's number.
     let chi_crates = repo.join("crates");
     let hep = CodeIndex::in_memory(FileRoots::new([chi_crates], [])).unwrap();
     let bat_dau = std::time::Instant::now();

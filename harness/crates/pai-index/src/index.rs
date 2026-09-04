@@ -1,21 +1,6 @@
-//! Chỉ mục: seam, và bản cài đặt chạy trên đĩa của chính máy này.
-//!
-//! Bất biến của tệp này gọn trong một câu: **một tệp không đổi thì không được parse
-//! lại.** Mọi thứ khác — bảng ngôn ngữ, truy vấn, FTS5 — chỉ quyết định chỉ mục *tốt* đến
-//! đâu; câu đó quyết định nó có được bật hay không. Một lần quét lại toàn repo cho mỗi
-//! câu hỏi là thứ khiến người ta tắt tính năng đi, và một tính năng bị tắt thì tốt đến
-//! đâu cũng bằng không.
-//!
-//! Vì thế lần quét thường xuyên nhất chỉ là một loạt `stat`: đọc `mtime` và kích thước,
-//! so với bảng `files`, và dừng ở đó cho mọi tệp không đổi. Parse chỉ xảy ra ở phần chênh.
-//!
-//! # Trần, và vì sao chúng là trần cứng chứ không phải mặc định
-//!
-//! Ba con số dưới đây — [`MAX_DEPTH`], [`MAX_NODES`], [`MAX_PATHS`] — không nhận giá trị
-//! từ người gọi, chỉ cắt xuống. Một đỉnh bậc bốn trăm trả về nguyên vẹn là một quả cầu
-//! đen trên màn hình và mười nghìn token trong cửa sổ ngữ cảnh, và cả hai hậu quả đó đều
-//! xảy ra **sau** khi lời gọi đã thành công, tức là quá muộn để người gọi tự sửa. Cái duy
-//! nhất người gọi cần biết là nó đã bị cắt, và [`Neighborhood::truncated`] nói ra.
+//! The index seam, and the on-disk implementation for this machine.
+//! One invariant: an unchanged file is never re-parsed, so the common scan is just `stat`.
+//! The three caps below are hard ceilings, not defaults; callers only learn they were cut.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -35,39 +20,36 @@ use crate::lang::{self, Lang};
 use crate::store::Store;
 use crate::symbol::{Symbol, SymbolKind};
 
-/// Xa hơn bốn bước thì lát cắt không còn là "quanh ký hiệu này" nữa mà là "gần hết repo",
-/// và một đồ thị bằng cả repo trả lời được đúng bằng số câu hỏi mà không có đồ thị nào.
+/// Past four hops the slice stops being "around this symbol" and becomes "most of the repo".
 pub const MAX_DEPTH: u32 = 4;
-/// Trần số đỉnh của một lân cận.
+/// Node ceiling for one neighborhood.
 pub const MAX_NODES: usize = 200;
-/// Bao nhiêu đỉnh khi người gọi không nói gì.
+/// How many nodes when the caller says nothing.
 pub const DEFAULT_NODES: usize = 60;
-/// Trần số đường đi của một lần truy vết.
+/// Path ceiling for one trace.
 pub const MAX_PATHS: usize = 40;
-/// Trần số lần mở rộng của một lần truy vết. Một đồ thị có chu trình dày làm số đường đi
-/// nổ theo hàm mũ trước khi kịp chạm [`MAX_PATHS`]; cái này chặn thời gian, cái kia chặn
-/// kích thước kết quả.
+/// Expansion ceiling for one trace: cycles explode before [`MAX_PATHS`] is reached, so this bounds time, that bounds size.
 const TRACE_BUDGET: usize = 4_000;
-/// Bao nhiêu thư mục và bao nhiêu ký hiệu trung tâm trong một bản đồ kiến trúc.
+/// How many directories and central symbols an architecture map holds.
 const OVERVIEW_DIRS: usize = 40;
 const OVERVIEW_CENTRAL: usize = 20;
 
-/// Kết quả một lần đồng bộ. Đây là số để đọc log bằng, không phải để mô hình đọc.
+/// The result of one sync: numbers for reading logs, not for the model.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SyncReport {
-    /// Số tệp mã nguồn nhìn thấy được sau khi đã lọc `.gitignore`.
+    /// Source files visible after `.gitignore` filtering.
     pub scanned: usize,
-    /// Số tệp thật sự phải parse lại lần này.
+    /// Files actually re-parsed this time.
     pub parsed: usize,
-    /// Số tệp đã biến mất khỏi đĩa và vừa bị quên.
+    /// Files gone from disk and just forgotten.
     pub forgotten: usize,
-    /// Số cạnh trong đồ thị sau lần quét.
+    /// Edges in the graph after the scan.
     pub edges: usize,
 }
 
 #[async_trait]
 pub trait SymbolIndex: Send + Sync + 'static {
-    /// Kéo chỉ mục về khớp với đĩa. Tăng dần, nên gọi trước mỗi lần tra là hợp lý.
+    /// Bring the index back in line with disk; incremental, so calling it before each query is fine.
     async fn sync(&self) -> Result<SyncReport, IndexError>;
 
     async fn search(
@@ -77,12 +59,10 @@ pub trait SymbolIndex: Send + Sync + 'static {
         limit: usize,
     ) -> Result<Vec<Symbol>, IndexError>;
 
-    /// `Ok(None)` nghĩa là tệp không nằm trong chỉ mục — khác hẳn `Ok(Some(vec![]))`, là
-    /// một tệp đã quét và thật sự không có ký hiệu nào.
+    /// `Ok(None)` means the file is not indexed; `Ok(Some(vec![]))` means indexed with no symbols.
     async fn outline(&self, path: &Path) -> Result<Option<Vec<Symbol>>, IndexError>;
 
-    /// Lát cắt quanh một ký hiệu. `depth` và `limit` đều bị cắt xuống trần cứng, và
-    /// [`Neighborhood::truncated`] nói ra khi điều đó xảy ra.
+    /// A slice around one symbol; `depth` and `limit` are clamped, and `truncated` says so.
     async fn neighborhood(
         &self,
         symbol: &str,
@@ -90,22 +70,18 @@ pub trait SymbolIndex: Send + Sync + 'static {
         limit: usize,
     ) -> Result<Neighborhood, IndexError>;
 
-    /// Các đường đi **ngược** theo cạnh `calls`: ai gọi, rồi ai gọi cái đó.
+    /// Paths backwards along `calls`: who calls this, and who calls them.
     async fn callers(&self, symbol: &str, depth: u32) -> Result<Vec<Vec<GraphNode>>, IndexError>;
 
-    /// Các đường đi **xuôi** theo cạnh `calls`.
+    /// Paths forwards along `calls`.
     async fn callees(&self, symbol: &str, depth: u32) -> Result<Vec<Vec<GraphNode>>, IndexError>;
 
-    /// Bản đồ kiến trúc: thư mục, ngôn ngữ, ký hiệu bậc cao nhất.
+    /// The architecture map: directories, languages, highest-degree symbols.
     async fn overview(&self) -> Result<Overview, IndexError>;
 
     async fn stats(&self) -> Result<Stats, IndexError>;
 
-    /// Đường dẫn khớp một truy vấn hoàn thành `@`, đã xếp hạng.
-    ///
-    /// Tách khỏi [`SymbolIndex::search`] vì hai câu hỏi khác nhau: `search` tìm **ký hiệu**
-    /// và xếp theo BM25, còn đây tìm **tệp** và xếp theo chỗ khớp rơi vào tên hay vào thư
-    /// mục. Xem [`crate::complete`].
+    /// Ranked paths for an `@` completion query; separate from `search`, which ranks symbols by BM25.
     async fn paths(&self, query: &str, limit: usize) -> Result<Vec<String>, IndexError>;
 }
 
@@ -131,7 +107,7 @@ impl CodeIndex {
         CodeIndex::with_store(roots, Store::open(db)?)
     }
 
-    /// Cho bài kiểm chứng, và cho phiên không cần sống qua lần khởi động sau.
+    /// For tests, and for sessions that need not outlive this run.
     pub fn in_memory(roots: FileRoots) -> Result<CodeIndex, IndexError> {
         CodeIndex::with_store(roots, Store::open_in_memory()?)
     }
@@ -146,11 +122,7 @@ impl CodeIndex {
         })
     }
 
-    /// Số lần một tệp thật sự đi qua tree-sitter kể từ lúc mở.
-    ///
-    /// Số này là cách duy nhất nhìn thấy được rằng chỉ mục đang tăng dần chứ không đang
-    /// âm thầm quét lại toàn bộ: hai lần `sync` liên tiếp trên một cây không đổi phải để
-    /// nó nguyên. Bài kiểm chứng soi vào đây, và log cũng vậy.
+    /// How many files went through tree-sitter since opening: the only visible proof the index is incremental.
     pub fn parse_count(&self) -> u64 {
         self.parses.load(Ordering::Relaxed)
     }
@@ -163,11 +135,7 @@ impl CodeIndex {
         self.store.edge_count()
     }
 
-    /// Cạnh quan sát được **trong một tệp**, đã kèm cả hai đầu.
-    ///
-    /// Nó không nằm trên seam vì mô hình không hỏi câu này; nó nằm ở đây vì một bài kiểm
-    /// chứng phải khẳng định được một cạnh **cụ thể** tồn tại, chứ không phải "có hơn
-    /// không cạnh".
+    /// Edges observed within one file, both ends attached; off the seam because only tests ask this.
     pub fn edges_of_file(
         &self,
         path: &Path,
@@ -183,8 +151,7 @@ impl SymbolIndex for CodeIndex {
         let store = self.store.clone();
         let extractor = self.extractor.clone();
         let parses = self.parses.clone();
-        // Đi cây thư mục, đọc tệp và parse đều là việc chặn, và một repo lớn thì chặn
-        // lâu. Ra khỏi runtime, nếu không cả reactor đứng trong lúc quét.
+        // Walking, reading and parsing all block, and a big repo blocks for a long time.
         blocking(move || scan(&roots, &store, &extractor, &parses)).await
     }
 
@@ -202,9 +169,7 @@ impl SymbolIndex for CodeIndex {
     async fn paths(&self, query: &str, limit: usize) -> Result<Vec<String>, IndexError> {
         let store = self.store.clone();
         let query = query.to_string();
-        // Đọc cả bảng `files` rồi chấm trong bộ nhớ. Rẻ vì bảng chỉ có đường dẫn, và nó
-        // tránh phải diễn đạt luật "tên tệp thắng thư mục" bằng SQL — thứ SQL nói được
-        // nhưng nói dài, và nói sai thì không ai thấy.
+        // Read all of `files` and score in memory: cheap, and "filename beats directory" is ugly in SQL.
         blocking(move || Ok(crate::complete::rank(&store.paths()?, &query, limit))).await
     }
 
@@ -265,11 +230,7 @@ where
     }
 }
 
-/// Lát cắt quanh một ký hiệu, mở dần từng vòng.
-///
-/// Mở theo vòng chứ không đệ quy vì mỗi vòng là **một** câu truy vấn cho cả biên giới,
-/// chứ không phải một câu cho mỗi đỉnh; và vì trần phải được kiểm sau mỗi vòng, không
-/// phải sau khi đã trót lấy hết.
+/// A slice around one symbol, expanded ring by ring: one query per frontier, and the caps are checked each ring.
 fn neighborhood(
     store: &Store,
     symbol: &str,
@@ -333,8 +294,7 @@ fn neighborhood(
         frontier = next;
     }
 
-    // Một cạnh có một đầu nằm ngoài tập đỉnh là một cạnh không vẽ được và không đọc được.
-    // Nó chỉ xuất hiện khi đã cắt, và `truncated` đã nói điều đó rồi.
+    // An edge with an end outside the node set cannot be drawn; it only appears after a cut, which `truncated` reports.
     edges.retain(|edge| seen.contains(&edge.src) && seen.contains(&edge.dst));
 
     let mut fetched: HashMap<i64, GraphNode> = store
@@ -354,10 +314,7 @@ fn neighborhood(
     })
 }
 
-/// Các đường đi theo cạnh `calls`, một chiều.
-///
-/// Chỉ `calls`: `contains` nối mọi tệp với mọi ký hiệu của nó, nên để nó vào thì mọi hàm
-/// đều "gọi tới" mọi hàm cùng tệp qua hai bước, và câu trả lời hết nói lên điều gì.
+/// One-directional paths along `calls` only: `contains` would make every same-file function two hops apart.
 fn trace(
     store: &Store,
     symbol: &str,
@@ -391,7 +348,7 @@ fn trace(
                 }
             }
             if next.is_empty() {
-                // Một đường đi chỉ có mình cái đỉnh xuất phát không phải một đường đi.
+                // A path holding only its seed node is not a path.
                 if path.len() > 1 {
                     found.push(path);
                 }
@@ -435,12 +392,7 @@ fn names(path: &[GraphNode]) -> Vec<&str> {
     path.iter().map(|node| node.name.as_str()).collect()
 }
 
-/// Dấu vân tay của một tệp trên đĩa: đủ để nói "không đổi", không đủ để nói "giống hệt".
-///
-/// `mtime` + kích thước bỏ sót đúng một trường hợp: sửa tệp giữ nguyên độ dài **và** giữ
-/// nguyên `mtime`. Cách duy nhất tạo ra nó là đặt lại `mtime` bằng tay. Bắt trường hợp
-/// đó đòi băm nội dung của mọi tệp ở mọi lần quét — tức là đọc toàn bộ repo mỗi lần, đúng
-/// cái giá mà chỉ mục tăng dần sinh ra để khỏi phải trả.
+/// Enough to say "unchanged", not "identical": `mtime` plus size misses only a hand-reset `mtime`, and hashing costs a full read.
 struct Fingerprint {
     lang: &'static Lang,
     mtime: i64,
@@ -472,10 +424,8 @@ fn scan(
                 parsed += 1;
             }
             Err(err) => {
-                // Một tệp có đuôi `.rs` nhưng không đọc được dưới dạng UTF-8 vẫn được ghi
-                // vào bảng với **không ký hiệu nào**. Bỏ qua im lặng thì nó bị đọc hỏng
-                // lại ở mọi lần quét sau; ghi lại thì nó im cho tới khi có người sửa nó.
-                tracing::debug!(path, error = %err, "bỏ qua tệp không đọc được");
+                // Record an unreadable file with no symbols, or every later scan retries and fails on it again.
+                tracing::debug!(path, error = %err, "skipping unreadable file");
                 store.replace_file(
                     path,
                     print.lang.name,
@@ -495,9 +445,7 @@ fn scan(
     let forgotten = gone.len();
     store.forget_files(&gone)?;
 
-    // Phân giải lại **toàn kho** khi có bất cứ thứ gì đổi, và không làm gì khi không có gì
-    // đổi. Một tệp mới có thể là đích của những cạnh đã nằm chờ trong `refs` từ lâu, nên
-    // "chỉ phân giải lại tệp vừa đổi" sẽ để chúng nằm chờ mãi mãi.
+    // Re-resolve the whole store on any change: a new file can be the target of long-pending `refs`.
     let edges = if parsed > 0 || forgotten > 0 {
         store.rebuild_edges()?
     } else {
@@ -523,15 +471,10 @@ fn now_ms() -> i64 {
 fn walk(roots: &FileRoots) -> Result<HashMap<String, Fingerprint>, IndexError> {
     let mut current = HashMap::new();
     for root in roots.roots() {
-        // Phân giải gốc trước khi đi: đường lưu trong chỉ mục phải trùng từng byte với
-        // đường mà `FileRoots::resolve_read` trả về, nếu không `outline` sẽ tra một chuỗi
-        // và bảng lại chứa một chuỗi khác cho cùng một tệp. Trên macOS, `/var` với
-        // `/private/var` là đúng cặp chuỗi đó.
+        // Canonicalise first: stored paths must match `FileRoots::resolve_read` byte for byte (macOS `/var`).
         let base = canonical(root)?;
         let mut builder = WalkBuilder::new(&base);
-        // `.gitignore` phải có tác dụng kể cả khi thư mục chưa `git init`: người dùng viết
-        // tệp đó để nói "đừng nhìn vào đây", và đó là ý định chứ không phải một chi tiết
-        // của git.
+        // `.gitignore` applies even without `git init`: it states intent, not a git detail.
         builder.require_git(false);
         for entry in builder.build().flatten() {
             if !entry.file_type().is_some_and(|kind| kind.is_file()) {
@@ -541,8 +484,7 @@ fn walk(roots: &FileRoots) -> Result<HashMap<String, Fingerprint>, IndexError> {
             let Some(lang) = lang::for_path(path) else {
                 continue;
             };
-            // Giấu khỏi chỉ mục, không chỉ chặn đọc — cùng lý do với `glob`: kể tên một
-            // tệp được bảo vệ là đã nói cho mô hình biết có cái gì ở đó.
+            // Hidden from the index, not merely unreadable: naming a protected file already leaks it.
             if roots.is_protected(path) {
                 continue;
             }

@@ -1,11 +1,10 @@
-//! Tiền tố, và những cái tên không được phép tồn tại.
-//!
-//! Đọc như đọc luật: mỗi bài khoá đúng một câu, và câu đó nằm ở dòng doc của bài.
+//! The prefix, and the names that may not exist.
+//! Reads like a rulebook: each test locks one sentence, written on its doc line.
 
 use pai_mcp::{ServerConfig, is_external, namespace, qualify, remote_of};
 use pai_tools::ToolName;
 
-/// Tiền tố đặt vào ở dạng `ext.<server>.`, và cắt ra trả lại đúng cái tên server đã công bố.
+/// The prefix goes on as `ext.<server>.`, and stripping returns exactly the published name.
 #[test]
 fn tien_to_dat_va_cat_dung_chieu() {
     let name = qualify("github", "search_issues");
@@ -14,7 +13,7 @@ fn tien_to_dat_va_cat_dung_chieu() {
     assert_eq!(namespace("github"), "ext.github");
 }
 
-/// Tên từ xa có dấu chấm đi qua nguyên vẹn: phép cắt không đụng tới phần đuôi.
+/// A dotted remote name survives intact: stripping never touches the tail.
 #[test]
 fn ten_tu_xa_co_dau_cham_khong_bi_dong_vao() {
     let name = qualify("srv", "rag.vector.search");
@@ -22,57 +21,53 @@ fn ten_tu_xa_co_dau_cham_khong_bi_dong_vao() {
     assert_eq!(remote_of("srv", &name), Some("rag.vector.search"));
 }
 
-/// Cắt đúng **một** lần và đúng ở đầu — một server bên thứ ba tự đặt tên tool là
-/// `ext.other.thing` không mượn được danh tính của server `other`.
+/// Strip once, at the front only, so a tool named `ext.other.thing` cannot borrow server `other`'s identity.
 #[test]
 fn cat_tien_to_chi_cat_mot_lan() {
     let name = qualify("srv", "ext.other.thing");
     assert_eq!(name.as_str(), "ext.srv.ext.other.thing");
     assert_eq!(remote_of("srv", &name), Some("ext.other.thing"));
-    // Và nó không phải là tool của `other`.
+    // And it is not `other`'s tool.
     assert_eq!(remote_of("other", &name), None);
     assert_ne!(name, qualify("other", "thing"));
 }
 
-/// Hỏi sai server thì không trả về gì — không có đường nào để một cái tên trôi sang server khác.
+/// Asking the wrong server returns nothing; no name drifts to another server.
 #[test]
 fn khong_cat_duoc_tien_to_cua_server_khac() {
     let name = qualify("alpha", "ping");
     assert_eq!(remote_of("beta", &name), None);
-    // Tiền tố khớp một phần cũng không tính: `al` không phải `alpha`.
+    // A partial prefix match does not count: `al` is not `alpha`.
     assert_eq!(remote_of("al", &name), None);
 }
 
-/// Tool nội bộ không bao giờ bị coi là tool ngoài, và ngược lại.
+/// An internal tool is never taken for an external one, or the reverse.
 #[test]
 fn phan_biet_duoc_tool_trong_voi_tool_ngoai() {
     assert!(is_external(&qualify("srv", "read")));
     assert!(!is_external(&ToolName::new("read")));
-    // `extra` bắt đầu bằng `ext` nhưng không phải `ext.` — chỗ này là nơi một phép so
-    // sánh cẩu thả sẽ nhận nhầm.
+    // `extra` starts with `ext` but not `ext.`, which is where a careless comparison goes wrong.
     assert!(!is_external(&ToolName::new("extra.thing")));
 }
 
-/// Tên server đi vào danh tính tool, nên nó bị kiểm như một danh tính chứ không như một nhãn.
+/// The server name enters a tool's identity, so it is checked as an identity, not as a label.
 #[test]
 fn ten_server_bi_kiem() {
     assert!(ServerConfig::stdio("github", "npx").validate().is_ok());
     assert!(ServerConfig::stdio("my_server-2", "npx").validate().is_ok());
 
-    // Rỗng: `ext..search` không định danh server nào cả.
+    // Empty: `ext..search` identifies no server.
     assert!(ServerConfig::stdio("", "npx").validate().is_err());
-    // Dấu chấm: `a.b` + tool `c` và `a` + tool `b.c` ra cùng một tên đầy đủ.
+    // A dot: `a.b` + tool `c` and `a` + tool `b.c` produce the same full name.
     assert!(ServerConfig::stdio("a.b", "npx").validate().is_err());
-    // `__`: phá mất tính khả nghịch của phép chiếu tên sang dạng wire.
+    // `__` breaks the reversibility of the wire-name mapping.
     assert!(ServerConfig::stdio("a__b", "npx").validate().is_err());
-    // Khoảng trắng, dấu nháy, gạch chéo — tất cả đều là ký tự của một cái tên không kiểm được.
+    // Spaces, quotes and slashes all belong to names that cannot be checked.
     assert!(ServerConfig::stdio("a b", "npx").validate().is_err());
     assert!(ServerConfig::stdio("a/b", "npx").validate().is_err());
 }
 
-/// Một cái tên đã qua kiểm cấu hình thì cũng qua được kiểm của sổ đăng ký.
-///
-/// Hai tầng này ở hai crate khác nhau và không gọi nhau; bài này khoá chúng lại với nhau.
+/// A name passing the config check also passes the registry's; the two live in different crates and never call each other.
 #[test]
 fn ten_qua_kiem_cau_hinh_thi_qua_duoc_so_dang_ky() {
     for server in ["github", "my_server-2", "a1"] {
@@ -81,8 +76,7 @@ fn ten_qua_kiem_cau_hinh_thi_qua_duoc_so_dang_ky() {
     }
 }
 
-/// Transport cũng bị kiểm: một lệnh rỗng hay một url không phải http là cấu hình sai, không
-/// phải một lần nối hỏng ở đâu đó trong nền.
+/// The transport is checked too: an empty command or a non-http url is bad config, not a background dial failure.
 #[test]
 fn transport_bi_kiem() {
     assert!(ServerConfig::stdio("srv", "   ").validate().is_err());
@@ -95,7 +89,7 @@ fn transport_bi_kiem() {
     );
 }
 
-/// Cấu hình đọc được từ JSON, và mặc định là thứ người dùng không phải gõ.
+/// Config parses from JSON, and the defaults are what the user does not have to type.
 #[test]
 fn cau_hinh_doc_duoc_tu_json() {
     let stdio: ServerConfig = serde_json::from_str(

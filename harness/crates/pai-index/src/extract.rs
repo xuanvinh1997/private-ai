@@ -1,21 +1,6 @@
-//! Từ cây cú pháp ra ký hiệu **và** quan hệ.
-//!
-//! Ba quyết định định hình tệp này.
-//!
-//! **Truy vấn được biên dịch một lần, lúc dựng.** Một truy vấn hỏng, hay một grammar
-//! lệch ABI, là lỗi cấu hình chứ không phải lỗi dữ liệu — nó phải nổ lúc khởi động, một
-//! lần, chứ không phải mỗi lần quét lại nuốt lặng một ngôn ngữ.
-//!
-//! **Quan hệ cha–con suy từ bao hàm, không khai trong truy vấn.** Một truy vấn khai được
-//! quan hệ đó phải nhắc lại nó cho từng cặp nút của từng ngôn ngữ; bao hàm phạm vi byte
-//! thì đúng cho mọi ngôn ngữ và không ai phải viết thêm gì. Cái giá là một lần sắp xếp
-//! và một cái ngăn xếp, dưới đây.
-//!
-//! **Chủ nhà của một tham chiếu đi qua đúng cái ngăn xếp ấy.** Một lời gọi không tự nói
-//! nó nằm trong hàm nào; thứ nói ra điều đó là việc nút gọi nằm lọt trong phạm vi byte
-//! của một khai báo. Vì thế khai báo và tham chiếu được trộn vào **một** lần duyệt theo
-//! thứ tự byte: hai lần duyệt riêng sẽ phải dựng lại cùng một ngăn xếp hai lần và có hai
-//! chỗ để lệch nhau.
+//! Syntax tree to symbols and relations.
+//! Queries compile once at construction, so an ABI or query error fails at startup. Nesting
+//! and reference owners both come from byte containment, in one merged byte-ordered walk.
 
 use std::collections::HashMap;
 
@@ -34,32 +19,23 @@ pub struct QueryBuildError {
     pub source: tree_sitter::QueryError,
 }
 
-/// Một tệp đã trích xong: ký hiệu, và những quan hệ **chưa** phân giải.
-///
-/// Tham chiếu chưa phân giải ở đây chứ không ở tầng trên vì tệp này không nhìn thấy tệp
-/// khác — mà `helper()` trong tệp này thì hay được khai ở tệp kia. Phân giải là việc của
-/// [`crate::store::Store::rebuild_edges`], nơi cả kho cùng có mặt một lúc.
+/// One extracted file: symbols, plus references left unresolved — only the store sees every file at once.
 #[derive(Debug, Default, PartialEq)]
 pub struct Extraction {
     pub symbols: Vec<Symbol>,
     pub refs: Vec<Reference>,
 }
 
-/// Vai của một capture `@def.*`.
+/// The role of a `@def.*` capture.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Role {
     Symbol(SymbolKind),
-    /// Cho tên cha, không tự mình thành ký hiệu.
+    /// Supplies a parent name; never becomes a symbol itself.
     Scope,
 }
 
 impl Role {
-    /// Xếp hạng khi hai mẫu cùng bắt trúng một khối.
-    ///
-    /// `export const f = () => {}` khớp cả mẫu hàm lẫn mẫu hằng, và cả hai trỏ vào đúng
-    /// một nút. Chọn theo thứ tự mẫu trong tệp truy vấn thì kết quả phụ thuộc vào thứ tự
-    /// match mà tree-sitter trả về — một thứ không có trong hợp đồng của nó. Một thang
-    /// hạng tường minh thì luôn ra cùng một đáp án.
+    /// Tie-break when two patterns capture one node; tree-sitter's match order is not part of its contract.
     fn rank(self) -> u8 {
         match self {
             Role::Symbol(SymbolKind::Function) => 4,
@@ -82,8 +58,7 @@ fn role_of(capture: &str) -> Option<Role> {
     }
 }
 
-/// `contains` không có ở đây: nó là sự thật của cái ngăn xếp bao hàm, không phải của một
-/// mẫu truy vấn — xem [`crate::graph::EdgeKind::is_structural`].
+/// `contains` is absent: it comes from the containment stack, not a query pattern — see [`crate::graph::EdgeKind::is_structural`].
 fn edge_of(capture: &str) -> Option<EdgeKind> {
     match capture {
         "ref.calls" => Some(EdgeKind::Calls),
@@ -98,27 +73,21 @@ fn edge_of(capture: &str) -> Option<EdgeKind> {
 struct Compiled {
     lang: &'static Lang,
     query: Query,
-    /// Chỉ số capture → vai. Tra bằng chỉ số chứ không bằng chuỗi: so chuỗi cho mọi
-    /// capture của mọi match là cách biến việc trích thành việc so sánh chuỗi.
+    /// Capture index to role; by index, not by string, or extraction becomes string comparison.
     roles: HashMap<u32, Role>,
     name_capture: Option<u32>,
     edges: Query,
-    /// Chỉ số capture của truy vấn cạnh → loại quan hệ. Capture bắt đầu bằng `_` không có
-    /// mặt ở đây: chúng chỉ tồn tại để một vị từ văn bản có cái mà so.
+    /// Edge-query capture index to relation kind; `_`-prefixed captures exist only for text predicates.
     edge_roles: HashMap<u32, EdgeKind>,
 }
 
-/// Bộ trích, dùng lại được cho nhiều tệp và nhiều luồng.
-///
-/// `Query` là `Send + Sync`, `Parser` thì không — nên bộ trích giữ truy vấn còn parser
-/// được dựng tại chỗ trong mỗi lần trích. Dựng một `Parser` là cấp phát vài trăm byte;
-/// biên dịch lại một `Query` thì không.
+/// Reusable across files and threads: `Query` is `Send + Sync`, `Parser` is not, so a parser is built per extraction.
 pub struct Extractor {
     langs: Vec<Compiled>,
 }
 
 impl Extractor {
-    /// Biên dịch **cả hai** truy vấn của **mọi** ngôn ngữ trong bảng.
+    /// Compile both queries of every language in the table.
     pub fn new() -> Result<Extractor, QueryBuildError> {
         let mut langs = Vec::with_capacity(LANGUAGES.len());
         for lang in LANGUAGES {
@@ -160,19 +129,13 @@ impl Extractor {
     }
 
     fn compiled(&self, lang: &'static Lang) -> Option<&Compiled> {
-        // So bằng con trỏ: bảng ngôn ngữ là `static`, nên hai tham chiếu tới cùng một
-        // hàng luôn cùng địa chỉ, và tên thì có thể trùng nhau về sau.
+        // Compare by pointer: the table is `static`, and names could collide later.
         self.langs
             .iter()
             .find(|compiled| std::ptr::eq(compiled.lang, lang))
     }
 
-    /// Trích ký hiệu và quan hệ từ một tệp đã đọc.
-    ///
-    /// Không trả `Result`: tree-sitter luôn dựng được một cây, kể cả từ mã hỏng — chỗ
-    /// hỏng thành nút `ERROR` và phần còn lại vẫn phân tích được. Một tệp hỏng vì thế trả
-    /// về **ít ký hiệu hơn**, không phải một lỗi làm gãy cả lần quét. Đó chính là hành vi
-    /// mong muốn khi quét một repo đang có người sửa dở.
+    /// Extract symbols and relations from one file; broken source yields fewer symbols, never an error.
     pub fn extract(&self, lang: &'static Lang, path: &str, source: &str) -> Extraction {
         let Some(compiled) = self.compiled(lang) else {
             return Extraction::default();
@@ -183,7 +146,7 @@ impl Extractor {
 
         let mut parser = Parser::new();
         if parser.set_language(&lang.grammar()).is_err() {
-            tracing::error!(lang = lang.name, "grammar không nạp được vào parser");
+            tracing::error!(lang = lang.name, "grammar failed to load into the parser");
             return Extraction::default();
         }
         let Some(tree) = parser.parse(source, None) else {
@@ -226,7 +189,7 @@ impl Extractor {
         }
 
         let mut hits: Vec<Hit> = found.into_values().collect();
-        // Ngoài trước, trong sau: đó là điều kiện để cái ngăn xếp dưới đây đúng.
+        // Outer before inner: the stack below depends on this order.
         hits.sort_by(|a, b| {
             a.start_byte
                 .cmp(&b.start_byte)
@@ -252,8 +215,7 @@ impl Extractor {
                 });
             }
         }
-        // Cùng một nút có thể bị hai mẫu bắt trúng; hai cạnh giống hệt nhau không nói thêm
-        // gì mà vẫn tốn một hàng và một lần phân giải.
+        // One node can match two patterns; a duplicate edge costs a row and a resolution for nothing.
         mentions.sort_by(|a, b| {
             a.start_byte
                 .cmp(&b.start_byte)
@@ -268,9 +230,7 @@ impl Extractor {
             symbol_of_hit: vec![None; hits.len()],
             out: Extraction::default(),
         };
-        // Trộn khai báo và tham chiếu vào một dòng thời gian theo byte. Khi hai thứ bắt
-        // đầu ở cùng một byte thì khai báo đi trước: nó là cái bao ngoài, và một tham
-        // chiếu được gán chủ nhà trước khi chủ nhà kịp vào ngăn xếp là một cạnh mất gốc.
+        // Merge declarations and references by byte; on a tie the declaration goes first, or its references lose their owner.
         let mut declarations = hits.iter().enumerate().peekable();
         let mut references = mentions.iter().peekable();
         loop {
@@ -292,11 +252,11 @@ impl Extractor {
     }
 }
 
-/// Trạng thái của lần duyệt trộn: ngăn xếp bao hàm, và cái nó sinh ra.
+/// State of the merged walk: the containment stack and what it produces.
 struct Walk {
-    /// Chỉ số của những `Hit` đang mở, ngoài dưới cùng.
+    /// Indices of the open `Hit`s, outermost first.
     stack: Vec<usize>,
-    /// `Hit` nào đã thành ký hiệu thứ mấy. `None` là một `@def.scope`.
+    /// Which symbol each `Hit` became; `None` marks a `@def.scope`.
     symbol_of_hit: Vec<Option<usize>>,
     out: Extraction,
 }
@@ -312,7 +272,7 @@ impl Walk {
         }
     }
 
-    /// Chủ nhà hiện tại. Ngăn xếp rỗng nghĩa là tầng tệp — xem [`Owner::File`].
+    /// The current owner; an empty stack means file level — see [`Owner::File`].
     fn owner(&self, hits: &[Hit]) -> Owner {
         match self.stack.last() {
             None => Owner::File,
@@ -337,8 +297,7 @@ impl Walk {
                 parent: self.stack.last().map(|top| hits[*top].name.clone()),
                 signature: signature(lines, hit.start_row),
             });
-            // Cạnh duy nhất biết chắc cả hai đầu: đích là chính ký hiệu vừa dựng, không
-            // phải một cái tên phải đi tra.
+            // The only edge sure of both ends: the target is the symbol just built, not a name to look up.
             self.out.refs.push(Reference {
                 from: owner,
                 to: Target::Symbol(position),
@@ -361,10 +320,7 @@ impl Walk {
     }
 }
 
-/// Dòng khai báo, cắt ngắn.
-///
-/// Cắt theo ký tự chứ không theo byte: cắt giữa một ký tự nhiều byte sinh ra chuỗi không
-/// phải UTF-8, và tên định danh tiếng Việt trong comment là chuyện bình thường ở repo này.
+/// The declaration line, truncated by characters rather than bytes so a multi-byte character is never split.
 fn signature(lines: &[&str], row: usize) -> String {
     const CAP: usize = 160;
     let raw = lines.get(row).copied().unwrap_or_default().trim();
@@ -384,7 +340,7 @@ struct Hit {
     end_row: usize,
 }
 
-/// Một cái tên được nhắc tới ở đâu đó, chưa biết của ai và trỏ vào đâu.
+/// A name mentioned somewhere, with neither owner nor target known yet.
 struct Mention {
     kind: EdgeKind,
     name: String,

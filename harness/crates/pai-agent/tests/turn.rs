@@ -1,8 +1,6 @@
-//! Bất biến của vòng lặp.
-//!
-//! Mỗi bài khoá một câu đã viết trong tài liệu module. Không bài nào chạm mạng: mô hình
-//! là một adapter giả phát ra một chuỗi chunk đã định sẵn, nên "mô hình trả lời thế này"
-//! là một dữ kiện của bài kiểm chứng chứ không phải một điều kiện của môi trường.
+//! Loop invariants.
+//! Each test locks one sentence of the module docs, and none touch the network: the model is
+//! a fake adapter emitting scripted chunks, so its reply is a fixture, not an environment.
 
 use std::sync::Arc;
 
@@ -23,13 +21,13 @@ use parking_lot::Mutex;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
-// --- mô hình giả --------------------------------------------------------------------
+// --- the fake model -------------------------------------------------------------------
 
-/// Phát ra một kịch bản đã định sẵn, một kịch bản cho mỗi lần được gọi.
+/// Emits a scripted run, one script per call.
 struct Script {
     turns: Mutex<Vec<Vec<StreamChunk>>>,
     seen: Mutex<Vec<ChatRequest>>,
-    /// Chặn giữa chừng để bài kiểm chứng huỷ được đúng lúc đang stream.
+    /// Stalls midway so a test can cancel while streaming.
     stall: bool,
 }
 
@@ -67,8 +65,7 @@ impl LlmAdapter for Script {
         };
         let head = stream::iter(chunks.into_iter().map(Ok));
         if self.stall {
-            // Sau khi phát hết phần đã có thì đứng im: nhánh huỷ mới là thứ kết thúc
-            // luồng, đúng như khi người dùng bấm Dừng giữa một câu trả lời dài.
+            // After the scripted part, sit still: cancellation ends the stream, as when the user hits Stop.
             Box::pin(head.chain(stream::once(async {
                 std::future::pending::<()>().await;
                 unreachable!()
@@ -131,7 +128,7 @@ fn calls_tool(name: &str, arguments: &str) -> Vec<StreamChunk> {
     ]
 }
 
-// --- tool giả -----------------------------------------------------------------------
+// --- the fake tool ----------------------------------------------------------------------
 
 struct Echo;
 
@@ -148,7 +145,7 @@ impl Tool for Echo {
     }
 }
 
-// --- giàn -------------------------------------------------------------------------
+// --- the harness ------------------------------------------------------------------------
 
 struct Bench {
     ctx: Context,
@@ -184,7 +181,7 @@ async fn session(bench: &Bench) -> pai_session::Session {
         .expect("tạo phiên")
 }
 
-// --- bài kiểm chứng -----------------------------------------------------------------
+// --- the tests ----------------------------------------------------------------------------
 
 #[tokio::test]
 async fn mot_luot_mot_buoc() {
@@ -261,8 +258,7 @@ async fn lich_su_gui_cho_mo_hinh_dung_bang_phep_chieu_tu_so() {
         .await
         .expect("lượt chạy được");
 
-    // Lần gọi thứ hai phải thấy đúng những gì sổ chiếu ra, cộng đúng một khối prompt hệ
-    // thống. Có nguồn sự thật thứ hai thì con số này lệch.
+    // The second call must see exactly the journal's projection plus one system prompt; a second source of truth would drift.
     let seen = script.seen.lock();
     let second = seen.last().expect("có lần gọi thứ hai");
     let projected = session.derive_messages();
@@ -279,7 +275,7 @@ async fn lich_su_gui_cho_mo_hinh_dung_bang_phep_chieu_tu_so() {
 
 #[tokio::test]
 async fn vong_cuoi_khong_duoc_trao_tool() {
-    // Trần một bước: ngay bước đầu đã là vòng cuối.
+    // A one-step ceiling: the first step is already the last round.
     let script = Script::new(vec![text("thôi vậy")]);
     let bench = bench(script.clone(), 1);
     let mut session = session(&bench).await;
@@ -343,7 +339,7 @@ async fn pre_step_tu_choi_van_ghi_mot_luot_khong_tieu_buoc_nao() {
         "không có message nào vào lịch sử"
     );
 
-    // Nhưng lượt vẫn phải nằm trong sổ: bản ghi phải nhớ là đã có người thử.
+    // The turn still has to be journalled: the record must remember the attempt.
     let types: Vec<String> = session
         .log()
         .events()
@@ -397,14 +393,14 @@ async fn huy_giua_stream_giu_lai_phan_tra_loi_do() {
     let history = session.derive_messages();
     let assistant = history.last().expect("có message trợ lý");
     assert_eq!(assistant.role, Role::Assistant);
-    // Đây là cả điểm của bài: nửa câu trả lời không được biến mất chỉ vì người dùng bấm Dừng.
+    // The whole point: half an answer must not vanish because the user pressed Stop.
     assert!(
         format!("{assistant:?}").contains("đang viết dở"),
         "mất phần trả lời dở: {assistant:?}"
     );
 }
 
-/// Sink ghi lại `meta` để kiểm chứng nó không bị rơi trên đường.
+/// A sink that records `meta`, to prove it is not dropped on the way.
 #[derive(Default)]
 struct MetaSink {
     seen: Mutex<Vec<serde_json::Map<String, serde_json::Value>>>,
@@ -475,8 +471,7 @@ async fn meta_cua_tool_di_toi_duoc_giao_dien() {
         .await
         .expect("lượt chạy được");
 
-    // Đây là thứ vẽ ra khối diff. Rơi nó đi thì giao diện vẫn chạy, vẫn hiện thẻ tool, và
-    // không ai biết là đã mất gì — nên nó cần một bài canh sẵn.
+    // This is what draws the diff block; losing it leaves a UI that still works and says nothing.
     let seen = sink.seen.lock();
     assert_eq!(seen.len(), 1);
     assert!(
@@ -486,7 +481,7 @@ async fn meta_cua_tool_di_toi_duoc_giao_dien() {
     );
 }
 
-/// Sổ ghi mọi câu `notice` mà driver nói ra trong một lượt.
+/// Records every `notice` the driver emits during a turn.
 struct NoticeSink {
     said: Mutex<Vec<String>>,
 }
@@ -497,7 +492,7 @@ impl pai_agent::TurnSink for NoticeSink {
     }
 }
 
-/// Middleware luôn rút gọn hai message đầu, để bài dưới không phụ thuộc vào ngưỡng nén.
+/// Middleware that always summarises the first two messages, so the test does not depend on the pressure threshold.
 struct AlwaysCompact;
 
 impl Middleware<PreStep> for AlwaysCompact {
@@ -525,12 +520,7 @@ impl Middleware<PreStep> for AlwaysCompact {
     }
 }
 
-/// Nén ngữ cảnh phải **nói ra**, không được xảy ra trong im lặng.
-///
-/// Đây là cùng một luật với bộ đệm terminal ("đã bỏ bao nhiêu dòng") và với sandbox (báo
-/// `Partial` thay vì làm tròn lên). Cái mất ở đây còn khó thấy hơn cả hai: mô hình bỗng
-/// không nhớ một quyết định từ đầu phiên, và người dùng kết luận nó kém đi chứ không kết
-/// luận là cửa sổ ngữ cảnh đã đầy.
+/// Compaction has to say so; silent loss just looks like the model getting worse.
 #[tokio::test]
 async fn nen_ngu_canh_thi_phai_noi_ra() {
     let script = Script::new(vec![text("xong")]);
@@ -576,7 +566,7 @@ async fn nen_ngu_canh_thi_phai_noi_ra() {
     );
 }
 
-/// Sổ ghi số token mà driver báo ra.
+/// Records the token counts the driver reports.
 struct UsageSink {
     seen: Mutex<Vec<(u64, u64)>>,
 }
@@ -587,12 +577,7 @@ impl pai_agent::TurnSink for UsageSink {
     }
 }
 
-/// Số token máy chủ báo phải đi tiếp, không được rơi mất ở driver.
-///
-/// Trước đây bộ ghép giữ đúng con số ấy còn driver ghi thẳng `usage: None` vào sổ, nên nó
-/// bị parse rồi vứt. Hệ quả là sổ phiên không trả lời được "lượt này tốn bao nhiêu", và
-/// giao diện không có cách nào cho thấy ngữ cảnh đang đầy dần **trước** khi nén cắt phần
-/// đầu — người dùng chỉ biết sau khi mất.
+/// Server-reported token counts must reach the journal; they were once parsed and then thrown away.
 #[tokio::test]
 async fn so_token_may_chu_bao_phai_di_tiep() {
     let mut turn = text("xong");

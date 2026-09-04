@@ -1,11 +1,6 @@
-//! Kho tràn: output dài được **giữ nguyên vẹn**, không bị cắt cụt.
-//!
-//! Bản Python cắt cứng ở 6000 ký tự (`adapter.py:22,64`) và phần dư biến mất — không ai
-//! đọc lại được, kể cả người dùng đang ngồi trước màn hình. Chuyện đó hỏng theo cách tệ
-//! nhất: tool đã làm xong việc, dữ liệu đã có, rồi bị vứt trên đường về.
-//!
-//! Ở đây, phần vượt ngưỡng được cất vào kho và mô hình nhận một locator. Ngưỡng chỉ quyết
-//! định **mô hình đọc bao nhiêu**, không quyết định **cái gì còn tồn tại**.
+//! The spill store: long output is kept whole rather than truncated.
+//! Anything past the threshold goes to the store and the model gets a locator, so the
+//! threshold decides how much the model reads, never what continues to exist.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,12 +11,12 @@ use serde_json::{Value, json};
 
 use crate::name::ToolName;
 
-/// Vé lấy lại toàn văn.
+/// A ticket for retrieving the full text.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SpillRef {
     pub id: String,
     pub tool: String,
-    /// Kích thước toàn văn, tính bằng ký tự Unicode — cùng đơn vị với ngưỡng.
+    /// Full-text size in Unicode characters, the same unit as the threshold.
     pub chars: usize,
     pub lines: usize,
 }
@@ -32,28 +27,21 @@ impl SpillRef {
     }
 }
 
-/// Nơi cất phần output không gửi cho mô hình.
+/// Where output not sent to the model is kept.
 pub trait SpillStore: Send + Sync + 'static {
-    /// Cất toàn văn, trả về vé.
+    /// Store the full text and return a ticket.
     fn spill(&self, tool: &ToolName, full: &str) -> SpillRef;
 
-    /// Lấy lại toàn văn từ **mã vé**. `None` nếu vé không còn giá trị.
-    ///
-    /// Nguyên thuỷ là mã chứ không phải cả vé, vì thứ mô hình cầm được chỉ có mã: vé đầy
-    /// đủ nằm ở `meta`, và `meta` không đi ra tới mô hình. Một kho chỉ tra được bằng cả
-    /// vé là một kho mà `spill_read` không gọi tới được.
+    /// Fetch the full text by id, the only part the model holds, since the whole ticket lives in `meta`.
     fn read_id(&self, id: &str) -> Option<String>;
 
-    /// Tiện dụng cho host, nơi cả vé vẫn còn trong tay.
+    /// A convenience for the host, which still holds the whole ticket.
     fn read(&self, handle: &SpillRef) -> Option<String> {
         self.read_id(&handle.id)
     }
 }
 
-/// Bản cài đặt trong bộ nhớ, sống bằng phiên.
-///
-/// Đủ cho một phiên desktop: cái tràn ra là kết quả tool của chính lượt đang chạy, và nó
-/// hết ý nghĩa khi phiên đóng. Một host cần lâu hơn thì cắm bản của mình vào cùng seam.
+/// An in-memory implementation living as long as the session; a host needing more plugs into the same seam.
 #[derive(Default)]
 pub struct MemorySpillStore {
     entries: DashMap<String, String>,

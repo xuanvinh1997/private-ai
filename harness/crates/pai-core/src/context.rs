@@ -1,8 +1,6 @@
 //! The context: service store, event bus, and ownership of effects.
-//!
-//! `Context` is a light handle — cloning it bumps a few `Arc`s. Every registration
-//! function takes `&self` rather than `&mut self`, because every plugin needs to capture a
-//! `Context` into an async listener, and `&mut` would not allow that.
+//! `Context` is a light handle; cloning it bumps a few `Arc`s. Registration takes `&self`
+//! so a plugin can capture a `Context` into an async listener.
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -59,11 +57,7 @@ impl Core {
         self.ready.write().entry(key).or_default().clone()
     }
 
-    /// Read a listener chain, filter it by scope, and return a snapshot.
-    ///
-    /// A snapshot rather than a held lock: a plugin unloading mid-flight must not corrupt
-    /// a chain that is already running. Cordis splices the shared array directly; here Rust
-    /// is safer.
+    /// Snapshot a listener chain, filtered by scope, so unloading mid-flight cannot corrupt a run.
     fn snapshot<E: 'static, T: Clone + 'static>(&self, at: Option<ScopeKey>) -> Vec<T> {
         let chains = self.chains.read();
         let Some(any) = chains.get(&TypeId::of::<E>()) else {
@@ -146,12 +140,7 @@ impl Context {
         self.scope
     }
 
-    /// The shared scope tree.
-    ///
-    /// Exposed because things that hold scopes inside their own data — the tool registry,
-    /// for one — have to answer parent–child questions without holding a `Context` on the
-    /// right branch. Not exposing it would force them to match exactly, which makes an
-    /// authority decision out of what is reachable rather than out of intent.
+    /// Shared scope tree, exposed so holders of scopes can answer parent/child questions.
     pub fn scopes(&self) -> Arc<ScopeTree> {
         self.core.scopes.clone()
     }
@@ -194,10 +183,7 @@ impl Context {
         (key, self.realms.lookup(key))
     }
 
-    /// Mount a provider for seam `K`.
-    ///
-    /// Two providers for the same seam in the same realm is a config error, not a silent
-    /// overwrite: the one being replaced already has consumers holding it.
+    /// Mount a provider for seam `K`; a second one in the same realm is a config error.
     pub fn provide<K: ServiceKey>(&self, api: Arc<K::Api>) -> Result<Guard, ProvideError> {
         let slot = self.slot::<K>();
         {
@@ -229,8 +215,7 @@ impl Context {
             .services
             .read()
             .get(&slot)?
-            // Never returns the wrong thing: the cell's key already contains
-            // `TypeId::of::<K>()`, and `K → K::Api` is one-to-one by the trait itself.
+            // Cannot mismatch: the cell's key holds `TypeId::of::<K>()` and `K -> K::Api` is 1:1.
             .value
             .downcast_ref::<Arc<K::Api>>()
             .cloned()
@@ -240,8 +225,7 @@ impl Context {
         self.get::<K>().ok_or(ProvideError::Missing(K::NAME))
     }
 
-    /// Wait until the seam exists. This is the Rust version of `inject` — load order is
-    /// expressed as a need for a service, not as a hand-written startup sequence.
+    /// Wait until the seam exists: load order is expressed as a need, not a startup sequence.
     pub async fn wait_for<K: ServiceKey>(&self) -> Arc<K::Api> {
         loop {
             if let Some(api) = self.get::<K>() {
@@ -249,8 +233,7 @@ impl Context {
             }
             let gate = self.core.gate(TypeId::of::<K>());
             let waiting = gate.notified();
-            // Re-check after registering the wait, or a signal slipping in between is
-            // missed.
+            // Re-check after registering the wait, or a signal slipping in between is missed.
             if let Some(api) = self.get::<K>() {
                 return api;
             }
@@ -266,7 +249,7 @@ impl Context {
         names
     }
 
-    /// Currently mounted providers with their realms — the basis for `--dump-config`.
+    /// Currently mounted providers with their realms: the basis for `--dump-config`.
     pub fn mounted(&self) -> Vec<(&'static str, Realm)> {
         let services = self.core.services.read();
         let mut rows: Vec<_> = services
@@ -319,8 +302,7 @@ impl Context {
             .attach::<E, Arc<dyn Middleware<E>>>(self.scope, middleware, false)
     }
 
-    /// Register a layer that runs **before** every existing one. For policy that has to
-    /// go first, not for layers to race each other for position.
+    /// Register a layer that runs before every existing one; for policy, not for racing.
     pub fn on_waterfall_first<E: Waterfall>(&self, middleware: Arc<dyn Middleware<E>>) -> Guard {
         self.core
             .attach::<E, Arc<dyn Middleware<E>>>(self.scope, middleware, true)

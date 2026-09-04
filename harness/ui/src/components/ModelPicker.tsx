@@ -1,43 +1,20 @@
 import { createMemo, createSignal, createUniqueId, For, onCleanup, Show } from "solid-js";
+import { S, t } from "../lib/i18n";
 import type { ModelChoice } from "../lib/protocol";
 import Icon from "./Icon";
 
-/**
- * Mô hình có được phép đứng trong bộ chọn hội thoại không.
- *
- * Giấu đúng nhóm **chỉ** nhúng được. Chọn một mô hình nhúng để trò chuyện là hội thoại
- * chết — nó không sinh chữ — nên nó không được có mặt ở đây.
- *
- * Lọc theo `chat === true` thoạt nhìn chặt hơn nhưng sai hướng: một máy chủ Ollama đời cũ
- * không có trường `capabilities` buộc lõi đoán năng lực theo tên, và một lần đoán trượt khi
- * ấy làm biến mất một mô hình người dùng đang dùng được. Hiện thừa một dòng thì họ chọn
- * nhầm một lần rồi thôi; giấu nhầm một dòng thì họ không có cách nào tìm lại nó.
- */
+/** Whether a model may appear in the chat picker; hide only the embedding-only ones, since filtering on
+ * `chat === true` would erase a usable model whenever the core had to guess capabilities from a name. */
 export const usableForChat = (choice: ModelChoice): boolean =>
   !(choice.embedding && !choice.chat);
 
-/**
- * Bộ chọn mô hình, ngồi **trong** ô soạn tin.
- *
- * Chỗ ngồi là điểm chính của component này. Bản trước để tên mô hình trên thanh tiêu đề,
- * nơi nó đọc như một thuộc tính của cả cửa sổ; nhưng mô hình là thuộc tính của **tin nhắn
- * sắp gửi**, và ChatGPT đã dời nó xuống composer đúng vì lý do đó (release notes 28/04/2026:
- * "Model selection now appears in the composer… so you can pick the right model before
- * sending a message"). Đứng cạnh nút Gửi thì nó được đọc lại ngay trước mỗi lần bấm.
- *
- * Không dùng `Menu` chung được: mỗi hàng ở đây mang hai dòng và hai huy hiệu, còn `Menu`
- * nhận một danh sách phẳng mỗi hàng một nhãn. Hai huy hiệu đó không phải trang trí — một
- * mô hình không gọi được tool sẽ trả lời trôi chảy mà không bao giờ đọc được tệp nào, và
- * đó là thứ phải đọc được **trước** khi chọn, không phải sau.
- *
- * Chỗ này là nơi duy nhất phần "nhiều nhà cung cấp mô hình" lộ ra trong luồng làm việc
- * hằng ngày, nên nó mang luôn lối đi tới màn hình cấu hình provider.
- */
+/** Model picker, placed *inside* the composer: the model is a property of the message about to be sent, so it is
+ * re-read before every click. Not the shared `Menu`, since each row carries two lines and two badges. */
 export default function ModelPicker(props: {
   value: string;
   models: ModelChoice[];
   onPick: (id: string) => void;
-  /** Mở màn hình cài đặt → nhà cung cấp mô hình. */
+  /** Open settings, model providers page. */
   onManageProviders: () => void;
   disabled?: boolean;
 }) {
@@ -47,8 +24,7 @@ export default function ModelPicker(props: {
   let popup: HTMLDivElement | undefined;
   let trigger: HTMLButtonElement | undefined;
 
-  // Bấm ra ngoài đóng menu. Nghe ở pha bắt để cú bấm đó không kịp kích hoạt một nút khác
-  // trước khi menu biết mình phải đóng.
+  // Click outside closes; listening in the capture phase so the click cannot hit another button first.
   const onDocPointerDown = (event: PointerEvent) => {
     const target = event.target as Node | null;
     if (popup?.contains(target ?? null) || trigger?.contains(target ?? null)) return;
@@ -78,7 +54,7 @@ export default function ModelPicker(props: {
         aria-haspopup="menu"
         aria-expanded={open()}
         aria-controls={id}
-        aria-label={`Mô hình: ${props.value}. Bấm để đổi.`}
+        aria-label={t(S.chat.model.trigger, { name: props.value })}
         onClick={() => setOpen((v) => !v)}
         onKeyDown={(event) => {
           if (event.key === "ArrowDown") {
@@ -99,7 +75,7 @@ export default function ModelPicker(props: {
           ref={popup}
           id={id}
           role="menu"
-          aria-label="Mô hình"
+          aria-label={t(S.common.model)}
           onKeyDown={(event) => {
             if (event.key === "Escape") {
               event.preventDefault();
@@ -112,22 +88,18 @@ export default function ModelPicker(props: {
               move(-1);
             }
           }}
-          // Bung **lên**: ô soạn tin nằm sát đáy cửa sổ, và một menu bung xuống từ đó không
-          // có chỗ nào để rơi vào.
+          // Open upward: the composer sits at the bottom, so a downward menu has nowhere to go.
           class="absolute bottom-full left-0 z-40 mb-3xs flex w-[min(22rem,72vw)] flex-col rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
         >
-          {/* Hai lý do rỗng, hai câu khác nhau. "Chưa hỏi được máy chủ" là một thứ có thể
-              hỏng ở mạng; "chỉ có mô hình nhúng" là một máy chủ trả lời tử tế mà không có
-              gì dùng được ở đây, và việc phải làm là đi nạp một mô hình trò chuyện. Gộp
-              lại thành một câu là dạy người dùng đi sửa nhầm chỗ. */}
+          {/* Two reasons for an empty list, two messages: unreachable server versus a server with no chat model. */}
           <Show
             when={choices().length > 0}
             fallback={
               <p class="m-0 flex items-center gap-2xs px-sm py-xs text-2xs text-faint">
                 <Icon name="model" size={13} />
-                {props.models.length === 0
-                  ? "Chưa hỏi được máy chủ mô hình nào."
-                  : "Chỉ có mô hình nhúng, không trò chuyện được."}
+                {t(
+                  props.models.length === 0 ? S.chat.model.noServer : S.chat.model.embedOnly,
+                )}
               </p>
             }
           >
@@ -140,7 +112,7 @@ export default function ModelPicker(props: {
                       role="menuitemradio"
                       aria-checked={choice.id === props.value}
                       onClick={() => {
-                        close(false);
+                        close(true);
                         props.onPick(choice.id);
                       }}
                       class="flex w-full items-start gap-sm rounded-btn px-sm py-2xs text-left transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] aria-[checked=true]:bg-accent-soft"
@@ -159,19 +131,19 @@ export default function ModelPicker(props: {
                           {choice.id}
                         </span>
                         <span class="flex flex-wrap items-center gap-2xs text-2xs">
-                          {/* Nói ra ngay ở đây thay vì để một câu cảnh báo hiện lên sau khi
-                              đã chọn: hậu quả của việc chọn nhầm là một trợ lý im lặng vô
-                              dụng, và người dùng không có manh mối nào để đoán ra. */}
+                          {/* Said here rather than after the choice: the cost of picking wrong is a silently useless assistant. */}
                           <Show
                             when={choice.tools}
-                            fallback={<span class="text-warn">không gọi được công cụ</span>}
+                            fallback={
+                              <span class="text-warn">{t(S.chat.model.noTools)}</span>
+                            }
                           >
-                            <span class="text-muted">gọi được công cụ</span>
+                            <span class="text-muted">{t(S.chat.model.hasTools)}</span>
                           </Show>
                           <Show when={choice.contextWindow}>
                             {(size) => (
                               <span class="text-faint tabular-nums">
-                                · {Math.round(size() / 1024)}K ngữ cảnh
+                                {t(S.chat.model.context, { n: Math.round(size() / 1024) })}
                               </span>
                             )}
                           </Show>
@@ -189,13 +161,13 @@ export default function ModelPicker(props: {
               type="button"
               role="menuitem"
               onClick={() => {
-                close(false);
+                close(true);
                 props.onManageProviders();
               }}
               class="flex w-full items-center gap-sm rounded-btn px-sm py-2xs text-left text-xs text-text transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
             >
               <Icon name="server" size={14} />
-              Nhà cung cấp mô hình…
+              {t(S.chat.model.providers)}
             </button>
           </div>
         </div>

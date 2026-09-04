@@ -1,11 +1,6 @@
-//! Bản đặc tả bảo mật của crate, port từ `tests/test_mcp.py` của bản Python.
-//!
-//! Bốn bài đầu là bốn bất biến mà bản Python làm đúng hơn dsh, nên chúng được chép sang
-//! trước khi có tool thật nào. Ba bài sau là những thứ chỉ bản Rust mới hứa được: canh
-//! gác đơn điệu, phê duyệt fail-closed, và output dài không bị cắt mất.
-//!
-//! Đọc chúng như đọc luật, không như đọc test: mỗi bài khoá đúng một câu, và câu đó viết
-//! ở dòng doc của bài.
+//! The crate's security specification.
+//! The first four groups are invariants ported from the Python suite; the last three are
+//! Rust-only: monotonic guards, fail-closed approval, and long output that is never lost.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -30,16 +25,15 @@ use pai_tools::{
 use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
 
-// --- một tool giả có thể chứng minh nó đã chạy hay chưa ------------------------------
+// --- a fake tool that can prove whether it ran -------------------------------------------
 
 struct Fake {
     name: ToolName,
     meta: ToolMeta,
     parameters: Value,
-    /// Đếm số lần **thân tool** thật sự chạy. Đây là thứ chứng minh một lời từ chối xảy
-    /// ra trước khi chạm vào tool, chứ không phải sau khi đã lỡ làm gì đó.
+    /// How many times the body actually ran; the proof a refusal happened before the tool was touched.
     ran: Arc<AtomicUsize>,
-    /// Tham số mà thân tool nhìn thấy — sau ghim, sau mọi middleware.
+    /// The arguments the body saw, after pinning and after every middleware.
     seen: Arc<Mutex<Map<String, Value>>>,
 }
 
@@ -81,7 +75,7 @@ impl Tool for Fake {
     }
 }
 
-/// Bốn tool đủ để diễn tả ranh giới chỉ-đọc: hai cái nhìn, hai cái đụng.
+/// Four tools, enough to draw the read-only boundary: two that look, two that touch.
 fn library() -> Vec<Arc<Fake>> {
     vec![
         Arc::new(Fake::new("workspaces.list", ToolMeta::read_only())),
@@ -91,7 +85,7 @@ fn library() -> Vec<Arc<Fake>> {
     ]
 }
 
-/// Dựng một agent có phạm vi, đã cắm sẵn thư viện tool ở tầng toàn cục.
+/// Build a scoped agent with the tool library already mounted globally.
 fn bench() -> (
     Context,
     Context,
@@ -119,13 +113,9 @@ fn names(schemas: &[ToolSchema]) -> Vec<String> {
         .collect()
 }
 
-// --- 1. tập cho phép đúng bằng tập tool không thay đổi gì -----------------------------
+// --- 1. the allow set is exactly the non-mutating tools -----------------------------------
 
-/// Port của `test_the_allow_set_is_exactly_the_non_mutating_tools` +
-/// `test_a_mutating_tool_is_never_advertised_to_the_agent`.
-///
-/// Khoá: **cái được quảng cáo cho một agent chỉ-đọc đúng bằng tập tool có
-/// `mutating == false`, không hơn một cái nào.**
+/// Locks that a read-only agent is advertised exactly the tools with `mutating == false`, and not one more.
 #[tokio::test]
 async fn tap_quang_cao_dung_bang_tap_tool_khong_thay_doi_gi() {
     let (_root, _agent, registry, scope, _tools) = bench();
@@ -142,7 +132,7 @@ async fn tap_quang_cao_dung_bang_tap_tool_khong_thay_doi_gi() {
         .map(|tool| tool.schema().name)
         .collect();
 
-    // Hai tập rời nhau — chính là bất biến mà `READ_ONLY_TOOLS` tồn tại để giữ.
+    // The two sets are disjoint, which is the invariant `READ_ONLY_TOOLS` exists to hold.
     assert!(read_only.is_disjoint(&mutating));
     assert_eq!(read_only.len(), 2);
     assert_eq!(mutating.len(), 2);
@@ -162,17 +152,14 @@ async fn tap_quang_cao_dung_bang_tap_tool_khong_thay_doi_gi() {
             "{name} lọt vào danh sách quảng cáo"
         );
     }
-    // Host, không có phạm vi, vẫn thấy đủ: giao diện gọi thẳng thì không bị siết.
+    // The host, with no scope, still sees everything: a direct UI call is not restricted.
     assert_eq!(registry.schemas(None).len(), 4);
     drop(guard);
 }
 
-// --- 2. bị từ chối kể cả khi gọi bằng tên đã mã hoá ------------------------------------
+// --- 2. refused even when called by the encoded name --------------------------------------
 
-/// Port của `test_a_mutating_tool_is_refused_even_when_called_by_its_mangled_name`.
-///
-/// Khoá: **danh sách quảng cáo chỉ là gợi ý.** Một mô hình đoán ra `documents__delete`
-/// đi thẳng vào hàm gọi, và tầng lọc thứ hai — chạy trên tên đã giải mã — chặn nó ở đó.
+/// Locks that the advertised list is only a hint: a guessed wire name is stopped by the second filter.
 #[tokio::test]
 async fn tool_bi_tu_choi_ke_ca_khi_goi_bang_ten_da_ma_hoa() {
     let (_root, agent, registry, scope, tools) = bench();
@@ -184,7 +171,7 @@ async fn tool_bi_tu_choi_ke_ca_khi_goi_bang_ten_da_ma_hoa() {
     );
     let pipeline = ToolPipeline::new(&agent, registry.clone());
 
-    // Tên trên wire, đúng thứ mô hình gõ được.
+    // The wire name, exactly what the model can type.
     assert_eq!(
         ToolName::new("documents.ingest_text").wire(),
         "documents__ingest_text"
@@ -203,9 +190,9 @@ async fn tool_bi_tu_choi_ke_ca_khi_goi_bang_ten_da_ma_hoa() {
         refused.content,
         not_available(&ToolName::new("documents.ingest_text"))
     );
-    // Từ chối là **văn bản**, không phải một `Result` bị vứt lên trên.
+    // A refusal is text, not a `Result` thrown upward.
     assert!(!refused.content.is_empty());
-    // Và không có gì được ghi.
+    // And nothing was written.
     assert_eq!(ingest.ran.load(Ordering::SeqCst), 0);
 
     let refused = pipeline
@@ -214,22 +201,19 @@ async fn tool_bi_tu_choi_ke_ca_khi_goi_bang_ten_da_ma_hoa() {
     assert!(refused.is_error);
     assert_eq!(delete.ran.load(Ordering::SeqCst), 0);
 
-    // Cùng đường gọi đó, một tool được phép vẫn chạy: bộ lọc lọc, không phải chặn hết.
+    // On the same path an allowed tool still runs: the filter filters, it does not block everything.
     let ok = pipeline.execute("c3", "workspaces__list", json!({})).await;
     assert!(!ok.is_error);
     assert_eq!(tools[0].ran.load(Ordering::SeqCst), 1);
     drop(guard);
 }
 
-// --- 3. từ chối xảy ra trước khi chạm vào thân tool ------------------------------------
+// --- 3. refusal happens before the tool body is touched -----------------------------------
 
-/// Port của `test_deletion_through_the_adapter_is_refused_before_it_reaches_the_tool`.
-///
-/// Khoá: **thân tool không chạy.** Ba nguồn từ chối — hạn chế, `tools/pre-execute`, và
-/// canh gác — đều phải dừng lại trước khi tool được đụng tới, không phải sau đó.
+/// Locks that the body never runs: restriction, `tools/pre-execute` and guards all stop before the tool is touched.
 #[tokio::test]
 async fn tu_choi_xay_ra_truoc_khi_cham_vao_than_tool() {
-    // (a) hạn chế theo phạm vi
+    // (a) a scope restriction
     let (_root, agent, registry, scope, tools) = bench();
     let delete = tools[3].clone();
     let restriction = registry.restrict(scope, ToolRestriction::deny_only(["documents.delete"]));
@@ -243,7 +227,7 @@ async fn tu_choi_xay_ra_truoc_khi_cham_vao_than_tool() {
     assert_eq!(delete.ran.load(Ordering::SeqCst), 0);
     drop(restriction);
 
-    // (b) `tools/pre-execute` nói không
+    // (b) `tools/pre-execute` says no
     struct NoWrites;
     impl Middleware<PreExecute> for NoWrites {
         fn call<'a>(
@@ -270,7 +254,7 @@ async fn tu_choi_xay_ra_truoc_khi_cham_vao_than_tool() {
     assert_eq!(delete.ran.load(Ordering::SeqCst), 0);
     drop(hook);
 
-    // (c) canh gác
+    // (c) a guard
     let gate = registry.add_guard(Some(scope), Arc::new(DenyAll));
     let denied = pipeline.execute("c", "documents__delete", json!({})).await;
     assert!(denied.is_error);
@@ -278,8 +262,7 @@ async fn tu_choi_xay_ra_truoc_khi_cham_vao_than_tool() {
     assert_eq!(delete.ran.load(Ordering::SeqCst), 0);
     drop(gate);
 
-    // Gỡ hết chính sách thì tool chạy — nghĩa là ba bài trên đo chính sách, không đo một
-    // tool hỏng sẵn.
+    // With every policy removed the tool runs, so the three cases above measure policy, not a broken tool.
     assert!(
         !pipeline
             .execute("d", "documents__delete", json!({}))
@@ -289,13 +272,9 @@ async fn tu_choi_xay_ra_truoc_khi_cham_vao_than_tool() {
     assert_eq!(delete.ran.load(Ordering::SeqCst), 1);
 }
 
-// --- 4. tham số ghim biến mất khỏi schema và bị ghi đè lúc gọi ------------------------
+// --- 4. a pinned parameter leaves the schema and is overridden at call time ---------------
 
-/// Port của `_bind_workspace` + `invoker` (`adapter.py:77-93`, `:150-156`).
-///
-/// Khoá: **tham số mô hình không thấy là tham số nó không thể làm sai.** `workspace_id`
-/// biến mất khỏi schema, và giá trị mô hình tự gửi bị **ghi đè** chứ không được dùng làm
-/// mặc định — kể cả khi một middleware ở `tools/pre-execute` cố đặt lại nó.
+/// Locks that a parameter the model cannot see is one it cannot get wrong: pinned values override, never default.
 #[tokio::test]
 async fn tham_so_ghim_bien_mat_khoi_schema_va_bi_ghi_de() {
     let root = Context::root();
@@ -315,7 +294,7 @@ async fn tham_so_ghim_bien_mat_khoi_schema_va_bi_ghi_de() {
     let agent = root.scoped("agent");
     let scope = agent.scope_key().expect("có phạm vi");
 
-    // Chưa ghim: mô hình thấy đủ ba tham số, đúng như bản Python quảng cáo.
+    // Before pinning the model sees all three parameters.
     let before = registry.schemas(Some(scope));
     let props = before[0].parameters["properties"]
         .as_object()
@@ -341,8 +320,7 @@ async fn tham_so_ghim_bien_mat_khoi_schema_va_bi_ghi_de() {
         .collect();
     assert_eq!(required, vec!["query"]);
 
-    // Một middleware "vô hại" cố đặt lại workspace_id — ghim vẫn phải thắng, nếu không
-    // thì hook trở thành đường vòng qua đúng cái ràng buộc này.
+    // A "harmless" middleware tries to reset workspace_id; the pin must still win, or the hook is a bypass.
     struct Meddle;
     impl Middleware<PreExecute> for Meddle {
         fn call<'a>(
@@ -379,7 +357,7 @@ async fn tham_so_ghim_bien_mat_khoi_schema_va_bi_ghi_de() {
     drop(pin);
 }
 
-// --- 5. canh gác đơn điệu không đảo ngược được ----------------------------------------
+// --- 5. monotonic guards cannot be reversed -----------------------------------------------
 
 struct DenyAll;
 
@@ -393,7 +371,7 @@ impl ToolGuard for DenyAll {
     }
 }
 
-/// Canh gác "dễ tính" nhất mà trait cho phép viết: nó vẫn chỉ bỏ qua được.
+/// The most permissive guard the trait allows: it can still only abstain.
 struct Abstain;
 
 #[async_trait]
@@ -406,9 +384,7 @@ impl ToolGuard for Abstain {
     }
 }
 
-/// Khoá: **thứ tự đăng ký canh gác không đổi được câu trả lời.** Không có nhánh cho phép
-/// trong [`ToolGuard`], nên không canh gác nào — đăng ký trước hay sau — gỡ được lời từ
-/// chối của canh gác khác.
+/// Locks that guard registration order cannot change the answer, since [`ToolGuard`] has no allow branch.
 #[tokio::test]
 async fn canh_gac_don_dieu_khong_dao_nguoc_duoc() {
     for order in [0, 1] {
@@ -436,7 +412,7 @@ async fn canh_gac_don_dieu_khong_dao_nguoc_duoc() {
     }
 }
 
-// --- 6. phê duyệt fail-closed ---------------------------------------------------------
+// --- 6. fail-closed approval ---------------------------------------------------------------
 
 struct AlwaysAsk;
 
@@ -470,14 +446,13 @@ struct NeverAnswers;
 #[async_trait]
 impl Approver for NeverAnswers {
     async fn approve(&self, _request: &ApprovalRequest) -> bool {
-        // Một hộp thoại bị che sau cửa sổ khác. Không bao giờ trả lời.
+        // A dialog hidden behind another window. It never answers.
         std::future::pending::<()>().await;
         true
     }
 }
 
-/// Khoá: **không có approver, hoặc hết giờ, đều là từ chối.** Không có nhánh nào trong
-/// đường ống biến "không hỏi được" thành "cho chạy".
+/// Locks that no approver and a timeout both mean refusal; no branch turns "cannot ask" into "go ahead".
 #[tokio::test]
 async fn khong_co_approver_hoac_het_gio_deu_la_tu_choi() {
     let (root, agent, registry, _scope, tools) = bench();
@@ -486,13 +461,13 @@ async fn khong_co_approver_hoac_het_gio_deu_la_tu_choi() {
     let pipeline = ToolPipeline::new(&agent, registry.clone())
         .with_approval_timeout(std::time::Duration::from_millis(50));
 
-    // (a) không ai để hỏi
+    // (a) nobody to ask
     let denied = pipeline.execute("a", "documents__delete", json!({})).await;
     assert!(denied.is_error);
     assert!(denied.content.contains("không cho phép"));
     assert_eq!(delete.ran.load(Ordering::SeqCst), 0);
 
-    // (b) có người hỏi nhưng không bao giờ trả lời
+    // (b) someone to ask who never answers
     let hung: Arc<dyn Approver> = Arc::new(NeverAnswers);
     let mounted = root.provide::<Approval>(hung).expect("cắm được");
     let denied = pipeline.execute("b", "documents__delete", json!({})).await;
@@ -500,7 +475,7 @@ async fn khong_co_approver_hoac_het_gio_deu_la_tu_choi() {
     assert_eq!(delete.ran.load(Ordering::SeqCst), 0);
     drop(mounted);
 
-    // (c) người dùng nói không
+    // (c) the user says no
     let no: Arc<dyn Approver> = Arc::new(Says(false));
     let mounted = root.provide::<Approval>(no).expect("cắm được");
     assert!(
@@ -512,7 +487,7 @@ async fn khong_co_approver_hoac_het_gio_deu_la_tu_choi() {
     assert_eq!(delete.ran.load(Ordering::SeqCst), 0);
     drop(mounted);
 
-    // (d) người dùng nói có — và chỉ lúc đó tool mới chạy
+    // (d) the user says yes, and only then does the tool run
     let yes: Arc<dyn Approver> = Arc::new(Says(true));
     let mounted = root.provide::<Approval>(yes).expect("cắm được");
     assert!(
@@ -526,8 +501,7 @@ async fn khong_co_approver_hoac_het_gio_deu_la_tu_choi() {
     drop(ask);
 }
 
-/// Khoá: **phê duyệt không mở được cái mà canh gác đã đóng.** Canh gác chạy sau, nên một
-/// lần bấm "cho phép" không thể vượt qua chính sách của chủ sở hữu.
+/// Locks that approval cannot open what a guard closed, because guards run afterwards.
 #[tokio::test]
 async fn phe_duyet_khong_mo_duoc_cai_canh_gac_da_dong() {
     let (root, agent, registry, scope, tools) = bench();
@@ -547,12 +521,9 @@ async fn phe_duyet_khong_mo_duoc_cai_canh_gac_da_dong() {
     drop(ask);
 }
 
-// --- 7. ranh giới tin cậy và kho tràn -------------------------------------------------
+// --- 7. the trust boundary and the spill store --------------------------------------------
 
-/// Port của `test_every_retrieval_tool_repeats_the_untrusted_framing`.
-///
-/// Khoá: **lời cảnh báo nằm trong mô tả tool**, và nó được chèn bởi sổ đăng ký chứ không
-/// bởi tác giả tool — một luật mà mỗi người phải nhớ áp dụng là một luật sẽ có chỗ quên.
+/// Locks that the notice lives in the tool description and is inserted by the registry, not by each tool author.
 #[tokio::test]
 async fn tool_tra_noi_dung_khong_dang_tin_cay_tu_mang_canh_bao_trong_mo_ta() {
     let root = Context::root();
@@ -578,11 +549,10 @@ async fn tool_tra_noi_dung_khong_dang_tin_cay_tu_mang_canh_bao_trong_mo_ta() {
         web.description.contains("tool giả"),
         "mô tả gốc bị nuốt mất"
     );
-    // Không dán bừa lên tool không trả nội dung ngoài: cảnh báo ở khắp nơi là cảnh báo ở
-    // không đâu cả.
+    // Not pasted onto tools returning no outside content: a warning everywhere is a warning nowhere.
     assert!(!time.description.contains(UNTRUSTED_NOTICE));
 
-    // Và metadata của host không đi kèm ra mô hình: schema đúng ba trường.
+    // And host metadata does not travel with it: the schema has exactly three fields.
     let wire = serde_json::to_value(web).expect("serialize được");
     let fields: HashSet<&str> = wire
         .as_object()
@@ -613,11 +583,7 @@ impl Tool for Verbose {
     }
 }
 
-/// Khoá: **output dài được giữ nguyên vẹn.** Bản Python cắt ở 6000 ký tự và mất phần dư;
-/// ở đây ngưỡng chỉ quyết định mô hình đọc bao nhiêu, không quyết định cái gì còn tồn tại.
-///
-/// Ngân sách nói bằng **token xấp xỉ** chứ không bằng ký tự, nên 100 ký tự cũ là 25 token
-/// mới (byte chia bốn). Khẳng định không đổi — chỉ đơn vị của cái trần đổi.
+/// Locks that long output is kept whole: the threshold decides how much the model reads, not what survives.
 #[tokio::test]
 async fn output_dai_duoc_cat_vao_kho_chu_khong_bi_cat_cut() {
     let root = Context::root();
@@ -642,7 +608,7 @@ async fn output_dai_duoc_cat_vao_kho_chu_khong_bi_cat_cut() {
     assert_eq!(store.read(&handle).map(|s| s.len()), Some(5_000));
     drop(mounted);
 
-    // Không có kho nào cắm vào thì thà gửi nguyên văn còn hơn mất phần đuôi.
+    // With no store mounted, sending the whole text beats losing the tail.
     let bare = Context::root();
     let registry = ToolRegistry::new(&root);
     bare.keep(registry.register(Arc::new(Verbose)));
@@ -653,9 +619,9 @@ async fn output_dai_duoc_cat_vao_kho_chu_khong_bi_cat_cut() {
     assert_eq!(outcome.content.chars().count(), 5_000);
 }
 
-// --- 8. từ vựng và tool mẫu -----------------------------------------------------------
+// --- 8. vocabulary and the reference tool -------------------------------------------------
 
-/// Port của `test_dots_become_double_underscores_and_back`.
+/// Dots become double underscores and back again.
 #[test]
 fn dau_cham_thanh_gach_duoi_doi_va_nguoc_lai() {
     let name = ToolName::new("rag.graph.neighborhood");
@@ -663,12 +629,11 @@ fn dau_cham_thanh_gach_duoi_doi_va_nguoc_lai() {
     assert_eq!(ToolName::from_wire(&name.wire()), name);
     assert!(!name.wire().contains('.'));
     assert!(name.round_trips());
-    // Một cái tên chứa sẵn `__` phá tính khả nghịch, nên sổ đăng ký từ chối nó.
+    // A name already containing `__` is irreversible, so the registry refuses it.
     assert!(!ToolName::new("a__b").round_trips());
 }
 
-/// Một tool có tên không mã hoá khả nghịch được thì **không tồn tại**, chứ không tồn tại
-/// dưới một cái tên mà chính sách không kiểm được.
+/// A tool whose name cannot round-trip does not exist, rather than existing under an uncheckable name.
 #[tokio::test]
 async fn ten_khong_ma_hoa_kha_nghich_thi_khong_duoc_dang_ky() {
     let root = Context::root();
@@ -686,8 +651,7 @@ async fn ten_khong_ma_hoa_kha_nghich_thi_khong_duoc_dang_ky() {
     assert_eq!(outcome.meta["refusal"], json!("unknown"));
 }
 
-/// `todo_write` là tool mẫu; bài này chỉ chứng minh nó đi qua đường ống được và trạng
-/// thái của nó thuộc về phiên.
+/// `todo_write` is the reference tool; this only shows it passes the pipeline and its state is session-scoped.
 #[tokio::test]
 async fn todo_write_ghi_de_ca_danh_sach_moi_lan() {
     let root = Context::root();
@@ -710,7 +674,7 @@ async fn todo_write_ghi_de_ca_danh_sach_moi_lan() {
     assert!(outcome.content.contains("- [~] đọc mã"));
     assert_eq!(todo.snapshot().len(), 2);
 
-    // Ghi đè, không ghi thêm.
+    // Replace, not append.
     let outcome = pipeline
         .execute(
             "c2",
@@ -721,7 +685,7 @@ async fn todo_write_ghi_de_ca_danh_sach_moi_lan() {
     assert!(!outcome.is_error);
     assert_eq!(todo.snapshot().len(), 1);
 
-    // Sai luật của chính tool thì trả về văn bản, không phải một lượt kết thúc trong im lặng.
+    // Breaking the tool's own rule returns text, not a silently ended turn.
     let outcome = pipeline
         .execute(
             "c3",
@@ -735,7 +699,7 @@ async fn todo_write_ghi_de_ca_danh_sach_moi_lan() {
     assert!(outcome.is_error);
     assert!(outcome.content.contains("chỉ được một"));
 
-    // Tham số ghim của mô hình không thấy `todo_write` — schema chỉ có `todos`.
+    // `todo_write` has no pinned parameters: its schema holds only `todos`.
     let schema = &registry.schemas(None)[0];
     assert_eq!(schema.name.wire(), "todo_write");
     assert!(
@@ -747,8 +711,7 @@ async fn todo_write_ghi_de_ca_danh_sach_moi_lan() {
     assert!(schema.parameters.get("$schema").is_none());
 }
 
-/// Đăng ký có phạm vi che đăng ký toàn cục — đó là cách một agent thay một tool bằng bản
-/// bị giam của riêng nó mà không đụng tới agent khác.
+/// A scoped registration shadows the global one, which is how an agent swaps in its own sandboxed version.
 #[tokio::test]
 async fn dang_ky_co_pham_vi_che_dang_ky_toan_cuc() {
     let (root, agent, registry, scope, tools) = bench();
@@ -761,7 +724,7 @@ async fn dang_ky_co_pham_vi_che_dang_ky_toan_cuc() {
     assert_eq!(sandboxed.ran.load(Ordering::SeqCst), 1);
     assert_eq!(tools[1].ran.load(Ordering::SeqCst), 0);
 
-    // Một agent khác vẫn thấy bản toàn cục.
+    // Another agent still sees the global one.
     let other = root.scoped("agent-b");
     ToolPipeline::new(&other, registry.clone())
         .execute("b", "documents__list", json!({}))
@@ -769,7 +732,7 @@ async fn dang_ky_co_pham_vi_che_dang_ky_toan_cuc() {
     assert_eq!(tools[1].ran.load(Ordering::SeqCst), 1);
     assert_eq!(sandboxed.ran.load(Ordering::SeqCst), 1);
 
-    // Danh sách quảng cáo không nhân đôi cái tên bị che.
+    // The advertised list does not duplicate the shadowed name.
     assert_eq!(
         names(&registry.schemas(Some(scope)))
             .iter()
@@ -780,7 +743,7 @@ async fn dang_ky_co_pham_vi_che_dang_ky_toan_cuc() {
     drop(shadow);
 }
 
-/// Nhiều hạn chế trên cùng một phạm vi thì **giao nhau**, và `deny` thắng `allow`.
+/// Several restrictions on one scope intersect, and `deny` beats `allow`.
 #[tokio::test]
 async fn nhieu_han_che_tren_cung_pham_vi_thi_giao_nhau() {
     let (_root, _agent, registry, scope, _tools) = bench();
@@ -806,7 +769,7 @@ async fn nhieu_han_che_tren_cung_pham_vi_thi_giao_nhau() {
         vec!["documents.list"]
     );
 
-    // Gỡ một hạn chế chỉ gỡ đúng nó.
+    // Dropping one restriction drops only that one.
     drop(c);
     assert_eq!(registry.schemas(Some(scope)).len(), 2);
     drop(b);
@@ -815,8 +778,7 @@ async fn nhieu_han_che_tren_cung_pham_vi_thi_giao_nhau() {
     assert_eq!(registry.schemas(Some(scope)).len(), 4);
 }
 
-/// Không có [`pai_tools::Elicitor`] nào cắm vào thì hỏi giá trị trả `None` — fail-closed,
-/// giống hệt phê duyệt.
+/// With no [`pai_tools::Elicitor`] mounted, asking for a value returns `None` — fail-closed, as approval is.
 #[tokio::test]
 async fn khong_co_elicitor_thi_khong_hoi_duoc() {
     let call = Invocation::new(ToolName::new("files.read"), "c1", Map::new());

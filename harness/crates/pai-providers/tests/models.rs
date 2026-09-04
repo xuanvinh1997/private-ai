@@ -1,13 +1,6 @@
-//! Kho mô hình của một provider, hỏi qua HTTP thật.
-//!
-//! Bài này canh đúng một thứ: cờ `embedding` của từng mô hình **đến từ máy chủ**, không
-//! đến từ một cái tên đặt sẵn trong mã. Trước đây màn hình mô hình nhúng điền sẵn
-//! `nomic-embed-text` cho mọi máy chủ Ollama, và một người đã kéo `bge-m3` về sẽ không
-//! thấy nó ở đâu cả — nên hai mô hình được chọn ở đây đều là mô hình nhúng **không có chữ
-//! "embed" trong tên**. Đoán theo tên trượt cả hai; hỏi máy chủ thì không.
-//!
-//! Máy chủ giả dựng bằng `TcpListener` thuần, cùng lối với `pai-llm/tests/adapters_http.rs`:
-//! bộ test phải chạy được khi rút dây mạng.
+//! A provider's model catalogue, asked over real HTTP. The one thing guarded here: each model's `embedding`
+//! flag comes from the server, not a hard-coded name -- both models used are embedders without "embed" in
+//! their names. The fake server is a plain `TcpListener`, so the suite runs with the network unplugged.
 
 use std::sync::Arc;
 
@@ -20,10 +13,8 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// Máy chủ HTTP tối giản: một hàm quyết định thân trả về từ đường dẫn và thân nhận được.
-///
-/// Nhận cả thân request vì `/api/show` của Ollama là một `POST` — cùng một đường dẫn cho
-/// mọi mô hình, và cái phân biệt chúng nằm trong thân.
+/// Minimal HTTP server: one function maps path plus request body to a response body, since Ollama's
+/// `/api/show` is a `POST` where only the body distinguishes models.
 async fn serve(reply: impl Fn(&str, &str) -> Value + Send + Sync + 'static) -> String {
     let reply = Arc::new(reply);
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
@@ -53,8 +44,7 @@ async fn serve(reply: impl Fn(&str, &str) -> Value + Send + Sync + 'static) -> S
     format!("http://{addr}")
 }
 
-/// Đọc trọn request. Thân phải đọc hết dù có dùng tới hay không: bỏ dở thì client thấy
-/// một cú reset chứ không thấy phản hồi.
+/// Read the whole request; the body must be drained even if unused, or the client sees a reset instead of a reply.
 async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, String)> {
     let mut buffer = Vec::new();
     let mut scratch = [0u8; 1024];
@@ -116,7 +106,7 @@ async fn ollama_khai_mo_hinh_nao_nhung_duoc_thi_lay_dung_cai_do() {
             {"name": "qwen2.5:7b", "size": 4_700_000_000u64, "details": {}}
         ]}),
         "/api/ps" => json!({"models": []}),
-        // `/api/show` là nguồn có thẩm quyền — và ở đây nó nói ngược hẳn với cái tên.
+        // `/api/show` is the authoritative source, and here it contradicts the name outright.
         "/api/show" if body.contains("bge-m3") => json!({"capabilities": ["embedding"]}),
         "/api/show" => json!({"capabilities": ["completion", "tools"]}),
         _ => json!({}),
@@ -135,9 +125,7 @@ async fn ollama_khai_mo_hinh_nao_nhung_duoc_thi_lay_dung_cai_do() {
 
 #[tokio::test]
 async fn provider_tu_xa_khong_co_nua_vong_doi_thi_van_liet_ke_duoc() {
-    // Không có `ModelAdmin` để hỏi, nên lõi rơi xuống nhánh liệt kê và đoán theo tên.
-    // Danh sách đoán vẫn hơn hẳn một ô trống — nhưng nó *là* phỏng đoán, và đó đúng là lý
-    // do màn hình phải giữ lối gõ tay.
+    // With no `ModelAdmin` to ask, the core falls back to listing and name inference -- better than nothing, but a guess.
     let base = serve(|path, _| match path {
         "/v1/models" => json!({"data": [
             {"id": "text-embedding-3-small"},
@@ -163,10 +151,8 @@ async fn provider_tu_xa_khong_co_nua_vong_doi_thi_van_liet_ke_duoc() {
 
 #[tokio::test]
 async fn lm_studio_khai_thang_loai_mo_hinh_nen_khong_phai_doan_ten() {
-    // `/api/v0/models` mang sẵn `type` cho từng mục, nên đây là loại provider duy nhất mà
-    // cờ `embedding` là **sự thật** chứ không phải phỏng đoán — và nó nói đúng cái mà một
-    // phép đoán theo tên nói sai: `text-embedding-nomic-embed-text-v1.5` là mô hình nhúng,
-    // còn `openai/gpt-oss-120b` thì không.
+    // `/api/v0/models` carries a `type` per entry, so this is the only provider where `embedding` is fact,
+    // and it gets right what name inference gets wrong.
     let base = serve(|path, _| match path {
         "/api/v0/models" => json!({"data": [
             {"id": "text-embedding-nomic-embed-text-v1.5", "type": "embeddings",
@@ -178,7 +164,7 @@ async fn lm_studio_khai_thang_loai_mo_hinh_nen_khong_phai_doan_ten() {
     })
     .await;
 
-    // URL có đuôi `/v1` như người dùng hay dán vào: adapter tự tìm về gốc máy chủ.
+    // A URL ending in `/v1`, as users tend to paste: the adapter finds the host root itself.
     let config = ProviderConfig::new(
         "pv",
         "LM Studio",
@@ -201,9 +187,7 @@ async fn lm_studio_khai_thang_loai_mo_hinh_nen_khong_phai_doan_ten() {
 
 #[tokio::test]
 async fn may_chu_khong_tra_loi_thi_danh_sach_rong_chu_khong_phai_mot_cai_ten_bia_ra() {
-    // Cổng không có ai nghe. Rỗng là câu trả lời đúng: nó nói "không hỏi được", và giao
-    // diện đọc nó thành "mở ô gõ tay ra" — chứ không phải điền sẵn một mô hình có thể
-    // không tồn tại trên máy này.
+    // Nothing is listening. Empty is the right answer: it means "could not ask", which the UI reads as "offer manual entry".
     let config = ProviderConfig::new(
         "pv",
         "Ollama chưa bật",

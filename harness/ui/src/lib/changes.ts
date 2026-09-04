@@ -5,31 +5,17 @@ export interface ChangedFile {
   path: string;
   added: number;
   removed: number;
-  /** Node cuối cùng đụng vào tệp này — đích của cú bấm "cuộn tới thay đổi". */
+  /** Last node that touched this file; the scroll target of "jump to change". */
   nodeId: string;
-  /** Tệp mới hoàn toàn: mọi hunk đều không có bản cũ. */
+  /** Brand-new file: no hunk has an old version. */
   created: boolean;
-  /** Diff mới chỉ là *dự kiến*: tool chưa chạy xong, tệp trên đĩa chưa đổi. */
+  /** The diff is still *intended*: the tool has not finished and the file on disk is unchanged. */
   pending: boolean;
-  /**
-   * Mọi hunk đã đụng vào tệp này, theo thứ tự thời gian.
-   *
-   * Có mặt để màn hình thay đổi mở được diff ngay tại chỗ thay vì chỉ đếm dòng rồi ném
-   * người dùng ngược về bản ghi. Cộng dồn chứ không thay thế: hai lần `edit` trên cùng
-   * một tệp là hai đoạn khác nhau, và giữ lại lần cuối là giấu mất lần đầu.
-   */
+  /** Every hunk that touched this file, in order; accumulated rather than replaced, so an earlier edit is not hidden. */
   hunks: DiffHunk[];
 }
 
-/**
- * Danh sách tệp đã đổi trong phiên, gấp lại từ chính bản ghi hội thoại.
- *
- * Không có sự kiện riêng nào cho việc này và cũng không nên có: bản ghi đã mang đủ dữ
- * liệu, còn một sự kiện thứ hai nói cùng một chuyện là một cơ hội để hai chỗ lệch nhau.
- *
- * Neo cuộn trỏ tới lần đụng **gần nhất** chứ không phải lần đầu — người dùng bấm vào một
- * tệp là để xem nó đang thành cái gì, không phải để xem nó từng là cái gì.
- */
+/** Files changed this session, folded out of the transcript itself; the scroll anchor points at the latest touch. */
 export function changedFiles(nodes: ConversationNode[]): ChangedFile[] {
   const byPath = new Map<string, ChangedFile>();
 
@@ -48,7 +34,7 @@ export function changedFiles(nodes: ConversationNode[]): ChangedFile[] {
       const previous = byPath.get(path);
       byPath.set(path, {
         path,
-        // Cộng dồn: hai lần `edit` trên cùng một tệp là hai lần thêm/xoá, không phải một.
+        // Accumulate: two `edit` calls on one file are two sets of additions and removals, not one.
         added: (previous?.added ?? 0) + totals.added,
         removed: (previous?.removed ?? 0) + totals.removed,
         nodeId: node.id,
@@ -62,13 +48,13 @@ export function changedFiles(nodes: ConversationNode[]): ChangedFile[] {
   return [...byPath.values()];
 }
 
-/** Tên tệp không kèm thư mục — phần duy nhất phân biệt được trong một cột hẹp. */
+/** Filename without its directory: the only part that distinguishes files in a narrow column. */
 export function baseName(path: string): string {
   const parts = path.split("/");
   return parts[parts.length - 1] ?? path;
 }
 
-/** Thư mục chứa, để dưới tên tệp làm dòng phụ. */
+/** Containing directory, shown as a secondary line under the filename. */
 export function dirName(path: string): string {
   const cut = path.lastIndexOf("/");
   return cut <= 0 ? "" : path.slice(0, cut);

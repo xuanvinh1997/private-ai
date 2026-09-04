@@ -1,8 +1,5 @@
-//! Lỗi của sổ tay phiên.
-//!
-//! Mọi biến thể ở đây là một bất biến bị vi phạm, không phải một sự cố kỹ thuật. Chúng
-//! được tách nhỏ vì người gọi phải phân biệt được: "sổ này hỏng, đừng ghi tiếp" khác hẳn
-//! "yêu cầu của bạn sai, sửa rồi gọi lại".
+//! Session log errors. Each variant is a violated invariant, kept separate so callers can tell
+//! "this log is broken, stop writing" from "your request was wrong, fix it and retry".
 
 use crate::event::Seq;
 
@@ -16,13 +13,11 @@ pub enum SessionError {
     #[error("phiên `{0}` đã tồn tại")]
     AlreadyExists(String),
 
-    /// Ranh giới fork sai. Không bao giờ tự làm tròn: một ranh giới sai là một ý định
-    /// sai, và làm tròn nó sẽ đẻ ra một phiên con mà người gọi không hề yêu cầu.
+    /// Bad fork boundary; never rounded, since rounding would create a child session nobody asked for.
     #[error("ranh giới fork {boundary} không hợp lệ: {reason}")]
     InvalidBoundary { boundary: Seq, reason: &'static str },
 
-    /// Cắt giữa một lượt đang mở sẽ sinh ra phiên con có `turn/start` không bao giờ được
-    /// đóng — một sổ mà chính bộ phát lại cũng không đọc được.
+    /// Cutting inside an open turn would leave a child with a `turn/start` that never closes.
     #[error("ranh giới {boundary} nằm giữa lượt {turn} đang mở (có turn/start, chưa có turn/end)")]
     OpenTurn { boundary: Seq, turn: u64 },
 
@@ -39,29 +34,26 @@ pub enum SessionError {
         len: usize,
     },
 
-    /// Một `replace` không kê đủ node bị che sẽ khiến bản ghi mất dấu vết: về sau không
-    /// còn cách nào biết bản tóm tắt đã nuốt những gì.
+    /// A `replace` that does not cite every shadowed node loses the trace of what the summary swallowed.
     #[error("replace phải kê mọi node bị che trong source_event_seqs; thiếu {missing:?}")]
     UncitedShadow { missing: Vec<Seq> },
 
-    /// `seq` liền mạch là bất biến trung tâm. Một lỗ hổng nghĩa là sổ đã mất event, và
-    /// mọi thứ chiếu ra từ nó — kể cả lịch sử gửi cho mô hình — đều không còn tin được.
+    /// Gapless `seq` is the central invariant: a gap means lost events, so every projection is untrustworthy.
     #[error("seq không liền mạch: chờ {expected}, gặp {found}")]
     SeqGap { expected: Seq, found: Seq },
 
-    /// Reader gặp loại sự kiện nó không hiểu và loại đó không tự nhận là bỏ qua được.
-    /// Im lặng lướt qua sẽ dựng lại một lịch sử thiếu, mà mô hình thì không biết.
+    /// An unknown event type that does not declare itself skippable; skipping it would rebuild a silently incomplete history.
     #[error("phiên dùng loại sự kiện `{0}` mà bản này không hiểu; hãy nâng cấp ứng dụng")]
     FormatUnsupported(String),
 
     #[error("tệp này không phải kho phiên của pai (application_id={found:#x})")]
     NotOurStore { found: i32 },
 
-    /// Không migrate ngầm: một schema lệch phiên bản là quyết định của con người.
+    /// No implicit migration: a schema version mismatch is a human decision.
     #[error("kho phiên ở schema v{found}, bản này nói v{expected}")]
     SchemaVersion { found: i32, expected: i32 },
 
-    /// Hai tiến trình cùng ghi một phiên. Ghi đè sẽ tạo ra lỗ hổng seq.
+    /// Two processes writing the same session; overwriting would create a seq gap.
     #[error("phiên `{0}` đã bị ghi bởi nơi khác kể từ lần đọc gần nhất")]
     ConcurrentWrite(String),
 
@@ -71,8 +63,7 @@ pub enum SessionError {
     #[error("dữ liệu sự kiện không hợp lệ: {0}")]
     Json(#[from] serde_json::Error),
 
-    /// Khoá của kho đã nhiễm độc vì một luồng khác hoảng loạn khi đang giữ nó. Trả về
-    /// lỗi thay vì hoảng loạn tiếp: một phiên hỏng không được kéo cả ứng dụng theo.
+    /// The store lock was poisoned by a panicking thread; we return an error so one broken session cannot take down the app.
     #[error("kho phiên không dùng được nữa: {0}")]
     Unavailable(String),
 }

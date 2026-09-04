@@ -16,7 +16,7 @@ pub const HOOK_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct HookInput<'a> {
     /// `pre-execute` or `post-execute`.
     pub event: &'a str,
-    /// The tool name in dotted form — the canonical form, not the wire form.
+    /// The tool name in dotted form: the canonical form, not the wire form.
     pub tool: &'a str,
     pub call_id: &'a str,
     pub arguments: &'a Map<String, Value>,
@@ -25,10 +25,7 @@ pub struct HookInput<'a> {
     pub output: Option<&'a str>,
 }
 
-/// What the hook writes to stdout.
-///
-/// There is no "ask" variant: a hook is a command running with nobody sitting there, so it
-/// has no way to ask anyone. Asking is `Approver`'s job.
+/// What the hook writes to stdout; there is no "ask" variant, since asking is `Approver`'s job.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "decision", rename_all = "lowercase")]
 pub enum HookDecision {
@@ -39,8 +36,7 @@ pub enum HookDecision {
     },
 }
 
-/// Run a hook. `None` means the hook could not answer — see the fail-open rule at the top
-/// of the crate.
+/// Run a hook; `None` means it could not answer, which the fail-open rule treats as allow.
 pub async fn run(command: &str, input: &HookInput<'_>, deadline: Duration) -> Option<HookDecision> {
     let payload = serde_json::to_vec(input).ok()?;
 
@@ -56,8 +52,7 @@ pub async fn run(command: &str, input: &HookInput<'_>, deadline: Duration) -> Op
         .ok()?;
 
     if let Some(mut stdin) = child.stdin.take() {
-        // A write error here is almost always the hook closing stdin because it does not
-        // read — not a reason to stop, so wait and see what it says.
+        // A write error here usually means the hook simply does not read stdin; carry on.
         let _ = stdin.write_all(&payload).await;
         let _ = stdin.shutdown().await;
     }

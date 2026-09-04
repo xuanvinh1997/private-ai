@@ -1,17 +1,11 @@
 import { Show } from "solid-js";
+import { S, t } from "../../lib/i18n";
 import type { DiffHunk, ToolCall } from "../../lib/protocol";
 import DiffBlock from "../DiffBlock";
 import { FilePath } from "../primitives";
 import { ToolShell } from "./ToolCard";
 
-/**
- * Thẻ cho `edit` và `write` — hai tool khác nhau, cùng một câu chuyện: một tệp đổi.
- *
- * Nguồn diff đổi theo vòng đời, và thứ tự ưu tiên là có chủ đích:
- *   - đang chạy → diff *dự kiến* suy từ đối số, để người dùng thấy trước khi tệp bị đụng;
- *   - xong → `meta.diffs`, tức diff **đã áp thật**, vì tool có quyền ghi khác điều nó hứa;
- *   - lỗi → không có diff nào, vì không có gì được ghi.
- */
+/** Card for `edit` and `write`: intended diff while running, the applied diff once done, none on error. */
 export default function MutationCard(props: { call: ToolCall }) {
   const diffs = (): DiffHunk[] | null => {
     if (props.call.state === "error") return null;
@@ -34,7 +28,7 @@ export default function MutationCard(props: { call: ToolCall }) {
         <span class="flex min-w-0 items-center gap-sm">
           <FilePath path={path()} line={diffs()?.[0]?.new_start ?? undefined} />
           <Show when={props.call.state === "running" && diffs()}>
-            <span class="shrink-0 text-2xs text-warn">dự kiến</span>
+            <span class="shrink-0 text-2xs text-warn">{t(S.tools.mutation.intended)}</span>
           </Show>
         </span>
       }

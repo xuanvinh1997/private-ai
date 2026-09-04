@@ -1,67 +1,34 @@
-//! Từ vựng của đồ thị, và cái mà một cạnh **không** hứa.
-//!
-//! Chỉ mục ký hiệu trả lời "khai báo ở đâu". Đồ thị trả lời "cái gì nối với cái gì" — và
-//! đó là câu hỏi mà một chỉ mục cú pháp thuần tuý chỉ trả lời được **gần đúng**.
-//!
-//! # Một cạnh là gì, thật sự
-//!
-//! Đúng một loại cạnh là sự thật cú pháp: [`EdgeKind::Contains`]. Cha chứa con suy ra từ
-//! bao hàm phạm vi byte trong cùng một cây, nên nó đúng hay sai cùng lúc với việc tệp có
-//! parse được hay không.
-//!
-//! Năm loại còn lại là **phỏng đoán theo tên**. Không có phân tích kiểu, không có phân
-//! giải module, không có bảng ký hiệu của trình biên dịch — chỉ có một cái tên ở chỗ gọi
-//! và một cái tên ở chỗ khai báo. `run()` trong tệp này nối tới ký hiệu `run` gần nhất mà
-//! bảng biết, theo bậc ưu tiên ở [`crate::store::Store::rebuild_edges`]. Khi trong cùng
-//! một bậc còn nhiều ứng viên thì **cả n cạnh được ghi**, chứ không chọn bừa một cái.
-//!
-//! Lý do ghi cả n thay vì bỏ: câu hỏi mà đồ thị này phục vụ là "ai gọi hàm này" trước một
-//! lần sửa. Trả về ba ứng viên trong đó có cái đúng khiến mô hình đi đọc ba chỗ; trả về
-//! rỗng khiến nó tin rằng **không ai gọi** và xoá hàm đi. Sai theo hướng thứ hai đắt hơn
-//! nhiều. Nhưng "cả n" có trần — xem `MAX_CANDIDATES` — vì một cái tên có hai mươi khai
-//! báo thì hai mươi cạnh không mang thông tin nào cả, chỉ mang nhiễu.
-//!
-//! Vì thế mọi kết quả tool đi ra mô hình đều mang [`NAME_BASED_NOTICE`]. Một đồ thị được
-//! trình bày như sự thật trong khi nó là phỏng đoán sẽ khiến mô hình kết luận sai **và tự
-//! tin**, đúng kiểu sai mà không ai bắt được. Cùng lý do khiến `pai-sandbox` báo
-//! `Enforcement::Partial` thay vì làm tròn lên thành "có giam".
+//! Graph vocabulary, and what an edge does not promise.
+//! Only `Contains` is a syntactic fact; the other five are name-based guesses, so every
+//! ambiguous name keeps all its candidates and every tool result carries the notice below.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Câu phải xuất hiện trong mọi kết quả tool có kèm cạnh.
-///
-/// Nó nằm trong **nội dung trả về** chứ không chỉ trong mô tả tool, vì mô tả được đọc một
-/// lần lúc liệt kê còn nội dung thì nằm ngay cạnh cái danh sách cạnh mà mô hình đang định
-/// tin.
+/// Must appear in every tool result carrying edges — in the payload, not just the tool description.
 pub const NAME_BASED_NOTICE: &str = "Cạnh `calls`, `imports`, `implements`, `extends` và \
 `references` là suy đoán theo tên, không phải phân tích kiểu: một tên trùng nhau ở nhiều \
 nơi sinh ra nhiều cạnh, và một lời gọi qua biến hay qua trait object có thể không sinh \
 cạnh nào. Chỉ `contains` là chắc chắn. Kiểm lại bằng `read` trước khi dựa vào nó để sửa mã.";
 
-/// Nhãn `kind` của đỉnh đại diện cho **cả một tệp**.
-///
-/// Nó không phải một [`crate::SymbolKind`], và đó là cố ý: bảng bốn loại kia là thứ mô
-/// hình lọc `symbol_search` bằng, thêm một loại vào đó là thêm một chỗ để đoán trượt. Đỉnh
-/// module chỉ tồn tại trong đồ thị — nơi nó là chủ nhà cho `import` ở tầng tệp và là gốc
-/// cho `contains` của những ký hiệu không có cha.
+/// The `kind` label of a whole-file node; deliberately not a [`crate::SymbolKind`], since the model filters on those four.
 pub const MODULE_KIND: &str = "module";
 
-/// Sáu quan hệ, đúng bằng hợp đồng wire. Không có loại thứ bảy.
+/// Six relations, exactly the wire contract. There is no seventh.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum EdgeKind {
-    /// Một lời gọi bên trong thân một ký hiệu.
+    /// A call inside a symbol's body.
     Calls,
     /// `use` / `import` / `require` / `from ... import`.
     Imports,
-    /// Cha chứa con. Loại duy nhất không phải phỏng đoán.
+    /// Parent contains child. The only kind that is not a guess.
     Contains,
     /// `impl Trait for T`, `class A implements I`.
     Implements,
     /// `class A extends B`, `class A(B)`.
     Extends,
-    /// Tên một kiểu xuất hiện trong chữ ký: tham số, kiểu trả về, chú thích.
+    /// A type name in a signature: parameter, return type, annotation.
     References,
 }
 
@@ -89,22 +56,18 @@ impl EdgeKind {
         }
     }
 
-    /// Cạnh này có phải sự thật cú pháp không. Xem ghi chú đầu tệp.
+    /// Whether this edge is a syntactic fact. See the header.
     pub fn is_structural(self) -> bool {
         matches!(self, EdgeKind::Contains)
     }
 
-    /// Đỉnh module có được làm đích của loại cạnh này không.
-    ///
-    /// `import os` trỏ đúng vào một tệp; `os.path()` thì không — một lời gọi không bao giờ
-    /// nhắm vào một tệp, nên cho phép nó khớp đỉnh module là tự sinh ra cạnh sai.
+    /// Whether a module node may be this edge's target: `import os` names a file, `os.path()` never does.
     pub fn may_target_module(self) -> bool {
         matches!(self, EdgeKind::Imports | EdgeKind::Contains)
     }
 }
 
-/// Một đỉnh. `kind` là chuỗi chứ không phải enum vì [`MODULE_KIND`] không nằm trong bảng
-/// bốn loại ký hiệu, và vì phía giao diện nhận nó dưới dạng chuỗi.
+/// A node; `kind` is a string because [`MODULE_KIND`] is not one of the four symbol kinds.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct GraphNode {
     pub id: i64,
@@ -121,17 +84,16 @@ pub struct GraphEdge {
     pub kind: EdgeKind,
 }
 
-/// Một lát cắt quanh một ký hiệu, đã cắt cho vừa màn hình và vừa ngữ cảnh.
+/// A slice around one symbol, trimmed to fit a screen and a context window.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Neighborhood {
     pub nodes: Vec<GraphNode>,
     pub edges: Vec<GraphEdge>,
-    /// Đã cắt: hoặc vì `depth` xin vượt trần, hoặc vì chạm trần số đỉnh/số cạnh. Nói ra
-    /// chứ không im, nếu không "không còn cạnh nào nữa" trông y hệt "hết cạnh rồi".
+    /// Trimmed by a depth or node/edge cap; said out loud, or "cut short" looks like "nothing more".
     pub truncated: bool,
 }
 
-/// Một thư mục và những gì nó chứa. Đây là phần "module" của bản đồ kiến trúc.
+/// A directory and its contents: the "module" half of the architecture map.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct DirectorySummary {
     pub path: String,
@@ -139,7 +101,7 @@ pub struct DirectorySummary {
     pub symbols: u32,
 }
 
-/// Một ký hiệu có nhiều cạnh nhất — chỗ đáng đọc đầu tiên trong một kho lạ.
+/// A most-connected symbol — the first thing worth reading in an unfamiliar repo.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct CentralSymbol {
     pub node: GraphNode,
@@ -153,61 +115,56 @@ impl CentralSymbol {
     }
 }
 
-/// Bản đồ kiến trúc: đọc trước khi đọc mã.
+/// The architecture map: read before reading code.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Overview {
     pub directories: Vec<DirectorySummary>,
-    /// `(ngôn ngữ, số tệp)`, nhiều trước.
+    /// `(language, file count)`, most first.
     pub languages: Vec<(String, u32)>,
     pub central: Vec<CentralSymbol>,
-    /// Số thư mục đã bị cắt khỏi `directories`.
+    /// How many directories were cut from `directories`.
     pub directories_omitted: u32,
 }
 
-/// Tình trạng chỉ mục. Chuyển thẳng sang `IndexStats` của hợp đồng wire.
+/// Index health; maps straight onto the wire contract's `IndexStats`.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Stats {
     pub files: u32,
-    /// **Không** kể đỉnh module: con số này là "repo có bao nhiêu khai báo", và một đỉnh
-    /// mỗi tệp cộng vào đó chỉ làm nó hết so sánh được với lần quét trước.
+    /// Excludes module nodes: this counts declarations, so it stays comparable across scans.
     pub symbols: u32,
     pub edges: u32,
-    /// `(ngôn ngữ, số tệp)`, nhiều trước.
+    /// `(language, file count)`, most first.
     pub languages: Vec<(String, u32)>,
-    /// Lần quét gần nhất, epoch mili-giây.
+    /// Last scan, epoch milliseconds.
     pub scanned_at: Option<i64>,
 }
 
-/// Chủ nhà của một tham chiếu: ký hiệu nào chứa chỗ nhắc tới nó.
-///
-/// Ba nhánh chứ không phải một chuỗi tên, vì độ chắc chắn của ba trường hợp khác nhau và
-/// gộp lại thì cả ba tụt xuống mức thấp nhất.
+/// Who owns a reference; three variants rather than one name, because their certainty differs.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Owner {
-    /// Chỉ số trong `Vec<Symbol>` vừa trích. Chính xác tuyệt đối.
+    /// An index into the just-extracted `Vec<Symbol>`. Exact.
     Symbol(usize),
-    /// Một `@def.scope` — `impl Foo`, `mod bar`. Nó không tự mình là ký hiệu, nên phải tra
-    /// tên **trong chính tệp này**; `impl Foo` tìm thấy `struct Foo` là trường hợp thường.
+    /// A `@def.scope` such as `impl Foo`: not a symbol itself, so the name is looked up within this file.
     Scope(String),
-    /// Tầng tệp: `use` ở đầu tệp không nằm trong ký hiệu nào. Chủ nhà là đỉnh module.
+    /// File level: a top-of-file `use` sits in no symbol, so the module node owns it.
     File,
 }
 
-/// Đích của một tham chiếu.
+/// A reference's target.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
-    /// Chỉ số trong `Vec<Symbol>` vừa trích — dùng cho `contains`, thứ duy nhất biết chắc.
+    /// An index into the just-extracted `Vec<Symbol>` — only `contains` is this sure.
     Symbol(usize),
-    /// Một cái tên, chờ phân giải. Đây là chỗ đồ thị thôi là sự thật và thành phỏng đoán.
+    /// A name awaiting resolution: where the graph stops being fact and becomes a guess.
     Name(String),
 }
 
-/// Một quan hệ vừa nhìn thấy trong cây cú pháp, **chưa** phân giải.
+/// A relation just seen in the syntax tree, not yet resolved.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Reference {
     pub from: Owner,
     pub to: Target,
     pub kind: EdgeKind,
-    /// Dòng của chỗ nhắc tới, đánh số từ 1.
+    /// The mention's line, 1-based.
     pub line: u32,
 }

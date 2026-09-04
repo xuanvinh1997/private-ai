@@ -1,23 +1,6 @@
-//! Bản cài đặt của seam: một tiến trình con cho mỗi ngôn ngữ, dựng lúc cần.
-//!
-//! Ba việc gộp ở đây, và chúng gộp vì cả ba đều là **biên giới** giữa từ vựng của harness
-//! và từ vựng của LSP:
-//!
-//! **Vòng đời.** Server được dựng ở lần hỏi đầu tiên, không phải lúc cắm plugin. Một
-//! `rust-analyzer` khởi động cùng ứng dụng là hàng trăm MB và một lõi CPU tiêu tốn cho
-//! một người dùng có thể không hỏi câu nào cả phiên.
-//!
-//! **Đường dẫn.** Mọi đường dẫn đi vào đều qua [`FileRoots::resolve_read`] — chuẩn hoá
-//! trước, kiểm tra sau, đúng luật của `pai-fs`. Mọi đường dẫn đi ra đều được hỏi lại cùng
-//! một câu, và câu trả lời đi kèm kết quả dưới dạng cờ `reachable`: một định nghĩa nằm
-//! trong `~/.cargo/registry` là một câu trả lời **đúng** mà `read` không với tới, và giấu
-//! nó đi thì mô hình kết luận rằng hàm đó không có định nghĩa.
-//!
-//! **Toạ độ.** LSP đếm dòng từ 0 và đếm cột bằng đơn vị mã UTF-16; `read`, trình soạn
-//! thảo và con người đếm từ 1 và đếm bằng ký tự. Phép đổi nằm gọn trong hai hàm ở cuối
-//! tệp và **không chỗ nào khác trong crate được phép đổi lại** — một cột lệch không làm
-//! câu trả lời sai hẳn, nó chỉ trỏ vào ký hiệu bên cạnh, và đó là loại sai không ai bắt
-//! được khi đọc kết quả.
+//! Seam implementation: one child process per language, started on demand.
+//! It is also the border between harness and LSP vocabulary: paths go through
+//! [`FileRoots::resolve_read`], and the 1-based/UTF-16 conversion lives only at the bottom.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -36,7 +19,7 @@ use crate::launch::Launch;
 use crate::seam::{Answer, Hit, LanguageServers, Note, Operation, Query};
 use crate::uri;
 
-/// Một hàng cấu hình đã dò được lệnh và sẵn sàng chạy.
+/// A config row whose command was located and is ready to run.
 pub struct Entry {
     pub id: String,
     pub extensions: Vec<String>,
@@ -44,7 +27,7 @@ pub struct Entry {
     pub options: Option<Value>,
 }
 
-/// Trạng thái một lần khởi động.
+/// State of one startup.
 #[derive(Clone)]
 enum Startup {
     Starting,
@@ -68,9 +51,7 @@ impl StdioServers {
         limits: Limits,
     ) -> StdioServers {
         StdioServers {
-            // Chuẩn hoá một lần ở đây: đường dẫn từ server về đã đi qua `canonicalize`,
-            // nên nếu gốc chưa chuẩn hoá thì phép `strip_prefix` để rút gọn hiển thị lặng
-            // lẽ trượt và mọi kết quả hiện ra dưới dạng tuyệt đối.
+            // Canonicalize once here: server paths come back canonicalized, so an uncanonical root makes the display `strip_prefix` silently miss.
             workspace: workspace.canonicalize().unwrap_or(workspace),
             roots,
             entries,
@@ -86,7 +67,7 @@ impl StdioServers {
             .find(|entry| entry.extensions.iter().any(|ext| ext == extension))
     }
 
-    /// Chuẩn hoá trước, kiểm tra sau. Đường dẫn tương đối tính từ thư mục làm việc.
+    /// Normalize first, check second. Relative paths resolve against the working directory.
     fn resolve(&self, path: &Path) -> Result<PathBuf, LspError> {
         let candidate = if path.is_absolute() {
             path.to_path_buf()
@@ -98,11 +79,7 @@ impl StdioServers {
             .map_err(|err| LspError::Invalid(err.to_string()))
     }
 
-    /// Lấy một client đã bắt tay xong, chờ **có hạn**.
-    ///
-    /// Hết hạn không phải là hỏng: task khởi động vẫn chạy tiếp trong nền, nên câu hỏi sau
-    /// vài giây nữa thường trúng một server đã sẵn sàng. Cái ta không được làm là ngồi
-    /// chờ vô hạn (lượt của người dùng đứng im) hay trả về rỗng (một lời nói dối).
+    /// Get a client that has finished its handshake, waiting with a deadline; a timeout is not a failure, since the startup task keeps running in the background.
     async fn ready_client(&self, entry: &Entry) -> Result<Arc<Client>, LspError> {
         let mut rx = self.slot(entry);
         let started = tokio::time::Instant::now();
@@ -125,12 +102,7 @@ impl StdioServers {
         }
     }
 
-    /// Ô của một ngôn ngữ, dựng nếu chưa có hoặc nếu cái cũ đã chết.
-    ///
-    /// Chết **sau khi từng chạy** thì dựng lại; **không dựng nổi** thì không. Hai chuyện
-    /// đó khác nhau ở chỗ thử lại có ích hay không: một server bị OOM giữa chừng sẽ chạy
-    /// lại được, còn một lệnh sai tham số sẽ hỏng y hệt ở lần thứ một trăm — và thử lại nó
-    /// mỗi lần mô hình hỏi là đẻ một tiến trình cho mỗi câu hỏi.
+    /// The slot for a language, built when absent or when the old one died; a server that died after running is retried, one that never started is not.
     fn slot(&self, entry: &Entry) -> watch::Receiver<Startup> {
         let mut slots = self.slots.lock();
         if let Some(rx) = slots.get(&entry.id) {
@@ -147,10 +119,7 @@ impl StdioServers {
         let launcher = entry.launcher.clone();
         let options = entry.options.clone();
         let root = self.workspace.clone();
-        // Task nền được rộng hạn hơn phía trước. Phía trước bỏ cuộc sớm vì nó đang giữ
-        // lượt của người dùng; task nền thì không giữ gì cả, và cắt nó đúng lúc phía
-        // trước hết kiên nhẫn sẽ biến "hỏi lại sau vài giây" — câu ta vừa nói với mô
-        // hình — thành một lời khuyên sai, vì lần hỏi sau lại bắt đầu từ số không.
+        // The background task gets a longer deadline than the caller: the caller gives up early because it holds the user's turn, and cutting the task short would make "ask again in a few seconds" a lie.
         let timeout = self.limits.startup.saturating_mul(3);
         let label = entry.id.clone();
         tokio::spawn(async move {
@@ -164,7 +133,7 @@ impl StdioServers {
         rx
     }
 
-    /// Đóng mọi server. Dành cho lúc gỡ plugin.
+    /// Close every server. For plugin teardown.
     pub async fn shutdown(&self) {
         let slots: Vec<_> = { self.slots.lock().drain().map(|(_, rx)| rx).collect() };
         for rx in slots {
@@ -179,7 +148,7 @@ impl StdioServers {
     }
 }
 
-/// Dựng và bắt tay. Tách khỏi [`StdioServers`] để nó chạy được trong một task rời.
+/// Start and handshake. Split from [`StdioServers`] so it can run in its own task.
 async fn boot(
     label: String,
     launcher: Arc<dyn Launch>,
@@ -195,12 +164,11 @@ async fn boot(
     let root_uri = uri::to_uri(root).map_err(|err| LspError::Invalid(err.to_string()))?;
     match client.handshake(root, &root_uri, options, timeout).await {
         Ok(_) => {
-            tracing::info!(server = %label, "language server đã bắt tay xong");
+            tracing::info!(server = %label, "language server finished its handshake");
             Ok(client)
         }
         Err(err) => {
-            // Bắt tay hỏng thì tiến trình con vẫn đang chạy. Không dọn ở đây là để lại một
-            // server mồ côi cho mỗi lần thử — và lần thử tiếp theo đẻ thêm một cái nữa.
+            // A failed handshake leaves the child running; not cleaning up here orphans one server per attempt.
             client.shutdown().await;
             Err(err)
         }
@@ -241,8 +209,7 @@ impl LanguageServers for StdioServers {
                 .await
             {
                 Some(notes) => notes,
-                // Hết giờ mà không có lần đăng mới: nếu server từng đăng cho tệp này thì
-                // bản cũ vẫn là câu trả lời tốt nhất ta có, và nó thường vẫn đúng.
+                // Timed out with no new publish: if the server ever published for this file, the old copy is the best answer we have.
                 None => client.diagnostics(&file_uri).unwrap_or_default(),
             };
             let notes = notes.iter().map(|note| to_note(&text, note)).collect();
@@ -264,8 +231,7 @@ impl LanguageServers for StdioServers {
             Operation::References => {
                 let mut params = position;
                 if let Some(object) = params.as_object_mut() {
-                    // Luôn kèm chỗ khai báo. Một danh sách tham chiếu thiếu mất định nghĩa
-                    // buộc mô hình hỏi thêm một lần nữa để biết thứ nó vừa đếm là gì.
+                    // Always include the declaration; a reference list missing it forces the model to ask again.
                     object.insert("context".into(), json!({ "includeDeclaration": true }));
                 }
                 ("textDocument/references", params)
@@ -291,7 +257,7 @@ impl LanguageServers for StdioServers {
             match self.hit(&mut cache, &target, line, character).await {
                 Some(hit) => hits.push(hit),
                 None => {
-                    tracing::debug!(uri = %target, "bỏ một vị trí không chuyển được về đường dẫn")
+                    tracing::debug!(uri = %target, "dropping a location that cannot be mapped to a path")
                 }
             }
         }
@@ -304,7 +270,7 @@ impl LanguageServers for StdioServers {
 }
 
 impl StdioServers {
-    /// Một vị trí của LSP thành một dòng mô hình đọc được.
+    /// One LSP location turned into a line the model can read.
     async fn hit(
         &self,
         cache: &mut HashMap<PathBuf, Option<String>>,
@@ -313,8 +279,7 @@ impl StdioServers {
         character: u32,
     ) -> Option<Hit> {
         let path = uri::from_uri(target).ok()?;
-        // Cùng một câu hỏi cho đường ra như cho đường vào. `resolve_read` cũng là thứ
-        // quyết định `reachable`, nên hai câu trả lời không thể lệch nhau.
+        // The same question on the way out as on the way in; `resolve_read` also decides `reachable`, so the two answers cannot diverge.
         let inside = self.roots.resolve_read(&path).ok();
 
         let text = match &inside {
@@ -330,13 +295,11 @@ impl StdioServers {
 
         let (line, column, snippet) = match text {
             Some(text) => from_lsp_position(text, line, character),
-            // Ngoài thư mục làm việc thì không đọc, và dòng mã để trống. Ranh giới của
-            // `pai-fs` không có ngoại lệ cho crate này, kể cả khi trích một dòng thì tiện.
+            // Outside the working directory means no read and no source line: `pai-fs` boundaries have no exception for this crate.
             None => (line + 1, character + 1, String::new()),
         };
 
-        // Rút gọn về đường dẫn tương đối khi nằm trong thư mục làm việc: đó là hình dạng
-        // mà `read` và `grep` nhận, nên mô hình chép thẳng sang bước sau được.
+        // Shorten to a relative path when inside the working directory: that is the shape `read` and `grep` accept.
         let display = inside
             .as_ref()
             .and_then(|resolved| resolved.strip_prefix(&self.workspace).ok())
@@ -369,14 +332,10 @@ fn to_note(text: &str, note: &RawNote) -> Note {
     }
 }
 
-/// `Location | Location[] | LocationLink[] | null` → danh sách `(uri, dòng, cột)`.
-///
-/// Ba hình dạng cho một câu trả lời là chuyện của spec, không phải của server; nhận đủ cả
-/// ba là điều kiện để câu trả lời không phụ thuộc vào server nào đang chạy.
+/// `Location | Location[] | LocationLink[] | null` -> a list of `(uri, line, column)`; all three shapes come from the spec, so accepting all three keeps answers server-independent.
 fn locations(result: &Value) -> Vec<(String, u32, u32)> {
     fn one(item: &Value, out: &mut Vec<(String, u32, u32)>) {
-        // `LocationLink` dùng `targetUri`; `targetSelectionRange` trỏ vào đúng cái tên,
-        // còn `targetRange` bao cả thân hàm — cái mô hình muốn đọc là cái tên.
+        // `LocationLink` uses `targetUri`; `targetSelectionRange` points at the name while `targetRange` spans the body, and the name is what the model wants.
         if let Some(uri) = item.get("targetUri").and_then(Value::as_str) {
             let range = item
                 .get("targetSelectionRange")
@@ -420,7 +379,7 @@ fn start_character(range: &Value) -> u32 {
         .unwrap_or(0) as u32
 }
 
-/// `Hover.contents`: chuỗi, `MarkedString`, mảng của chúng, hoặc `MarkupContent`.
+/// `Hover.contents`: a string, a `MarkedString`, an array of those, or `MarkupContent`.
 fn hover_text(result: &Value) -> String {
     fn piece(value: &Value, out: &mut Vec<String>) {
         match value {
@@ -431,8 +390,7 @@ fn hover_text(result: &Value) -> String {
                 }
             }
             Value::Object(map) => {
-                // `MarkupContent {kind, value}` và `MarkedString {language, value}` chỉ
-                // khác nhau ở cái nhãn; phần ta cần là `value` trong cả hai.
+                // `MarkupContent {kind, value}` and `MarkedString {language, value}` differ only in the label; `value` is what we need.
                 if let Some(text) = map.get("value").and_then(Value::as_str) {
                     out.push(text.to_string());
                 }
@@ -445,12 +403,7 @@ fn hover_text(result: &Value) -> String {
     parts.join("\n").trim().to_string()
 }
 
-/// (dòng 1-based, cột 1-based theo ký tự) → (dòng 0-based, cột theo đơn vị mã UTF-16).
-///
-/// Cột vượt quá độ dài dòng thì **kẹp về cuối dòng** chứ không báo lỗi: con trỏ ở cuối
-/// dòng là một chỗ hợp lệ để hỏi, và một mô hình đếm cột hơi rộng tay vẫn đang hỏi đúng
-/// dòng. Dòng vượt quá số dòng của tệp thì ngược lại — đó là một câu hỏi về chỗ không tồn
-/// tại, và trả lời nó bằng dòng cuối là bịa.
+/// (1-based line, 1-based character column) -> (0-based line, UTF-16 code unit column); an over-long column clamps to end of line, but an out-of-range line is an error rather than a guess.
 fn to_lsp_position(text: &str, line: u32, column: u32) -> Result<(u32, u32), LspError> {
     if line == 0 || column == 0 {
         return Err(LspError::Invalid(
@@ -474,7 +427,7 @@ fn to_lsp_position(text: &str, line: u32, column: u32) -> Result<(u32, u32), Lsp
     Ok((line - 1, utf16))
 }
 
-/// Chiều ngược lại, cộng chính dòng mã ở đó.
+/// The reverse, plus the source line itself.
 fn from_lsp_position(text: &str, line: u32, character: u32) -> (u32, u32, String) {
     let lines: Vec<&str> = text.split('\n').collect();
     let Some(row) = lines.get(line as usize) else {

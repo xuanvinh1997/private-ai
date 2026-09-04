@@ -1,10 +1,6 @@
-//! Vỏ Tauri của harness.
-//!
-//! Tệp này cố tình mỏng. Nó giữ đúng ba thứ: các lệnh giao diện gọi, trạng thái chỉ có
-//! nghĩa với cửa sổ (câu hỏi duyệt nào đang treo, lượt nào huỷ được), và phép dịch từ sự
-//! kiện của vòng lặp sang sự kiện giao diện đọc. Mọi hành vi thật nằm trong `pai-*`, để
-//! đổi được lõi mà không đụng vỏ — và để lõi chạy được ngoài Tauri, trong test và ở chế
-//! độ không giao diện.
+//! The Tauri shell around the harness, deliberately thin: UI commands, window-only state (pending approvals,
+//! cancellable turns), and the translation from loop events to UI events. All real behaviour lives in `pai-*`
+//! so the core runs outside Tauri, in tests and headless.
 
 mod approval;
 pub mod coalesce;
@@ -38,15 +34,11 @@ use crate::protocol::{
 #[derive(Default)]
 pub(crate) struct AppState {
     approvals: Arc<Approvals>,
-    /// Dựng một lần, lúc lệnh đầu tiên tới. Dựng trong `setup` thì một lỗi cấu hình sẽ
-    /// hiện ra dưới dạng cửa sổ không mở được, không kèm lý do nào người dùng đọc được.
+    /// Built once, on the first command: building in `setup` would turn a config error into a window that never opens.
     harness: OnceCell<Arc<Harness>>,
-    /// Một token huỷ cho mỗi lượt đang chạy, tra theo phiên.
+    /// One cancellation token per running turn, keyed by session.
     pub(crate) running: Mutex<HashMap<String, CancellationToken>>,
-    /// Bản clone đang chạy, nếu có.
-    ///
-    /// Một cái, không phải một bảng: người dùng clone một repo tại một thời điểm, và một
-    /// bảng ở đây sẽ đòi giao diện phải sinh và giữ một khoá cho một thứ chỉ có một.
+    /// The running clone, if any; one, not a map, because a user clones one repository at a time.
     pub(crate) cloning: Mutex<Option<CancellationToken>>,
 }
 
@@ -64,11 +56,8 @@ impl AppState {
     }
 }
 
-/// Dịch sự kiện của vòng lặp sang sự kiện giao diện.
-///
-/// Ôm luôn cửa sổ ngữ cảnh của mô hình đang chạy, vì `TurnSink::usage` chỉ đưa tử số. Không
-/// có mẫu số thì giao diện chỉ vẽ được một con số token trần — đúng, nhưng không trả lời
-/// được câu người dùng thật sự hỏi: "còn bao nhiêu chỗ nữa".
+/// Translate loop events into UI events, carrying the model's context window because `TurnSink::usage` only
+/// gives the numerator, and without a denominator the UI cannot answer "how much room is left".
 struct ChannelSink {
     events: Coalescer,
     context_window: Option<u64>,
@@ -85,8 +74,7 @@ impl TurnSink for ChannelSink {
         self.events.send(AgentEvent::ToolStart {
             call_id: call_id.to_string(),
             name: name.to_string(),
-            // Tham số hỏng vẫn phải hiện được: giao diện vẽ một thẻ có tham số lạ tốt hơn
-            // một thẻ không có gì.
+            // Broken arguments must still render: a card with odd arguments beats a card with nothing.
             args: serde_json::from_str(arguments).unwrap_or_else(|_| arguments.into()),
         });
     }
@@ -99,9 +87,7 @@ impl TurnSink for ChannelSink {
         preview: &str,
         meta: &serde_json::Map<String, serde_json::Value>,
     ) {
-        // `meta` đi từ tool tới giao diện mà không ai ở giữa diễn giải nó. Cố ý: dsh có
-        // `presentCall`/`presentResult` ở phía host và bản web của nó **không dùng** —
-        // một tầng trình bày ở giữa là một tầng nữa để hai đầu lệch pha.
+        // `meta` travels from tool to UI uninterpreted, on purpose: a presentation layer in between is one more place for the two ends to drift.
         let meta = (!meta.is_empty())
             .then(|| serde_json::from_value(serde_json::Value::Object(meta.clone())).ok())
             .flatten();
@@ -134,20 +120,13 @@ impl TurnSink for ChannelSink {
 pub struct SendMessage {
     pub session_id: String,
     pub text: String,
-    /// Quyền tool cho **riêng lượt này**.
-    ///
-    /// Không `#[serde(default)]`: một mặc định ở đây nghĩa là một giao diện cũ hoặc một
-    /// lời gọi thiếu trường vẫn chạy được, im lặng, ở một mức quyền không ai chọn. Thiếu
-    /// trường thì lệnh hỏng ngay tại biên và người dùng đọc được lý do — to hơn nhiều so
-    /// với một lượt chạy quá quyền.
+    /// Tool permissions for this turn alone. No `#[serde(default)]`: a default would let an old UI run
+    /// silently at a privilege level nobody chose, whereas a missing field fails loudly at the boundary.
     pub scope: ToolScope,
 }
 
-/// Chạy một lượt, phát sự kiện về giao diện.
-///
-/// Dùng `Channel` chứ không `emit`: một channel gắn với đúng một lượt, giữ thứ tự, và tự
-/// dọn khi giao diện bỏ nó — nên hai lượt song song không trộn token vào nhau, và không
-/// listener nào sống sót qua một lượt đã kết thúc.
+/// Run a turn, emitting events to the UI over a `Channel` rather than `emit`: a channel belongs to one turn,
+/// preserves order, and disappears with it, so concurrent turns never interleave tokens.
 #[tauri::command]
 async fn send_message(
     input: SendMessage,
@@ -165,8 +144,7 @@ async fn send_message(
         events: Coalescer::spawn(on_event.clone()),
         context_window: u64::try_from(harness.context_window).ok(),
     };
-    // Người duyệt ôm chính `Channel` của lượt này: câu hỏi phải đi ra đúng cửa sổ đã gửi
-    // câu hỏi đi. Xem `approval::TurnApprover`.
+    // The approver holds this turn's `Channel`, so prompts return to the window that raised them.
     let approver: Arc<dyn pai_tools::Approver> = Arc::new(approval::TurnApprover::new(
         state.approvals.clone(),
         on_event.clone(),
@@ -175,32 +153,23 @@ async fn send_message(
 
     state.running.lock().remove(&input.session_id);
 
-    // Mọi sự kiện của lượt đi qua **đúng một** đường ra — bộ gộp. Trước đây `Final`,
-    // `Error` và `ApprovalCancel` gửi thẳng vào `Channel` trong khi token đi qua bộ đệm
-    // 16 ms, nên chúng vượt lên trước những token cuối cùng: giao diện thấy `final`, đóng
-    // khối trả lời, rồi token muộn tới và đẻ ra một tin nhắn cụt mang con trỏ nhấp nháy
-    // không bao giờ tắt. Bộ gộp xả hết token trước khi cho bất kỳ sự kiện nào khác đi qua,
-    // nên chỉ cần đi chung đường là thứ tự đúng.
+    // Every event of a turn leaves through exactly one path, the coalescer: sending `Final` straight to the
+    // `Channel` once overtook buffered tokens, so the UI closed the block and late tokens spawned a stub message.
     state.approvals.cancel_all(|event| sink.events.send(event));
 
     match result {
         Ok(message_id) => sink.events.send(AgentEvent::Final { message_id }),
-        // Lỗi đi ra bằng đường sự kiện chứ không bằng `Err`: giao diện đã dựng một khối
-        // cho lượt này rồi, và một lời từ chối im lặng để nó treo ở đó mãi.
+        // Errors leave as events, not as `Err`: the UI already opened a block, and a silent rejection leaves it hanging.
         Err(message) => sink.events.send(AgentEvent::Error { message }),
     }
 
-    // Và trả về **sau khi** kênh đã nhận hết: `invoke` resolve là tín hiệu giao diện dùng
-    // để kết thúc lượt, nên nó không được sớm hơn sự kiện cuối cùng.
+    // And return only after the channel has drained: the UI treats `invoke` resolving as the end of the turn.
     sink.events.finish().await;
     Ok(())
 }
 
-/// Chạy một lượt trong phạm vi tool người dùng vừa chọn.
-///
-/// Phạm vi được mở ra rồi **dọn ngay tại đây**, trong cùng một hàm, vì đó là thứ khiến nó
-/// là phạm vi của một lượt chứ không phải một thiết lập: không có đường nào để một lần hạ
-/// quyền sống sót sang lượt sau, kể cả khi lượt này hỏng giữa chừng.
+/// Run a turn inside the tool scope the user chose; the scope is opened and disposed in this one function,
+/// which is what makes it a turn's scope rather than a setting, even when the turn fails midway.
 async fn run_turn(
     harness: &Harness,
     input: &SendMessage,
@@ -210,12 +179,12 @@ async fn run_turn(
 ) -> Result<String, String> {
     let turn_ctx = scope::mo_pham_vi(&harness.ctx, input.scope, approver)?;
     let result = drive_turn(harness, &turn_ctx, input, cancel, sink).await;
-    // Dọn bất đồng bộ, nên nó không thể là một `Drop`. Đây là chỗ hạn chế được gỡ.
+    // Disposal is async, so it cannot be a `Drop`; this is where the restriction is lifted.
     turn_ctx.effects().dispose().await;
     result
 }
 
-/// Thân của [`run_turn`], tách ra để mọi đường thoát đều đi qua đúng một lần dọn phạm vi.
+/// The body of [`run_turn`], split out so every exit path passes through exactly one scope disposal.
 async fn drive_turn(
     harness: &Harness,
     turn_ctx: &pai_core::Context,
@@ -229,8 +198,7 @@ async fn drive_turn(
         .await
         .map_err(|err| err.to_string())?;
 
-    // Số lượt suy ra từ sổ, không giữ trong bộ nhớ: mở lại một phiên cũ phải tiếp đúng
-    // chỗ nó dừng, kể cả sau khi ứng dụng đã đóng.
+    // The turn number is derived from the log, not held in memory, so reopening an old session continues where it stopped.
     let turn = session
         .log()
         .events()
@@ -239,13 +207,8 @@ async fn drive_turn(
         .count() as u64
         + 1;
 
-    // Vòng lặp của lượt chạy trong ngữ cảnh **của lượt**, không phải ngữ cảnh gốc: cả
-    // hai tầng lọc quyền — danh sách schema gửi cho mô hình và lần tra cứu tên lúc gọi —
-    // đọc phạm vi từ chính `Context` này. Dựng ở đây nên rẻ: `Driver` chỉ là vài con trỏ.
-    //
-    // Nhà cung cấp và mô hình đọc từ `harness.driver` ngay lúc bắt đầu lượt, đúng luật
-    // "chốt một lần cho cả lượt" mà `Driver::drive` đã giữ: đổi provider giữa chừng có
-    // hiệu lực từ lượt sau.
+    // The loop runs in the turn's context, not the root: both permission layers read the scope from this
+    // `Context`. Provider and model are read from `harness.driver` at turn start, so a mid-turn switch applies next turn.
     let registry = harness
         .ctx
         .require::<Tools>()
@@ -281,7 +244,7 @@ fn approval_result(request_id: String, decision: ApprovalDecision, state: State<
     state.approvals.resolve(&request_id, decision);
 }
 
-/// Huỷ lượt đang chạy của một phiên. Gọi khi không có lượt nào thì không sao.
+/// Cancel a session's running turn; calling it with no turn running is harmless.
 #[tauri::command]
 fn cancel_turn(session_id: String, state: State<'_, AppState>) {
     if let Some(token) = state.running.lock().remove(&session_id) {
@@ -289,11 +252,8 @@ fn cancel_turn(session_id: String, state: State<'_, AppState>) {
     }
 }
 
-/// Cây plugin đang chạy gồm những gì.
-///
-/// Tương đương `--dump-config` của dsh, và có mặt vì cùng một lý do: trong một kiến trúc
-/// mà mọi thứ đều thay được từ cấu hình, câu hỏi đầu tiên khi có gì đó sai luôn là "bản
-/// đang chạy thật sự gồm những gì".
+/// What the running plugin tree contains: the equivalent of dsh's `--dump-config`, because in a fully
+/// configurable architecture the first question is always what is actually running.
 #[tauri::command]
 async fn describe_harness(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let harness = state.harness().await?;
@@ -310,11 +270,8 @@ async fn describe_harness(state: State<'_, AppState>) -> Result<Vec<String>, Str
     Ok(lines)
 }
 
-/// Bản ghi đã lưu của một phiên, dựng lại từ sổ.
-///
-/// Chiếu **sổ**, không chiếu `derive_messages()`: phép chiếu kia bỏ đi mọi thứ mô hình
-/// không thấy — thẻ tool, giờ giấc — mà đó chính là những thứ người đọc cần. Hai phép
-/// chiếu từ cùng một sổ, cho hai người đọc khác nhau.
+/// A session's stored transcript, projected from the log rather than `derive_messages()`, which drops exactly
+/// what a human reader needs: tool cards and timestamps. Two projections of one log, for two audiences.
 #[tauri::command]
 async fn load_session(
     session_id: String,
@@ -324,7 +281,7 @@ async fn load_session(
     load_session_for_test(&harness, &session_id).await
 }
 
-/// Thân của [`load_session`], tách ra vì một `#[tauri::command]` không gọi được từ test.
+/// The body of [`load_session`], split out because a `#[tauri::command]` cannot be called from a test.
 pub async fn load_session_for_test(
     harness: &Harness,
     session_id: &str,
@@ -341,7 +298,7 @@ pub async fn load_session_for_test(
         match &entry.event {
             SessionEvent::UserMessage(message) => {
                 let text = text_of(&message.content);
-                // Message rỗng vẫn nằm trong sổ nhưng không có gì để vẽ.
+                // An empty message stays in the log but has nothing to draw.
                 if !text.is_empty() {
                     nodes.push(HistoryNode::User {
                         id: format!("s{}", entry.seq),
@@ -371,8 +328,7 @@ pub async fn load_session_for_test(
                 created_at: at,
             }),
             SessionEvent::ToolResult(result) => {
-                // Kết quả gắn vào đúng lời gọi đã dựng ở trên. Tìm ngược vì một cặp
-                // gọi/kết quả luôn kề nhau trong một bước.
+                // Attach the result to the call built above, searching backwards since a call/result pair is adjacent within a step.
                 let content = text_of(&result.message.content);
                 let is_error = result.error.is_some();
                 let meta = result
@@ -397,7 +353,7 @@ pub async fn load_session_for_test(
     Ok(nodes)
 }
 
-/// Văn bản người đọc thấy được trong một message của sổ.
+/// The human-readable text inside a logged message.
 fn text_of(blocks: &[pai_session::ContentBlock]) -> String {
     blocks
         .iter()
@@ -427,8 +383,7 @@ async fn rename_session(
 #[tauri::command]
 async fn delete_session(session_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let harness = state.harness().await?;
-    // Huỷ lượt đang chạy trước khi xoá: xoá một phiên trong lúc nó đang ghi để lại một
-    // lượt viết vào chỗ không còn ai nhận.
+    // Cancel the running turn before deleting: deleting a session mid-write leaves a turn writing into nothing.
     if let Some(token) = state.running.lock().remove(&session_id) {
         token.cancel();
     }
@@ -439,7 +394,7 @@ async fn delete_session(session_id: String, state: State<'_, AppState>) -> Resul
         .map_err(|e| e.to_string())
 }
 
-/// Mô hình máy chủ đang có. Danh sách rỗng nghĩa là máy chủ không trả lời được.
+/// Models the server offers; an empty list means the server did not answer.
 #[tauri::command]
 async fn list_models(state: State<'_, AppState>) -> Result<Vec<ModelChoice>, String> {
     let harness = state.harness().await?;
@@ -466,9 +421,8 @@ async fn create_session(
     state: State<'_, AppState>,
 ) -> Result<SessionSummary, String> {
     let harness = state.harness().await?;
-    // Phiên **không** bắt buộc thuộc một dự án. Một phiên trò chuyện thuần tuý là một
-    // phiên hợp lệ, và đó là thứ ứng dụng mở lên lần đầu; điền đại một thư mục vào `cwd`
-    // chỉ để trường ấy có giá trị là ghi vào sổ một điều không đúng.
+    // A session need not belong to a project: plain conversation is valid and is what the app opens first,
+    // so filling `cwd` with an arbitrary directory would record an untruth.
     let opened = NewSession {
         cwd: harness.workspace().map(|dir| dir.display().to_string()),
         ..NewSession::default()
@@ -478,8 +432,7 @@ async fn create_session(
         .create(opened)
         .await
         .map_err(|err| err.to_string())?;
-    // Tiêu đề rỗng thì để trống hẳn: `SessionSummary` tự điền chỗ hiển thị, còn sổ giữ
-    // đúng sự thật là chưa ai đặt tên cho phiên này.
+    // An empty title stays empty: `SessionSummary` fills the display, while the log records that nobody named this session.
     if let Some(title) = title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
         session
             .set_title(title)
@@ -558,10 +511,8 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("không khởi động được cửa sổ ứng dụng")
         .run(|app, event| {
-            // Thoát tiến trình dọn được phần lớn mọi thứ, nhưng không dọn được thứ cần
-            // nói lời tạm biệt: một `shutdown` gửi cho language server, một phiên MCP
-            // đóng tử tế, một job nền bị giết cả nhóm. Chặn ở đây là chấp nhận được —
-            // cửa sổ đã đóng rồi, không ai đang chờ.
+            // Process exit cleans up most things, but not those needing a goodbye: an LSP `shutdown`, a polite
+            // MCP close, a background job's process group. Blocking here is fine -- the window is already closed.
             if let tauri::RunEvent::Exit = event
                 && let Some(harness) = app.state::<AppState>().harness.get()
             {

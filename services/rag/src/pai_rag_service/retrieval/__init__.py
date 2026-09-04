@@ -1,32 +1,6 @@
-"""Các chiến lược truy hồi, và bộ định tuyến chọn giữa chúng.
-
-# Bốn chiến lược, và khi nào dùng cái nào
-
-``keyword``  — câu hỏi chứa tên riêng, số hiệu văn bản, mã định danh, hoặc một cụm đặt
-trong ngoặc kép cần khớp đúng chữ. BM25 trên FTS5, không cần Qdrant.
-
-``vector``   — người hỏi diễn đạt lại ý bằng từ ngữ của mình; câu hỏi về khái niệm. Không
-hợp khi cần khớp đúng một tên riêng, vì bộ nhúng làm nhoè chính chỗ đó.
-
-``hybrid``   — mặc định. Chạy cả hai rồi hợp nhất bằng RRF, sau đó xếp lại bằng
-cross-encoder. Đây là đường trả lời đúng nhất cho một câu hỏi thông thường.
-
-``auto``     — chọn hộ bằng **luật**, không gọi mô hình.
-
-# Vì sao `auto` định tuyến bằng luật
-
-Hỏi một mô hình nên dùng retriever nào tốn một vòng round-trip trước khi truy hồi bắt
-đầu, và cùng một câu hỏi có thể định tuyến hai kiểu ở hai lượt — khiến một câu trả lời sai
-trở nên không giải thích được. Luật thì đọc được, kiểm chứng được, và lý do được ghi vào
-kết quả (``routed_by``) nên giao diện nói được vì sao.
-
-# Xếp hạng lại nằm ở đâu
-
-Sau hợp nhất, trước khi cắt. Lấy về :attr:`RerankConfig.candidates` ứng viên rồi cross-
-encoder chấm lại và giữ ``top_n``. Đây là chỗ chất lượng thật sự đến từ: BM25 và cosine
-là hai tín hiệu rẻ dùng để **thu hẹp**, cross-encoder mới là thứ đọc cả câu hỏi lẫn đoạn
-cùng một lượt.
-"""
+"""Retrieval strategies (keyword, vector, hybrid) and the router that picks between them.
+`auto` routes by rule, not by asking a model: rules are readable, reproducible, and their
+reason ships with the result. Reranking sits after fusion and before the cut."""
 
 from __future__ import annotations
 
@@ -44,12 +18,12 @@ __all__ = ["Hit", "Retriever", "route"]
 
 log = logging.getLogger(__name__)
 
-#: Cụm cho thấy người dùng muốn tóm tắt **cả** tài liệu, không phải tìm một chi tiết.
+#: Phrases showing the user wants a whole-document summary rather than one detail.
 SUMMARY_HINTS = re.compile(
     r"\b(tóm tắt|tóm lược|tổng hợp|nội dung chính|nói về (cái )?gì|summar(y|ize)|overview)\b",
     re.IGNORECASE,
 )
-#: Cụm cho thấy câu hỏi về **quan hệ giữa các thực thể** — việc của graph.
+#: Phrases showing a question about relations between entities - the graph's job.
 RELATION_HINTS = re.compile(
     r"\b(liên quan|liên hệ|quan hệ|ảnh hưởng|dẫn đến|so với|giữa .+ và |ai (là|đã)|"
     r"related to|relationship|connection between)\b",
@@ -57,24 +31,12 @@ RELATION_HINTS = re.compile(
 )
 QUOTED = re.compile(r'"[^"]{2,}"|“[^”]{2,}”')
 
-#: Một "từ" theo nghĩa của mã định danh: chữ, số, và những dấu nối hay nằm giữa chúng.
-#: Dấu gạch phải nằm **trong** token, không tách nó ra — đó là chỗ bản đầu tiên của hàm
-#: này sai: nó đòi chữ và số cùng nằm trong một khối `\w+`, nên `HD-2026-0042` bị xé
-#: thành `HD`, `2026`, `0042` và không mảnh nào vừa có chữ vừa có số. Câu hỏi đúng bằng
-#: một mã hợp đồng vì thế được định tuyến sang `hybrid` thay vì `keyword`.
+#: A "word" in the identifier sense; the separators must stay *inside* the token, or `HD-2026-0042` splits into pieces that each look alphabetic or numeric but never both.
 TOKEN = re.compile(r"[A-Za-z0-9]+(?:[-_./][A-Za-z0-9]+)*")
 
 
 def has_identifier(text: str) -> bool:
-    """Câu hỏi có chứa mã định danh không — ``HD-2026-0042``, ``NV001``, ``v1.5``.
-
-    Phép thử là **vừa có chữ vừa có số trong cùng một token**. Đây là thứ bộ nhúng làm
-    nhoè (mọi mã hợp đồng trông giống nhau trong không gian vector) và BM25 khớp chính
-    xác, nên nó là tín hiệu mạnh nhất để chọn nhánh từ khoá.
-
-    Đòi ít nhất ba ký tự để ``A1`` hay ``số 3`` không kéo cả câu hỏi bình thường sang
-    nhánh từ khoá.
-    """
+    """Does the query contain an identifier? The test is letters and digits in one token of at least three characters - what embedders blur and BM25 matches exactly."""
     for token in TOKEN.findall(text):
         if len(token) < 3:
             continue
@@ -85,7 +47,7 @@ def has_identifier(text: str) -> bool:
 
 @dataclass(slots=True)
 class Hit:
-    """Một đoạn trả về cho người hỏi, đủ để trích dẫn kiểm chứng được."""
+    """One chunk returned to the asker, enough for a verifiable citation."""
 
     chunk_id: int
     document_id: str
@@ -113,12 +75,7 @@ class Hit:
         }
 
     def render(self) -> str:
-        """In ra cho mô hình đọc.
-
-        Bắt đầu bằng ``[tên tài liệu #đoạn — mục — trang]`` vì mô hình phải **trích dẫn
-        được**: người dùng đọc câu trả lời sẽ hỏi "chỗ nào nói thế", và một câu trả lời
-        không chỉ ra được đoạn nào của tài liệu nào thì không kiểm chứng được.
-        """
+        """Render for the model; the `[title #ordinal - section - page]` prefix is what makes the answer citable."""
         parts = [f"{self.title} #{self.ordinal}"]
         if self.section:
             parts.append(self.section)
@@ -128,11 +85,7 @@ class Hit:
 
 
 def route(query: str) -> tuple[str, str]:
-    """``(chiến lược, lý do)`` cho một câu hỏi. Thuần luật, không gọi mô hình.
-
-    Thứ tự xét là thứ tự ưu tiên, và nó cố ý: một câu vừa xin tóm tắt vừa có tên riêng
-    thì vẫn là một yêu cầu tóm tắt.
-    """
+    """`(strategy, reason)` for a query, rules only; the order is the priority order, so a summary request stays a summary request."""
     text = query.strip()
     if SUMMARY_HINTS.search(text):
         return "summary", "câu hỏi xin tóm tắt cả tài liệu"
@@ -146,7 +99,7 @@ def route(query: str) -> tuple[str, str]:
 
 
 class Retriever:
-    """Truy hồi trên thư viện của một dự án."""
+    """Retrieval over one project's library."""
 
     def __init__(
         self,
@@ -170,27 +123,23 @@ class Retriever:
             self._embedder = embedder_for(self.config.embedding)
         return self._embedder
 
-    # -- chiến lược ---------------------------------------------------------------------
+    # -- strategies ------------------------------------------------------------------------
 
     def keyword(self, query: str, limit: int) -> list[Hit]:
         ids = self.store.search_keyword(query, limit)
         return self._hits(ids, MatchedBy.KEYWORD.value, {})
 
     async def semantic_ids(self, query: str, limit: int) -> list[int]:
-        """Mã đoạn theo cosine, hoặc danh sách rỗng khi phần ngữ nghĩa chưa dùng được.
-
-        **Không** ném: bộ nhúng tắt hay Qdrant chết không được phép biến một lần tìm
-        thành một lần hỏng — nhánh từ khoá vẫn trả lời được.
-        """
+        """Chunk ids by cosine, or an empty list when the semantic half is unusable; never raises, since the keyword branch can still answer."""
         try:
             vector = await self.embedder.aembed_query(query)
         except EmbedError as err:
-            log.warning("bỏ qua phần ngữ nghĩa: %s", err)
+            log.warning("skipping the semantic half: %s", err)
             return []
         try:
             return [match.chunk_id for match in self.vectors.search(vector, limit)]
         except VectorStoreError as err:
-            log.warning("bỏ qua phần ngữ nghĩa: %s", err)
+            log.warning("skipping the semantic half: %s", err)
             return []
 
     async def vector(self, query: str, limit: int) -> list[Hit]:
@@ -198,10 +147,8 @@ class Retriever:
         return self._hits(ids, MatchedBy.SEMANTIC.value, {})
 
     async def hybrid(self, query: str, limit: int) -> list[Hit]:
-        """BM25 hợp nhất với cosine bằng RRF, rồi xếp lại bằng cross-encoder."""
-        # Lấy sâu hơn `limit` ở mỗi nhánh trước khi hợp nhất: một đoạn đứng hạng 15 ở cả
-        # hai bảng đáng lên đầu, mà cắt ở `limit` thì nó không bao giờ vào tới phép hợp
-        # nhất. Cũng là tập ứng viên cho bước xếp hạng lại.
+        """BM25 fused with cosine via RRF, then reranked by the cross-encoder."""
+        # Take deeper than `limit` on each branch before fusing: a chunk ranked 15th in both deserves the top, and it is also the reranker's candidate pool.
         pool = max(self.config.rerank.candidates, limit * 4, 20)
         keyword_ids = self.store.search_keyword(query, pool)
         semantic_ids = await self.semantic_ids(query, pool)
@@ -211,8 +158,7 @@ class Retriever:
             return []
 
         rows = {row.id: row for row in self.store.chunks_by_id([r.chunk_id for r in ranked])}
-        # Giữ đúng thứ tự của phép hợp nhất, và bỏ mã không còn hàng nào — vector mồ côi
-        # của một tài liệu đã bị rút ngắn rơi ra ở đây.
+        # Keep the fusion order and drop ids with no row - orphan vectors of a shortened document fall out here.
         ordered = [(r, rows[r.chunk_id]) for r in ranked if r.chunk_id in rows]
         if not ordered:
             return []
@@ -220,7 +166,7 @@ class Retriever:
         return self._rerank(query, ordered, limit)
 
     def _rerank(self, query: str, ordered: list[tuple], limit: int) -> list[Hit]:
-        """Xếp lại tập ứng viên và cắt còn ``limit``."""
+        """Rescore the candidate pool and cut to `limit`."""
         from pai_rag_service.rerank import rerank
 
         passages = [row.body for _, row in ordered]
@@ -232,13 +178,12 @@ class Retriever:
         return out
 
     def read(self, document_id: str, offset: int, limit: int) -> list[Hit]:
-        """Đọc một tài liệu theo thứ tự, từng đoạn một."""
+        """Read one document in order, chunk by chunk."""
         rows = self.store.chunks_of(document_id, offset, limit)
-        # Điểm `0.0` vì đây là đọc tuần tự, không phải xếp hạng — một điểm bịa ra ở đây sẽ
-        # được giao diện vẽ ra như thể nó có nghĩa.
+        # Score `0.0` because this is sequential reading, not ranking; an invented score would be drawn as if it meant something.
         return [self._hit(row, 0.0, "read") for row in rows]
 
-    # -- dựng kết quả -------------------------------------------------------------------
+    # -- building results ------------------------------------------------------------------
 
     def _hits(self, ids: list[int], matched_by: str, scores: dict[int, float]) -> list[Hit]:
         rows = {row.id: row for row in self.store.chunks_by_id(ids)}

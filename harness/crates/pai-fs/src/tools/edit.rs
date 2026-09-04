@@ -1,10 +1,6 @@
-//! `edit` — replace one literal stretch of text.
-//!
-//! Literal matching rather than a regular expression, and by default it must match
-//! **exactly once**. Both are deliberate constraints: a pattern matching several places when
-//! only one was meant is how a single edit spreads across a file. On multiple matches, the
-//! error has to say *how many* — that is the number the model needs to decide whether to
-//! widen the excerpt or set `replace_all`.
+//! `edit`: replace one literal stretch of text, matching exactly once by default, so an edit
+//! meant for one place cannot spread across the file. On multiple matches the error reports
+//! the count, which is what the model needs to widen the excerpt or set `replace_all`.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -84,8 +80,7 @@ impl Tool for Edit {
 
         let hits = before.matches(&args.old_string).count();
         match hits {
-            // Change nothing before reporting: a failed `edit` has to leave the file as it
-            // was.
+            // Change nothing before reporting: a failed `edit` must leave the file as it was.
             0 => {
                 return Err(ToolError::Invalid(format!(
                     "không tìm thấy đoạn cần thay trong {shown}. Hãy `read` lại tệp: nội \

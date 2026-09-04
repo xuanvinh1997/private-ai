@@ -1,14 +1,6 @@
-//! Mọi cách một truy vấn LSP hỏng, và cả cách nó *chưa* hỏng mà chỉ chưa xong.
-//!
-//! Danh sách này ngắn có chủ ý, và mỗi nhánh tồn tại vì mô hình phải làm một việc **khác
-//! nhau** với nó:
-//!
-//! - [`LspError::NotReady`] — thử lại sau vài giây thì được. Đây là nhánh quan trọng nhất
-//!   của cả crate: `rust-analyzer` mất hàng chục giây để nạp một workspace, và gộp nó vào
-//!   "không tìm thấy gì" là dạy mô hình rằng câu trả lời đúng là "hàm đó không tồn tại".
-//! - [`LspError::Dead`] — server đã chết. Thử lại có ích, nhưng vì lý do khác hẳn.
-//! - [`LspError::NoServer`] — không có server cho ngôn ngữ này; thử lại vô ích, đổi công
-//!   cụ mới có ích. `symbol_search` của `pai-index` là câu trả lời, và thông báo nói ra.
+//! Every way an LSP query fails, plus the case where it has simply not finished yet.
+//! Each variant exists because the model must do something different with it: retry soon
+//! ([`LspError::NotReady`]), retry for another reason ([`LspError::Dead`]), or switch tool.
 
 use std::time::Duration;
 

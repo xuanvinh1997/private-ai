@@ -1,21 +1,10 @@
-//! Từ vựng luồng: cái mà một adapter phát ra trong lúc mô hình đang nói.
-//!
-//! Đây là chỗ bản Python không có gì để port. `AIMessageChunk` của LangChain được gấp
-//! lại bằng toán tử `+`, nên hình dạng thật của một chunk — và toàn bộ wire format của
-//! tool-calling — nằm ẩn trong thư viện. Bản Rust phải tự khai, nên khai cho đúng.
-//!
-//! Hình dạng mượn từ dsh (`packages/llm/llm/src/types.ts`), với **ba bất biến** mà mọi
-//! adapter phải giữ và [`crate::assembler::BlockAssembler`] dựa vào:
-//!
-//! 1. Mỗi khối nội dung có một `index` tăng dần, mở bằng `BlockStart` và đóng bằng
-//!    `BlockEnd`. Delta của hai khối khác nhau **được phép** xen kẽ.
-//! 2. `Usage` (nếu có) đứng **trước** `Finish`.
-//! 3. `Finish` là chunk cuối cùng. Sau nó không còn gì. Một luồng kết thúc bằng đúng một
-//!    `Finish`, hoặc bằng một `Err` — không có khả năng thứ ba.
+//! Stream vocabulary: what an adapter emits while the model is talking.
+//! Three invariants every adapter must hold: blocks carry a rising `index` and are opened
+//! by `BlockStart`/closed by `BlockEnd`; `Usage` precedes `Finish`; `Finish` comes last.
 
 use serde::{Deserialize, Serialize};
 
-/// Loại khối mà một `BlockStart` mở ra.
+/// The kind of block a `BlockStart` opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BlockKind {
@@ -24,31 +13,30 @@ pub enum BlockKind {
     ToolUse,
 }
 
-/// Vì sao mô hình ngừng nói.
+/// Why the model stopped talking.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FinishReason {
-    /// Mô hình tự thấy đã xong.
+    /// The model decided it was done.
     Stop,
-    /// Mô hình dừng để đợi kết quả tool. Vòng lặp agent phân nhánh ở đây.
+    /// The model stopped to wait for tool results. The agent loop branches here.
     ToolCalls,
-    /// Chạm trần `max_tokens`. Câu trả lời **bị cắt giữa chừng**, không phải xong.
+    /// Hit the `max_tokens` ceiling. The answer is cut off, not finished.
     Length,
-    /// Bộ lọc nội dung của máy chủ chặn lại.
+    /// The server's content filter blocked it.
     ContentFilter,
-    /// Người dùng huỷ.
+    /// Cancelled by the user.
     Cancelled,
-    /// Máy chủ báo dừng vì lỗi, nhưng vẫn đóng luồng tử tế.
+    /// The server reported an error but still closed the stream cleanly.
     Error,
 }
 
-/// Thống kê token của một lượt.
+/// Token statistics for one turn.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
-    /// Máy chủ nào báo thì lấy; không thì cộng lại. Giữ `Option` để phân biệt "máy chủ
-    /// nói 0" với "máy chủ không nói".
+    /// Taken from the server when it reports one, else summed; `Option` separates "server said 0" from "server said nothing".
     pub total_tokens: Option<u64>,
 }
 
@@ -59,12 +47,7 @@ impl TokenUsage {
     }
 }
 
-/// Một sự kiện trên luồng.
-///
-/// `ToolCallDelta.arguments` là **một mảnh** của chuỗi JSON, không phải cả chuỗi. OpenAI
-/// gửi tên tool ở delta đầu rồi nhỏ giọt tham số qua hàng chục event, và điểm cắt rơi
-/// vào giữa một escape `\"` là chuyện bình thường. Ai ghép chúng lại phải nối chuỗi
-/// thuần, tuyệt đối không parse từng mảnh.
+/// One event on the stream; `ToolCallDelta.arguments` is a *fragment* of the JSON string, so joiners must concatenate raw text and never parse a fragment.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StreamChunk {
@@ -82,15 +65,14 @@ pub enum StreamChunk {
     },
     ToolCallDelta {
         index: u32,
-        /// Chỉ có ở delta đầu của khối. `None` ở các delta sau.
+        /// Only on the block's first delta. `None` afterwards.
         id: Option<String>,
-        /// Chỉ có ở delta đầu của khối. `None` ở các delta sau.
+        /// Only on the block's first delta. `None` afterwards.
         name: Option<String>,
-        /// Mảnh chuỗi JSON. Có thể rỗng.
+        /// A fragment of the JSON string. May be empty.
         arguments: String,
     },
-    /// Khối đóng lại. **Không mang theo nội dung đã ráp**: nếu mang thì mọi adapter đều
-    /// phải giữ một bản sao của cả khối, tức là làm đúng công việc của bộ ráp, hai lần.
+    /// Block closes; it carries no assembled content, or every adapter would duplicate the assembler's work.
     BlockEnd {
         index: u32,
     },
@@ -103,8 +85,7 @@ pub enum StreamChunk {
 }
 
 impl StreamChunk {
-    /// Văn bản trả lời mà chunk này đóng góp. Dùng cho đường token ra giao diện, nơi chỉ
-    /// `TextDelta` được hiện — reasoning đi kênh khác, tool call đi kênh khác nữa.
+    /// Answer text this chunk contributes; used by the UI token path, where only `TextDelta` is shown.
     pub fn answer_text(&self) -> Option<&str> {
         match self {
             Self::TextDelta { text, .. } => Some(text),

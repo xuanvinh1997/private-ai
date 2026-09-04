@@ -1,14 +1,9 @@
 import { Show } from "solid-js";
+import { S, t } from "../../lib/i18n";
 import { langLabel } from "./fences";
 import { CopyButton } from "../primitives";
 
-/**
- * Khối mã có rào, ngôn ngữ bất kỳ.
- *
- * Mượn nguyên khung của `DiffBlock`: cùng viền, cùng hàng tiêu đề có nhãn bên trái và
- * nút bên phải, cùng khung cuộn ngang riêng. Hai thứ này đứng cạnh nhau trong một bản
- * ghi, và hai kiểu khung khác nhau cho hai khối mã khiến mắt phải đọc lại bố cục.
- */
+/** A fenced code block in any language, framed exactly like `DiffBlock` so the two read alike. */
 export default function CodeFence(props: { lang: string; code: string; streaming?: boolean }) {
   return (
     <figure class="m-0 overflow-hidden rounded-panel border border-line bg-surface">
@@ -16,13 +11,13 @@ export default function CodeFence(props: { lang: string; code: string; streaming
         <figcaption class="min-w-0 truncate text-2xs text-muted">
           {langLabel(props.lang)}
           <Show when={props.streaming}>
-            <span class="text-faint"> · đang nhận</span>
+            <span class="text-faint"> · {t(S.tools.code.streaming)}</span>
           </Show>
         </figcaption>
-        <CopyButton text={() => props.code} label="Chép khối mã" />
+        <CopyButton text={() => props.code} label={t(S.tools.code.copy)} />
       </div>
 
-      {/* Cuộn ngang trong khung riêng — dòng mã dài không được kéo giãn cả bản ghi. */}
+      {/* Scrolls inside its own frame, so a long line cannot widen the transcript. */}
       <div class="overflow-x-auto" aria-busy={props.streaming === true}>
         <pre class="m-0 w-max min-w-full px-sm py-2xs font-mono text-2xs leading-[1.55] text-text">
           {props.code === "" ? " " : props.code}

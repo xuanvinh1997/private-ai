@@ -1,13 +1,6 @@
-"""Build ``PrivateAI.icns`` from the app's own brand mark.
-
-The three ascending bars are the mark ``_BrandMark`` paints in the sidebar, at the same
-proportions. Drawing the icon from the same geometry rather than commissioning a separate
-one is the whole point: the thing in the Dock and the thing at the top of the rail are the
-same mark, and neither can drift from the other.
-
-macOS wants an ``.icns``, which is an ``.iconset`` directory run through ``iconutil``.
-Run this directly, or let ``build.sh`` do it.
-"""
+"""Build `PrivateAI.icns` from the app's own brand mark.
+Drawn from the same geometry `_BrandMark` paints in the sidebar, so the Dock icon and
+the rail mark cannot drift apart. Run this directly, or let `build.sh` do it."""
 
 from __future__ import annotations
 
@@ -17,8 +10,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 
-# The rounded-square plate every macOS icon sits on, as a fraction of the canvas. Apple's
-# grid leaves the outer ~10% clear and rounds at ~22% of the plate.
+# The rounded-square plate every macOS icon sits on: Apple leaves the outer ~10% clear, rounding at ~22%.
 PLATE_INSET = 0.10
 PLATE_RADIUS = 0.225
 
@@ -26,14 +18,12 @@ PLATE_RADIUS = 0.225
 BAR_COUNT = 3
 BAR_WIDTH = 0.150
 BAR_GAP = 0.085
-# Heights plus the baseline offset below must stay under 1.0, or the tallest bar grows
-# out through the top of the plate.
+# Heights plus the baseline offset must stay under 1.0, or the tallest bar grows out of the plate.
 BAR_HEIGHTS = (0.34, 0.53, 0.72)
 BAR_ALPHAS = (140, 199, 255)
 BAR_RADIUS = 0.055
 
-# The app's accent, and a plate a shade off pure white so the mark is not floating on the
-# desktop when the wallpaper happens to be light.
+# The app's accent, and a plate a shade off pure white so the mark does not float on a light desktop.
 ACCENT = "#2f6fd0"
 PLATE_TOP = "#ffffff"
 PLATE_BOTTOM = "#eef1f6"

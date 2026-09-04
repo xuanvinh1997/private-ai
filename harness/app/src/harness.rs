@@ -1,12 +1,6 @@
-//! Dựng cây plugin.
-//!
-//! Toàn bộ việc "ứng dụng này gồm những gì" nằm trong đúng một hàm, và nó đọc như một
-//! danh sách. Đó là điểm của kiến trúc plugin: thêm một khả năng là thêm một dòng ở đây,
-//! bớt đi là xoá một dòng, và không có chỗ nào khác phải biết.
-//!
-//! Về sau danh sách này đến từ tệp cấu hình theo lớp (profile/bundle/patch). Cho tới lúc
-//! đó nó nằm trong mã, vì một trình nạp cấu hình chưa ai dùng là một trình nạp chưa ai
-//! kiểm chứng.
+//! Building the plugin tree. What this application consists of lives in one function that reads as a list:
+//! adding a capability is adding a line, and nothing else needs to know. The list will move to layered config
+//! files later; until then it stays in code, because an unused config loader is an unverified one.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,7 +29,7 @@ use pai_tools::{ToolPipeline, ToolRegistry, Tools, ToolsPlugin};
 use crate::llm::ActiveLlm;
 use crate::rag_config::RagConfigFile;
 
-/// Lời tự giới thiệu đứng đầu mọi prompt.
+/// The self-introduction at the head of every prompt.
 const IDENTITY: &str = "\
 Bạn là trợ lý lập trình chạy trên máy của người dùng. Bạn đọc và sửa mã nguồn trong thư \
 mục làm việc, chạy lệnh khi cần, và nói tiếng Việt.
@@ -45,43 +39,33 @@ không làm được, hãy nói ra thay vì làm một việc gần giống.";
 
 pub struct Harness {
     pub ctx: Context,
-    /// Cửa sổ ngữ cảnh mà **plugin nén** đang dùng làm ngưỡng.
-    ///
-    /// Lấy đúng con số ấy chứ không lấy `context_window` của mô hình: thanh áp lực ngữ cảnh
-    /// trên giao diện phải đầy đúng lúc nén sắp chạy. Hai con số khác nhau thì thanh báo
-    /// còn chỗ trong khi phần đầu cuộc trò chuyện vừa bị rút gọn.
+    /// The context window the compaction plugin uses as its threshold, not the model's `context_window`, so
+    /// the UI pressure bar fills exactly when compaction is about to run.
     pub context_window: usize,
     pub sessions: SessionService,
     pub driver: Arc<Driver>,
-    /// Cây đã áp lớp, giữ lại để trả lời câu hỏi "bản đang chạy gồm những gì".
+    /// The layered tree, kept so we can answer what the running build consists of.
     pub plugins: Composed,
-    /// Scope của plugin ứng dụng, theo đúng thứ tự đã cắm. Sống bằng tiến trình.
+    /// Application plugin scopes in load order; they live as long as the process.
     scopes: Vec<Context>,
-    /// Scope của plugin thuộc dự án. Bị tháo và dựng lại mỗi lần đổi dự án.
+    /// Project plugin scopes, torn down and rebuilt on every project switch.
     project_scopes: tokio::sync::Mutex<Vec<Context>>,
     projects: Arc<dyn ProjectStore>,
     current: parking_lot::Mutex<Option<Project>>,
-    /// Con trỏ tới provider đang hoạt động. Mọi chỗ cần nói chuyện với mô hình đều cầm
-    /// **cái này**, không cầm một bản sao — xem `crate::llm`.
+    /// Pointer to the active provider; everything that talks to the model holds this, never a copy.
     pub llm: Arc<ActiveLlm>,
-    /// Tệp cấu hình mà `pai-rag-service` đọc. Ghi lại mỗi lần vai provider đổi — xem
-    /// `crate::rag_config`.
+    /// The configuration file `pai-rag-service` reads, rewritten whenever a provider role changes.
     pub rag_config: Arc<RagConfigFile>,
     pub providers: Arc<ProviderRuntime>,
-    /// Server MCP khai trong **hàng cấu hình** (`patch.yaml`), giữ nguyên để mỗi lần nạp
-    /// lại còn truyền vào được.
-    ///
-    /// `pai_mcp::apply` gỡ mọi server không nằm trong danh sách nó nhận. Truyền một danh
-    /// sách rỗng nghĩa là server người dùng khai trong bản vá biến mất ngay lần nạp lại
-    /// đầu tiên — im lặng, và họ sẽ đi tìm xem bản vá của mình hỏng ở đâu.
+    /// MCP servers declared in the config row (`patch.yaml`), kept so every reload can pass them back in:
+    /// `pai_mcp::apply` removes any server missing from the list it receives.
     pub mcp_rows: Vec<ServerConfig>,
-    /// Đủ để dựng lại tầng dự án. Giữ nguyên `Config` thì tiện hơn, nhưng nó mang cả
-    /// `workspace` — và một trường nói "thư mục làm việc" mà không còn đúng sau lần đổi
-    /// dự án đầu tiên là một cái bẫy đặt sẵn.
+    /// Enough to rebuild the project layer; keeping the whole `Config` would carry a `workspace` field that
+    /// stops being true after the first project switch.
     rebuild: Rebuild,
 }
 
-/// Những gì `open_project` cần để dựng lại tầng dự án.
+/// What `open_project` needs to rebuild the project layer.
 struct Rebuild {
     ctx: Context,
     config: Config,
@@ -92,18 +76,12 @@ struct Rebuild {
 }
 
 impl Harness {
-    /// Mô hình máy chủ đang có.
-    ///
-    /// Trả danh sách rỗng khi không hỏi được, không trả lỗi: một máy chủ chưa bật là
-    /// trạng thái bình thường lúc khởi động, và một hộp thoại lỗi ở đó chỉ dạy người dùng
-    /// bấm cho qua.
+    /// Models the server offers; an empty list when it cannot be asked, not an error, since a server that is
+    /// not running yet is normal at startup.
     pub async fn models(&self) -> Vec<crate::protocol::ModelChoice> {
-        // Hỏi provider **đang hoạt động**, không hỏi một `OllamaAdmin` dựng lúc khởi động.
-        // Bản dựng lúc khởi động sẽ vẫn liệt kê kho của máy chủ cũ sau khi người dùng đổi
-        // sang một provider khác — im lặng, và trông y hệt như đúng.
+        // Ask the active provider, not an `OllamaAdmin` built at startup, which would keep listing the old server's catalogue.
         let Some(admin) = self.llm.admin() else {
-            // Provider từ xa không có nửa vòng đời mô hình. Danh sách rỗng là câu trả lời
-            // đúng ở đây; giao diện lấy tên mô hình từ lần thử kết nối.
+            // Remote providers have no model lifecycle; empty is the right answer, and the UI gets names from the probe.
             return Vec::new();
         };
         match admin.list().await {
@@ -118,17 +96,14 @@ impl Harness {
                 })
                 .collect(),
             Err(err) => {
-                tracing::warn!("không hỏi được danh sách mô hình: {err}");
+                tracing::warn!("could not query the model list: {err}");
                 Vec::new()
             }
         }
     }
 
-    /// Đẩy provider đang hoạt động ra mọi chỗ cầm con trỏ chia sẻ.
-    ///
-    /// `ProviderRuntime` tự lo phần `Driver`; đây là nửa còn lại — agent con, phần quản
-    /// trị mô hình, và bộ nhúng của thư viện tài liệu. Gọi nó sau **mọi** thay đổi
-    /// provider, và chỉ gọi nó, để không có đường thứ hai nào quên mất một chỗ.
+    /// Push the active provider out to everything holding the shared pointer -- sub-agents, model administration
+    /// and the document embedder -- after every provider change, so no second path can forget one.
     pub async fn apply_provider(&self) -> Result<(), String> {
         self.providers
             .apply_active()
@@ -138,8 +113,7 @@ impl Harness {
         Ok(())
     }
 
-    /// Tệp vá của người dùng. Có thể chưa tồn tại — màn hình cài đặt vẫn phải chỉ ra nó
-    /// để người dùng biết tạo ở đâu.
+    /// The user's patch file, which may not exist yet; settings still shows the path so they know where to create it.
     pub fn patch_path(&self) -> PathBuf {
         self.rebuild.config.data_dir.join("patch.yaml")
     }
@@ -148,11 +122,8 @@ impl Harness {
         self.current.lock().clone()
     }
 
-    /// Thư mục làm việc, nếu có dự án đang mở.
-    ///
-    /// `None` không phải một lỗi và không được thay bằng một mặc định: mọi chỗ gọi hàm này
-    /// đều là chỗ cần một thư mục *của người dùng*, và điền đại một thư mục vào đó là cách
-    /// một tool ghi vào chỗ không ai ngờ tới.
+    /// The working directory, if a project is open; `None` is not an error and must never be defaulted, since
+    /// every caller needs a directory the user actually chose.
     pub fn workspace(&self) -> Option<PathBuf> {
         self.current
             .lock()
@@ -164,11 +135,8 @@ impl Harness {
         self.projects.list().map_err(|err| err.to_string())
     }
 
-    /// Ghi nhận một thư mục thành dự án với loại tường minh. **Không mở nó.**
-    ///
-    /// Tách khỏi [`Harness::open_project`] vì hai việc có hai ngữ nghĩa khác nhau về loại:
-    /// mở thì giữ nguyên loại đã có, tạo thì đặt loại. Gộp lại thành một hàm có tham số
-    /// `Option<ProjectKind>` sẽ đúng ở cả hai chỗ gọi, và sai ở chỗ gọi thứ ba.
+    /// Register a directory as a project with an explicit type, without opening it; separate from
+    /// [`Harness::open_project`], which preserves an existing type instead of setting one.
     pub fn create_project(
         &self,
         path: &Path,
@@ -180,11 +148,8 @@ impl Harness {
             .map_err(|err| err.to_string())
     }
 
-    /// Đổi loại của một dự án, và **cắm lại tầng plugin ngay** nếu đó là dự án đang mở.
-    ///
-    /// Đổi loại mà không cắm lại thì hàng trong kho nói một đằng còn bộ tool đang chạy nói
-    /// một nẻo, cho tới lần mở lại tiếp theo — và người dùng vừa bấm đổi loại thì họ chờ
-    /// hiệu lực ngay, không chờ tới lần khởi động sau.
+    /// Change a project's type, reloading the plugin layer immediately when it is the open project, or the
+    /// stored row and the running tool set would disagree until the next open.
     pub async fn set_project_kind(&self, id: &str, kind: ProjectKind) -> Result<Project, String> {
         let project = self
             .projects
@@ -208,24 +173,14 @@ impl Harness {
             .as_ref()
             .is_some_and(|open| open.id == id)
         {
-            // Bỏ dự án đang mở khỏi danh sách sẽ để ứng dụng trỏ vào một chỗ không còn ai
-            // nhắc tới. Chuyển sang dự án khác trước, rồi mới bỏ.
+            // Dropping the open project would leave the app pointing at something nothing references; switch first, then remove.
             return Err("hãy chuyển sang dự án khác trước khi bỏ dự án đang mở".into());
         }
         self.projects.forget(id).map_err(|err| err.to_string())
     }
 
-    /// Đổi dự án: tháo tầng plugin thuộc dự án, rồi cắm lại với đường dẫn mới.
-    ///
-    /// Đây là toàn bộ cơ chế. Không có bước "cập nhật gốc của fs", "đổi cwd của shell",
-    /// "trỏ chỉ mục sang chỗ khác" — mỗi bước như thế là một chỗ để quên, và cái quên đó
-    /// chỉ lộ ra khi một tool đọc nhầm repo. Cắm lại thì không quên được: plugin nào cũng
-    /// đi qua đúng một đường khởi tạo, đường mà nó đã đi lúc khởi động.
-    /// Chiếu trạng thái provider và dự án đang mở xuống tệp mà `pai-rag-service` đọc.
-    ///
-    /// Gọi ở **mọi** chỗ một trong hai thứ ấy đổi: áp lại provider, mở dự án, đóng dự án.
-    /// Bỏ sót một chỗ nghĩa là service chạy bằng một bức ảnh cũ của cấu hình, và không có
-    /// gì báo — nó vẫn trả lời, chỉ là trả lời về sai thư mục hoặc bằng sai mô hình.
+    /// Project the provider state and open project into the file `pai-rag-service` reads; call it wherever
+    /// either changes, or the service answers from a stale snapshot with nothing to signal it.
     fn write_rag_config(&self, project: Option<&Project>) {
         match self.providers.list() {
             Ok(rows) => self.rag_config.write(
@@ -236,24 +191,21 @@ impl Harness {
                     root: PathBuf::from(&item.path),
                 }),
             ),
-            Err(err) => tracing::warn!("không đọc được danh sách nhà cung cấp: {err}"),
+            Err(err) => tracing::warn!("could not read the provider list: {err}"),
         }
     }
 
     pub async fn open_project(&self, path: &Path) -> Result<Project, String> {
         let project = self.projects.touch(path).map_err(|err| err.to_string())?;
-        // Giữ khoá suốt cả quá trình: hai lần đổi dự án chồng lên nhau sẽ để lại một nửa
-        // tầng của dự án này và một nửa của dự án kia.
+        // Hold the lock throughout: two overlapping switches would leave half of each project's layer.
         let mut scopes = self.project_scopes.lock().await;
 
         for scope in scopes.drain(..).rev() {
             scope.effects().dispose().await;
         }
 
-        // Ghi cấu hình RAG **trước** khi cắm plugin. Tiến trình service nối lười, nhưng
-        // lời gọi đầu tiên có thể tới ngay sau khi cửa sổ vẽ xong — và một service đọc
-        // được tệp còn khai dự án cũ sẽ trả về thư viện của dự án trước đó, trông y hệt
-        // một câu trả lời sai bình thường.
+        // Write the RAG config before loading plugins: the service connects lazily, but the first call can
+        // arrive at once, and a stale file would serve the previous project's library.
         self.write_rag_config(Some(&project));
 
         let catalog = catalog(
@@ -276,36 +228,27 @@ impl Harness {
         }
 
         *self.current.lock() = Some(project.clone());
-        tracing::info!(path = %project.path, "đã đổi dự án");
+        tracing::info!(path = %project.path, "switched project");
         Ok(project)
     }
 
-    /// Đóng dự án đang mở và **không mở cái nào thay thế**.
-    ///
-    /// Cùng một cơ chế với đổi dự án, chỉ thiếu nửa sau: tháo tầng dự án rồi dừng ở đó.
-    /// Sau lời gọi này hội thoại vẫn chạy, chỉ là không còn tool nào chạm được vào đĩa —
-    /// và đó chính là trạng thái ứng dụng mở lên lần đầu, nên nó không phải một chế độ
-    /// riêng cần nuôi thêm.
+    /// Close the open project without opening a replacement: the same mechanism as switching, minus the second
+    /// half. Conversation still runs with no disk-touching tools, which is the app's first-launch state.
     pub async fn close_project(&self) {
         let mut scopes = self.project_scopes.lock().await;
         for scope in scopes.drain(..).rev() {
             scope.effects().dispose().await;
         }
-        // Xoá dự án khỏi cấu hình luôn. Để nguyên thì một service còn sống vẫn trả lời
-        // được về thư viện của dự án vừa đóng.
+        // Remove the project from the config too, or a live service would still answer about the closed library.
         self.write_rag_config(None);
         *self.current.lock() = None;
-        tracing::info!("đã đóng dự án; hội thoại chạy không có tool chạm đĩa");
+        tracing::info!("project closed; conversation runs with no disk-touching tools");
     }
 
-    /// Tháo cây, con trước cha, plugin cắm sau tháo trước.
-    ///
-    /// Thoát tiến trình dọn được phần lớn thứ này, nhưng không dọn được thứ cần nói lời
-    /// tạm biệt: một `shutdown` gửi cho language server, một phiên MCP đóng tử tế. Gọi nó
-    /// khi cửa sổ đóng.
+    /// Tear the tree down, children before parents and last-loaded first; process exit cannot send an LSP
+    /// `shutdown` or close an MCP session politely. Call it when the window closes.
     pub async fn shutdown(&self) {
-        // Tầng dự án tháo trước: nó phụ thuộc vào sổ đăng ký tool của tầng ứng dụng, nên
-        // tháo ngược lại là gỡ cái nền ra khỏi dưới chân thứ đang đứng trên nó.
+        // The project layer goes first: it depends on the application layer's tool registry.
         for scope in self.project_scopes.lock().await.drain(..).rev() {
             scope.effects().dispose().await;
         }
@@ -317,30 +260,22 @@ impl Harness {
 
 pub struct Config {
     pub data_dir: PathBuf,
-    /// Bộ skill đi kèm bản cài đặt. `None` khi không tìm thấy — và đó là trạng thái hợp
-    /// lệ, không phải lỗi khởi động: ứng dụng vẫn chạy, chỉ là không có skill dựng sẵn.
+    /// Skills bundled with the installation; `None` is valid, not a startup error -- the app runs without built-ins.
     pub builtin_skills: Option<PathBuf>,
-    /// Dự án mở sẵn lúc khởi động. `None` = **không mở dự án nào**.
-    ///
-    /// Trước đây trường này luôn có giá trị và nó lấy thư mục hiện hành làm mặc định. Nghe
-    /// thì tiện, nhưng mở ứng dụng từ Finder cho thư mục hiện hành là `/`, và người dùng
-    /// nhận về một "dự án" tên `/` mà họ chưa bao giờ chọn — cùng với `fs`, `shell` và
-    /// `index` cắm vào gốc đĩa. Không mở gì cả là câu trả lời đúng cho "chưa ai nói mở
-    /// cái nào".
+    /// The project open at startup; `None` means none. It used to default to the current directory, which is
+    /// `/` when launched from Finder, giving an unchosen "project" rooted at the disk.
     pub workspace: Option<PathBuf>,
     pub ollama_url: String,
     pub model: String,
-    /// Cửa sổ ngữ cảnh, tính bằng token.
+    /// Context window, in tokens.
     pub context_window: usize,
-    /// Mô hình nhúng dùng để **gieo** hàng provider đầu tiên. Sau lần gieo đó, mô hình
-    /// nhúng là một trường trên từng hàng trong kho và người dùng đổi nó từ trong ứng
-    /// dụng — biến môi trường không còn quyền gì, vì hai nguồn cho cùng một giá trị thì
-    /// một nguồn sẽ luôn là nguồn người ta quên.
+    /// The embedding model used to seed the first provider row; after that it is a per-row field edited in the
+    /// app, and this variable has no further say.
     pub embed_model: Option<String>,
 }
 
 impl Config {
-    /// Cấu hình từ môi trường, với mặc định dùng được ngay.
+    /// Configuration from the environment, with defaults that work out of the box.
     pub fn from_env() -> Config {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
         Config {
@@ -348,15 +283,13 @@ impl Config {
             data_dir: std::env::var("PAI_DATA_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from(&home).join(".private-ai")),
-            // Không lùi về thư mục hiện hành: xem tài liệu của trường. Thiếu biến này thì
-            // [`boot`] mở lại dự án gần nhất trong kho, và nếu kho rỗng thì không mở gì.
+            // No fallback to the current directory; without this variable [`boot`] reopens the most recent stored project, or none.
             workspace: std::env::var("PAI_WORKSPACE").ok().map(PathBuf::from),
             ollama_url: std::env::var("PAI_OLLAMA_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:11434".into()),
             model: std::env::var("PAI_MODEL").unwrap_or_else(|_| "qwen3:8b".into()),
-            // Hỏi máy chủ được thì tốt hơn, nhưng khởi động không nên phụ thuộc vào việc
-            // máy chủ có đang chạy hay không. Con số này là chỗ lùi về, và nó thấp hơn
-            // thực tế — nén sớm hơn cần thiết thì mất token, nén muộn thì mất cả lượt.
+            // Asking the server would be better, but startup must not depend on it running; this fallback errs
+            // low, since compacting early costs tokens while compacting late costs the turn.
             embed_model: std::env::var("PAI_EMBED_MODEL").ok(),
             context_window: std::env::var("PAI_CONTEXT_WINDOW")
                 .ok()
@@ -366,18 +299,14 @@ impl Config {
     }
 }
 
-/// Tên thư mục riêng cho một dự án trong kho dữ liệu.
-///
-/// Tên thư mục cộng một băm của đường dẫn đầy đủ, theo đúng lối `pai-index` đã dùng: chỉ
-/// tên thì hai repo cùng tên `harness` ở hai chỗ sẽ dùng chung một thư viện, còn chỉ băm
-/// thì không ai nhìn vào thư mục dữ liệu mà đoán được nó thuộc dự án nào.
+/// A project's own directory name in the data store: folder name plus a hash of the full path, as `pai-index`
+/// does, so same-named repos stay separate while the directory remains recognisable.
 fn project_slug(workspace: &Path) -> String {
     let name = workspace
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "du-an".to_string());
-    // FNV-1a 64 bit, viết tay vì đây là chỗ duy nhất cần băm và một crate băm cho một
-    // chuỗi đường dẫn là một phụ thuộc phải nuôi qua từng bản phát hành.
+    // 64-bit FNV-1a, hand-written because this is the only place that hashes and a crate for one path string is a dependency to maintain.
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in workspace.display().to_string().as_bytes() {
         hash ^= u64::from(*byte);
@@ -396,35 +325,27 @@ fn project_slug(workspace: &Path) -> String {
     format!("{safe}-{hash:016x}")
 }
 
-/// Nửa còn lại của việc đổi provider.
-///
-/// Đọc từ **kho**, không đọc từ `Driver`. Đọc từ `Driver` thì lúc chưa cấu hình được
-/// provider nào, `driver.llm()` vẫn đang là chính [`ActiveLlm`] — và đặt nó làm cái mà
-/// `ActiveLlm` trỏ tới là dựng một vòng lặp vô hạn ngay trong đường gửi token. Kho thì
-/// không bao giờ trả về chính nó.
+/// The other half of switching providers, read from the store rather than `Driver`: with nothing configured,
+/// `driver.llm()` is [`ActiveLlm`] itself, and pointing it at itself would loop forever in the token path.
 fn apply_llm(
     runtime: &ProviderRuntime,
     llm: &ActiveLlm,
     rag_config: &RagConfigFile,
     project: Option<&Project>,
 ) {
-    // Hai vai, hai nhánh **độc lập**. Trước đây lỗi ở nhánh hội thoại `return` sớm và bộ
-    // nhúng không bao giờ được đặt — đúng ở thời điểm hai vai còn là một, và sai ngay khi
-    // chúng tách ra: một máy chủ hội thoại không nối được không nói gì về máy chủ nhúng.
+    // Two roles, two independent branches: a chat failure used to return early and leave the embedder unset,
+    // yet an unreachable chat server says nothing about the embedding one.
     match runtime.store().active(Role::Chat) {
         Ok(Some(active)) => match runtime.registry().adapter(&active.config) {
             Ok(adapter) => llm.set(adapter),
-            Err(err) => tracing::warn!("không dựng được adapter hội thoại: {err}"),
+            Err(err) => tracing::warn!("could not build the chat adapter: {err}"),
         },
-        Ok(None) => tracing::warn!("chưa có nhà cung cấp nào giữ vai hội thoại"),
-        Err(err) => tracing::warn!("không đọc được nhà cung cấp hội thoại: {err}"),
+        Ok(None) => tracing::warn!("no provider holds the chat role yet"),
+        Err(err) => tracing::warn!("could not read the chat provider: {err}"),
     }
 
-    // Ghi lại cấu hình cho service tài liệu. Gỡ vai nhúng cũng **phải** được ghi, không
-    // được bỏ qua: không ghi nghĩa là tệp vẫn khai mô hình cũ, và tài liệu tiếp tục được
-    // gửi tới đúng chỗ người dùng vừa gỡ. Ghi một mô hình rỗng thì thư viện lùi về tìm
-    // theo từ khoá và `LibraryStats::reason` nói ra vì sao — đó là hành vi đúng, không
-    // phải một trạng thái hỏng.
+    // Rewrite the document service config. Revoking the embedding role must also be written, or documents keep
+    // going to the server the user just detached; an empty model falls back to keyword search, which is correct.
     match runtime.list() {
         Ok(rows) => rag_config.write(
             &rows,
@@ -434,23 +355,13 @@ fn apply_llm(
                 root: PathBuf::from(&item.path),
             }),
         ),
-        Err(err) => tracing::warn!("không đọc được danh sách nhà cung cấp: {err}"),
+        Err(err) => tracing::warn!("could not read the provider list: {err}"),
     }
 }
 
-/// Thư mục skill đi kèm bản cài đặt.
-///
-/// Dò theo đường dẫn thay vì hỏi `AppHandle`, vì [`boot`] chạy trước khi có handle nào và
-/// đổi chữ ký của nó chỉ để lấy một đường dẫn là kéo cả Tauri vào một hàm vốn không biết
-/// gì về Tauri. Ba chỗ, theo đúng thứ tự đáng tin:
-///
-/// 1. `PAI_SKILLS_DIR` — lối thoát cho người phát triển và cho bộ test.
-/// 2. `…/Contents/Resources/skills` — chỗ Tauri đặt tài nguyên trong bản `.app` của macOS.
-/// 3. `…/skills` cạnh chính tệp thực thi — chỗ nó nằm khi chạy `tauri dev` và trên Linux.
-/// 4. `<mã nguồn>/skills` — chỉ khi chạy từ cây mã nguồn.
-///
-/// Không có cái nào thì trả `None`. Một danh sách skill rỗng là một danh sách skill rỗng;
-/// nó không đáng để chặn khởi động.
+/// The bundled skills directory, probed by path rather than via `AppHandle` because [`boot`] runs before any
+/// handle exists: `PAI_SKILLS_DIR`, then the macOS `.app` resources, then next to the executable, then the
+/// source tree. `None` when none exist, which is not worth blocking startup over.
 fn builtin_skills() -> Option<PathBuf> {
     if let Ok(explicit) = std::env::var("PAI_SKILLS_DIR") {
         let path = PathBuf::from(explicit);
@@ -466,18 +377,9 @@ fn builtin_skills() -> Option<PathBuf> {
     candidates.into_iter().find(|path| path.is_dir())
 }
 
-/// Thư mục mã nguồn của `pai-rag-service`.
-///
-/// Cùng lối dò với [`builtin_skills`] và cùng lý do: [`boot`] chạy trước khi có
-/// `AppHandle` nào. Thứ tự:
-///
-/// 1. `PAI_RAG_SERVICE_DIR` — lối thoát cho người phát triển và cho bộ test.
-/// 2. `…/services/rag` cạnh tệp thực thi — chỗ nó nằm trong một bản cài đặt.
-/// 3. `<mã nguồn>/../services/rag` — khi chạy từ cây mã nguồn.
-///
-/// Không tìm thấy thì vẫn trả về ứng viên cuối: `Sidecar` sẽ hỏng lúc `spawn` với một
-/// câu nói rõ đường dẫn nào không chạy được, và đó là thông tin hữu ích hơn một
-/// `Option::None` phải xử lý ở bốn chỗ.
+/// The `pai-rag-service` source directory, probed like [`builtin_skills`]: `PAI_RAG_SERVICE_DIR`, then next to
+/// the executable, then the source tree. If none exist it still returns the last candidate, so `Sidecar` fails
+/// at `spawn` naming the path that did not work.
 fn rag_service_dir() -> PathBuf {
     if let Ok(explicit) = std::env::var("PAI_RAG_SERVICE_DIR") {
         return PathBuf::from(explicit);
@@ -491,11 +393,8 @@ fn rag_service_dir() -> PathBuf {
     candidates.into_iter().find(|path| path.is_dir()).unwrap_or(from_source)
 }
 
-/// Cây plugin mặc định, viết bằng chính định dạng mà người dùng vá.
-///
-/// Nằm trong mã chứ không trong một tệp cạnh bản cài đặt, vì một tệp cạnh bản cài đặt là
-/// một tệp người dùng sẽ sửa rồi mất sau lần cập nhật đầu tiên. Muốn đổi thì vá ở lớp
-/// trên — và lớp trên thì không bao giờ bị ghi đè.
+/// The default plugin tree, written in the same format users patch; kept in code rather than beside the
+/// installation, where an edited file would be lost at the first update.
 const BASE: &str = r#"
 patches:
   - op: insert
@@ -548,76 +447,43 @@ patches:
     plugin: terminal
 "#;
 
-/// Plugin **thuộc về một dự án**: tháo ra và cắm lại mỗi lần đổi dự án.
-///
-/// Mỗi cái trong đây bắt lấy một đường dẫn lúc dựng — gốc được phép đọc/ghi, thư mục làm
-/// việc của shell, gốc chỉ mục, gốc LSP. Đổi dự án nghĩa là những giá trị đó đổi, và cách
-/// duy nhất đúng để đổi chúng là dựng lại.
-///
-/// Phân tầng theo **tên plugin**, không theo tệp cấu hình hay theo `id`. Theo tệp thì bản
-/// vá của người dùng phải biết chuyện chia tầng; theo `id` thì đổi tên một hàng là lặng lẽ
-/// đổi tầng của nó. Tên plugin là thứ duy nhất nói đúng bản chất: plugin này có cần một
-/// đường dẫn không.
-///
-/// Đây là chỗ kiến trúc plugin phải trả nợ. Nếu đổi dự án cần một đường "cấu hình lại mọi
-/// thứ" chạy song song với đường cắm plugin, hai đường đó sẽ trôi ra khỏi nhau và đường
-/// thứ hai sẽ luôn thiếu một thứ. Ở đây không có đường thứ hai: [`Harness::open_project`]
-/// gọi đúng `dispose()` rồi đúng `apply()`.
-/// Dự án mã nguồn: đọc, sửa, chạy, tra.
+/// Code projects: read, edit, run, look up. Project-layer plugins each capture a path when built, so switching
+/// projects means rebuilding them; the layer is chosen by plugin name, and there is no second reconfigure path.
 const CODE_PLUGINS: &[&str] = &[
     "skills", "fs", "subagent", "index", "lsp", "shell", "terminal",
 ];
 
-/// Dự án tài liệu: **chỉ tìm và đọc**.
-///
-/// Danh sách này ngắn hơn hẳn, và mỗi cái vắng mặt là một quyết định chứ không phải một
-/// chỗ chưa làm. Một thư viện tài liệu là một chồng tệp do người khác gửi tới; cấp cho nó
-/// `shell` hay `edit` là mở đường thi hành lệnh và ghi đè tệp ở đúng nơi nội dung không
-/// đáng tin nhất đang nằm. `index` và `lsp` cũng không có mặt: chúng phân tích mã nguồn,
-/// và ở đây không có mã nguồn.
+/// Document projects: search and read only. Every omission is a decision -- a library is files other people
+/// sent, so `shell` and `edit` would grant execution and overwrite where content is least trusted, and
+/// `index` and `lsp` analyse source code that is not here.
 const DOCS_PLUGINS: &[&str] = &["skills", "rag", "subagent"];
 
-/// Plugin thuộc tầng dự án — tháo ra và cắm lại mỗi lần đổi dự án.
-///
-/// Mỗi cái trong đây bắt lấy một đường dẫn lúc dựng. Đổi dự án nghĩa là những giá trị đó
-/// đổi, và cách duy nhất đúng để đổi chúng là dựng lại.
+/// Project-layer plugins, rebuilt on every switch because each captures a path when built.
 fn thuoc_du_an(row: &Row) -> bool {
     CODE_PLUGINS.contains(&row.plugin.as_str()) || DOCS_PLUGINS.contains(&row.plugin.as_str())
 }
 
-/// Plugin thuộc tầng dự án **và** hợp với loại của dự án đang mở.
-///
-/// Đây là chỗ loại dự án thật sự có hiệu lực. Không có bước "tắt tool cho dự án tài liệu"
-/// nào chạy song song — một bước như thế sẽ trôi ra khỏi danh sách này và sớm muộn để sót
-/// một tool. Tool không hợp thì **không được cắm ngay từ đầu**, nên không có gì để tắt.
+/// Project-layer plugins that also suit the open project's type -- where the type actually takes effect.
+/// Unsuitable tools are never loaded, so there is nothing to disable and no parallel path to drift.
 fn hop_loai(row: &Row, kind: Option<ProjectKind>) -> bool {
     match kind {
         Some(ProjectKind::Code) => CODE_PLUGINS,
         Some(ProjectKind::Docs) => DOCS_PLUGINS,
-        // Không có dự án nào thì **không** plugin nào của tầng dự án được cắm. Mỗi cái
-        // trong hai danh sách trên đều bắt lấy một đường dẫn lúc dựng, và không có đường
-        // dẫn nào để bắt: `fs` sẽ cấp quyền cho một thư mục không ai chọn, `shell` sẽ chạy
-        // lệnh ở đó, `index` sẽ quét nó. Hội thoại vẫn chạy — đó là toàn bộ điểm của trạng
-        // thái này, và nó là trạng thái ứng dụng mở lên lần đầu.
+        // With no project, no project-layer plugin loads: each captures a path and there is none to capture.
+        // Conversation still runs, which is the whole point of this state.
         None => &[],
     }
     .contains(&row.plugin.as_str())
 }
 
-/// Chốt cuối cho plugin thuộc tầng dự án khi không có dự án nào.
-///
-/// [`hop_loai`] đã lọc chúng ra trước khi tới đây, nên hàm này lẽ ra không bao giờ chạy.
-/// Nó tồn tại để lần lọc ấy hỏng thì hỏng **ồn ào**: cách còn lại là điền một đường dẫn
-/// giả vào chỗ `fs` và `shell` nhận gốc quyền, và cái đó hỏng im lặng.
+/// Last line of defence for project-layer plugins with no project; [`hop_loai`] already filtered them out, so
+/// this exists to fail loudly rather than hand `fs` and `shell` a fabricated root.
 fn khong_co_du_an() -> anyhow::Error {
     anyhow::anyhow!("plugin này cần một dự án đang mở, nhưng chưa có dự án nào")
 }
 
-/// Sổ dựng plugin, gắn với **một** dự án.
-///
-/// Nhận `workspace` tường minh chứ không đọc từ `config`: tầng dự án được dựng lại mỗi
-/// lần đổi dự án, và một sổ đọc đường dẫn từ cấu hình khởi động thì lần dựng thứ hai vẫn
-/// ra đường dẫn cũ — im lặng, và chỉ lộ ra khi người dùng thấy tool đọc nhầm repo.
+/// The plugin builder registry, bound to one project; `workspace` is explicit rather than read from `config`,
+/// or the second build would silently reuse the startup path.
 fn catalog(
     config: &Config,
     workspace: Option<&Path>,
@@ -627,10 +493,7 @@ fn catalog(
 ) -> PluginCatalog {
     let mut catalog = PluginCatalog::new();
     let identity = IDENTITY.to_string();
-    // Plugin thuộc tầng dự án chỉ được dựng khi có dự án — [`hop_loai`] lọc chúng ra trước
-    // khi tới đây. Chốt lại một lần nữa ở đây bằng một lỗi có chữ, thay vì điền một đường
-    // dẫn giả: nếu về sau ai đó gọi nhầm, họ đọc được vì sao thay vì thấy tool đọc nhầm
-    // thư mục.
+    // Project-layer plugins are built only with a project; assert it again with a readable error rather than a fabricated path.
     let workspace = workspace.map(Path::to_path_buf);
     let data_dir = config.data_dir.clone();
     let window = config.context_window;
@@ -649,11 +512,8 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Ba nguồn, quét theo thứ tự và nguồn sau **thay thế** gói trùng tên của nguồn
-            // trước: bộ dựng sẵn đi kèm bản cài đặt, gói của người dùng trong kho dữ liệu,
-            // rồi gói riêng của dự án nằm ngay trong repo. Thứ tự ấy là một thang thẩm
-            // quyền — một repo nói khác đi về quy trình của chính nó thì nó đúng, và người
-            // dùng đè lên bộ dựng sẵn thì họ đúng.
+            // Three sources scanned in order, each replacing same-named bundles from the previous: built-ins,
+            // the user's data store, then the repo's own. The order is an authority ladder.
             let mut roots = Vec::with_capacity(3);
             roots.extend(builtin.clone());
             roots.push(data_dir.join("skills"));
@@ -667,12 +527,9 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Chỉ thư mục làm việc được cấp quyền. Kho dữ liệu của chính ứng dụng thì
-            // không: mô hình không có việc gì trong đó, và cấp quyền "cho tiện" là cách
-            // một tệp thiết lập bị sửa bởi một câu trong tài liệu người dùng vừa nạp.
-            // Đường dẫn lấy từ chính `pai-mcp`, không viết tay lại: tệp này là chìa
-            // khoá của mọi tool khác, và hai chuỗi ở hai crate thì sớm muộn trôi ra
-            // khỏi nhau mà không ai nhận ra cho tới lúc nó đọc được.
+            // Only the workspace is granted; the app's own data store is not, since a convenience grant is how
+            // a settings file gets edited by a sentence inside a freshly ingested document. The path comes from
+            // `pai-mcp` itself so two crates cannot drift apart on it.
             Ok(
                 Box::new(FsPlugin::new([workspace.clone()], [token_path(&data_dir)]))
                     as Box<dyn Plugin>,
@@ -689,8 +546,7 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Con trỏ chia sẻ, không phải bản sao adapter: agent con phải đi tới cùng
-            // provider mà lượt cha đang dùng, kể cả khi người dùng vừa đổi provider.
+            // The shared pointer, not an adapter copy: a sub-agent must reach the same provider as its parent turn.
             let llm: Arc<dyn LlmAdapter> = llm.clone();
             Ok(Box::new(SubagentPlugin::new(
                 llm,
@@ -707,13 +563,9 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Thư mục người dùng chọn **là** thư viện, đúng như thư mục mã nguồn là nguồn
-            // sự thật của `pai-index`. Service đọc thẳng từ đó — không có bản sao nào
-            // trong kho của ứng dụng, nên không có gì để lệch với đĩa.
-            //
-            // Mã dự án đi kèm mọi lời gọi, và nó cũng là tên collection Qdrant. Dùng
-            // `project_slug` chứ không dùng tên thư mục: hai dự án cùng tên `tai-lieu` ở
-            // hai chỗ khác nhau phải là hai thư viện.
+            // The chosen directory is the library, read directly by the service with no copy to drift from disk.
+            // The project id travels with every call and names the Qdrant collection, so it uses `project_slug`
+            // rather than the folder name.
             let sidecar = SidecarConfig::uv(rag_service_dir(), project_slug(&workspace))
                 .with_env("PAI_RAG_CONFIG", rag_config.path().display().to_string());
             Ok(Box::new(RagPlugin::new(sidecar, workspace.clone())) as Box<dyn Plugin>)
@@ -728,8 +580,7 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Cùng bộ gốc và cùng danh sách bảo vệ với `fs`: một chỉ mục nhìn rộng hơn
-            // tool đọc là một đường vòng qua đúng ranh giới mà `fs` dựng lên.
+            // The same roots and guards as `fs`: an index that sees more than the read tool is a way around that boundary.
             Ok(Box::new(IndexPlugin::new(
                 [workspace.clone()],
                 [token_path(&data_dir)],
@@ -743,9 +594,7 @@ fn catalog(
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
             };
-            // Cùng bộ gốc và cùng danh sách bảo vệ với `fs` và `index`. Không có
-            // language server nào trên máy thì plugin cắm xong mà **không đăng ký tool
-            // nào** — đó là trạng thái hợp lệ, không phải lỗi khởi động.
+            // Same roots and guards as `fs` and `index`; with no language server installed the plugin loads and registers no tools, which is valid.
             Ok(Box::new(LspPlugin::new(
                 [workspace.clone()],
                 [token_path(&data_dir)],
@@ -773,9 +622,7 @@ fn catalog(
         catalog.register("mcp", move |value| {
             let row: McpRow = serde_json::from_value(value.clone())?;
             let mut plugin = McpPlugin::new(row.servers).storing(data_dir.join("mcp.json"));
-            // Phơi ra ngoài **tắt mặc định**. Mở một cổng, kể cả cổng loopback, là một
-            // hành động hướng ra ngoài; nó phải là thứ người dùng bật, không phải thứ họ
-            // phát hiện ra là đang chạy.
+            // Exposure is off by default: opening a port, even on loopback, is outward-facing and must be switched on deliberately.
             if row.expose.stdio || row.expose.http.is_some() {
                 plugin = plugin.exposing(ExposeOptions {
                     data_dir: data_dir.clone(),
@@ -790,17 +637,14 @@ fn catalog(
     catalog
 }
 
-/// Cấu hình của hàng `hooks`.
+/// Configuration of the `hooks` row.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct HooksRow {
     hooks: Vec<HookConfig>,
 }
 
-/// Cấu hình của hàng `mcp`.
-///
-/// Khai ở đây chứ không trong `pai-mcp` vì đây là hình dạng của **một hàng cấu hình**,
-/// và hàng cấu hình là chuyện của chỗ dựng cây, không phải của crate làm việc thật.
+/// Configuration of the `mcp` row, declared here rather than in `pai-mcp` because a config row's shape belongs to whoever builds the tree.
 #[derive(Debug, Default, serde::Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct McpRow {
@@ -816,11 +660,8 @@ struct ExposeRow {
     allowed_origins: Vec<String>,
 }
 
-/// Các lớp cấu hình, theo đúng thứ tự áp: nền trước, người dùng sau.
-///
-/// Một lần áp cho cả cây; việc chia tầng xảy ra **sau**, trên danh sách hàng đã áp xong.
-/// Nhờ thế bản vá của người dùng không phải biết gì về chuyện chia tầng, và một `id` gõ
-/// sai vẫn dừng khởi động như trước.
+/// The configuration layers in application order, base then user; layering happens once for the whole tree and
+/// the split into tiers comes after, so a patch need not know about tiers.
 fn layers(config: &Config) -> anyhow::Result<Vec<Layer>> {
     let base: Layer = serde_norway::from_str(BASE)?;
     let mut layers = vec![Layer {
@@ -832,9 +673,7 @@ fn layers(config: &Config) -> anyhow::Result<Vec<Layer>> {
     if path.is_file() {
         let text = std::fs::read_to_string(&path)?;
         let user: Layer = serde_norway::from_str(&text)
-            // Tệp vá hỏng thì **dừng khởi động**, không bỏ qua: chạy tiếp với cây mặc
-            // định trông y hệt chạy đúng, và người dùng sẽ đi tìm xem vì sao bản vá của
-            // họ không có tác dụng.
+            // A broken patch file stops startup rather than being skipped: continuing on defaults looks exactly like working.
             .map_err(|err| anyhow::anyhow!("{}: {err}", path.display()))?;
         layers.push(Layer {
             origin: path.display().to_string(),
@@ -848,20 +687,15 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     std::fs::create_dir_all(&config.data_dir)?;
     let ctx = Context::root();
 
-    // Sổ phiên và adapter mô hình dựng **trước** vòng lặp plugin, vì `subagent` là một
-    // plugin cần cả hai: một agent con là một lượt trọn vẹn, nên nó cần đúng những gì một
-    // lượt cần. Chúng vẫn không phải plugin — chúng là thứ plugin dùng.
+    // The session store and model adapter are built before the plugin loop, because `subagent` needs both:
+    // a sub-agent is a complete turn. They are not plugins; they are what plugins use.
     let store: Arc<dyn SessionStore> =
         Arc::new(SqliteSessionStore::open(config.data_dir.join("phien.db"))?);
     let sessions = SessionService::new(store);
     let http = reqwest::Client::new();
 
-    // Kho provider, và một lần gieo nếu nó rỗng.
-    //
-    // Cấu hình môi trường (`PAI_OLLAMA_URL`, `PAI_MODEL`) không biến mất — nó trở thành
-    // **hàng đầu tiên trong kho** thay vì một đường đi song song. Nhờ vậy có đúng một
-    // nguồn sự thật cho "đang nói chuyện với ai", và người dùng sửa được nó từ trong ứng
-    // dụng thay vì phải đi tìm biến môi trường đã đặt ở đâu.
+    // The provider store, seeded once if empty: environment configuration becomes the first stored row rather
+    // than a parallel path, so there is one source of truth the user can edit in the app.
     let providers: Arc<dyn ProviderStore> =
         Arc::new(SqliteProviderStore::open(config.data_dir.join(DB_FILE))?);
     if providers.list()?.is_empty() {
@@ -874,11 +708,8 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
             .with_model(config.model.clone()),
         )?;
         providers.activate(Role::Chat, seeded.id(), Some(&config.model))?;
-        // Hàng gieo là Ollama trên **chính máy này**, nên trao luôn vai nhúng cho nó không
-        // gửi gì ra ngoài — và đó là mặc định đúng: người dùng nạp tài liệu lên trước khi
-        // họ kịp mở trang cài đặt, và một thư viện chỉ có từ khoá ngay từ đầu là một thư
-        // viện họ sẽ kết luận là không hoạt động. Kho cố ý không tự làm việc này vì nó
-        // không biết hàng nào là hàng gieo.
+        // The seeded row is a local Ollama, so granting it the embedding role sends nothing outward and is the
+        // right default: documents get ingested before anyone opens settings.
         let embed_model = config
             .embed_model
             .clone()
@@ -886,9 +717,7 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         providers.activate(Role::Embedding, seeded.id(), Some(&embed_model))?;
     }
 
-    // Con trỏ tới provider đang hoạt động. Dựng **trước** vòng lặp plugin vì `subagent`
-    // cần nó lúc cắm, và dựng nó rỗng rồi điền sau nghĩa là có một khoảng thời gian nó
-    // trỏ vào hư không.
+    // The active-provider pointer, built before the plugin loop because `subagent` needs it at load time.
     let boot_adapter: Arc<dyn LlmAdapter> = Arc::new(OllamaAdapter::new(
         "ollama",
         &config.ollama_url,
@@ -899,21 +728,17 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
 
     let projects: Arc<dyn ProjectStore> =
         Arc::new(SqliteProjectStore::open(config.data_dir.join("du-an.db"))?);
-    // Thư mục khởi động là một dự án như mọi dự án khác, chỉ khác ở chỗ nó được mở sẵn.
-    // Dự án mở sẵn, theo ba tầng: biến môi trường, rồi cái mở gần nhất trong kho, rồi
-    // **không có gì**. Tầng chót không phải một chỗ chưa làm — nó là trạng thái lần đầu
-    // mở ứng dụng, và cũng là trạng thái sau khi người dùng bỏ dự án cuối cùng khỏi danh
-    // sách. Hội thoại vẫn chạy trong đó.
+    // The startup project is an ordinary project that happens to be open, chosen in three tiers: environment
+    // variable, most recent stored project, then none -- which is the first-launch state, not a gap.
     let project = match &config.workspace {
         Some(path) => Some(projects.touch(path)?),
         None => match projects.list()?.into_iter().next() {
-            // `list` trả mới nhất trước, nên phần tử đầu là cái mở gần nhất. `touch` lại
-            // để giờ mở được cập nhật, và để một thư mục đã bị xoá khỏi đĩa không làm
-            // ứng dụng chết lúc khởi động — hỏng thì bỏ qua và mở lên không có dự án.
+            // `list` returns newest first, so the first entry is the most recent; `touch` refreshes its time and
+            // turns a deleted directory into a skipped project rather than a failed startup.
             Some(last) => match projects.touch(Path::new(&last.path)) {
                 Ok(project) => Some(project),
                 Err(err) => {
-                    tracing::warn!(path = %last.path, "không mở lại được dự án gần nhất: {err}");
+                    tracing::warn!(path = %last.path, "could not reopen the most recent project: {err}");
                     None
                 }
             },
@@ -923,14 +748,14 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
     let kind = project.as_ref().map(|open| open.kind);
 
     let composed = compose(&layers(&config)?)?;
-    // Rút danh sách server của hàng `mcp` **một lần**, ngay chỗ cây cấu hình còn nguyên.
+    // Extract the `mcp` row's server list once, while the config tree is still intact.
     let mcp_rows = composed
         .active()
         .find(|row| row.plugin == "mcp")
         .and_then(|row| serde_json::from_value::<McpRow>(row.config.clone()).ok())
         .map(|row| row.servers)
         .unwrap_or_default();
-    tracing::debug!("cây plugin:\n{}", composed.dump());
+    tracing::debug!("plugin tree:\n{}", composed.dump());
     let catalog = catalog(
         &config,
         project.as_ref().map(|open| Path::new(open.path.as_str())),
@@ -939,17 +764,12 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         sessions.clone(),
     );
 
-    // Thứ tự trong danh sách không quyết định thứ tự nạp — phụ thuộc được diễn đạt bằng
-    // `require`, nên `fs` chờ `tools` có mặt chứ không chờ nó đứng trước.
-    //
-    // Giữ scope thay vì `mem::forget` nó. Thả trôi thì việc dọn bất đồng bộ của mọi plugin
-    // — đóng client MCP, tắt language server, giết job nền — không bao giờ có cơ hội chạy,
-    // và cái đó chỉ lộ ra dưới dạng tiến trình mồ côi sau khi đóng app.
+    // List order does not decide load order: dependencies are expressed with `require`. Keep the scopes rather
+    // than forgetting them, or no plugin's async teardown ever runs and orphan processes survive the app.
     let mut scopes = Vec::new();
     let mut project_scopes = Vec::new();
     for row in composed.active() {
-        // Bỏ qua trước cả khi dựng: một hàng `rag` trong dự án mã nguồn không có gì để
-        // dựng, và gọi `build` rồi vứt đi là mở một cơ sở dữ liệu chẳng ai đọc.
+        // Skip before building: a `rag` row in a code project has nothing to build, and building then discarding opens a database nobody reads.
         if thuoc_du_an(row) && !hop_loai(row, kind) {
             continue;
         }
@@ -975,32 +795,23 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         config.model.clone(),
     ));
 
-    // Tầng provider dựng **sau** `Driver` vì nó cần chính cái `Driver` ấy để đẩy adapter
-    // vào. Nó không phải một hàng plugin vì lý do đó: một plugin được cắm trước khi
-    // `Driver` tồn tại, nên nó sẽ phải nhận một `Driver` chưa có — và một seam nhận giá
-    // trị điền sau là một seam có một khoảng thời gian trả lời sai.
+    // The provider layer is built after `Driver` because it pushes adapters into it; that is why it is not a
+    // plugin row, since plugins load before `Driver` exists.
     let runtime = Arc::new(ProviderRuntime::new(
         providers.clone(),
         Arc::new(AdapterRegistry::new(http.clone())),
         driver.clone(),
         http.clone(),
     ));
-    // Giao guard cho scope gốc thay vì giữ nó trong `Harness`: `Guard` bọc một
-    // `Box<dyn FnOnce + Send>` nên nó không `Sync`, mà `Harness` thì nằm trong `State` của
-    // Tauri và phải `Sync`. Scope gốc sống bằng tiến trình, nên vòng đời không đổi — chỉ
-    // đổi chỗ cất.
+    // Hand the guard to the root scope instead of keeping it in `Harness`: `Guard` is not `Sync` while `Harness`
+    // lives in Tauri `State` and must be. The root scope lasts the process, so only the storage location changes.
     ctx.keep(ctx.provide::<Providers>(runtime.clone())?);
-    // Máy chưa cấu hình gì là trạng thái bình thường lúc mới cài, không phải lỗi khởi
-    // động: ứng dụng vẫn mở, và màn hình provider là chỗ người dùng sửa nó.
+    // An unconfigured machine is normal on a fresh install, not a startup error: the provider screen is where it gets fixed.
     if let Err(err) = runtime.apply_active().await {
-        tracing::warn!("chưa dùng được nhà cung cấp nào: {err}");
+        tracing::warn!("no provider is usable yet: {err}");
     }
-    // Truyền **dự án đã khôi phục**, không phải `None`.
-    //
-    // `boot` dựng tầng plugin của dự án gần nhất ngay tại đây chứ không đi qua
-    // `open_project`, nên đây là chỗ duy nhất ghi được cấu hình cho nó. Truyền `None` thì
-    // tệp ghi ra khai `projects: []`, và mọi lời gọi tới service hỏng với "chưa có dự án
-    // nào đang mở" — trong khi giao diện thì đang hiện một dự án đã mở.
+    // Pass the restored project, not `None`: `boot` builds the recent project's layer here rather than through
+    // `open_project`, so this is the only place its config gets written.
     apply_llm(&runtime, &llm, &rag_config, project.as_ref());
     Ok(Harness {
         ctx: ctx.clone(),

@@ -1,16 +1,7 @@
 import type { DocumentHit, DocumentView, IngestProgress, LibraryStats } from "../protocol";
 
-/**
- * Dữ liệu mẫu cho màn hình thư viện tài liệu ở chế độ `?demo=1`.
- *
- * Ba trạng thái nhúng đều có mặt, và đó là lý do chính tệp này tồn tại: *đã nhúng*,
- * *đang xếp hàng*, và *hỏng kèm lý do* trông rất giống nhau trong mã nguồn mà phải trông
- * rất khác nhau trên màn hình. Không đặt cả ba cạnh nhau thì không ai kiểm được điều đó.
- *
- * `demoLibraryStats()` cố ý trả `semanticReady: false`: một thư viện chưa nhúng xong vẫn
- * tìm được bằng từ khoá, và dải trạng thái phải nói ra điều đó thay vì để người dùng
- * tưởng thư viện hỏng và bỏ cuộc.
- */
+/** Sample data for the document library under `?demo=1`; all three embedding states appear side by side, and
+ * `demoLibraryStats()` deliberately reports `semanticReady: false`, which keyword search survives. */
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -41,7 +32,7 @@ export function demoDocuments(now = Date.now()): DocumentView[] {
       error: null,
     },
     {
-      // Đang xếp hàng: chưa có vector nhưng KHÔNG có lỗi. Tệp này là bài kiểm cho mắt.
+      // Queued: no vector yet but NO error. This row is the eyeball test.
       id: "d-bien-ban",
       path: "/Users/vinhpx/Documents/so-tay/bien-ban-hop-q3.md",
       title: "Biên bản họp quý III",
@@ -64,7 +55,7 @@ export function demoDocuments(now = Date.now()): DocumentView[] {
       error: null,
     },
     {
-      // Hỏng, kèm lý do đủ để người đọc biết phải làm gì tiếp — chứ không phải "lỗi".
+      // Failed, with a reason specific enough to act on rather than the word "error".
       id: "d-ban-quet",
       path: "/Users/vinhpx/Documents/so-tay/ban-quet-2019.pdf",
       title: "Bản quét lưu trữ 2019",
@@ -99,9 +90,7 @@ export function demoLibraryStats(): LibraryStats {
     reason: "Còn 16 đoạn chưa nhúng xong.",
     root: "/Users/vinhpx/Documents/NCS",
     filesSeen: 8,
-    // Hai tệp chạm trần kích thước và một tệp không đọc được: bộ mẫu phải cho thấy được
-    // khoảng cách giữa "thư mục có 8 tệp" và "thư viện có 6", nếu không thì dòng giải
-    // thích ấy là dòng chưa ai nhìn thấy bao giờ.
+    // Two size-capped files and one unreadable, so the gap between "8 files in the folder" and "6 in the library" shows.
     filesSkipped: 1,
     unreadable: 1,
     excluded: 0,
@@ -110,42 +99,30 @@ export function demoLibraryStats(): LibraryStats {
   };
 }
 
-/**
- * Một lô nạp giả, trong đó **một tệp hỏng còn phần còn lại vẫn vào**.
- *
- * Đây là hình dạng thật của việc nạp tài liệu, và cũng là hình dạng dễ vẽ sai nhất: một
- * giao diện báo "thất bại" cho cả lô vì một tệp hỏng sẽ khiến người dùng nạp lại mười
- * chín tệp đã nằm sẵn trong thư viện.
- */
+/** A fake ingest batch where one file fails and the rest succeed, the shape a UI most often gets wrong. */
 export function demoIngestFrames(paths: string[]): IngestProgress[] {
   const total = paths.length;
   return paths.flatMap((path, at): IngestProgress[] => {
     const done = at + 1;
-    // Tệp thứ hai của mỗi lô hỏng — luôn có một tệp hỏng để nhìn, kể cả lô hai tệp.
+    // The second file of every batch fails, so there is always one failure to look at.
     const broken = at === 1;
     return [
-      { path, stage: "Đang đọc", done: at, total, finished: false, error: null },
+      { path, stage: "reading", done: at, total, finished: false, error: null },
       broken
         ? {
             path,
-            stage: "Bỏ qua",
+            stage: "skipped",
             done,
             total,
             finished: false,
             error: "Định dạng không đọc được — tệp có thể đã hỏng hoặc đang bị khoá.",
           }
-        : { path, stage: "Đang cắt đoạn", done, total, finished: false, error: null },
+        : { path, stage: "stored", done, total, finished: false, error: null },
     ];
   });
 }
 
-/**
- * Kết quả tìm thử.
- *
- * Đủ cả ba `matchedBy`: chỉ từ khoá, chỉ ngữ nghĩa, và cả hai. Ba huy hiệu đó là thứ
- * giải thích vì sao một câu hỏi tìm ra kết quả này mà không tìm ra kết quả kia, nên cả
- * ba phải được nhìn thấy cạnh nhau ít nhất một lần.
- */
+/** Probe results covering all three `matchedBy` values, the badges that explain why one hit ranked and another did not. */
 export function demoHits(query: string): DocumentHit[] {
   const q = query.trim();
   if (q === "") return [];

@@ -1,14 +1,6 @@
-"""Dòng lệnh của service.
-
-``serve`` là thứ ứng dụng gọi; mọi lệnh còn lại tồn tại để **gỡ lỗi mà không cần dựng cả
-ứng dụng**. Đó không phải tiện lợi thừa: khi một câu hỏi trả về kết quả sai, câu đầu tiên
-phải trả lời là "sai từ khâu nào" — rút chữ, cắt đoạn, nhúng, hay xếp hạng — và chạy được
-từng khâu một từ terminal là cách duy nhất trả lời nhanh.
-
-``doctor`` là lệnh nên chạy đầu tiên trên một máy mới: nó chạm vào mọi phụ thuộc ngoài
-theo đúng thứ tự phụ thuộc và nói ra cái nào chưa sẵn sàng, thay vì để người dùng phát
-hiện ra từng cái một qua các lỗi rời rạc.
-"""
+"""Service command line. `serve` is what the app calls; the rest exist to debug one
+stage at a time without the app, and `doctor` touches every external dependency in
+dependency order so a new machine reports what is missing all at once."""
 
 from __future__ import annotations
 
@@ -78,10 +70,7 @@ async def _stats(args: argparse.Namespace) -> int:
 
 
 async def _doctor(args: argparse.Namespace) -> int:
-    """Chạm vào mọi phụ thuộc ngoài, theo đúng thứ tự phụ thuộc.
-
-    Trả về mã thoát khác 0 khi có thứ hỏng, để dùng được trong script.
-    """
+    """Touch every external dependency in dependency order; non-zero exit when something is broken."""
     from pai_rag_service.embed import embedder_for
     from pai_rag_service.vectors import VectorStore
 
@@ -90,7 +79,7 @@ async def _doctor(args: argparse.Namespace) -> int:
     print(f"cấu hình      : {'PAI_RAG_CONFIG' if config.projects else 'mặc định trong mã'}")
     print(f"dự án         : {[p.id for p in config.projects] or '(chưa có)'}")
 
-    # 1. Máy chủ nhúng. Mọi thứ khác vô nghĩa nếu cái này không chạy.
+    # 1. Embedding server. Nothing else matters if this is down.
     try:
         vector = await embedder_for(config.embedding).aembed_query("kiểm tra")
         print(f"nhúng         : OK  {config.embedding.model} → {len(vector)} chiều")
@@ -107,25 +96,28 @@ async def _doctor(args: argparse.Namespace) -> int:
         ok = False
         print(f"qdrant        : HỎNG  {err}")
 
-    # 3. Neo4j — tắt được, nên không sẵn sàng thì cảnh báo chứ không phải lỗi.
+    # 3. Graph - optional, so unavailable is a warning rather than a failure. Probed through a real
+    # project when there is one: an embedded store is a directory per project, and the only useful
+    # question is whether *that* directory opens.
     if config.graph.enabled:
         try:
-            from neo4j import GraphDatabase
+            from pai_rag_service.graph import GraphStore
 
-            driver = GraphDatabase.driver(
-                config.graph.uri, auth=(config.graph.user, config.graph.password)
-            )
-            driver.verify_connectivity()
-            driver.close()
-            print(f"neo4j         : OK  {config.graph.uri}")
+            probe = config.projects[0] if config.projects else None
+            url = config.graph_url(probe) if probe else (config.graph.url or "surrealkv://<dự án>")
+            if probe is None:
+                print(f"graph         : chưa có dự án để mở  {url}")
+            else:
+                graph = GraphStore(config.graph, url, config.graph_database(probe))
+                entities, relations = graph.count()
+                graph.close()
+                print(f"graph         : OK  {url} → {entities} thực thể, {relations} quan hệ")
         except Exception as err:
-            print(f"neo4j         : chưa sẵn sàng ({err}) — chiến lược graph sẽ vắng mặt")
+            print(f"graph         : chưa sẵn sàng ({err}) — chiến lược graph sẽ vắng mặt")
     else:
-        print("neo4j         : tắt trong cấu hình")
+        print("graph         : tắt trong cấu hình")
 
-    # 4. Reranker. Bước này **tải model** ở lần đầu, nên nó là lý do chính `doctor` tồn
-    #    tại: trả 2 GB tải về vào một lệnh người dùng chủ động chạy, thay vì vào lần tìm
-    #    kiếm đầu tiên của họ.
+    # 4. Reranker. This downloads the model on first run, which is the main reason `doctor` exists: pay the 2 GB in a command the user chose to run.
     if config.rerank.enabled:
         try:
             from pai_rag_service.rerank import build
@@ -176,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    # `serve` tự lo phần log của nó: stdout là đường JSON-RPC và không được lẫn gì vào.
+    # `serve` handles its own logging: stdout is the JSON-RPC channel and must stay clean.
     if args.command == "serve":
         from pai_rag_service.mcp_server import run
 
@@ -191,8 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return asyncio.run(args.handler(args))
     except RagError as err:
-        # Lỗi của tầng này đã được viết để người đọc hành động được — in thẳng, không kèm
-        # traceback, vì traceback ở đây chỉ che mất câu cần đọc.
+        # Errors from this layer are already actionable; print them plainly, since a traceback would bury the sentence that matters.
         print(f"lỗi: {err}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

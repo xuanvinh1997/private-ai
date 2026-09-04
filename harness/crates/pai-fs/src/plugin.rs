@@ -1,8 +1,5 @@
-//! Mount the filesystem into the tree.
-//!
-//! One plugin, six tools, one provider and one policy. Disposing it loses all six tools
-//! *and* the read-before-edit rule — which is right, because a rule guarding tools that are
-//! no longer there is pure cost.
+//! Mount the filesystem into the tree: one plugin, six tools, one provider, one policy.
+//! Disposing it drops the tools and the read-before-edit rule together, as it should.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -45,9 +42,7 @@ impl Plugin for FsPlugin {
 
         let ledger = Arc::new(ReadLedger::default());
         let tools = ctx.require::<Tools>()?;
-        // The token budget is built from `ctx` itself, so the spill store is looked up at
-        // call time rather than construction time: disposing `ToolsPlugin` means every
-        // later fold knows it has nowhere to store the overflow.
+        // Built from `ctx`, so the spill store is looked up at call time, not construction time.
         let overflow = Overflow::new(ctx);
 
         ctx.keep(tools.register(Arc::new(Read::new(

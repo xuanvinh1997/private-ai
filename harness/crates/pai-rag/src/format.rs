@@ -1,13 +1,6 @@
-//! Định dạng của một tài liệu.
-//!
-//! Danh sách này phải khớp **ba chỗ**: `Format::as_str` ở đây, nhãn `format` mà
-//! `services/rag/src/pai_rag_service/extract/__init__.py` trả về, và union
-//! `DocumentFormat` trong `ui/src/lib/protocol.ts`. Lệch một chỗ thì hoặc bảng tài liệu
-//! hiện một ô trống, hoặc `Format::parse` lặng lẽ gom một định dạng lạ vào `Text`.
-//!
-//! Nhóm theo **cách đọc**, không theo phần mở rộng: `office` là mọi thứ markitdown mở
-//! bằng đường OOXML — `.docx`, `.xlsx`, `.pptx` — và tách chúng thành ba nhãn chỉ để bảng
-//! hiện ba chữ khác nhau là ba nhánh phải giữ đồng bộ mà không đổi được hành vi nào.
+//! Document format.
+//! This list must match `Format::as_str`, the `format` labels from the Python extractor,
+//! and the `DocumentFormat` union in `ui/src/lib/protocol.ts`. Grouped by how it is read.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,12 +8,12 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum Format {
     Pdf,
-    /// `.docx`, `.xlsx`, `.pptx` và họ hàng — đọc qua markitdown.
+    /// `.docx`, `.xlsx`, `.pptx` and relatives — read through markitdown.
     Office,
-    /// Ảnh, đọc bằng mô hình vision. Chỉ có mặt khi người dùng đã chọn một model vision.
+    /// Images, read by a vision model. Only present once a vision model is selected.
     Image,
     Html,
-    /// `.csv`, `.tsv`, `.json`, `.xml`, `.yaml` — có cấu trúc nhưng đọc ra như văn bản.
+    /// `.csv`, `.tsv`, `.json`, `.xml`, `.yaml` — structured, but read out as text.
     Data,
     Markdown,
     Code,
@@ -41,11 +34,7 @@ impl Format {
         }
     }
 
-    /// Từ chuỗi trên dây.
-    ///
-    /// Định dạng lạ rơi về [`Format::Text`] thay vì thành lỗi: một nhãn mới bên Python
-    /// không được phép làm cả danh sách tài liệu không hiện ra. `docx` được nhận cho
-    /// tương thích với kho đã ghi bằng bản trước.
+    /// From the wire string; unknown formats fall back to [`Format::Text`] so a new Python label never blanks the list.
     pub fn parse(name: &str) -> Format {
         match name.trim().to_ascii_lowercase().as_str() {
             "pdf" => Format::Pdf,

@@ -1,7 +1,6 @@
-//! Cắm phần ráp prompt vào cây.
-//!
-//! Vòng lặp không phải một service: nó là thứ *dùng* các service, và mỗi phiên chạy một
-//! bản riêng. Cái cần dùng chung là sổ các khối prompt, vì plugin khác đóng góp vào đó.
+//! Mount prompt assembly into the tree.
+//! The loop is not a service; it uses them, one instance per session. What is shared is the
+//! register of prompt sections, because other plugins contribute to it.
 
 use async_trait::async_trait;
 use pai_core::{Context, Plugin};

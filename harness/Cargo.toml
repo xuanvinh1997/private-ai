@@ -1,8 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*", "app"]
-# Bản vá không phải một crate của ta: nó không dùng `[workspace.package]`, không theo
-# edition của ta, và `cargo test --workspace` không nên chạy vào nó.
+# The vendored patch is not one of our crates: it skips `[workspace.package]` and must stay out of `cargo test --workspace`.
 
 
 [workspace.package]
@@ -12,14 +11,14 @@ rust-version = "1.88"
 license = "MIT"
 
 [workspace.dependencies]
-# --- lõi async ---
+# --- async core ---
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "fs"] }
 tokio-util = { version = "0.7", features = ["rt"] }
 tokio-stream = "0.1"
 futures = "0.3"
 async-trait = "0.1"
 
-# --- dữ liệu ---
+# --- data ---
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"
@@ -27,7 +26,7 @@ rusqlite = { version = "0.37", features = ["bundled", "serde_json", "chrono"] }
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 
-# --- hạ tầng ---
+# --- infrastructure ---
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
@@ -36,41 +35,36 @@ dashmap = "6"
 arc-swap = "1"
 parking_lot = "0.12"
 
-# --- mạng ---
-# rustls chứ không phải OpenSSL của hệ thống: bản đóng gói phải chạy được trên máy
-# không có gì cài sẵn, và một dependency C là một thứ nữa phải ký lúc phát hành.
+# --- network ---
+# rustls instead of system OpenSSL: the bundle must run on a bare machine, and a C dep is one more thing to sign at release.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset", "http2"] }
 
 # --- MCP ---
-# SDK Rust chính thức của Model Context Protocol. Lấy cả hai vai từ một crate: client cho
-# server bên thứ ba và server cho phía ta, trên cùng một bản cài đặt giao thức — hai bản
-# cài đặt khác nhau là hai chỗ để lệch nhau qua từng bản spec.
+# Official MCP Rust SDK; both roles from one crate so client and server share a single protocol implementation.
 rmcp = { version = "3.2", default-features = false, features = ["client", "server", "reqwest", "transport-io", "transport-child-process", "transport-streamable-http-client-reqwest", "transport-streamable-http-server"] }
 
-# --- tìm kiếm tệp: chính là ruột của ripgrep, dùng thẳng thư viện nên không cần
-# đóng gói một binary ngoài rồi phải nuôi nó qua từng bản phát hành ---
+# --- file search: ripgrep's own guts as a library, so no external binary to ship and maintain ---
 grep-searcher = "0.1"
 grep-regex = "0.1"
 grep-matcher = "0.1"
 ignore = "0.4"
 globset = "0.4"
 
-# --- khác ---
+# --- misc ---
 indexmap = "2"
-# Chỉ để gửi tín hiệu cho cả nhóm tiến trình: giết một shell không giết con cháu nó.
+# Only for signalling a whole process group: killing a shell does not kill its descendants.
 libc = "0.2"
 similar = "2"
 serde_norway = "0.9"
-# --- tầng tài liệu ---
-# Rút chữ khỏi PDF và DOCX. Cả hai đều thuần Rust: một bản đóng gói không được đòi
-# `pdftotext` hay LibreOffice có sẵn trên máy người dùng.
+# --- document layer ---
+# Text extraction from PDF and DOCX; pure Rust so the bundle needs no `pdftotext` or LibreOffice installed.
 pdf-extract = "0.9"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 quick-xml = "0.38"
 sha2 = "0.10"
 tempfile = "3"
 
-# --- crate nội bộ ---
+# --- internal crates ---
 pai-core = { path = "crates/pai-core" }
 pai-session = { path = "crates/pai-session" }
 pai-llm = { path = "crates/pai-llm" }

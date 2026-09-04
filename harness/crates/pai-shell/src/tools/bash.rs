@@ -1,18 +1,6 @@
-//! `bash` — run a shell command.
-//!
-//! The most dangerous tool in the set, so two decisions are written down here rather than
-//! left implicit:
-//!
-//! **Asking is the default.** `meta().mutating` is set, and the plugin attaches a guard
-//! that routes every call through `PreDecision::Ask`. This is the default, not an option:
-//! a tool that runs commands with no path to ask the user has no safe mode to fall back
-//! to.
-//!
-//! **There is no blocklist.** No filtering of `rm -rf`, none of `curl | sh`. A blocklist
-//! for shell commands always leaks — `r''m`, `$(echo cm0K | base64 -d)`, an intermediate
-//! script — and what it produces is not safety but the feeling of safety, the thing that
-//! gets people to click "allow" without reading. The real defences are approval and the
-//! sandbox.
+//! `bash`: run a shell command, the most dangerous tool in the set. Asking is the default,
+//! via a middleware that turns every call into `PreDecision::Ask`. There is no blocklist:
+//! shell filtering always leaks, so the real defences are approval and the sandbox.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,8 +18,7 @@ use tokio_util::sync::CancellationToken;
 use crate::jobs::{JobState, Jobs};
 use crate::provider::{Request, ShellExecutor};
 
-/// Without a deadline, a command waiting on input hangs the whole turn until the user
-/// gives up.
+/// Without a deadline, a command waiting on input hangs the whole turn.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -84,8 +71,7 @@ impl Tool for Bash {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Not marked `concurrency_safe`: two commands running in parallel in the same
-        // working directory can step on each other, and the shell tells nobody.
+        // Not `concurrency_safe`: two commands in one working directory can step on each other.
         ToolMeta::mutating().untrusted().concurrency_safe(false)
     }
 
@@ -103,8 +89,7 @@ impl Tool for Bash {
         );
 
         if args.run_in_background {
-            // Its own token, not the turn's: the job has to outlive the turn that
-            // started it, or `run_in_background` is no different from running normally.
+            // Its own token, not the turn's, or backgrounding would mean nothing.
             let cancel = CancellationToken::new();
             let job = self
                 .jobs
@@ -161,9 +146,7 @@ impl Tool for Bash {
             rendered = "(không có output)".to_string();
         }
 
-        // Command output is large output too: `cargo build` on a medium repo emits a few
-        // hundred KiB, and the tail — where the exit code and the last error line are — is
-        // the most valuable part. So keep both ends, not just the head.
+        // Keep both ends: for command output the tail holds the exit code and last error.
         let folded = self.overflow.fold(&call.name, rendered, |_| {
             "Chạy lại và lọc ngay trong lệnh (`| tail -n 200`, `| grep …`) nếu bạn cần \
              phần giữa."
@@ -180,8 +163,7 @@ impl Tool for Bash {
             "job_id": serde_json::Value::Null,
         });
 
-        // A non-zero exit code is **not** `is_error`: the command did exactly what it was
-        // told, and a red test suite is a useful result, not a failed tool call.
+        // A non-zero exit code is not `is_error`: a red test suite is a result, not a failure.
         let mut outcome = ToolOutcome::ok(folded.content).with_meta("terminal", meta);
         if let Some(handle) = folded.spill {
             outcome.meta.insert("spill".into(), handle.to_json());

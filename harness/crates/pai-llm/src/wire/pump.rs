@@ -1,11 +1,6 @@
-//! Bơm: nối một request HTTP đang chạy với một bộ giải mã khung, cho ra một `Stream`.
-//!
-//! Cả hai adapter đều cần đúng một máy trạng thái: gửi request → kiểm mã trạng thái →
-//! đọc byte → giải mã → nhả chunk. Chỉ bước "giải mã" là khác nhau, nên nó là một trait
-//! và phần còn lại viết một lần.
-//!
-//! Viết bằng `futures::stream::unfold` chứ không `async-stream`: thêm một dependency chỉ
-//! để có cú pháp `yield` là không đáng, và máy trạng thái viết tay ở đây đủ nhỏ để đọc.
+//! Pump: joins a live HTTP request to a frame decoder and yields a `Stream`.
+//! Both adapters need the same state machine and differ only in decoding, so that step
+//! is a trait; written with `futures::stream::unfold` to avoid an `async-stream` dependency.
 
 use std::collections::VecDeque;
 
@@ -15,26 +10,19 @@ use futures::stream::{BoxStream, StreamExt};
 use crate::error::{LlmError, LlmErrorCode};
 use crate::stream::StreamChunk;
 
-/// Biến byte của một giao thức cụ thể thành [`StreamChunk`].
-///
-/// Tách khỏi phần HTTP là điều khiến bộ test chạy được **không cần mạng**: bài test khó
-/// nhất — điểm cắt rơi vào giữa một event — chỉ cần gọi `push` với hai lát byte.
+/// Turns one protocol's bytes into [`StreamChunk`]s; splitting this from HTTP is what lets the tests run with no network.
 pub trait FrameDecoder: Send {
-    /// Ăn một mảnh byte và đẩy chunk vào `out`.
-    ///
-    /// Trả `Err` chỉ khi chính giao thức hỏng (máy chủ trả một object lỗi giữa luồng).
-    /// JSON không đọc được ở một dòng lẻ thì bỏ dòng đó, không giết cả luồng.
+    /// Eat a byte slice and push chunks into `out`; `Err` only for a broken protocol, never for one unreadable line.
     fn push(&mut self, bytes: &[u8], out: &mut Vec<StreamChunk>) -> Result<(), LlmError>;
 
-    /// Luồng byte đã đóng. Cơ hội cuối để nhả phần đệm dở và đóng các khối còn mở.
+    /// The byte stream closed. Last chance to flush the buffer and close open blocks.
     fn finish(&mut self, out: &mut Vec<StreamChunk>);
 
-    /// Đã phát ra `Finish` chưa. Bơm dựa vào đây để phân biệt "mô hình nói xong" với
-    /// "kết nối đứt giữa câu" — hai thứ trông y hệt nhau ở tầng TCP.
+    /// Has `Finish` been emitted? The pump uses this to tell "model finished" from "connection dropped mid-sentence".
     fn saw_finish(&self) -> bool;
 }
 
-/// Trạng thái của bơm.
+/// Pump state.
 enum Pump<D> {
     Connecting {
         request: BoxFuture<'static, Result<reqwest::Response, LlmError>>,
@@ -45,7 +33,7 @@ enum Pump<D> {
         decoder: D,
         queue: VecDeque<StreamChunk>,
     },
-    /// Đã đọc hết; còn chunk trong hàng đợi, và có thể còn một lỗi ở chót.
+    /// Reading is done; chunks remain queued, and possibly a trailing error.
     Draining {
         queue: VecDeque<StreamChunk>,
         tail: Option<LlmError>,
@@ -53,10 +41,7 @@ enum Pump<D> {
     Done,
 }
 
-/// Chạy một request streaming qua một bộ giải mã.
-///
-/// Bất biến giữ ở đây: luồng kết thúc bằng **đúng một** `Finish`, hoặc bằng một `Err`.
-/// Không có khả năng thứ ba, nên người gọi không cần đoán xem im lặng nghĩa là gì.
+/// Run a streaming request through a decoder; the stream ends with exactly one `Finish` or an `Err`, never in silence.
 pub fn pump<D>(
     request: BoxFuture<'static, Result<reqwest::Response, LlmError>>,
     decoder: D,
@@ -73,16 +58,14 @@ where
                     Ok(response) => {
                         let status = response.status();
                         if !status.is_success() {
-                            // Đọc thân lỗi trước khi bỏ: nó là thứ duy nhất phân biệt
-                            // "tràn cửa sổ ngữ cảnh" với "request sai".
+                            // Read the error body before discarding it: it is the only thing separating "context window exceeded" from "bad request".
                             let body = response.text().await.unwrap_or_default();
                             let err = LlmError::from_status(status.as_u16(), &body);
                             return Some((Err(err), Pump::Done));
                         }
                         let body = response
                             .bytes_stream()
-                            // Sao chép sang `Vec<u8>` để khỏi phơi kiểu của `bytes` ra
-                            // giao diện crate; một lần sao mỗi mảnh socket là không đáng kể.
+                            // Copy into `Vec<u8>` so `bytes`'s type stays out of the crate interface; one copy per socket chunk is negligible.
                             .map(|item| item.map(|bytes| bytes.to_vec()).map_err(LlmError::from))
                             .boxed();
                         state = Pump::Reading {
@@ -114,8 +97,7 @@ where
                         Some(Ok(bytes)) => {
                             let mut out = Vec::new();
                             if let Err(err) = decoder.push(&bytes, &mut out) {
-                                // Lỗi giao thức: nhả nốt cái đã ráp rồi mới báo lỗi, để
-                                // phần câu trả lời đã nhận không bị vứt đi.
+                                // Protocol error: flush what was assembled before reporting, so the received answer is not thrown away.
                                 queue.extend(out);
                                 state = Pump::Draining {
                                     queue,
@@ -164,7 +146,7 @@ where
     .boxed()
 }
 
-/// Một luồng chỉ có đúng một lỗi. Dùng khi request còn chưa dựng nổi.
+/// A stream carrying exactly one error. Used when the request could not even be built.
 pub fn failed(err: LlmError) -> BoxStream<'static, Result<StreamChunk, LlmError>> {
     futures::stream::once(async move { Err(err) }).boxed()
 }

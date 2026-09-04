@@ -1,20 +1,12 @@
 import { Key } from "@solid-primitives/keyed";
 import { formatBytes, formatLabel } from "../../lib/docs";
+import { S, t } from "../../lib/i18n";
 import type { DocumentView } from "../../lib/protocol";
 import { relativeTime } from "../../lib/sessions";
 import { IconButton } from "../primitives";
 import EmbedBadge from "./EmbedBadge";
 
-/**
- * Bảng tài liệu.
- *
- * Bảng thật (`<table>`) chứ không phải một chồng `div`: sáu cột dữ liệu cùng loại là
- * đúng định nghĩa của bảng, và trình đọc màn hình đọc được "Định dạng: PDF" thay vì đọc
- * một chuỗi từ rời rạc chỉ vì ta muốn dùng flexbox.
- *
- * Cuộn ngang nằm **trong khung của bảng**, không đẩy cả trang: một tiêu đề tài liệu dài
- * làm cả màn hình trượt ngang là cách nhanh nhất để mất chỗ đứng của thanh bên.
- */
+/** Document table: a real `<table>` so screen readers pair cells with headers, scrolling inside its own frame. */
 export default function DocumentTable(props: {
   docs: DocumentView[];
   busy?: boolean;
@@ -23,24 +15,22 @@ export default function DocumentTable(props: {
   return (
     <div class="overflow-x-auto rounded-card border border-line bg-surface">
       <table class="w-full min-w-[720px] border-collapse text-left">
-        <caption class="sr-only">Tài liệu trong thư viện</caption>
+        <caption class="sr-only">{t(S.docs.table.caption)}</caption>
         <thead>
           <tr class="border-b border-line">
-            <Th>Tài liệu</Th>
-            <Th>Định dạng</Th>
-            <Th>Kích thước</Th>
-            <Th>Đoạn</Th>
-            <Th>Nạp lúc</Th>
-            <Th>Nhúng</Th>
+            <Th>{t(S.docs.table.document)}</Th>
+            <Th>{t(S.docs.table.format)}</Th>
+            <Th>{t(S.docs.table.size)}</Th>
+            <Th>{t(S.docs.table.chunks)}</Th>
+            <Th>{t(S.docs.table.addedAt)}</Th>
+            <Th>{t(S.docs.table.embed)}</Th>
             <th class="w-10 px-sm py-xs">
-              <span class="sr-only">Thao tác</span>
+              <span class="sr-only">{t(S.docs.table.actions)}</span>
             </th>
           </tr>
         </thead>
         <tbody>
-          {/* Keyed theo id: danh sách được thay nguyên mảng sau mỗi lần nạp, và keyed
-              theo vị trí thì mọi hàng dựng lại — nút xoá đang có tiêu điểm biến mất
-              dưới ngón tay người dùng ngay giữa lúc họ định bấm. */}
+          {/* Keyed by id: the array is replaced on every load, and keying by index rebuilds every row. */}
           <Key each={props.docs} by={(doc) => doc.id}>
             {(keyed) => (
               <tr class="border-b border-line last:border-0 transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-faint)]">
@@ -80,7 +70,7 @@ export default function DocumentTable(props: {
                     danger
                     disabled={props.busy}
                     tip="left"
-                    label={`Xoá "${keyed().title}" khỏi thư viện`}
+                    label={t(S.docs.table.remove, { title: keyed().title })}
                     onClick={() => props.onRemove(keyed())}
                   />
                 </td>

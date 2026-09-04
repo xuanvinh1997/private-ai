@@ -1,8 +1,6 @@
-//! Nén ngữ cảnh.
-//!
-//! Bài quan trọng nhất là bài về ranh giới: cắt giữa một lời gọi tool và kết quả của nó
-//! làm request bị máy chủ từ chối thẳng, và triệu chứng ("400 từ máy chủ") không hề chỉ
-//! về đây. Đó là loại lỗi tốn nửa ngày để tìm, nên nó phải có một bài đỏ canh sẵn.
+//! Context compaction.
+//! The boundary test matters most: cutting between a tool call and its result gets the
+//! request rejected outright, and the symptom ("400 from the server") points nowhere near.
 
 use std::sync::Arc;
 
@@ -10,7 +8,7 @@ use pai_agent::{CompactionPlugin, PreStep, PreStepRequest, StepDecision};
 use pai_core::{Context, Plugin};
 use pai_session::{ContentBlock, Message, Role};
 
-/// Cửa sổ nhỏ để áp lực đến sớm; hằng số trong plugin có sàn 2048.
+/// A small window so pressure arrives early; the plugin floors it at 2048.
 const WINDOW: usize = 2048;
 
 fn long_user(n: usize) -> Message {
@@ -78,7 +76,7 @@ async fn duoi_nguong_thi_khong_dung_toi() {
 #[tokio::test]
 async fn vuot_nguong_thi_che_phan_dau_va_giu_phan_duoi() {
     let ctx = ctx_with_compaction().await;
-    // Mười node, mỗi node ~1000 token: vượt xa 80% của 2048.
+    // Ten nodes at about 1000 tokens each: far past 80% of 2048.
     let history: Vec<Message> = (0..10).map(|_| long_user(4000)).collect();
     let total = history.len();
 
@@ -95,7 +93,7 @@ async fn vuot_nguong_thi_che_phan_dau_va_giu_phan_duoi() {
         "che {} trên {total} node",
         replace.end
     );
-    // Bản tóm tắt là một message thật, đọc được, và tự khai nó là bản rút gọn.
+    // The summary is a real, readable message that says it is a summary.
     assert!(format!("{:?}", replace.summary).contains("ngu-canh-da-nen"));
 }
 
@@ -116,8 +114,7 @@ async fn khong_cat_giua_mot_loi_goi_tool_va_ket_qua_cua_no() {
         panic!("phải yêu cầu che");
     };
 
-    // Node đầu tiên còn lại sau khi che không được là một kết quả mồ côi, và node cuối
-    // cùng bị che không được là một lời gọi đang chờ kết quả.
+    // The first surviving node must not be an orphan result, nor the last masked one a pending call.
     if let Some(first_kept) = history.get(replace.end) {
         assert_ne!(
             first_kept.role,
@@ -140,7 +137,7 @@ async fn khong_dam_len_quyet_dinh_cua_tang_duoi() {
     let ctx = ctx_with_compaction().await;
     let history: Vec<Message> = (0..10).map(|_| long_user(4000)).collect();
 
-    // Một tầng khác từ chối bước. Nén không được biến lời từ chối đó thành một lần vào bước.
+    // Another layer rejects the step, and compaction must not turn that refusal into an entry.
     struct Reject;
     impl pai_core::Middleware<PreStep> for Reject {
         fn call<'a>(

@@ -1,9 +1,10 @@
 import { createMemo, createSignal, Show } from "solid-js";
+import { S, t } from "../../lib/i18n";
 import type { ToolCall } from "../../lib/protocol";
-import { CopyButton, type DotState } from "../primitives";
+import { CopyButton, IconButton, type DotState } from "../primitives";
 import { ToolShell } from "./ToolCard";
 
-/** Giữ chung số học gập với khối diff: nửa trên làm tròn lên. */
+/** Same fold arithmetic as the diff block: the head half rounds up. */
 const MAX_LINES = 12;
 
 function fold(text: string, expanded: boolean): { body: string; hidden: number } {
@@ -13,23 +14,16 @@ function fold(text: string, expanded: boolean): { body: string; hidden: number }
   const tail = MAX_LINES - head;
   const hidden = lines.length - head - tail;
   return {
-    body: [...lines.slice(0, head), `⋯ ẩn ${hidden} dòng`, ...lines.slice(lines.length - tail)].join(
-      "\n",
-    ),
+    body: [
+      ...lines.slice(0, head),
+      t(S.tools.bash.hidden, { n: hidden }),
+      ...lines.slice(lines.length - tail),
+    ].join("\n"),
     hidden,
   };
 }
 
-/**
- * Thẻ `bash`.
- *
- * Một điểm khác mọi thẻ khác: **exit code khác 0 thì chấm đỏ, kể cả khi `is_error` là
- * false**. Lõi coi "lệnh chạy xong và trả 1" là thi hành thành công — đúng về mặt kỹ
- * thuật, nhưng người đọc muốn biết lệnh *hỏng*, và họ đọc chấm màu chứ không đọc số.
- *
- * Tiến trình nền không có exit code cho tới khi nó kết thúc, nên trạng thái "chưa có
- * exit code" phải nói rõ là *đang chạy nền*, không phải là *treo*.
- */
+/** The `bash` card: a non-zero exit shows red, and a background job with no exit code shows running. */
 export default function BashCard(props: { call: ToolCall }) {
   const [expanded, setExpanded] = createSignal(false);
   const terminal = () => props.call.meta?.terminal;
@@ -57,7 +51,9 @@ export default function BashCard(props: { call: ToolCall }) {
         <span class="flex min-w-0 items-center gap-sm">
           <code class="min-w-0 truncate font-mono text-xs text-accent-ink">$ {command()}</code>
           <Show when={terminal()?.background}>
-            <span class="shrink-0 rounded-pill bg-warn-soft px-2xs text-2xs text-warn">nền</span>
+            <span class="shrink-0 rounded-pill bg-warn-soft px-2xs text-2xs text-warn">
+              {t(S.tools.bash.background)}
+            </span>
           </Show>
           <Show when={terminal()?.exit_code !== null && terminal()?.exit_code !== undefined}>
             <span
@@ -71,30 +67,36 @@ export default function BashCard(props: { call: ToolCall }) {
             </span>
           </Show>
           <Show when={terminal()?.signal}>
-            {(signal) => <span class="shrink-0 text-2xs text-danger">tín hiệu {signal()}</span>}
+            {(signal) => (
+              <span class="shrink-0 text-2xs text-danger">
+                {t(S.tools.bash.signal, { name: signal() })}
+              </span>
+            )}
           </Show>
         </span>
       }
     >
       <Show when={terminal()?.cwd}>
-        {(cwd) => <p class="font-mono text-2xs text-faint">tại {cwd()}</p>}
+        {(cwd) => (
+          <p class="font-mono text-2xs text-faint">{t(S.tools.bash.cwd, { path: cwd() })}</p>
+        )}
       </Show>
       <Show when={output() !== ""}>
         <figure class="m-0 overflow-hidden rounded-panel border border-line bg-surface">
           <div class="flex items-center justify-between gap-sm border-b border-line px-sm py-3xs">
-            <figcaption class="text-2xs text-muted">Đầu ra</figcaption>
+            <figcaption class="text-2xs text-muted">{t(S.tools.bash.output)}</figcaption>
             <div class="flex items-center gap-3xs">
+              {/* An icon, not a word: this button repeats on every command card. */}
               <Show when={folded().hidden > 0 || expanded()}>
-                <button
-                  type="button"
+                <IconButton
+                  icon={expanded() ? "fold" : "unfold"}
+                  label={expanded() ? t(S.tools.bash.collapse) : t(S.tools.bash.expand)}
+                  size="sm"
+                  expanded={expanded()}
                   onClick={() => setExpanded((v) => !v)}
-                  aria-expanded={expanded()}
-                  class="rounded-btn px-2xs py-3xs text-2xs text-muted transition-colors hover:bg-surface-hover hover:text-text"
-                >
-                  {expanded() ? "Gập lại" : "Mở rộng"}
-                </button>
+                />
               </Show>
-              <CopyButton text={output} label="Chép đầu ra lệnh" />
+              <CopyButton text={output} label={t(S.tools.bash.copyOutput)} />
             </div>
           </div>
           <div class="max-h-72 overflow-auto">
@@ -106,8 +108,9 @@ export default function BashCard(props: { call: ToolCall }) {
       </Show>
       <Show when={props.call.state === "running" && terminal()?.background}>
         <p class="text-2xs text-faint">
-          Chạy nền{terminal()?.job_id ? ` · mã tiến trình ${terminal()?.job_id}` : ""} — dùng
-          <code class="mx-3xs font-mono">job_output</code>.
+          {terminal()?.job_id
+            ? t(S.tools.bash.job, { id: String(terminal()?.job_id) })
+            : t(S.tools.bash.jobless)}
         </p>
       </Show>
     </ToolShell>

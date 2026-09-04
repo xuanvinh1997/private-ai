@@ -1,27 +1,6 @@
 import { createSignal } from "solid-js";
 
-/**
- * Thông báo nổi: chỗ đứng của những câu **vừa xảy ra**.
- *
- * # Vì sao không để chúng dưới ô soạn tin
- *
- * Dưới ô soạn tin là chỗ của những điều kiện **đang tồn tại** — chưa mở dự án, mô hình
- * đang cảnh báo, ngữ cảnh sắp đầy. Chúng ở lại vì tình trạng ở lại, và người dùng đọc
- * chúng khi tới lượt. Một câu lỗi thì ngược hẳn: nó nói về một cử chỉ vừa xong, nó đúng
- * trong vài giây, và nó phải tự đi. Trộn hai giọng ấy vào cùng một dải chữ làm hỏng cả
- * hai — dải điều kiện nhấp nháy theo từng cú bấm, còn câu lỗi thì nằm im như thể nó là
- * một tình trạng mới của ứng dụng.
- *
- * Chỗ này cũng là chỗ duy nhất nói được khi màn hình gây ra lỗi đã không còn trước mắt:
- * một cú thả tệp hỏng vẫn phải nói được thành lời sau khi người dùng đã chuyển sang tab
- * khác.
- *
- * # Vì sao một kho ở tầng module chứ không phải một context
- *
- * Cùng khuôn với `prefs.ts` và `theme.ts`. Bất kỳ đâu cũng gọi `notify` được mà không phải
- * xâu một prop qua bốn tầng component, và một ứng dụng một cửa sổ thì không có cái thứ hai
- * để tách kho ra cho.
- */
+/** Floating notices for things that just happened; the composer status line is for conditions that persist. */
 
 export type ToastKind = "error" | "info";
 
@@ -31,25 +10,10 @@ export interface Toast {
   text: string;
 }
 
-/**
- * Ba cái một lúc là hết. Cái thứ tư đẩy cái **già nhất** đi.
- *
- * Một chồng thông báo cao hơn thế thì không ai đọc từ đầu; nó chỉ che mất giao diện và tự
- * biến mình thành thứ người dùng học cách nhìn xuyên qua.
- */
+/** Three at a time; a fourth pushes out the oldest, because a taller stack stops being read at all. */
 const MAX = 3;
 
-/**
- * Tám giây, và cùng một khoảng cho cả lỗi.
- *
- * Lỗi ở đây luôn là lỗi của một **thao tác vừa làm**, không phải một tình trạng của ứng
- * dụng: tệp này không đính kèm được, hộp thoại này không mở được. Người dùng biết mình vừa
- * làm gì, nên câu trả lời chỉ cần sống đủ lâu để đọc hết. Thứ đáng ở lại thì đã có chỗ ở
- * lại — dòng điều kiện dưới ô soạn tin, hoặc dải lỗi của chính màn hình gây ra nó.
- *
- * Vẫn có nút đóng: tám giây là quá lâu khi người dùng đã đọc xong ở giây thứ hai và cái
- * thẻ ấy đang nằm trên đúng chỗ họ muốn bấm.
- */
+/** Eight seconds, errors included: each one describes a gesture just made, and a close button handles the rest. */
 const LIFETIME_MS = 8_000;
 
 const [toasts, setToasts] = createSignal<Toast[]>([]);
@@ -75,13 +39,7 @@ function arm(id: number) {
   );
 }
 
-/**
- * Đẩy một thông báo lên.
- *
- * Câu trùng nguyên văn với một thông báo đang hiện thì **không** thành thẻ thứ hai: nó chỉ
- * đặt lại đồng hồ của cái đang có. Thả hỏng ba lần liên tiếp là cùng một tin xấu ba lần,
- * và xếp nó thành ba thẻ chồng lên nhau biến một câu đọc được thành một bức tường.
- */
+/** Push a notice; text identical to a visible one only resets its timer instead of stacking a second card. */
 export function notify(kind: ToastKind, text: string): void {
   const trimmed = text.trim();
   if (trimmed === "") return;
@@ -95,8 +53,7 @@ export function notify(kind: ToastKind, text: string): void {
   const toast: Toast = { id: ++seq, kind, text: trimmed };
   setToasts((all) => {
     const next = [...all, toast];
-    // Cắt từ đầu: cái già nhất đi trước. Cái vừa tới nói về cử chỉ vừa xong, nên nó là cái
-    // cuối cùng đáng bị bỏ.
+    // Trim from the front: oldest first, since the newest describes the gesture just made.
     for (const dropped of next.slice(0, Math.max(0, next.length - MAX))) forget(dropped.id);
     return next.slice(-MAX);
   });

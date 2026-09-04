@@ -1,20 +1,6 @@
-//! Sáu tool terminal, tên và schema lấy nguyên của dsh.
-//!
-//! Giữ nguyên tên và hình dạng tham số — kể cả `sessionId` viết kiểu camel giữa những
-//! `run_in_background` viết kiểu snake — là một quyết định chứ không phải một sự cẩu thả.
-//! Mô hình học bộ tool này từ dữ liệu công khai; đổi `sessionId` thành `session_id` cho
-//! nhất quán về hình thức thì đổi lấy một lớp gọi sai mà không có gì bù lại.
-//!
-//! **Không có `terminal_resize`.** dsh cố ý bỏ nó khỏi bộ tool, và bộ sáu ở đây giữ đúng
-//! bộ đó. Lý do thì đứng vững: kích thước cửa sổ là chuyện của cái khung đang hiển thị
-//! phiên, không phải chuyện của người gõ lệnh vào nó — một agent tự đổi 80 cột thành 200
-//! cột đang sửa thứ mà người dùng nhìn thấy để cho vừa mắt mình. Việc đổi kích thước vẫn
-//! làm được, nhưng qua seam ([`crate::seam::TerminalHost::resize`]), nơi giao diện gọi.
-//!
-//! Cùng lý do đó, phần `run_in_background` của `terminal_send` **không** mở một job trong
-//! sổ job của `pai-shell`: sổ đó không phải một seam, nên với tới nó là buộc hai crate
-//! dính vào nhau qua một kiểu cụ thể. Một phiên bền vốn đã có id của riêng nó, và
-//! `terminal_read` trên id đó trả lời đúng câu mà `job_output` trả lời.
+//! Six terminal tools, names and schemas taken verbatim from dsh -- including the camel-cased
+//! `sessionId` -- because the model learned this tool set from public data. No `terminal_resize`:
+//! window size belongs to the UI showing the session, so resizing goes through the seam instead.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,14 +13,13 @@ use serde_json::{Value, json};
 
 use crate::seam::{OpenRequest, Owner, Sent, Signal, Stop, TerminalError, TerminalHost, Wait};
 
-/// Bao lâu không có gì mới thì coi là lệnh đã yên.
+/// How long without new output counts as the command having settled.
 const DEFAULT_QUIET: Duration = Duration::from_millis(300);
-/// Trần cho một lần gửi ở tiền cảnh. Quá đây thì trả về phần đã có kèm lời nói rõ.
+/// Cap for a foreground send; past it we return what we have plus an explicit note.
 const DEFAULT_SEND_TIMEOUT: Duration = Duration::from_secs(30);
-/// Số dòng một lần đọc, đúng mặc định của dsh.
+/// Lines per read, matching dsh's default.
 const DEFAULT_COUNT: usize = 500;
-/// Trần cứng cho một lần đọc: một `count` khổng lồ không được biến `terminal_read` thành
-/// một cách đổ cả bộ đệm vào ngữ cảnh trong một lần gọi.
+/// Hard cap per read, so a huge `count` cannot dump the whole buffer into context in one call.
 const MAX_COUNT: usize = 2_000;
 
 fn invalid(err: impl std::fmt::Display) -> ToolError {
@@ -45,11 +30,7 @@ fn args<T: serde::de::DeserializeOwned>(call: &Invocation) -> Result<T, ToolErro
     serde_json::from_value(Value::Object(call.arguments.clone())).map_err(invalid)
 }
 
-/// Lỗi của seam đi ra mô hình dưới dạng lỗi tool, không phải dưới dạng văn bản thành công.
-///
-/// Khác `bash`, nơi mã thoát khác 0 vẫn là một lần chạy thành công: ở đây "không có phiên
-/// đó" là một câu nói rằng lời gọi sai, và mô hình phải sửa lời gọi chứ không phải đọc kết
-/// quả.
+/// Seam errors reach the model as tool errors, not as successful text: a missing session means the call was wrong.
 fn failed(err: TerminalError) -> ToolError {
     match err {
         TerminalError::NoSession(_) | TerminalError::NoBackend(_, _) => {
@@ -59,7 +40,7 @@ fn failed(err: TerminalError) -> ToolError {
     }
 }
 
-/// Khối chữ mà mô hình đọc, cộng lời nói rõ về phần đã rơi khỏi bộ đệm.
+/// The text block the model reads, plus an explicit note about lines dropped from the buffer.
 fn render(lines: &[String], dropped: usize, max_lines: usize) -> String {
     let mut text = if lines.is_empty() {
         "(không có output)".to_string()
@@ -74,10 +55,7 @@ fn render(lines: &[String], dropped: usize, max_lines: usize) -> String {
     text
 }
 
-/// `meta.terminal` đúng hình dạng mà giao diện đọc (`ui/src/lib/protocol.ts`).
-///
-/// Một phiên bền không có mã thoát chừng nào nó còn sống, và `null` ở đây nghĩa đúng như
-/// vậy — không phải "chưa lấy được".
+/// `meta.terminal` in the shape the UI reads (`ui/src/lib/protocol.ts`); a live session has no exit code, hence `null`.
 fn terminal_meta(command: &str, cwd: &str, output: &str, background: bool, id: &str) -> Value {
     json!({
         "command": command,
@@ -130,8 +108,7 @@ impl Tool for TerminalOpen {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Không `concurrency_safe`: hai phiên mở song song trong cùng thư mục làm việc là
-        // hai phiên có thể giẫm lên nhau, và shell không nói cho ai biết.
+        // Not `concurrency_safe`: two sessions opened in parallel in the same cwd can trample each other silently.
         ToolMeta::mutating().untrusted().concurrency_safe(false)
     }
 
@@ -307,7 +284,7 @@ pub struct SendArgs {
     /// Submit Enter after text (default true). Set false for control characters or
     /// incomplete REPL input.
     pub submit: Option<bool>,
-    /// Gửi rồi trả về ngay, không chờ. Lấy output sau bằng `terminal_read`.
+    /// Send and return immediately without waiting. Collect output later with `terminal_read`.
     #[serde(default)]
     pub run_in_background: bool,
 }
@@ -373,8 +350,7 @@ impl Tool for TerminalSend {
             .map_err(failed)?;
 
         let mut text = render(&lines, dropped, self.max_lines);
-        // Lý do dừng đi kèm kết quả, vì "yên rồi" và "hết giờ" dẫn tới hai bước tiếp theo
-        // khác nhau, và đoán nhầm chiều nào cũng tốn một lượt.
+        // The stop reason ships with the result, because "settled" and "timed out" imply different next steps.
         match stopped {
             Stop::Quiet => {}
             Stop::Background => {
@@ -403,13 +379,8 @@ impl Tool for TerminalSend {
 
 // --- terminal_signal --------------------------------------------------------------------
 
-/// Bộ tín hiệu đóng. Xem [`crate::seam::Signal`] về việc vì sao `SIGKILL` bị chặn khi nó
-/// nhắm vào chính shell của phiên.
-///
-/// `inline` chứ không để schemars đẩy sang `$defs` rồi `$ref` tới: schema này đi thẳng
-/// vào request tới mô hình, và một tham chiếu phải đi tìm nơi khác là một tham chiếu mà
-/// bộ chuyển đổi nào đó trên đường sẽ làm phẳng sai — hoặc bỏ qua, và lúc đó `signal` trở
-/// thành một ô trống không có bờ.
+/// Closed signal set. `inline` rather than a schemars `$ref`, since this schema goes straight to the model
+/// and some converter along the way will flatten the reference wrongly or drop it.
 #[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
 #[schemars(inline)]
 pub enum SignalName {

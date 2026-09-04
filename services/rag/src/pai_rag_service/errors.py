@@ -1,9 +1,5 @@
-"""Lỗi của tầng RAG, và một luật về cách chúng được viết ra.
-
-Mọi thông điệp ở đây đi thẳng lên giao diện hoặc vào ngữ cảnh của mô hình, nên chúng
-phải nói được **người đọc cần làm gì tiếp theo**. "Kết nối thất bại" là một câu không ai
-hành động được; "không nối được Qdrant ở 127.0.0.1:6333 — dựng nó bằng `docker compose
-up -d` trong services/rag/deploy" thì có.
+"""RAG layer errors. Every message here reaches the UI or the model's context,
+so each one must say what the reader should do next, not merely that something failed.
 """
 
 from __future__ import annotations
@@ -21,18 +17,15 @@ __all__ = [
 
 
 class RagError(Exception):
-    """Gốc của mọi lỗi tầng này. Bắt được cái này là bắt được toàn bộ."""
+    """Root of every error in this layer; catching this catches all of them."""
 
 
 class ConfigError(RagError):
-    """Cấu hình thiếu hoặc mâu thuẫn. Người dùng sửa được, ở màn hình Cài đặt."""
+    """Configuration missing or contradictory. The user can fix it in Settings."""
 
 
 class ExtractError(RagError):
-    """Một tệp không rút được chữ.
-
-    Luôn kèm đường dẫn: người dùng vừa thả hai mươi tệp vào và cần biết tệp nào.
-    """
+    """A file yielded no text; always carries the path, since the user just dropped twenty files."""
 
     def __init__(self, path: str, reason: str) -> None:
         super().__init__(f"{path}: {reason}")
@@ -41,22 +34,20 @@ class ExtractError(RagError):
 
 
 class UnsupportedFile(ExtractError):
-    """Định dạng nằm ngoài tập đọc được. Khác `ExtractError` vì nó **không** đáng thử lại."""
+    """Format outside the readable set. Distinct from `ExtractError` because retrying will not help."""
 
 
 class EmbedError(RagError):
-    """Máy chủ nhúng không trả lời, hoặc trả về thứ không dùng được."""
+    """The embedding server did not answer, or returned something unusable."""
 
 
 class RerankError(RagError):
-    """Reranker hỏng. Luôn bắt được ở tầng trên: xếp hạng lại là bước làm tốt hơn,
-    không phải bước bắt buộc, nên nó hỏng thì truy hồi vẫn phải trả về kết quả."""
+    """Reranker failure; always caught upstream, since reranking improves results rather than producing them."""
 
 
 class VectorStoreError(RagError):
-    """Qdrant không với tới được, hoặc collection ở trạng thái không dùng được."""
+    """Qdrant is unreachable, or the collection is in an unusable state."""
 
 
 class GraphError(RagError):
-    """Neo4j không với tới được. Cũng luôn bắt được ở tầng trên — chiến lược graph vắng
-    mặt thì `auto` phải lùi về `hybrid`, không phải trả lỗi cho người hỏi."""
+    """The graph store is unreachable or refused a query; caught upstream, so `auto` falls back to `hybrid`."""

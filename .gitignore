@@ -28,3 +28,9 @@ packaging/*.iconset/
 harness/target/
 harness/ui/dist/
 harness/app/gen/
+
+# Đóng gói: binary tải về và bản dựng của sidecar RAG. Không commit — 69 MB cho qdrant và
+# ~300 MB cho bản đóng gói Python, và cả hai dựng lại được từ version đã ghim.
+harness/app/binaries/
+services/rag/dist/
+services/rag/build/

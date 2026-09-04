@@ -1,9 +1,6 @@
-//! Build diff hunks carrying **real line numbers from the file**.
-//!
-//! The UI draws a line number beside every diff line. If a hunk does not carry its position
-//! in the file, the UI numbers from 1 and the reader sees a number that looks right and
-//! points somewhere else — a silent discrepancy, the worst kind. So `old_start`/`new_start`
-//! are computed here, the only place that still has both versions of the text.
+//! Build diff hunks carrying real line numbers from the file, so the UI does not number from 1
+//! and show plausible but wrong positions. `old_start`/`new_start` are computed here, the only
+//! place that still holds both versions of the text.
 
 use serde_json::{Value, json};
 use similar::{ChangeTag, TextDiff};

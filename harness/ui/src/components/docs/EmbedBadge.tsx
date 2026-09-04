@@ -1,25 +1,20 @@
 import { Show } from "solid-js";
 import { embedState } from "../../lib/docs";
+import { S, t } from "../../lib/i18n";
 import type { DocumentView } from "../../lib/protocol";
 import Icon, { type IconName } from "../Icon";
 
-/**
- * Trạng thái nhúng của một tài liệu — chỗ quan trọng nhất của cả màn hình.
- *
- * Ba trạng thái phải phân biệt được bằng **ba thứ cùng lúc**: chữ, màu, và hình. Chỉ
- * dựa vào màu là bỏ rơi người mù màu; chỉ dựa vào chữ thì mắt phải đọc từng dòng của một
- * bảng ba mươi dòng mới thấy dòng nào hỏng.
- *
- * "Đang xếp hàng" cố ý **không** dùng màu cảnh báo. Nó không phải một vấn đề: tài liệu
- * đó đã tìm được bằng từ khoá rồi, chỉ là chưa có vector. Tô nó vàng là mời người dùng
- * xoá đi nạp lại một tệp hoàn toàn bình thường — và lần nạp lại cũng sẽ "vàng" y như vậy.
- */
+/** A document's embed state, told by text, colour and icon at once; queued is neutral, not a warning. */
 export default function EmbedBadge(props: { doc: DocumentView }) {
   const state = () => embedState(props.doc);
   const icon = (): IconName =>
     state() === "embedded" ? "check" : state() === "queued" ? "clock" : "warn";
   const label = () =>
-    state() === "embedded" ? "Đã nhúng" : state() === "queued" ? "Đang xếp hàng" : "Hỏng";
+    state() === "embedded"
+      ? t(S.docs.embed.embedded)
+      : state() === "queued"
+        ? t(S.docs.embed.queued)
+        : t(S.docs.embed.failed);
 
   return (
     <span class="flex flex-col items-start gap-3xs">
@@ -36,8 +31,7 @@ export default function EmbedBadge(props: { doc: DocumentView }) {
         </span>
         {label()}
       </span>
-      {/* Lý do hỏng đứng ngay dưới huy hiệu, không giấu sau một cú rê chuột: nó là thứ
-          duy nhất nói được phải làm gì tiếp, và rê chuột thì bàn phím không tới được. */}
+      {/* The failure reason sits below the badge, not behind a hover a keyboard cannot reach. */}
       <Show when={props.doc.error}>
         {(reason) => <span class="max-w-[28ch] text-2xs text-danger">{reason()}</span>}
       </Show>

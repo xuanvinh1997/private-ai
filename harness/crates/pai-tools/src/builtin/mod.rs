@@ -1,9 +1,6 @@
-//! Tool đi kèm crate này.
-//!
-//! Chỉ những cái không phụ thuộc vào hệ tệp, tiến trình hay mạng. Đọc/ghi tệp ở `pai-fs`,
-//! chạy lệnh ở `pai-shell` — không phải để cho gọn, mà vì mỗi crate đó kéo theo một seam
-//! phải giam giữ được, và trộn chúng vào đây sẽ khiến crate nền tảng bảo mật phụ thuộc
-//! vào chính những thứ nó phải canh.
+//! The tools shipped with this crate: only those needing no filesystem, process or network.
+//! Files live in `pai-fs` and commands in `pai-shell`, so the security floor never depends
+//! on the very things it has to guard.
 
 pub mod spill_read;
 pub mod todo;

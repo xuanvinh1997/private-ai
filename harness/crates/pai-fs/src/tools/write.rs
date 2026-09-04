@@ -1,9 +1,5 @@
-//! `write` — overwrite a whole file.
-//!
-//! Separate from `edit` because they are different jobs: `write` creates a file, `edit`
-//! changes one place. Merged, the model would use `write` for edits, and every one-line
-//! change becomes a retyping of the whole file from memory — where everything it does not
-//! remember disappears.
+//! `write`: overwrite a whole file. Kept apart from `edit` so a one-line change is never
+//! retyped from memory, which is how the parts the model does not remember disappear.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -50,8 +46,7 @@ impl Tool for Write {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Two parallel writes to the same file lose one of them, with no way to know
-        // which.
+        // Two parallel writes to one file lose one of them, with no way to know which.
         ToolMeta::mutating().concurrency_safe(false)
     }
 

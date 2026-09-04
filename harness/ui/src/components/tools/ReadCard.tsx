@@ -1,14 +1,10 @@
 import { For, Show } from "solid-js";
+import { S, t, tn } from "../../lib/i18n";
 import type { ToolCall } from "../../lib/protocol";
 import { Disclosure, FilePath } from "../primitives";
 import { ToolShell } from "./ToolCard";
 
-/**
- * Thẻ `read`: đường dẫn + số dòng đã đọc trên tổng số.
- *
- * Tỉ lệ "đã đọc / tổng" quan trọng hơn nội dung: nó cho biết mô hình đang nhìn cả tệp
- * hay chỉ một cửa sổ — và một cửa sổ hẹp là lý do phổ biến của câu trả lời sai.
- */
+/** The `read` card: path plus lines read over total, which says whether the model saw the whole file. */
 export default function ReadCard(props: { call: ToolCall }) {
   const read = () => props.call.meta?.read;
   const path = () =>
@@ -22,13 +18,19 @@ export default function ReadCard(props: { call: ToolCall }) {
       call={props.call}
       summary={
         <span class="flex min-w-0 items-center gap-sm">
-          {/* Mở ở đúng cửa sổ mô hình đã nhìn: đó là chỗ câu trả lời của nó đến từ. */}
+          {/* Open at the window the model saw: that is where its answer came from. */}
           <FilePath path={path()} line={read()?.offset || undefined} />
           <Show when={read()}>
             {(meta) => (
               <span class="shrink-0 tabular-nums text-faint">
-                {meta().lines.length}/{meta().total_lines} dòng
-                {meta().offset > 0 ? ` · từ dòng ${meta().offset}` : ""}
+                {t(S.tools.read.lines, {
+                  n: meta().lines.length,
+                  total: meta().total_lines,
+                })}
+                <Show when={meta().offset > 0}>
+                  {" · "}
+                  {t(S.tools.read.fromLine, { n: meta().offset })}
+                </Show>
               </span>
             )}
           </Show>
@@ -37,7 +39,10 @@ export default function ReadCard(props: { call: ToolCall }) {
     >
       <Show when={read()}>
         {(meta) => (
-          <Disclosure label="Nội dung" hint={`${meta().lines.length} dòng`}>
+          <Disclosure
+            label={t(S.tools.read.content)}
+            hint={tn(meta().lines.length, S.tools.read.oneLine, S.tools.read.manyLines)}
+          >
             <div class="max-h-72 overflow-auto rounded-panel bg-surface">
               <div class="w-max min-w-full font-mono text-2xs leading-[1.55]">
                 <For each={meta().lines}>

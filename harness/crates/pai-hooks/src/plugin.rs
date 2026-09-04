@@ -17,20 +17,10 @@ use crate::runner::{HookDecision, HookInput, run};
 pub struct HookConfig {
     /// The command, run through `/bin/sh -c`.
     pub command: String,
-    /// Only run for these tools. Empty = every tool.
-    ///
-    /// Filtered here rather than inside the hook, because every hook call is a process
-    /// spawn — a hook that only cares about `bash` but gets invoked on every `read` slows
-    /// down precisely the cheapest calls.
+    /// Only run for these tools, empty meaning all; filtered here since each call is a spawn.
     #[serde(default)]
     pub tools: Vec<String>,
-    /// This hook's own timeout, in seconds. Absent means [`HOOK_TIMEOUT`].
-    ///
-    /// Here for two separate reasons, both real. First, a hook that calls out to the
-    /// network needs longer than one running `grep`, and a single number for both is wrong
-    /// for at least one of them. Second, **the test suite needs to shorten it**: a timeout
-    /// test that measures the wall clock goes red at random when the machine is running
-    /// twenty other tests in parallel — which has happened twice in this repo.
+    /// This hook's timeout in seconds, absent meaning the default; per-hook so tests can shorten it.
     #[serde(default)]
     pub timeout_secs: Option<u64>,
 }
@@ -61,9 +51,7 @@ impl Middleware<PreExecute> for PreHooks {
                     arguments: &req.arguments,
                     output: None,
                 };
-                // One hook saying no stops the loop; the remaining hooks are not asked.
-                // The answer is already known, and going on only costs more processes.
-                // This hook's own deadline, or the default. See `HookConfig::timeout_secs`.
+                // One hook saying no ends the loop; this hook's own deadline, or the default.
                 let deadline = hook
                     .timeout_secs
                     .map(std::time::Duration::from_secs)
@@ -100,9 +88,7 @@ impl Plugin for HooksPlugin {
         if self.hooks.is_empty() {
             return Ok(());
         }
-        // Runs **before** every other layer, approval included: operator policy should
-        // not have to wait on the user answering a question about something the policy has
-        // already decided is not allowed.
+        // Before every other layer, approval included: policy must not wait on a question.
         ctx.keep(ctx.on_waterfall_first(Arc::new(PreHooks {
             hooks: self.hooks.clone(),
         })));

@@ -1,11 +1,6 @@
-//! Nửa server: một client MCP thật nói chuyện với [`RegistryServer`] qua một ống trong
-//! bộ nhớ, không cổng nào được mở.
-//!
-//! Bài ở đây khoá hai câu:
-//!
-//! 1. Cái phơi ra là **sổ đăng ký**, không phải một bản sao của nó — nên mọi luật gắn trên
-//!    đường ống tự động áp cho client bên ngoài.
-//! 2. Từ chối đi ra dưới dạng **văn bản**, không phải lỗi giao thức.
+//! The server half: a real MCP client talking to [`RegistryServer`] over an in-memory pipe.
+//! Locks two sentences: what is exposed is the registry itself, not a copy of it, and a
+//! refusal leaves as text rather than as a protocol error.
 
 use std::sync::Arc;
 
@@ -42,7 +37,7 @@ impl Tool for Builtin {
     }
 }
 
-/// Canh gác đơn điệu: chỉ từ chối, không bao giờ cho phép.
+/// A monotonous guard: it only refuses, never allows.
 struct NoBash;
 
 #[async_trait]
@@ -56,7 +51,7 @@ impl ToolGuard for NoBash {
     }
 }
 
-/// Nối một client MCP thật vào một `RegistryServer` chạy trong cùng tiến trình.
+/// Connect a real MCP client to an in-process `RegistryServer`.
 async fn connect(server: RegistryServer) -> RunningService<RoleClient, ()> {
     let (client_side, server_side) = tokio::io::duplex(8 * 1024);
     tokio::spawn(async move {
@@ -79,7 +74,7 @@ fn text_of(result: &CallToolResult) -> String {
         .join("\n")
 }
 
-/// Danh sách phơi ra đúng bằng cái sổ đăng ký nói, ở **dạng chuẩn có dấu chấm**.
+/// The exposed list matches the registry exactly, in dotted form.
 #[tokio::test]
 async fn phoi_dung_cai_so_dang_ky_noi() {
     let ctx = Context::root();
@@ -96,10 +91,7 @@ async fn phoi_dung_cai_so_dang_ky_noi() {
     drop(keep);
 }
 
-/// Tool của server bên thứ ba **không** được phơi lại ra ngoài, trừ khi ai đó nói ra rằng có.
-///
-/// Một client nối vào đây tin *ta*. Chuyển tiếp tool của người thứ ba dưới cái tên của ta
-/// là cho mượn lòng tin đó cho một bên mà client kia chưa bao giờ chọn.
+/// Third-party tools are not re-exposed unless someone says so: a client here trusts us, not them.
 #[tokio::test]
 async fn khong_phoi_lai_tool_ben_thu_ba() {
     let ctx = Context::root();
@@ -120,7 +112,7 @@ async fn khong_phoi_lai_tool_ben_thu_ba() {
     assert_eq!(names, vec!["read".to_string()]);
     let _ = client.cancel().await;
 
-    // Bật tường minh thì nó xuất hiện — và lúc đó đó là quyết định của người bật.
+    // Turned on explicitly it appears, and then it is the operator's decision.
     let client = connect(RegistryServer::new(pipeline).relay_external(true)).await;
     let names: Vec<String> = client
         .peer()
@@ -136,7 +128,7 @@ async fn khong_phoi_lai_tool_ben_thu_ba() {
     drop((keep_own, keep_ext));
 }
 
-/// Gọi được thật, và lời gọi đi qua đường ống chứ không đi tắt vào thân tool.
+/// Calls really work, and go through the pipeline rather than straight into the tool body.
 #[tokio::test]
 async fn goi_duoc_va_di_qua_duong_ong() {
     let ctx = Context::root();
@@ -155,8 +147,7 @@ async fn goi_duoc_va_di_qua_duong_ong() {
     assert_eq!(ok.is_error, Some(false));
     assert!(text_of(&ok).contains("nội bộ đã chạy"));
 
-    // Canh gác của đường ống áp cho client bên ngoài y như cho agent nội bộ — không phải
-    // vì `RegistryServer` nhớ kiểm, mà vì nó không tự kiểm gì cả.
+    // The pipeline's guard applies to outside clients too, not because the server remembers to check but because it never does.
     let blocked = client
         .call_tool(CallToolRequestParams::new("bash"))
         .await
@@ -168,10 +159,7 @@ async fn goi_duoc_va_di_qua_duong_ong() {
     drop((keep, keep_bash, keep_guard));
 }
 
-/// **Từ chối là văn bản, không phải lỗi giao thức.**
-///
-/// Trả `McpError` thì client bên kia hiểu là ta hỏng, và mô hình phía nó không đọc được lý
-/// do — nên nó sẽ thử lại đúng cách vừa hỏng.
+/// A refusal is text, not a protocol error: an `McpError` reads as "we broke" and gets retried the same way.
 #[tokio::test]
 async fn tu_choi_ra_ngoai_duoi_dang_van_ban() {
     let ctx = Context::root();

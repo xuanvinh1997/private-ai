@@ -1,28 +1,17 @@
 import { For, Show, createResource } from "solid-js";
+import { S, t } from "../lib/i18n";
 import { displayMode } from "../lib/prefs";
 import { NO_SEEDS, goiY, promptSeeds } from "../lib/prompts";
 import type { ProjectKind } from "../lib/protocol";
 import Icon from "./Icon";
 import { InfoDot } from "./settings/FormKit";
 
-/**
- * Nửa trên của màn hình trống: câu hỏi lớn, và những gì phải đọc **trước** khi gõ.
- *
- * Tách khỏi phần gợi ý vì hai nửa ngồi hai bên ô soạn tin. Trạng thái trống của ChatGPT
- * đặt đúng một câu hỏi ngay sát trên ô nhập rồi thôi — không có gì chen giữa câu hỏi và
- * chỗ trả lời nó — còn gợi ý thì rơi xuống dưới. Nhét gợi ý vào giữa là đẩy ô soạn tin ra
- * xa câu hỏi vừa hỏi người dùng, và cả bố cục mất điểm tựa.
- *
- * Ba thông điệp của trạng thái không-dự-án giữ nguyên từng chữ; ở đây chúng chỉ đổi chỗ
- * và đổi cỡ.
- */
+/** Top half of the empty screen: the big question and what must be read *before* typing. Split from the chips
+ * because the two halves sit on either side of the composer, with nothing between question and input. */
 export function EmptyLead(props: {
-  /**
-   * Loại dự án đang mở, `null` là chưa mở dự án nào. Sai đi một chỗ này là hứa nhầm cả
-   * bộ quyền — và lời hứa ấy nằm ngay trên ô soạn tin, trước khi người dùng gõ chữ đầu.
-   */
+  /** Kind of the open project, `null` when none; getting it wrong promises the wrong tool set above the composer. */
   kind: ProjectKind | null;
-  /** Mở màn hình dự án. Lối duy nhất từ đây ra khỏi trạng thái "chưa có dự án". */
+  /** Open the projects screen: the only way out of the "no project" state from here. */
   onOpenProject: () => void;
 }) {
   return (
@@ -31,27 +20,21 @@ export function EmptyLead(props: {
         when={props.kind !== null}
         fallback={
           <>
-            {/* Câu đầu tiên nói rằng **trò chuyện chạy được**, và nó phải đứng trước mọi
-                thứ khác: người mở ứng dụng lần đầu chưa có dự án nào, và nếu điều đầu
-                tiên họ đọc là một thứ còn thiếu thì họ kết luận ứng dụng chưa dùng được
-                rồi đóng nó lại. */}
-            <h2 class="m-0 text-2xl font-semibold text-ink">Trò chuyện được ngay</h2>
-            <p class="m-0 max-w-[48ch] text-sm text-muted">
-              Chưa có dự án, trợ lý vẫn trả lời được.
-            </p>
+            {/* First line says chat already works, and must come first: a first-run user who reads about a
+                missing piece concludes the app is unusable and closes it. */}
+            <h2 class="m-0 text-2xl font-medium text-ink">{t(S.chat.empty.readyTitle)}</h2>
+            <p class="m-0 max-w-[48ch] text-sm text-muted">{t(S.chat.empty.readyBody)}</p>
 
-            {/* Câu thứ hai là câu giới hạn, và nó nói bằng lời của người dùng chứ không
-                bằng tên tool: người đọc biết "đọc tệp" và "chạy lệnh", không ai biết
-                `glob` với `docs.search` là gì trước khi thấy chúng chạy. */}
+            {/* Second line states the limits in the user's words, not tool names nobody knows yet. */}
             <p class="m-0 flex max-w-[52ch] items-start gap-2xs rounded-panel bg-[var(--overlay-faint)] px-md py-sm text-left text-xs text-muted">
               <span class="mt-3xs shrink-0 text-faint">
                 <Icon name="warn" size={13} />
               </span>
               <span class="flex flex-wrap items-center gap-2xs">
-                Trợ lý chưa đọc, sửa hay chạy gì trên máy.
+                {t(S.chat.empty.limitBody)}
                 <InfoDot
-                  label="Về giới hạn khi chưa có dự án"
-                  text="Chưa có dự án thì trợ lý không đọc, không sửa và không chạy được gì trên máy này. Mở một dự án là chỉ cho nó đúng một thư mục để làm việc."
+                  label={t(S.chat.empty.limitInfo)}
+                  text={t(S.chat.empty.limitInfoBody)}
                 />
               </span>
             </p>
@@ -59,39 +42,29 @@ export function EmptyLead(props: {
             <button
               type="button"
               onClick={props.onOpenProject}
-              class="flex items-center gap-2xs rounded-pill bg-accent px-md py-2xs text-sm font-medium text-on-accent transition-colors duration-[var(--dur-fast)] hover:bg-accent-hover"
+              class="pai-btn pai-btn-primary"
             >
               <Icon name="folder-open" size={14} />
-              Mở một dự án
+              {t(S.chat.empty.openProject)}
             </button>
           </>
         }
       >
-        {/* Một câu hỏi, không một lời chào: câu hỏi để lại chỗ trống mà ô nhập ngay dưới
-            lấp vào, còn một lời chào thì tự đóng lại và không dẫn đi đâu. */}
-        <h2 class="m-0 text-2xl font-semibold text-ink">Ta làm gì hôm nay?</h2>
-        {/* Câu này là lời hứa về quyền, nên nó phải kể đúng bộ tool của **loại dự án đang
-            mở**. Hứa "sửa được tệp, chạy được lệnh" trong một thư viện tài liệu — nơi lõi
-            chỉ cắm `rag` — là hứa hai thứ không tồn tại, và người dùng chỉ phát hiện ra
-            sau khi đã nhờ một việc không ai làm được. */}
+        {/* A question, not a greeting: a question leaves a gap the input below fills; a greeting closes itself. */}
+        <h2 class="m-0 text-2xl font-medium text-ink">{t(S.chat.empty.title)}</h2>
+        {/* This line is a promise about permissions, so it must match the open project's tool set exactly. */}
         <p class="m-0 flex max-w-[46ch] flex-wrap items-center justify-center gap-2xs text-sm text-muted">
           <Show
             when={props.kind === "docs"}
             fallback={
               <>
-                Trợ lý đọc, sửa tệp và chạy lệnh ở đây.
-                <InfoDot
-                  label="Về quyền trong dự án mã nguồn"
-                  text="Trợ lý đọc và sửa được tệp trong thư mục làm việc, chạy được lệnh, và hỏi lại trước mỗi thao tác ghi."
-                />
+                {t(S.chat.empty.codeBody)}
+                <InfoDot label={t(S.chat.empty.codeInfo)} text={t(S.chat.empty.codeInfoBody)} />
               </>
             }
           >
-            Trợ lý đọc tài liệu để trả lời, kèm nguồn.
-            <InfoDot
-              label="Về quyền trong thư viện tài liệu"
-              text="Trợ lý tìm và đọc tài liệu trong thư viện này để trả lời, kèm chỗ nó lấy ra. Nó không sửa tệp và không chạy lệnh trong dự án loại này."
-            />
+            {t(S.chat.empty.docsBody)}
+            <InfoDot label={t(S.chat.empty.docsInfo)} text={t(S.chat.empty.docsInfoBody)} />
           </Show>
         </p>
       </Show>
@@ -99,33 +72,19 @@ export function EmptyLead(props: {
   );
 }
 
-/**
- * Nửa dưới: mấy câu bấm được, ngồi **dưới** ô soạn tin.
- *
- * Rộng đúng bằng ô soạn tin và ăn cùng mép trái với hàng chip trạng thái ngay trên nó —
- * cùng `displayMode`, cùng `px-2xs`. Một cụm hẹp hơn, căn giữa, dưới một hàng căn trái sẽ
- * đọc ra thành hai khối rời nhau thay vì phần đuôi của cùng một ô nhập.
- */
+/** Bottom half: clickable prompts under the composer, matching its width and left edge so they read as one unit. */
 export function PromptChips(props: {
   onPick: (text: string) => void;
   disabled?: boolean;
   kind: ProjectKind | null;
-  /**
-   * Đổi khi người dùng sang dự án khác. Nguyên liệu gợi ý phải hỏi lại từ đầu — `kind`
-   * không đủ làm khoá vì hai dự án mã nguồn khác nhau vẫn cùng một `kind`, và bộ gợi ý
-   * của kho trước sẽ gọi tên những ký hiệu không có trong kho sau.
-   */
+  /** Changes when the project does; `kind` is not a sufficient key, since two code projects share one kind. */
   projectKey: string;
 }) {
   const [seeds] = createResource(() => props.projectKey, promptSeeds, {
     initialValue: NO_SEEDS,
   });
 
-  // Trong lúc chờ lõi trả lời thì hiện bộ tĩnh chứ không hiện chỗ trống: lệnh này đi qua
-  // IPC nội bộ nên thường xong trong một nhịp, và một hàng chip hiện ra muộn ngay dưới ô
-  // soạn tin đẩy cả bố cục xuống đúng lúc người dùng bắt đầu gõ. Cái giá là mấy con chip
-  // đổi chữ một lần sau khi nguyên liệu về — chấp nhận được vì chúng nằm dưới ô nhập chứ
-  // không nằm dưới con trỏ.
+  // Show the static set while the core answers, rather than a gap that would shift the layout as the user starts typing.
   const goi_y = () => goiY(props.kind, seeds());
 
   return (
@@ -143,7 +102,7 @@ export function PromptChips(props: {
               type="button"
               disabled={props.disabled}
               onClick={() => props.onPick(text)}
-              class="rounded-pill border border-line bg-surface px-md py-2xs text-xs text-text transition-colors duration-[var(--dur-fast)] hover:border-accent hover:bg-accent-soft hover:text-accent-ink disabled:opacity-40"
+              class="pai-btn pai-btn-secondary text-xs hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
             >
               {text}
             </button>

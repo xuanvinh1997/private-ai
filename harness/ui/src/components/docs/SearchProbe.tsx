@@ -1,23 +1,14 @@
 import { For, Show, createSignal } from "solid-js";
 import { isDemo } from "../../lib/demo";
 import { searchDocuments } from "../../lib/docs";
+import { S, t } from "../../lib/i18n";
 import { demoHits } from "../../lib/fixtures/docs";
 import type { DocumentHit } from "../../lib/protocol";
 import Icon from "../Icon";
 import { InfoDot } from "../settings/FormKit";
 import { Button } from "../projects/DialogShell";
 
-/**
- * Ô thử tìm: kiểm chứng thư viện **trước** khi đem nó đi hỏi trợ lý.
- *
- * Khi câu trả lời của trợ lý sai, có hai nguyên nhân rất khác nhau — thư viện không tìm
- * ra đoạn đúng, hay mô hình đọc đoạn đúng rồi trả lời sai. Không có ô này thì hai nguyên
- * nhân đó trông giống hệt nhau, và người dùng sẽ đi sửa cái không hỏng.
- *
- * Trích đoạn hiện **nguyên văn và đóng khung như một trích dẫn**. Đó là nội dung do
- * người ngoài viết, nạp vào từ một tệp bất kỳ; trộn nó vào giọng của ứng dụng là để một
- * dòng chữ trong tài liệu nói thay ứng dụng.
- */
+/** Search probe: check the library before asking the assistant, so retrieval and reasoning faults stay apart; excerpts are quoted verbatim, since they are someone else's words. */
 export default function SearchProbe(props: { disabled?: boolean }) {
   const [query, setQuery] = createSignal("");
   const [hits, setHits] = createSignal<DocumentHit[] | null>(null);
@@ -43,16 +34,16 @@ export default function SearchProbe(props: { disabled?: boolean }) {
     <section class="flex flex-col gap-md">
       <div class="flex flex-col gap-3xs">
         <h3 class="m-0 flex items-center gap-2xs text-sm font-semibold text-ink">
-          Thử tìm
-          <InfoDot text="Đây chỉ là tìm kiếm — không có câu trả lời nào được sinh ra ở đây." />
+          {t(S.docs.probe.title)}
+          <InfoDot text={t(S.docs.probe.titleMore)} />
         </h3>
         <p class="m-0 text-xs text-muted">
-          Gõ câu hỏi để xem thư viện tìm ra gì.
+          {t(S.docs.probe.subtitle)}
         </p>
       </div>
 
       <div class="flex flex-wrap gap-sm">
-        <label class="flex min-w-[220px] flex-1 items-center gap-2xs rounded-btn border border-line bg-surface px-sm focus-within:border-accent">
+        <label class="flex min-w-[220px] flex-1 items-center gap-2xs rounded-btn border border-line-strong bg-surface px-sm transition-colors duration-[var(--dur-fast)] focus-within:border-accent">
           <span class="shrink-0 text-faint">
             <Icon name="search" size={14} />
           </span>
@@ -60,8 +51,8 @@ export default function SearchProbe(props: { disabled?: boolean }) {
             type="search"
             value={query()}
             spellcheck={false}
-            placeholder="Ví dụ: quy trình khôi phục sau sự cố"
-            aria-label="Câu hỏi để thử tìm trong thư viện"
+            placeholder={t(S.docs.probe.placeholder)}
+            aria-label={t(S.docs.probe.inputLabel)}
             disabled={props.disabled}
             onInput={(event) => setQuery(event.currentTarget.value)}
             onKeyDown={(event) => {
@@ -78,7 +69,7 @@ export default function SearchProbe(props: { disabled?: boolean }) {
           disabled={props.disabled || busy() || query().trim() === ""}
           onClick={() => void run()}
         >
-          {busy() ? "Đang tìm…" : "Tìm"}
+          {busy() ? t(S.docs.probe.busy) : t(S.common.search)}
         </Button>
       </div>
 
@@ -97,8 +88,8 @@ export default function SearchProbe(props: { disabled?: boolean }) {
               when={list().length > 0}
               fallback={
                 <p class="m-0 flex items-center justify-center gap-2xs rounded-card border border-dashed border-line px-(--card-pad-x) py-lg text-center text-xs text-muted">
-                  Không tìm thấy đoạn nào khớp.
-                  <InfoDot text="Thư viện có thể chưa có tài liệu về chuyện này, hoặc câu hỏi dùng từ khác với tài liệu." />
+                  {t(S.docs.probe.empty)}
+                  <InfoDot text={t(S.docs.probe.emptyMore)} />
                 </p>
               }
             >
@@ -120,33 +111,32 @@ function Hit(props: { hit: DocumentHit }) {
         <span class="min-w-0 truncate text-xs font-medium text-ink" title={props.hit.path}>
           {props.hit.title}
         </span>
-        <span class="text-2xs text-faint tabular-nums">đoạn {props.hit.ordinal}</span>
+        <span class="text-2xs text-faint tabular-nums">
+          {t(S.docs.probe.ordinal, { n: props.hit.ordinal })}
+        </span>
         <MatchBadge by={props.hit.matchedBy} />
         <span class="ml-auto text-2xs text-faint tabular-nums">
           {props.hit.score.toFixed(2)}
         </span>
       </div>
 
-      {/* Vạch dọc bên trái cộng chữ nghiêng: dấu hiệu quy ước của một trích dẫn. Không
-          cắt bớt và không sửa chính tả — đây là chữ của tài liệu, không phải chữ của ta. */}
+      {/* Rule and italics mark a quotation: never trimmed or corrected, these are the document's words. */}
       <blockquote class="m-0 border-l-2 border-line-strong bg-surface-soft py-2xs pr-sm pl-md text-xs whitespace-pre-wrap text-text italic">
         {props.hit.text}
       </blockquote>
-      <p class="m-0 text-2xs text-faint">Trích nguyên văn từ tài liệu do bạn nạp lên.</p>
+      <p class="m-0 text-2xs text-faint">{t(S.docs.probe.quoteNote)}</p>
     </li>
   );
 }
 
-/**
- * Vì sao đoạn này khớp.
- *
- * Ba nhãn này giải thích được điều mà điểm số không giải thích nổi: một thư viện chưa
- * nhúng xong chỉ trả về `keyword`, và khi người dùng nhìn thấy điều đó họ hiểu ngay vì
- * sao kết quả hôm nay khác hôm qua.
- */
+/** Why this chunk matched: a library still embedding returns only `keyword`, which the score cannot show. */
 function MatchBadge(props: { by: DocumentHit["matchedBy"] }) {
   const label = () =>
-    props.by === "both" ? "từ khoá + ngữ nghĩa" : props.by === "semantic" ? "ngữ nghĩa" : "từ khoá";
+    props.by === "both"
+      ? t(S.docs.probe.matchBoth)
+      : props.by === "semantic"
+        ? t(S.docs.probe.matchSemantic)
+        : t(S.docs.probe.matchKeyword);
   return (
     <span
       class="inline-flex shrink-0 items-center rounded-pill px-2xs py-3xs text-2xs whitespace-nowrap"

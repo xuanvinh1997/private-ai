@@ -1,42 +1,21 @@
-//! Chìa khoá của cổng HTTP.
-//!
-//! Tệp này giữ một bí mật, và bí mật đó **mở được mọi tool trong sổ đăng ký** — `bash`,
-//! `write`, `edit`. Ai đọc được nó thì đọc được và sửa được mọi thứ mà ứng dụng chạm tới.
-//! Hai hệ quả, và cả hai đều nằm trong mã dưới đây chứ không nằm trong tài liệu:
-//!
-//! 1. **Quyền `0600`.** Đặt lúc tạo bằng cờ mở tệp, chứ không phải `chmod` sau khi ghi:
-//!    giữa hai lời gọi đó có một khoảnh khắc tệp nằm trên đĩa với quyền mặc định.
-//! 2. **`data_dir/mcp-token` phải nằm trong danh sách đường dẫn được bảo vệ của
-//!    `pai-fs`.** Không có bước đó thì mô hình chỉ cần gọi `read` lên chính cái tệp này là
-//!    có đủ thứ để tự gọi lại mọi tool khác, vòng qua mọi lớp canh gác. Xem
-//!    [`token_path`].
+//! The key to the HTTP gate: this secret opens every tool in the registry.
+//! So `0600` is set by the open flags, never by a later `chmod`, and `data_dir/mcp-token`
+//! must sit in `pai-fs`'s protected paths or `read` hands the model the key.
 
 use std::fmt;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-/// Tên tệp trong `data_dir`.
+/// The filename inside `data_dir`.
 pub const TOKEN_FILE: &str = "mcp-token";
 
-/// Đường dẫn tệp token.
-///
-/// Hàm này tồn tại để chỗ nối `pai-fs` gọi được nó: `app` dựng danh sách đường dẫn được
-/// bảo vệ, và nó phải lấy đường dẫn từ đây thay vì gõ lại chuỗi `"mcp-token"` ở một tệp
-/// khác — hai chuỗi giống nhau viết ở hai nơi là hai chuỗi sẽ khác nhau vào một ngày nào
-/// đó, và ngày đó cái tệp này thôi được bảo vệ mà không ai thấy.
+/// The token file's path; exported so the protected-paths list takes it from here instead of retyping the name.
 pub fn token_path(data_dir: &Path) -> PathBuf {
     data_dir.join(TOKEN_FILE)
 }
 
-/// So sánh hai chuỗi byte trong thời gian không phụ thuộc nội dung.
-///
-/// `==` của Rust thoát ra ở byte lệch đầu tiên. Với một bí mật, thời gian thoát ra *là*
-/// thông tin: kẻ tấn công đo nó và dò ra từng byte một, biến 2^256 khả năng thành 64 lần
-/// thử. Vòng lặp dưới đây luôn chạy hết.
-///
-/// Độ dài thì có rò rỉ, và đó là chấp nhận được: độ dài token là hằng số công khai của
-/// chương trình, không phải một phần của bí mật.
+/// Compare bytes in content-independent time; `==` returns at the first mismatch, which leaks the secret byte by byte.
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     let mut diff = a.len() ^ b.len();
     for (x, y) in a.iter().zip(b.iter()) {
@@ -45,14 +24,13 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// Bí mật dùng cho `Authorization: Bearer`.
+/// The secret used for `Authorization: Bearer`.
 #[derive(Clone)]
 pub struct McpToken {
     value: String,
 }
 
-/// Không in ra bí mật, kể cả khi ai đó `dbg!` một struct chứa nó. Một token lọt vào log
-/// là một token đã mất.
+/// Never print the secret, even through a `dbg!` of some enclosing struct: a logged token is a lost token.
 impl fmt::Debug for McpToken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("McpToken(<đã ẩn>)")
@@ -60,7 +38,7 @@ impl fmt::Debug for McpToken {
 }
 
 impl McpToken {
-    /// 256 bit từ CSPRNG, viết ra dạng hex.
+    /// 256 bits from the CSPRNG, written as hex.
     pub fn generate() -> McpToken {
         let bytes: [u8; 32] = rand::random();
         let value = bytes.iter().fold(String::with_capacity(64), |mut out, b| {
@@ -70,7 +48,7 @@ impl McpToken {
         McpToken { value }
     }
 
-    /// Dựng từ một giá trị có sẵn. Dành cho bài kiểm chứng và cho cấu hình.
+    /// Build from an existing value; for tests and for configuration.
     pub fn from_value(value: impl Into<String>) -> McpToken {
         McpToken {
             value: value.into(),
@@ -81,16 +59,12 @@ impl McpToken {
         &self.value
     }
 
-    /// Token khách trình ra có đúng không. **Luôn** đi qua [`constant_time_eq`].
+    /// Whether the presented token matches; always through [`constant_time_eq`].
     pub fn matches(&self, presented: &str) -> bool {
         constant_time_eq(self.value.as_bytes(), presented.as_bytes())
     }
 
-    /// Đọc token cũ, hoặc sinh một cái mới và ghi xuống với quyền `0600`.
-    ///
-    /// Sinh **một lần** rồi dùng lại: một token đổi sau mỗi lần khởi động buộc mọi client
-    /// đã cấu hình phải cấu hình lại, và cách người dùng thoát ra khỏi phiền toái đó
-    /// thường là tắt xác thực đi.
+    /// Read the existing token, or generate one and write it `0600`; rotating on every start makes users disable auth.
     pub fn load_or_create(path: &Path) -> io::Result<McpToken> {
         if let Ok(existing) = fs::read_to_string(path) {
             let trimmed = existing.trim();
@@ -106,8 +80,7 @@ impl McpToken {
         let token = McpToken::generate();
         match write_private(path, &token.value) {
             Ok(()) => Ok(token),
-            // Một tiến trình khác vừa tạo trước ta. Cái của nó thắng — hai token cùng
-            // sống thì một nửa số client sẽ bị từ chối mà không hiểu vì sao.
+            // Another process created it first and wins; two live tokens would reject half the clients.
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
                 let existing = fs::read_to_string(path)?;
                 harden(path)?;
@@ -123,8 +96,7 @@ fn write_private(path: &Path, value: &str) -> io::Result<()> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
 
-    // `create_new` để không đè lên token của một tiến trình khác; `mode` để tệp **sinh ra
-    // đã** là 0600, không phải trở thành 0600 một nhịp sau.
+    // `create_new` avoids clobbering another process's token; `mode` makes the file 0600 from birth.
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -137,8 +109,7 @@ fn write_private(path: &Path, value: &str) -> io::Result<()> {
 fn write_private(path: &Path, value: &str) -> io::Result<()> {
     use std::io::Write;
 
-    // Windows không có bit quyền kiểu POSIX; ACL mặc định của thư mục hồ sơ người dùng là
-    // thứ duy nhất bảo vệ tệp này. Nói ra ở đây thay vì để im lặng trông như đã xong.
+    // Windows has no POSIX mode bits; the profile directory's default ACL is all that protects this file.
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -152,13 +123,11 @@ fn harden(path: &Path) -> io::Result<()> {
 
     let mode = fs::metadata(path)?.permissions().mode();
     if mode & 0o077 != 0 {
-        // Siết lại và kêu, chứ không sinh token mới: token cũ có thể đã lộ, nhưng đổi nó
-        // ở đây làm mọi client đang chạy đứt kết nối vì một chuyện họ không gây ra. Cái
-        // người vận hành cần là một dòng cảnh báo đọc được, để tự quyết định xoá tệp đi.
+        // Tighten and warn rather than rotate: rotating here disconnects every running client over something they did not do.
         tracing::warn!(
             path = %path.display(),
             mode = format!("{:o}", mode & 0o777),
-            "tệp token MCP đang mở cho người khác đọc; đã siết về 0600"
+            "the MCP token file was world-readable; tightened to 0600"
         );
         fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
     }

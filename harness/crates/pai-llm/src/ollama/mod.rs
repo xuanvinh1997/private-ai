@@ -1,13 +1,6 @@
-//! Adapter Ollama: `/api/chat` dạng NDJSON.
-//!
-//! Ollama **không** dùng SSE. Nó trả một object JSON mỗi dòng, không `data:`, không dòng
-//! trống ngăn cách, và dòng cuối mang `"done": true` cùng toàn bộ thống kê. Nhầm nó với
-//! SSE là lỗi phổ biến nhất khi tự viết adapter cho Ollama.
-//!
-//! Khác biệt thứ hai, quan trọng hơn: **Ollama gửi tool call nguyên khối**, `arguments`
-//! là một object JSON đã hoàn chỉnh, không phải chuỗi nhỏ giọt như OpenAI. Adapter vẫn
-//! phát ra `ToolCallDelta` — một mảnh duy nhất chứa cả chuỗi — để bộ ráp chỉ phải biết
-//! một hình dạng. Giao thức chịu phần khó, chứ không đẩy cho người dùng nó.
+//! Ollama adapter: `/api/chat` as NDJSON, not SSE - one JSON object per line, the last
+//! carrying `"done": true` and the stats. Ollama also sends tool calls whole, so this
+//! adapter emits one `ToolCallDelta` holding the entire string to keep the assembler simple.
 
 pub mod admin;
 
@@ -28,7 +21,7 @@ use crate::wire::pump::{FrameDecoder, pump};
 
 pub use admin::OllamaAdmin;
 
-/// Nói chuyện với một máy chủ Ollama.
+/// Talks to an Ollama server.
 pub struct OllamaAdapter {
     id: String,
     base_url: String,
@@ -37,7 +30,7 @@ pub struct OllamaAdapter {
 }
 
 impl OllamaAdapter {
-    /// `base_url` là gốc của máy chủ (`http://localhost:11434`), không phải `/api`.
+    /// `base_url` is the server root (`http://localhost:11434`), not `/api`.
     pub fn new(id: impl Into<String>, base_url: impl AsRef<str>, http: reqwest::Client) -> Self {
         let base_url = base_url.as_ref().trim_end_matches('/').to_string();
         let admin = Arc::new(OllamaAdmin::new(base_url.clone(), http.clone()));
@@ -76,8 +69,7 @@ impl LlmAdapter for OllamaAdapter {
     }
 
     async fn capabilities(&self, model: &str) -> Result<Capabilities, LlmError> {
-        // Thứ tự bắt buộc: hỏi máy chủ trước. Chỉ khi `/api/show` không trả lời được thì
-        // mới đoán theo tên — xem `capabilities.rs`.
+        // Order matters: ask the server first, guess by name only if `/api/show` cannot answer.
         Ok(self
             .admin
             .show(model)
@@ -95,7 +87,7 @@ impl LlmAdapter for OllamaAdapter {
     }
 }
 
-/// Dựng thân request `/api/chat`.
+/// Build the `/api/chat` request body.
 pub(crate) fn encode_chat(req: &ChatRequest) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
@@ -123,13 +115,12 @@ pub(crate) fn encode_chat(req: &ChatRequest) -> Value {
         body.insert("tools".into(), Value::Array(tools));
     }
 
-    // `keep_alive` là cách duy nhất Ollama cho ta điều khiển việc nạp/nhả mô hình:
-    // `"5m"` để giữ ấm, `"0"` để nhả ngay sau lượt này.
+    // `keep_alive` is the only model load/unload control Ollama gives us: `"5m"` to stay warm, `"0"` to release.
     if let Some(keep_alive) = &req.keep_alive {
         body.insert("keep_alive".into(), json!(keep_alive));
     }
 
-    // Tham số sinh của Ollama nằm trong `options`, không nằm ở cấp cao nhất như OpenAI.
+    // Ollama's sampling parameters live in `options`, not at the top level as with OpenAI.
     let mut options = Map::new();
     if let Some(temperature) = req.temperature {
         options.insert("temperature".into(), json!(temperature));
@@ -153,7 +144,7 @@ fn encode_message(message: &Message) -> Value {
             let mut object = Map::new();
             object.insert("role".into(), json!("user"));
             object.insert("content".into(), json!(joined_text(content)));
-            // Ollama nhận ảnh dưới dạng mảng base64 thuần, không tiền tố `data:`.
+            // Ollama takes images as plain base64 in an array, with no `data:` prefix.
             let images: Vec<Value> = content
                 .iter()
                 .filter_map(|block| match block {
@@ -169,8 +160,7 @@ fn encode_message(message: &Message) -> Value {
         Message::Assistant { content } => {
             let mut object = Map::new();
             object.insert("role".into(), json!("assistant"));
-            // Reasoning **không** được gửi lại: nó là ghi chú nháp của vòng trước, và
-            // nhồi nó vào ngữ cảnh vòng sau vừa tốn token vừa làm mô hình tự lặp lại mình.
+            // Reasoning is not sent back: it is last round's scratch, and replaying it costs tokens and makes the model repeat itself.
             object.insert("content".into(), json!(joined_text(content)));
             let calls: Vec<Value> = content
                 .iter()
@@ -180,9 +170,7 @@ fn encode_message(message: &Message) -> Value {
                     } => Some(json!({
                         "function": {
                             "name": name,
-                            // Ollama muốn object, không muốn chuỗi. Tham số hỏng thì gửi
-                            // nguyên chuỗi: máy chủ từ chối còn rõ hơn là ta lặng lẽ bỏ
-                            // lời gọi và để mô hình chờ một kết quả không bao giờ tới.
+                            // Ollama wants an object, not a string; on broken arguments send the raw string so the server refuses loudly.
                             "arguments": serde_json::from_str::<Value>(arguments)
                                 .unwrap_or_else(|_| Value::String(arguments.clone())),
                         }
@@ -196,8 +184,7 @@ fn encode_message(message: &Message) -> Value {
             Value::Object(object)
         }
         Message::Tool { name, content, .. } => {
-            // Ollama khớp kết quả với lời gọi bằng **tên**, không bằng id — nó không phát
-            // id ngay từ đầu. `tool_call_id` vẫn được giữ ở tầng từ vựng cho OpenAI.
+            // Ollama matches results to calls by *name*, not id, since it never emits one; `tool_call_id` stays in the vocabulary for OpenAI.
             json!({ "role": "tool", "tool_name": name, "content": content })
         }
     }
@@ -207,7 +194,7 @@ fn joined_text(blocks: &[ContentBlock]) -> String {
     blocks.iter().filter_map(ContentBlock::as_text).collect()
 }
 
-/// Bộ giải mã NDJSON của `/api/chat`.
+/// NDJSON decoder for `/api/chat`.
 #[derive(Debug, Default)]
 pub struct ChatDecoder {
     lines: LineDecoder,
@@ -237,14 +224,13 @@ impl ChatDecoder {
         let value: Value = match serde_json::from_str(trimmed) {
             Ok(value) => value,
             Err(err) => {
-                // Một dòng hỏng làm hỏng đúng dòng đó. Ollama thỉnh thoảng chèn dòng rác
-                // khi máy chủ bị nạp lại giữa chừng.
-                tracing::warn!(%err, line = trimmed, "dòng NDJSON không đọc được, bỏ qua");
+                // A bad line breaks only that line; Ollama sometimes emits junk when the server reloads mid-stream.
+                tracing::warn!(%err, line = trimmed, "unreadable NDJSON line, skipping");
                 return Ok(());
             }
         };
 
-        // Ollama báo lỗi *bên trong* luồng, với mã HTTP 200 ở ngoài.
+        // Ollama reports errors *inside* the stream, with HTTP 200 on the outside.
         if let Some(message) = value.get("error").and_then(Value::as_str) {
             return Err(LlmError::unavailable(message.to_string()));
         }
@@ -315,8 +301,7 @@ impl ChatDecoder {
                     });
                     out.push(StreamChunk::ToolCallDelta {
                         index,
-                        // Ollama không phát id; bộ ráp sinh `call_<index>` để lượt sau
-                        // vẫn có thứ để đối chiếu.
+                        // Ollama emits no id; the assembler mints `call_<index>` so the next round has something to match.
                         id: call.get("id").and_then(Value::as_str).map(str::to_string),
                         name: Some(name.to_string()),
                         arguments,
@@ -340,8 +325,7 @@ impl ChatDecoder {
                 out.push(StreamChunk::Usage { usage });
             }
             let reason = if self.saw_tool_call {
-                // Ollama báo `done_reason: "stop"` kể cả khi nó vừa xin gọi tool, nên
-                // trường ấy một mình không đủ để vòng lặp agent phân nhánh.
+                // Ollama reports `done_reason: "stop"` even when it just asked for a tool, so that field alone cannot drive the agent loop.
                 FinishReason::ToolCalls
             } else {
                 match value.get("done_reason").and_then(Value::as_str) {
@@ -380,11 +364,11 @@ impl FrameDecoder for ChatDecoder {
         if self.finished {
             return;
         }
-        // Máy chủ đóng kết nối mà không có `\n` cuối: dòng `done` vẫn còn trong bộ đệm.
+        // The server closed without a trailing `\n`: the `done` line is still buffered.
         if let Some(rest) = self.lines.flush()
             && let Err(err) = self.line(&rest, out)
         {
-            tracing::warn!(%err, "dòng NDJSON chót hỏng");
+            tracing::warn!(%err, "final NDJSON line is broken");
         }
     }
 

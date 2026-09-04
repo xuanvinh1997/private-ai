@@ -2,12 +2,7 @@ import { Show } from "solid-js";
 import type { NodeProps } from "../../lib/registry";
 import Icon from "../Icon";
 
-/**
- * Thông báo ngoài câu trả lời.
- *
- * Thụt vào bằng đúng bề rộng avatar cộng khoảng cách của một tin nhắn, nên nó nằm trên
- * cùng một trục dọc với nội dung thật thay vì tạo ra một mép thứ hai.
- */
+/** A notice outside the reply, indented to the message text axis rather than a second margin. */
 export function NoticeNode(props: NodeProps<"notice">) {
   return (
     <p
@@ -35,12 +30,7 @@ export function ProgressNode(props: NodeProps<"progress">) {
   );
 }
 
-/**
- * Lỗi cấp lượt.
- *
- * `role="alert"` chứ không `aria-live="polite"`: một lượt hỏng là thứ người dùng cần
- * biết ngay, không phải sau khi trình đọc màn hình nói hết câu đang dở.
- */
+/** Turn-level error: `role="alert"`, not polite, because a broken turn must be heard at once. */
 export function ErrorNode(props: NodeProps<"error">) {
   return (
     <div

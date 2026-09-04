@@ -1,20 +1,6 @@
-//! `McpHub` — mọi server bên thứ ba, từ một đối tượng.
-//!
-//! Ba tính chất, và cả ba đều là quyết định:
-//!
-//! **Best-effort.** Một server không chạy, chạy rồi treo, hay trả về một danh sách tool
-//! vô nghĩa đều dừng lại trong task giám sát của chính nó. Không có đường nào từ đó ra tới
-//! `bash` hay `read` của người dùng. Bản Python nói điều này bằng một `try/except` quanh
-//! chỗ nối (`mcp/client.py:216-218`); ở đây nó là hình dạng của cấu trúc: mỗi server là
-//! một task, và một task chết chỉ làm một task chết.
-//!
-//! **Một chủ cho một kết nối.** [`rmcp::service::RunningService`] không bao giờ rời khỏi
-//! task giám sát. Mọi thứ khác cầm [`rmcp::service::Peer`] — xem ghi chú đầu crate về chỗ
-//! bản Rust không cần chép cấu trúc né tránh của bản Python.
-//!
-//! **Hot-reload.** Thêm hay bớt một server không cần khởi động lại ứng dụng, và quan
-//! trọng hơn: nó **không đụng tới những server không đổi**. Bản Python bắt phải restart,
-//! nghĩa là thêm một server thứ tám làm rụng bảy kết nối đang khoẻ. Xem [`McpHub::reload`].
+//! `McpHub` — every third-party server behind one object.
+//! Best-effort: one server per supervisor task, so a failure stops there. One owner per
+//! connection. Hot-reload that leaves unchanged servers connected — see [`McpHub::reload`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -33,65 +19,47 @@ use crate::dial::{ConfigDialers, Dialer, DialerFactory, Reach};
 use crate::naming::qualify;
 use crate::remote::{Link, RemoteTool};
 
-/// Một kết nối sống được chừng này rồi mới đứt thì lần đứt đó là sự cố, không phải một
-/// server hỏng ngay từ đầu — nên bộ đếm số lần thử được đặt lại.
-///
-/// Không có ngưỡng này thì một server chết ngay sau `initialize` sẽ được nối lại vô hạn:
-/// mỗi lần nối thành công đặt bộ đếm về không, và vòng lặp quay tít mà không bao giờ chạm
-/// tới giới hạn số lần thử.
+/// A connection that lasts this long counts as healthy, so its next drop resets the attempt counter.
 const HEALTHY_AFTER: Duration = Duration::from_secs(30);
 
-/// Trạng thái một server, đủ để giao diện vẽ ra.
+/// A server's state, enough for the UI to draw.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ServerState {
     Connecting,
     Ready {
         tools: usize,
     },
-    /// Đã hết số lần thử. Server vẫn còn trong danh sách để người dùng thấy nó hỏng.
+    /// Out of attempts; the server stays listed so the user can see it failed.
     Failed {
         reason: String,
     },
     Stopped,
 }
 
-/// Một server, đủ để giao diện vẽ một hàng và trả lời được câu hỏi của người dùng.
-///
-/// Ba trường sau cùng đều là những thứ [`McpHub::state`] một mình không nói được, và đều là
-/// thứ người dùng hỏi đầu tiên khi có gì đó không chạy: *cắm được bao nhiêu tool, tên gì,
-/// và nếu hỏng thì hỏng vì cái gì.*
+/// One server row for the UI: how many tools mounted, under what names, and why it failed if it did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ServerStatus {
     pub name: String,
     pub state: ServerState,
-    /// Tên **đầy đủ đã mang tiền tố**: `ext.<server>.<tool>`.
-    ///
-    /// Chỗ này dễ sai đúng một cách: hub biết tên từ xa, nhưng cái người dùng phải thấy là
-    /// cái mô hình thật sự gọi. Hiện tên trần thì người dùng đi tìm một tool không tồn tại
-    /// trong sổ đăng ký, và không ai giải thích được vì sao.
+    /// Fully prefixed names, `ext.<server>.<tool>`: the user must see what the model actually calls.
     pub tools: Vec<String>,
-    /// Lý do **lần hỏng gần nhất**, giữ lại kể cả sau khi đã nối lại được.
-    ///
-    /// Một server chập chờn nối lại thành công rồi lại đứt sẽ không để lại dấu vết nào nếu
-    /// ta xoá lý do mỗi lần nối được; người dùng chỉ thấy một danh sách tool lúc có lúc
-    /// không.
+    /// The most recent failure reason, kept even after a successful reconnect, or a flaky server leaves no trace.
     pub error: Option<String>,
 }
 
-/// Kết quả của một lần cắm server.
+/// The result of mounting one server.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mount {
     Connected {
         tools: usize,
     },
-    /// Không nối được **lần đầu**. Không phải lỗi: task giám sát vẫn đang thử lại, và
-    /// người dùng vẫn còn đủ tool của mình.
+    /// The first dial failed; not an error, since the supervisor keeps retrying.
     Unavailable {
         reason: String,
     },
 }
 
-/// Bao lâu và bao nhiêu lần.
+/// How long, and how many times.
 #[derive(Clone, Copy, Debug)]
 pub struct RetryPolicy {
     pub connect_timeout: Duration,
@@ -107,21 +75,16 @@ impl Default for RetryPolicy {
     }
 }
 
-/// Chỗ task giám sát ghi lại những gì [`McpHub::status`] đọc ra.
-///
-/// Không dùng thêm một `watch` nữa vì đây không phải thứ ai đó chờ đợi trên đó — nó chỉ
-/// được đọc lúc giao diện vẽ lại, và một ô có khoá là thứ rẻ nhất làm được việc đó.
+/// Where the supervisor writes what [`McpHub::status`] reads; a locked cell, since nobody awaits it.
 #[derive(Default)]
 struct Report {
-    /// Đã mang tiền tố, đúng như trong sổ đăng ký.
+    /// Already prefixed, exactly as in the registry.
     tools: Mutex<Vec<String>>,
     error: Mutex<Option<String>>,
 }
 
 struct Mounted {
-    /// Ảnh chụp cấu hình, để [`McpHub::reload`] biết cái gì đổi. `None` cho server cắm
-    /// bằng [`McpHub::mount_dialer`] — không có cấu hình thì không so được, nên coi như
-    /// luôn khác và người gọi tự quản.
+    /// A config snapshot so [`McpHub::reload`] sees changes; `None` for a hand-mounted dialer, which always counts as changed.
     fingerprint: Option<String>,
     cancel: CancellationToken,
     handle: JoinHandle<()>,
@@ -129,7 +92,7 @@ struct Mounted {
     report: Arc<Report>,
 }
 
-/// Mọi server bên thứ ba mà ứng dụng đang nói chuyện.
+/// Every third-party server the application is talking to.
 pub struct McpHub {
     registry: Arc<ToolRegistry>,
     servers: Mutex<HashMap<String, Mounted>>,
@@ -141,7 +104,7 @@ impl McpHub {
         McpHub::with_dialers(registry, Arc::new(ConfigDialers))
     }
 
-    /// Cùng cái hub, khác cách mở kết nối. Xem [`DialerFactory`].
+    /// The same hub with a different way to dial. See [`DialerFactory`].
     pub fn with_dialers(
         registry: Arc<ToolRegistry>,
         dialers: Arc<dyn DialerFactory>,
@@ -153,12 +116,7 @@ impl McpHub {
         })
     }
 
-    /// Cắm một server theo cấu hình người dùng khai.
-    ///
-    /// `Err` chỉ dành cho cấu hình sai — thứ người dùng sửa được. Một server không nối
-    /// được là `Ok(Mount::Unavailable)`: đó là một sự việc, không phải một lỗi của lời
-    /// gọi, và gấp nó thành `Err` sẽ cám dỗ chỗ gọi làm đúng cái việc bị cấm — để một
-    /// server bên thứ ba làm hỏng lượt khởi động.
+    /// Mount a server from the user's config; `Err` is only for bad config, an unreachable server is `Ok(Unavailable)`.
     pub async fn mount(&self, config: ServerConfig) -> Result<Mount, ConfigError> {
         config.validate()?;
         let policy = RetryPolicy {
@@ -171,7 +129,7 @@ impl McpHub {
         Ok(self.install(name, dialer, policy, Some(fingerprint)).await)
     }
 
-    /// Cắm một server bằng một [`Dialer`] tự dựng. Đây là cửa mà bài kiểm chứng đi vào.
+    /// Mount using a hand-built [`Dialer`]; this is the door tests come in through.
     pub async fn mount_dialer(
         &self,
         name: impl Into<String>,
@@ -188,8 +146,7 @@ impl McpHub {
         policy: RetryPolicy,
         fingerprint: Option<String>,
     ) -> Mount {
-        // Cắm đè lên một cái tên đang có là thay thế, không phải thêm: hai task giám sát
-        // cùng một tên sẽ tranh nhau đăng ký cùng một bộ tool.
+        // Mounting over an existing name replaces it: two supervisors would fight over the same tool names.
         self.unmount(&name).await;
 
         let cancel = CancellationToken::new();
@@ -221,12 +178,7 @@ impl McpHub {
             },
         );
 
-        // Chờ **lần thử đầu tiên** ngã ngũ, không chờ hết mọi lần thử lại. Người dùng cần
-        // biết ngay bây giờ mình có tool nào; những lần thử sau chạy trong nền.
-        //
-        // Vẫn có một hạn chót ở đây dù `dial` đã có hạn chót của nó: một `Dialer` do người
-        // khác viết không bắt buộc phải tôn trọng cái nào cả, và treo cả lượt khởi động vì
-        // một server bên thứ ba là đúng thứ crate này tồn tại để tránh.
+        // Wait for the first attempt only, with our own deadline: a third-party `Dialer` need not honour its own.
         let deadline = policy.connect_timeout.saturating_mul(2) + Duration::from_secs(1);
         match tokio::time::timeout(deadline, first_rx).await {
             Ok(Ok(mount)) => mount,
@@ -239,29 +191,19 @@ impl McpHub {
         }
     }
 
-    /// Gỡ một server: đóng kết nối và **gỡ mọi tool của nó khỏi sổ đăng ký**.
-    ///
-    /// Việc gỡ tool không nằm ở đây mà nằm trong task giám sát: guard của lượt đăng ký là
-    /// biến cục bộ của nó, nên chỉ cần task đó kết thúc là sổ sạch. Không có bảng nào phải
-    /// dọn bằng tay, và không có đường nào để quên.
+    /// Unmount a server: the supervisor task owns the registration guards, so ending it clears the registry.
     pub async fn unmount(&self, name: &str) -> bool {
         let Some(mounted) = self.servers.lock().remove(name) else {
             return false;
         };
         mounted.cancel.cancel();
         if let Err(err) = mounted.handle.await {
-            tracing::warn!(server = %name, %err, "task giám sát MCP kết thúc bất thường");
+            tracing::warn!(server = %name, %err, "the MCP supervisor task ended abnormally");
         }
         true
     }
 
-    /// Đặt lại toàn bộ danh sách server, **không đụng vào cái không đổi**.
-    ///
-    /// Đây là điểm khác thật sự so với bản Python, nơi mọi thay đổi đòi khởi động lại ứng
-    /// dụng. Một server có cấu hình y hệt trước đó giữ nguyên kết nối, nguyên phiên, và
-    /// nguyên bộ tool đã đăng ký; chỉ cái được thêm mới bị nối, chỉ cái bị bỏ mới bị đóng.
-    ///
-    /// Trả về kết quả cho từng cái **được đụng tới**, theo thứ tự trong `configs`.
+    /// Reset the whole server list without touching unchanged servers; returns a result for each one actually touched.
     pub async fn reload(
         &self,
         configs: Vec<ServerConfig>,
@@ -304,7 +246,7 @@ impl McpHub {
         report
     }
 
-    /// Đóng tất cả. Dành cho lúc gỡ plugin.
+    /// Close everything; used when the plugin is torn down.
     pub async fn shutdown(&self) {
         let names: Vec<String> = self.servers.lock().keys().cloned().collect();
         for name in names {
@@ -322,12 +264,7 @@ impl McpHub {
         Some(self.servers.lock().get(name)?.state.borrow().clone())
     }
 
-    /// Ảnh chụp mọi server đang cắm, xếp theo tên để giao diện không nhảy hàng giữa hai
-    /// lần vẽ.
-    ///
-    /// Chỉ những server **đang cắm**: một server bị tắt không có kết nối, không có tool, và
-    /// không có gì để nói ở đây — trạng thái "tắt" là chuyện của kho cấu hình, xem
-    /// [`crate::store`].
+    /// A name-sorted snapshot of mounted servers only; "disabled" belongs to the config store, see [`crate::store`].
     pub fn status(&self) -> Vec<ServerStatus> {
         let mut out: Vec<ServerStatus> = {
             let servers = self.servers.lock();
@@ -347,16 +284,11 @@ impl McpHub {
 }
 
 fn fingerprint(config: &ServerConfig) -> String {
-    // Cấu hình luôn serialize được — nó là struct của chính ta. Nhánh hỏng chỉ làm dấu vân
-    // tay rỗng, tức là lần reload sau nối lại server đó; đắt hơn một chút, không sai.
+    // The config always serialises; a failure only empties the fingerprint, which costs one extra reconnect.
     serde_json::to_string(config).unwrap_or_default()
 }
 
-/// Đăng ký một danh sách tool từ xa, trả về guard của từng cái **và tên đã mang tiền tố**.
-///
-/// Thả `Vec<Guard>` là gỡ sạch. Đó là lý do nó được trả ra chứ không được cất vào trong.
-/// Tên trả về cùng chỗ với guard, vì đó là chỗ duy nhất biết cái nào **thật sự** vào được
-/// sổ — hai cái bị bỏ qua ở dưới không được phép hiện ra trong danh sách người dùng đọc.
+/// Register remote tools, returning one guard each plus the prefixed names that actually made it into the registry.
 fn register_tools(
     registry: &Arc<ToolRegistry>,
     server: &str,
@@ -367,28 +299,23 @@ fn register_tools(
     let mut guards = Vec::new();
     let mut names = Vec::new();
     for tool in tools {
-        // Tiền tố được đặt **ở đây** — chỗ đầu tiên cái tên từ xa chạm vào hệ thống của
-        // ta, trước sổ đăng ký, trước log, trước mọi con mắt.
+        // The prefix is applied here, the first place a remote name touches us: before the registry, before the log.
         let name = qualify(server, &tool.name);
 
         if !name.round_trips() {
             tracing::warn!(
                 server = %server, tool = %tool.name,
-                "bỏ qua: tên chứa `__` nên không mã hoá sang dạng wire một cách khả nghịch"
+                "skipped: the name contains `__`, so the wire encoding is not reversible"
             );
             continue;
         }
 
-        // Tiền tố đã bảo đảm không đụng tool nội bộ. Lần kiểm này canh cái còn lại: một
-        // server tên `a` công bố tool `b.c` và một server tên `a.b` công bố tool `c` sẽ ra
-        // cùng một danh tính. Cấu hình đã cấm dấu chấm trong tên server nên chuyện đó
-        // không xảy ra được — nhưng bất biến "đăng ký sau che đăng ký trước" là thứ đắt
-        // đến mức đáng kiểm hai lần, ở hai chỗ độc lập.
+        // The prefix rules out internal clashes; this guards the rest, and shadowing is costly enough to check twice.
         if !matches!(
             registry.resolve(None, name.as_str()),
             Resolution::Unknown(_)
         ) {
-            tracing::warn!(tool = %name, "bỏ qua: đã có tool cùng tên trong sổ đăng ký");
+            tracing::warn!(tool = %name, "skipped: a tool of that name is already registered");
             continue;
         }
 
@@ -408,17 +335,11 @@ fn register_tools(
 }
 
 fn backoff(attempt: u32) -> Duration {
-    // 1s, 2s, 4s, 8s, 16s rồi dừng ở đó. Có chặn trên là bắt buộc: cấp số nhân không chặn
-    // thì lần thử thứ mười rơi vào giữa đêm hôm sau.
+    // 1s, 2s, 4s, 8s, 16s and no further: unbounded exponential backoff lands the tenth attempt a day later.
     Duration::from_secs(1u64 << (attempt.clamp(1, 5) - 1))
 }
 
-/// Task sở hữu kết nối tới đúng một server.
-///
-/// Gom tham số vào một struct chứ không rải ra tám đối số, và không phải để cho gọn: vòng
-/// đời ở đây là *nối → đăng ký → chờ chết → gỡ → nối lại*, và mỗi trường dưới đây là một
-/// thứ sống qua trọn vòng đó. Cái duy nhất không sống qua nổi một vòng là `first`, nên nó
-/// là đối số của [`Supervisor::run`] chứ không phải một trường.
+/// The task owning one server's connection; every field outlives the dial-register-wait-drop-redial cycle, unlike `first`.
 struct Supervisor {
     name: String,
     dialer: Arc<dyn Dialer>,
@@ -440,9 +361,7 @@ impl Supervisor {
             }
             let _ = self.state.send(ServerState::Connecting);
 
-            // Token con: huỷ nó đóng đúng kết nối này, và lần nối lại sau có token của
-            // riêng nó. Dùng chung một token cho cả vòng đời thì `RunningService` lúc bị
-            // thả sẽ huỷ token đó — và lần nối lại kế tiếp bắt đầu bằng một token đã chết.
+            // A child token per connection: sharing one would leave the next redial starting from an already-cancelled token.
             let conn_ct = self.ct.child_token();
             let dialed = tokio::select! {
                 () = self.ct.cancelled() => break,
@@ -475,8 +394,7 @@ impl Supervisor {
             let tools = match service.peer().list_all_tools().await {
                 Ok(tools) => tools,
                 Err(err) => {
-                    // Kết nối mở nhưng vô dụng. Đóng nó lại trước khi thử lại, nếu không
-                    // mỗi vòng để lại một tiến trình con còn sống.
+                    // Open but useless; close it before retrying, or every round leaks a child process.
                     let _ = service.cancel().await;
                     let reason = format!("không đọc được danh sách tool: {err}");
                     if !self.retry(&mut attempt, &mut first, reason).await {
@@ -496,13 +414,11 @@ impl Supervisor {
             );
             let count = guards.len();
             *self.report.tools.lock() = names;
-            tracing::info!(server = %self.name, tools = count, "MCP server đã sẵn sàng");
+            tracing::info!(server = %self.name, tools = count, "MCP server ready");
             let _ = self.state.send(ServerState::Ready { tools: count });
             settle(&mut first, Mount::Connected { tools: count });
 
-            // Chuyển quyền sở hữu kết nối sang một task con để chờ nó chết mà không phải
-            // tiêu thụ nó ở đây: `waiting()` nhận `self` theo giá trị, nên đây là cách duy
-            // nhất vừa chờ được vừa còn `select!` được với lệnh dừng.
+            // `waiting()` takes `self` by value, so a child task owns the connection while we stay able to `select!`.
             let started = Instant::now();
             let mut watcher = tokio::spawn(async move { service.waiting().await });
             let stopped_by_us = tokio::select! {
@@ -510,23 +426,20 @@ impl Supervisor {
                 _ = &mut watcher => false,
             };
             if stopped_by_us {
-                // Đợi task sở hữu kết nối dọn xong. Không đợi thì tiến trình con của một
-                // server stdio còn sống thêm một lúc sau khi người dùng đã bấm gỡ.
+                // Wait for the owning task to finish cleaning up, or a stdio child outlives the user's click.
                 let _ = watcher.await;
             }
 
-            // Thả guard **trước** khi thử lại: trong lúc chưa có kết nối, không tool nào
-            // của server này được phép còn nằm trong danh sách quảng cáo cho mô hình.
+            // Drop the guards before retrying: with no connection, none of these tools may stay advertised.
             drop(guards);
             self.link.clear();
-            // Danh sách tool phải rỗng đúng lúc sổ đăng ký rỗng. Lệch nhau một nhịp là
-            // giao diện mời người dùng gọi một tool vừa biến mất.
+            // The tool list empties exactly when the registry does, or the UI offers a tool that just vanished.
             self.report.tools.lock().clear();
 
             if self.ct.is_cancelled() {
                 break;
             }
-            // Sống đủ lâu thì lần đứt này là sự cố, không phải một server hỏng sẵn.
+            // Long enough alive means this drop is an incident, not a server broken from the start.
             if started.elapsed() >= HEALTHY_AFTER {
                 attempt = 0;
             }
@@ -539,29 +452,24 @@ impl Supervisor {
         }
 
         self.link.clear();
-        // `Failed` không được ghi đè bằng `Stopped`. Hai chuyện đó khác nhau ở đúng thứ mà
-        // người dùng cần biết: một cái là "tôi đã bỏ cuộc, đây là lý do", cái kia là "bạn
-        // bảo tôi dừng". Ghi đè thì mọi server hỏng đều trông như vừa được gỡ đi tử tế.
+        // `Stopped` must not overwrite `Failed`: "I gave up, here is why" and "you told me to stop" are different answers.
         let gave_up = matches!(*self.state.borrow(), ServerState::Failed { .. });
         if !gave_up {
             let _ = self.state.send(ServerState::Stopped);
         }
     }
 
-    /// `false` nghĩa là thôi, đừng thử nữa.
+    /// `false` means stop trying.
     async fn retry(
         &self,
         attempt: &mut u32,
         first: &mut Option<oneshot::Sender<Mount>>,
         reason: String,
     ) -> bool {
-        tracing::warn!(server = %self.name, %reason, "MCP server không dùng được");
-        // Ghi lý do ngay, và **không** xoá nó ở lần nối thành công sau: đây là câu trả lời
-        // cho "vì sao lúc nãy nó hỏng", mà câu hỏi đó luôn được hỏi sau khi mọi thứ có vẻ
-        // đã ổn trở lại.
+        tracing::warn!(server = %self.name, %reason, "MCP server unusable");
+        // Record the reason now and never clear it on a later success: the question is always asked afterwards.
         *self.report.error.lock() = Some(reason.clone());
-        // Báo kết quả lần đầu **ngay bây giờ**, trước khi ngủ: chỗ gọi `mount` đang chờ, và
-        // bắt nó chờ hết cả chuỗi thử lại là bắt cửa sổ ứng dụng chờ theo.
+        // Settle the first result before sleeping: `mount` is waiting, and so is the application window.
         settle(
             first,
             Mount::Unavailable {
@@ -571,7 +479,7 @@ impl Supervisor {
 
         *attempt += 1;
         if *attempt > self.policy.max_retries {
-            tracing::warn!(server = %self.name, "thôi không nối lại MCP server nữa");
+            tracing::warn!(server = %self.name, "giving up on reconnecting to the MCP server");
             let _ = self.state.send(ServerState::Failed { reason });
             return false;
         }

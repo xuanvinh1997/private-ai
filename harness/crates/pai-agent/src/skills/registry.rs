@@ -1,4 +1,4 @@
-//! Sổ skill, và việc chọn skill cho một lượt.
+//! The skill register, and choosing skills for a turn.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,28 +13,19 @@ use crate::events::{PreStep, PreStepRequest, StepDecision};
 use crate::prompt::{Prompt, order};
 use crate::skills::loader::{Skill, load_skill};
 
-/// Điểm tối thiểu để một skill được coi là liên quan.
+/// The minimum score for a skill to count as relevant.
 const THRESHOLD: f32 = 2.0;
-/// Và nó còn phải đạt ít nhất chừng này so với skill điểm cao nhất. Không có luật thứ
-/// hai thì một câu hỏi dài kéo theo mọi skill có chung một từ thông dụng.
+/// It must also reach this fraction of the top score, or a long question drags in every skill sharing a common word.
 const RELATIVE_FLOOR: f32 = 0.5;
 
 #[derive(Default)]
 pub struct SkillRegistry {
     skills: RwLock<Vec<Skill>>,
-    /// Skill được chọn cho lượt đang chạy. Đặt bởi middleware, đọc bởi khối prompt.
+    /// Skills chosen for the current turn; set by middleware, read by the prompt section.
     active: RwLock<Vec<String>>,
 }
 
-/// Bỏ dấu tiếng Việt và hạ chữ thường.
-///
-/// Người dùng gõ "tai lieu" cũng phải chọn được skill khai báo "tài liệu". Không gấp dấu
-/// thì cơ chế chọn chỉ chạy đúng khi người ta gõ đủ dấu, tức là gần như không bao giờ.
-/// Bảng dấu tiếng Việt, viết ra thành từng nhóm thay vì dùng khoảng mã.
-///
-/// Các ký tự tiếng Việt nằm rải rác qua nhiều khối Unicode, nên khoảng mã vừa bỏ sót vừa
-/// chồng lên nhau. Một bảng dài nhưng đúng thì đọc được và sửa được; một khoảng mã ngắn
-/// nhưng sai thì im lặng bỏ qua đúng những chữ hay gặp nhất.
+/// The Vietnamese fold table, written out as groups: the letters are scattered across Unicode blocks, so ranges miss some.
 const FOLD: [(&str, char); 7] = [
     ("àáâãäåạảấầẩẫậắằẳẵặăâ", 'a'),
     ("èéêëẹẻẽếềểễệ", 'e'),
@@ -45,13 +36,7 @@ const FOLD: [(&str, char); 7] = [
     ("đ", 'd'),
 ];
 
-/// Bỏ dấu tiếng Việt và hạ chữ thường.
-///
-/// Người dùng gõ "tai lieu" cũng phải chọn được skill khai báo "tài liệu". Không gấp dấu
-/// thì cơ chế chọn chỉ chạy đúng khi người ta gõ đủ dấu, tức là gần như không bao giờ.
-///
-/// Hạ chữ thường **trước** rồi mới tra bảng, nên bảng chỉ cần một nửa và không có chữ hoa
-/// nào lọt qua vì người viết bảng quên nó.
+/// Strip Vietnamese diacritics and lowercase; lowercasing first halves the table and lets no capital slip through.
 fn fold(text: &str) -> String {
     text.to_lowercase()
         .chars()
@@ -72,10 +57,7 @@ impl SkillRegistry {
         Arc::new(SkillRegistry::default())
     }
 
-    /// Quét một thư mục. Mỗi thư mục con có `SKILL.md` là một skill.
-    ///
-    /// Một gói hỏng bị bỏ qua kèm log, không làm hỏng lần quét: mất một skill là mất một
-    /// quy trình, còn ném lỗi ở đây là mất cả bộ.
+    /// Scan a directory; each subdirectory with a `SKILL.md` is a skill, and a broken one is logged and skipped.
     pub fn scan(&self, root: &Path) {
         let Ok(entries) = std::fs::read_dir(root) else {
             return;
@@ -88,12 +70,12 @@ impl SkillRegistry {
             }
             match load_skill(&dir) {
                 Ok(skill) => loaded.push(skill),
-                Err(err) => tracing::warn!("bỏ qua skill: {err}"),
+                Err(err) => tracing::warn!("skipping skill: {err}"),
             }
         }
         let mut skills = self.skills.write();
         for skill in loaded {
-            // Gói của người dùng trùng tên thì **thay thế** gói dựng sẵn, không đứng cạnh.
+            // A user package of the same name replaces the built-in one rather than sitting beside it.
             skills.retain(|existing| existing.name != skill.name);
             skills.push(skill);
         }
@@ -115,7 +97,7 @@ impl SkillRegistry {
         self.len() == 0
     }
 
-    /// Tầng một: tên và một dòng mô tả của mọi skill. Luôn có mặt trong prompt.
+    /// Tier one: every skill's name and one-line description, always in the prompt.
     pub fn catalog(&self) -> Option<String> {
         let skills = self.skills.read();
         if skills.is_empty() {
@@ -133,7 +115,7 @@ impl SkillRegistry {
         ))
     }
 
-    /// Tầng hai: toàn văn hướng dẫn của những skill đã được chọn cho lượt này.
+    /// Tier two: the full instructions of the skills selected for this turn.
     pub fn activated(&self) -> Option<String> {
         let active = self.active.read();
         if active.is_empty() {
@@ -144,7 +126,7 @@ impl SkillRegistry {
             .iter()
             .filter_map(|name| skills.iter().find(|skill| &skill.name == name))
             .map(|skill| {
-                // Tầng ba: chỉ tên tệp. Mô hình tự mở bằng `read` khi thật sự cần.
+                // Tier three: filenames only; the model opens them with `read` when it needs to.
                 let files = if skill.resources.is_empty() {
                     String::new()
                 } else {
@@ -166,7 +148,7 @@ impl SkillRegistry {
         ))
     }
 
-    /// Chọn skill cho một đoạn văn bản. Trùng lặp từ khoá, không gọi mô hình.
+    /// Select skills for a piece of text by keyword overlap, with no model call.
     pub fn select(&self, text: &str) -> Vec<String> {
         let folded = fold(text);
         let skills = self.skills.read();
@@ -211,11 +193,7 @@ impl SkillRegistry {
     }
 }
 
-/// Chọn skill ngay trước khi bước bắt đầu.
-///
-/// Là middleware trên `agent/pre-step` chứ không phải một lời gọi trong vòng lặp, vì
-/// vòng lặp không được biết skill là gì. Gỡ plugin này ra thì prompt mất hai khối và
-/// không có gì khác đổi.
+/// Select skills just before a step; middleware on `agent/pre-step`, because the loop must not know what a skill is.
 struct ActivateSkills {
     registry: Arc<SkillRegistry>,
 }
@@ -237,9 +215,7 @@ impl Middleware<PreStep> for ActivateSkills {
                 })
                 .collect::<Vec<_>>()
                 .join(" ");
-            // Bước sau trong cùng một lượt không mang message mới; giữ nguyên lựa chọn cũ
-            // thay vì xoá, nếu không thì quy trình biến mất giữa chừng đúng lúc mô hình
-            // đang theo nó.
+            // Later steps in a turn carry no new message; keep the previous selection so the procedure does not vanish mid-use.
             if !text.trim().is_empty() {
                 self.registry.set_active(self.registry.select(&text));
             }

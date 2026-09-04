@@ -1,36 +1,6 @@
-//! Bảng ngôn ngữ: thêm một ngôn ngữ là thêm **một hàng**.
-//!
-//! Cả bộ máy — parse, trích, ghi, tra — không biết tên ngôn ngữ nào. Nó chỉ biết ba thứ
-//! trong [`Lang`]: đuôi tệp nào thuộc về nó, grammar nào đọc nó, và truy vấn nào lấy ký
-//! hiệu ra. Đó là lý do phần khó của việc thêm TypeScript sau này không phải là mã, mà
-//! là viết đúng mười dòng truy vấn.
-//!
-//! Truy vấn dùng một quy ước đặt tên capture, và quy ước đó là toàn bộ hợp đồng giữa tệp
-//! này và [`crate::extract`]:
-//!
-//! - `@name` — nút định danh mang **tên** ký hiệu.
-//! - `@def.function` / `@def.type` / `@def.trait` / `@def.const` — nút bao trọn **khối**
-//!   khai báo. Phần sau dấu chấm là loại ký hiệu.
-//! - `@def.scope` — cũng là một khối, nhưng **không** được phát ra thành ký hiệu; nó chỉ
-//!   tồn tại để cho những ký hiệu nằm trong nó một cái tên cha. `impl Foo` của Rust là ví
-//!   dụ đúng: `Foo` đã có mặt với tư cách `struct`, kể nó lần thứ hai là nói dối về số
-//!   lượng kiểu trong repo, nhưng `fn bar` bên trong thì vẫn phải biết nó thuộc về `Foo`.
-//!
-//! Quan hệ cha–con **không** được khai trong truy vấn. Nó được suy ra từ bao hàm phạm vi
-//! byte, nên nó đúng cho mọi ngôn ngữ mà không ngôn ngữ nào phải nói thêm gì.
-//!
-//! Mỗi ngôn ngữ có **hai** truy vấn, và truy vấn thứ hai ([`Lang::edges`]) theo một quy
-//! ước khác: mỗi capture bắt đúng cái **nút mang tên** của chỗ nhắc tới, còn chủ nhà của
-//! nó lại được suy từ bao hàm — cùng một cơ chế, cùng một lý do.
-//!
-//! - `@ref.calls` — định danh ở vị trí bị gọi.
-//! - `@ref.imports` — tên được mang vào phạm vi bởi một lệnh nhập.
-//! - `@ref.implements` / `@ref.extends` — cái được cài đặt hoặc được kế thừa.
-//! - `@ref.references` — tên một kiểu trong chữ ký: tham số, kiểu trả về, chú thích.
-//!
-//! `contains` không có mặt ở đây: nó đã nằm sẵn trong cái ngăn xếp bao hàm mà
-//! [`crate::extract`] dựng cho ký hiệu, và hỏi lại nó bằng truy vấn là hỏi hai lần cùng
-//! một câu để rồi phải chọn tin câu nào.
+//! Language table: adding a language means adding one row.
+//! Nothing downstream knows a language name, only extensions, grammar and two queries.
+//! Capture names are the contract with `extract`; nesting comes from byte-range containment.
 
 use std::path::Path;
 
@@ -41,28 +11,20 @@ pub struct Lang {
     pub name: &'static str,
     pub extensions: &'static [&'static str],
     grammar: LanguageFn,
-    /// Truy vấn ký hiệu.
+    /// The symbol query.
     pub query: &'static str,
-    /// Truy vấn cạnh. Rỗng là hợp lệ: một ngôn ngữ mới vào bảng vẫn tra được ký hiệu
-    /// trong lúc chưa ai viết xong phần cạnh cho nó.
+    /// The edge query; empty is valid, so a new language is searchable before its edges are written.
     pub edges: &'static str,
 }
 
 impl Lang {
-    /// Dựng `Language` từ con trỏ hàm của grammar.
-    ///
-    /// Đây là chỗ duy nhất ABI giữa core và grammar gặp nhau, và nó **không** được hệ
-    /// kiểu kiểm: một grammar sinh bởi CLI quá cũ sẽ trả về một `Language` mà
-    /// `Query::new` từ chối. Vì thế truy vấn được biên dịch hết ngay lúc dựng
-    /// [`crate::extract::Extractor`], chứ không lười tới lần parse đầu tiên — một lệch
-    /// version phải nổ lúc khởi động, không phải giữa một lần người dùng đang tìm.
+    /// Build a `Language` from the grammar function pointer; the core/grammar ABI is unchecked, so queries compile up front.
     pub fn grammar(&self) -> Grammar {
         Grammar::from(self.grammar)
     }
 }
 
-/// Ngôn ngữ nào đọc tệp này. `None` là "không phải mã nguồn mà ta hiểu" — bỏ qua, không
-/// phải lỗi.
+/// Which language reads this file; `None` means "not source we understand" — skip it, not an error.
 pub fn for_path(path: &Path) -> Option<&'static Lang> {
     let ext = path.extension()?.to_str()?;
     LANGUAGES.iter().find(|lang| lang.extensions.contains(&ext))
@@ -106,7 +68,7 @@ pub static LANGUAGES: &[Lang] = &[
     },
 ];
 
-/// `impl` và `mod` là scope chứ không phải ký hiệu — xem ghi chú đầu tệp.
+/// `impl` and `mod` are scopes, not symbols — see the header.
 const RUST: &str = r#"
 (function_item name: (identifier) @name) @def.function
 (function_signature_item name: (identifier) @name) @def.function
@@ -127,11 +89,7 @@ const RUST: &str = r#"
 (impl_item type: (generic_type type: (type_identifier) @name)) @def.scope
 "#;
 
-/// Hằng bị neo vào `program` hoặc `export_statement`, còn hàm thì không.
-///
-/// Không neo thì `const x = 1` trong thân mỗi hàm cũng thành một ký hiệu, và chỉ mục biến
-/// thành một danh sách biến cục bộ mà không ai tra. Hàm thì ngược lại — một
-/// `function_declaration` lồng trong một hàm khác vẫn là thứ người ta đi tìm.
+/// Constants are anchored to `program`/`export_statement`, functions are not: otherwise every local `const` becomes a symbol.
 const TYPESCRIPT: &str = r#"
 (function_declaration name: (identifier) @name) @def.function
 (generator_function_declaration name: (identifier) @name) @def.function
@@ -193,11 +151,7 @@ const PYTHON: &str = r#"
     (assignment left: (identifier) @name)) @def.const)
 "#;
 
-/// `use` được bắt ở **tên cuối cùng** của đường dẫn, không phải cả đường.
-///
-/// `use crate::store::Store` mang vào phạm vi đúng một cái tên là `Store`, và đó cũng là
-/// cái tên duy nhất tra được trong bảng ký hiệu. Bắt cả `crate` với `store` thì mỗi lệnh
-/// `use` sinh ra ba cạnh, hai trong đó không trỏ vào đâu cả.
+/// `use` is captured at the last name of the path only: the earlier segments resolve to nothing in the symbol table.
 const RUST_EDGES: &str = r#"
 (call_expression function: (identifier) @ref.calls)
 (call_expression function: (scoped_identifier name: (identifier) @ref.calls))
@@ -223,9 +177,7 @@ const RUST_EDGES: &str = r#"
 (function_item return_type: (generic_type type: (type_identifier) @ref.references))
 "#;
 
-/// `implements` và `extends` là hai mẫu tách rời chứ không lồng trong `class_heritage`:
-/// `interface J extends I` dùng `extends_type_clause` chứ không đi qua `class_heritage`,
-/// và chủ nhà của cạnh vẫn được suy từ bao hàm nên không mẫu nào cần nhắc tới cái lớp.
+/// `implements`/`extends` are separate patterns, not nested in `class_heritage`: an interface uses `extends_type_clause`.
 const TYPESCRIPT_EDGES: &str = r#"
 (call_expression function: (identifier) @ref.calls)
 (call_expression function: (member_expression property: (property_identifier) @ref.calls))
@@ -243,11 +195,7 @@ const TYPESCRIPT_EDGES: &str = r#"
 (type_annotation (generic_type name: (type_identifier) @ref.references))
 "#;
 
-/// `class_heritage` của JavaScript chứa thẳng một biểu thức — không có `extends_clause`
-/// như bên TypeScript, nên hai bảng không dùng chung được mẫu đó.
-///
-/// `require` phải đi kèm một vị từ văn bản: không có nó thì mọi `const x = f(...)` đều
-/// thành một lệnh nhập.
+/// JavaScript's `class_heritage` holds the expression directly, and `require` needs a text predicate or every call looks like an import.
 const JAVASCRIPT_EDGES: &str = r#"
 (call_expression function: (identifier) @ref.calls)
 (call_expression function: (member_expression property: (property_identifier) @ref.calls))
@@ -264,8 +212,7 @@ const JAVASCRIPT_EDGES: &str = r#"
 (class_heritage (identifier) @ref.extends)
 "#;
 
-/// `import_from_statement` có hai trường cùng kiểu `dotted_name`; chỉ `name:` mới là thứ
-/// được mang vào phạm vi, còn `module_name:` là đường dẫn tệp và không tra được.
+/// `import_from_statement` has two `dotted_name` fields; only `name:` enters scope, `module_name:` is a path.
 const PYTHON_EDGES: &str = r#"
 (call function: (identifier) @ref.calls)
 (call function: (attribute attribute: (identifier) @ref.calls))

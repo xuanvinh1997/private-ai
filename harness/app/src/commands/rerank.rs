@@ -1,21 +1,6 @@
-//! Bật/tắt và chỉnh bước xếp hạng lại.
-//!
-//! # Vì sao đây là một màn hình riêng chứ không nằm trong Nhà cung cấp
-//!
-//! Reranker mặc định không phải một endpoint — nó là một tệp `.onnx` chạy trong tiến
-//! trình service. Nó không có địa chỉ máy chủ, không có khoá, và không health check được
-//! bằng một request. Đặt nó cạnh danh sách provider sẽ cho người dùng một biểu mẫu mà
-//! quá nửa số ô không có nghĩa.
-//!
-//! # Vì sao có một nút tắt
-//!
-//! Vì bước này **đắt**, và cái giá thì tuỳ máy. Đo trên CPU với `bge-reranker-v2-m3`:
-//! khoảng 0,4 giây mỗi đoạn, nên 30 ứng viên là hơn mười giây cho mỗi câu hỏi. Trên GPU
-//! cùng phép ấy nhỏ tới mức không cần nghĩ tới.
-//!
-//! Người dùng trên một máy không có GPU cần đường thoát, và đường thoát ấy phải **nói ra
-//! nó đổi lấy gì**: tắt xếp hạng lại thì truy hồi vẫn chạy bằng RRF, chỉ là thứ tự kém đi
-//! ở những câu hỏi cần hiểu nghĩa thay vì khớp từ.
+//! Toggling and tuning the reranking step. It gets its own screen because the default reranker is an `.onnx`
+//! file inside the service, with no host, key or health check -- half a provider form would be meaningless.
+//! It can be switched off because it is expensive on CPU, and the switch must say what that costs.
 
 use serde_json::json;
 use tauri::State;
@@ -23,18 +8,13 @@ use tauri::State;
 use crate::AppState;
 use crate::protocol::RerankSetting;
 
-/// Mặc định hiện lên khi người dùng chưa đặt gì.
-///
-/// **Phải khớp** với `RerankConfig` trong
-/// `services/rag/src/pai_rag_service/config.py`. Không có gì trong hệ kiểu bắt chúng khớp
-/// — nên có một bài kiểm chứng đọc thẳng tệp Python ấy và so từng giá trị. Xem
-/// `app/tests/rerank.rs`.
+/// Defaults shown before the user sets anything; they must match `RerankConfig` in
+/// `services/rag/src/pai_rag_service/config.py`, which a test enforces by reading that file.
 const DEFAULT_BACKEND: &str = "onnx";
 const DEFAULT_MODEL: &str = "viplao5/bge-reranker-v2-m3-onnx";
 const DEFAULT_CANDIDATES: u32 = 30;
 const DEFAULT_TOP_N: u32 = 8;
-/// Tệp ONNX bên trong repo mặc định — repo chính chủ của BAAI đặt ở `onnx/model.onnx`,
-/// bản export này đặt ở gốc.
+/// The ONNX file inside the default repo; BAAI's own repo puts it under `onnx/`, this export at the root.
 const DEFAULT_ONNX_FILE: &str = "model.onnx";
 
 #[tauri::command]
@@ -75,7 +55,7 @@ pub async fn rerank_setting(state: State<'_, AppState>) -> Result<RerankSetting,
     })
 }
 
-/// Câu nói ra cái giá đang trả, để công tắc không phải là một lựa chọn mù.
+/// The sentence stating the cost, so the toggle is not a blind choice.
 fn reason_for(enabled: bool, candidates: u32) -> Option<String> {
     if !enabled {
         return Some(
@@ -84,9 +64,7 @@ fn reason_for(enabled: bool, candidates: u32) -> Option<String> {
                 .to_string(),
         );
     }
-    // Con số này là ước lượng đo trên CPU, và nó cố ý nói "nếu chạy CPU" chứ không khẳng
-    // định: ứng dụng không biết service đang chạy trên gì cho tới khi nó nạp model xong.
-    // Log của service nói ra provider thật.
+    // A CPU-measured estimate, hedged on purpose: the app cannot know what the service runs on until it loads the model.
     let seconds = f64::from(candidates) * 0.4;
     Some(format!(
         "Chấm lại {candidates} đoạn cho mỗi câu hỏi. Nếu service chạy trên CPU thì mất \
@@ -106,18 +84,15 @@ pub async fn set_rerank(
 ) -> Result<RerankSetting, String> {
     let harness = state.harness().await?;
 
-    // Siết ở đây chứ không tin biểu mẫu: một `candidates` bằng 0 làm mọi lần tìm trả về
-    // rỗng, và một `top_n` lớn hơn `candidates` là xin nhiều hơn số đã lấy về.
+    // Clamp here rather than trusting the form: `candidates` of 0 empties every search, and `top_n` above it asks for more than was fetched.
     let candidates = candidates.clamp(1, 200);
     let top_n = top_n.clamp(1, candidates);
     let backend = if backend == "http" { "http" } else { DEFAULT_BACKEND };
     let model = model.trim().to_string();
     let model = if model.is_empty() { DEFAULT_MODEL.to_string() } else { model };
 
-    // `onnx_file` không có ô trên giao diện: nó là chi tiết bố cục của một repo
-    // HuggingFace, và người dùng đổi model thì gần như luôn đổi sang một repo đặt tệp ở
-    // gốc như bản mặc định. Ai cần khác thì sửa thẳng trong `rag-config.json`, và lần ghi
-    // sau **giữ nguyên** giá trị ấy — đó là lý do nó được đọc lại chứ không viết cứng.
+    // `onnx_file` has no form field: it is a HuggingFace repo layout detail. Anyone who needs a different one
+    // edits `rag-config.json`, and it is read back rather than hard-coded so later writes preserve it.
     let onnx_file = harness
         .rag_config
         .rerank()
@@ -141,9 +116,8 @@ pub async fn set_rerank(
         }))
         .map_err(|err| format!("không ghi được cấu hình xếp hạng lại: {err}"))?;
 
-    // Không khởi động lại service: nó soi `mtime` của tệp cấu hình và tự nạp lại ở lời
-    // gọi kế tiếp — xem `pai_rag_service.config.load`. Giết tiến trình con ở đây sẽ vứt
-    // luôn phiên ONNX vừa nạp sẵn, tức là trả lại đúng cái cold boot vừa bỏ công tránh.
+    // Do not restart the service: it watches the config `mtime` and reloads itself, and killing it would
+    // discard the warm ONNX session -- exactly the cold start we were avoiding.
     Ok(RerankSetting {
         enabled,
         backend: backend.to_string(),

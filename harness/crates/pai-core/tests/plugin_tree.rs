@@ -1,8 +1,5 @@
-//! Exercise the core in exactly the shape the harness will use it: a seam, a plugin that
-//! contributes to that seam, and a middleware that cuts in to veto.
-//!
-//! If those three do not fit together, everything built on top is wrong, so these tests run
-//! before there are any real tools.
+//! Exercise the core in the shape the harness uses it: a seam, a plugin contributing to that
+//! seam, and a middleware that cuts in to veto. Everything else is built on those three.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -48,7 +45,7 @@ impl Waterfall for PreExecute {
     type Out = Result<String, String>;
 }
 
-/// Block one tool and do not delegate — a veto in the literal sense.
+/// Block one tool and do not delegate: a veto.
 struct DenyGate {
     deny: &'static str,
 }
@@ -73,7 +70,7 @@ impl Middleware<PreExecute> for DenyGate {
     }
 }
 
-/// Edit the request and still delegate — the cooperative branch, quite unlike the veto.
+/// Edit the request and still delegate: the cooperative branch.
 struct Rewrite;
 
 impl Middleware<PreExecute> for Rewrite {
@@ -221,8 +218,7 @@ async fn a_scoped_listener_does_not_reach_other_agents() {
     });
     agent.keep(guard);
 
-    // Emit at the root: the child agent's listener does not receive it, because events
-    // flow up, not down.
+    // Emit at the root: the child listener does not receive it, because events flow up.
     root.notify::<ToolCalled>(&"read".to_string());
     assert_eq!(seen.load(Ordering::SeqCst), 0);
 

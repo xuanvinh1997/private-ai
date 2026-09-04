@@ -1,10 +1,6 @@
-//! Bất biến của nửa client, kiểm bằng một server MCP giả **trong cùng tiến trình**.
-//!
-//! Server giả nói MCP thật — cùng bộ mã hoá, cùng cái bắt tay `initialize`, cùng
-//! `tools/list` và `tools/call` — chỉ khác chỗ nó chạy trên một [`tokio::io::duplex`] thay
-//! vì một socket hay một tiến trình con. Nhờ vậy bài kiểm chứng không chạm mạng, không đẻ
-//! tiến trình, không phụ thuộc vào việc máy chạy CI có `npx` hay không, mà vẫn đi qua đúng
-//! đoạn mã sẽ chạy thật.
+//! Client-half invariants, checked against an in-process fake MCP server.
+//! The fake speaks real MCP over a [`tokio::io::duplex`] instead of a socket or a child, so
+//! the tests touch no network and no `npx` yet run the same code the product runs.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,7 +26,7 @@ use rmcp::{ErrorData as McpError, ServerHandler};
 use serde_json::{Map, Value, json};
 use tokio_util::sync::CancellationToken;
 
-// --- server giả -----------------------------------------------------------------------
+// --- the fake server --------------------------------------------------------------------
 
 fn empty_schema() -> Map<String, Value> {
     json!({ "type": "object", "properties": {} })
@@ -42,8 +38,7 @@ fn empty_schema() -> Map<String, Value> {
 #[derive(Clone)]
 struct FakeServer {
     tools: Vec<String>,
-    /// Tên tool **đúng như server nhận được**. Đây là thứ chứng minh tiền tố đã được cắt
-    /// trước khi gửi đi, chứ không phải được cắt ở đâu đó rồi lại dán vào.
+    /// The tool name exactly as the server received it, proving the prefix was stripped before sending.
     seen: Arc<Mutex<Vec<String>>>,
 }
 
@@ -83,13 +78,13 @@ impl ServerHandler for FakeServer {
     }
 }
 
-/// Mở kết nối tới một [`FakeServer`] qua một ống trong bộ nhớ.
+/// Open a connection to a [`FakeServer`] over an in-memory pipe.
 struct FakeDialer {
     tools: Vec<String>,
     seen: Arc<Mutex<Vec<String>>>,
-    /// Bật lên: mọi lần nối sau đó hỏng, y như một server đã tắt hẳn.
+    /// Once set, every later dial fails, just like a server that is truly gone.
     down: Arc<AtomicBool>,
-    /// Huỷ: giết kết nối đang sống.
+    /// Cancel: kill the live connection.
     kill: CancellationToken,
 }
 
@@ -129,10 +124,7 @@ impl Dialer for FakeDialer {
     }
 }
 
-/// Dựng [`FakeDialer`] từ một cấu hình, để bài kiểm chứng đi qua **đúng** đường
-/// [`McpHub::reload`] mà người dùng đi, chứ không qua một cửa riêng chỉ test mới dùng.
-///
-/// Quy ước: đối số của cấu hình chính là danh sách tool mà server giả sẽ công bố.
+/// Build a [`FakeDialer`] from a config so tests take the real [`McpHub::reload`] path; the config args are the tool names.
 struct FakeFactory;
 
 impl DialerFactory for FakeFactory {
@@ -155,7 +147,7 @@ fn fake_config(name: &str, tools: &[&str]) -> ServerConfig {
     config
 }
 
-// --- một tool nội bộ có thể tự nhận ra mình -------------------------------------------
+// --- an internal tool that can recognise itself -------------------------------------------
 
 struct Builtin(ToolName);
 
@@ -178,7 +170,7 @@ impl Tool for Builtin {
     }
 }
 
-// --- tiện ích --------------------------------------------------------------------------
+// --- helpers --------------------------------------------------------------------------
 
 fn setup() -> (Context, Arc<ToolRegistry>, Arc<McpHub>) {
     let ctx = Context::root();
@@ -206,7 +198,7 @@ fn known(registry: &ToolRegistry, name: &str) -> bool {
     matches!(registry.resolve(None, name), Resolution::Found(_, _))
 }
 
-/// Chờ một điều kiện, tối đa hai giây. Trả về `false` nếu hết giờ.
+/// Wait for a condition, up to two seconds; `false` on timeout.
 async fn eventually(mut check: impl FnMut() -> bool) -> bool {
     for _ in 0..200 {
         if check() {
@@ -217,9 +209,9 @@ async fn eventually(mut check: impl FnMut() -> bool) -> bool {
     false
 }
 
-// --- bài kiểm chứng ---------------------------------------------------------------------
+// --- the tests ---------------------------------------------------------------------------
 
-/// Tiền tố được đặt **trước khi** tool vào sổ đăng ký, và cắt ra **trước khi** lời gọi rời máy.
+/// The prefix goes on before the tool enters the registry and comes off before the call leaves.
 #[tokio::test]
 async fn tien_to_dat_truoc_so_dang_ky_va_cat_truoc_khi_gui() {
     let (_ctx, registry, hub) = setup();
@@ -231,7 +223,7 @@ async fn tien_to_dat_truoc_so_dang_ky_va_cat_truoc_khi_gui() {
         Mount::Connected { tools: 1 }
     );
 
-    // Cái sổ đăng ký thấy là cái đã mang tiền tố. Tên trần không tồn tại.
+    // The registry sees the prefixed name; the bare one does not exist.
     assert_eq!(names(&registry), vec!["ext.github.search".to_string()]);
     assert!(!known(&registry, "search"));
 
@@ -244,15 +236,11 @@ async fn tien_to_dat_truoc_so_dang_ky_va_cat_truoc_khi_gui() {
         .expect("gọi được tool từ xa");
     assert!(outcome.content.contains("đã chạy search"));
 
-    // Cái server thấy là cái tên trần của chính nó — tiền tố đã bị cắt đúng chiều.
+    // The server sees its own bare name, so the prefix was stripped the right way round.
     assert_eq!(seen.lock().as_slice(), ["search".to_string()]);
 }
 
-/// Một tool bên ngoài trùng tên **không** che được tool nội bộ.
-///
-/// Đây là bất biến mà cả cái tiền tố tồn tại vì nó. Sổ đăng ký cho đăng ký sau thắng đăng
-/// ký trước, nên nếu tên từ xa đi thẳng vào thì một server bên thứ ba công bố `read` sẽ
-/// lặng lẽ thay `read` của `pai-fs`.
+/// An external tool of the same name cannot shadow an internal one — the invariant the whole prefix exists for.
 #[tokio::test]
 async fn tool_ngoai_khong_che_duoc_tool_noi_bo() {
     let (_ctx, registry, hub) = setup();
@@ -271,7 +259,7 @@ async fn tool_ngoai_khong_che_duoc_tool_noi_bo() {
     };
     assert_eq!(remote.schema().description, "tool giả `read`");
 
-    // Và cả hai cùng tồn tại, chứ không phải cái này thay cái kia.
+    // And both exist, rather than one replacing the other.
     assert_eq!(
         names(&registry),
         vec!["ext.srv.read".to_string(), "read".to_string()]
@@ -279,7 +267,7 @@ async fn tool_ngoai_khong_che_duoc_tool_noi_bo() {
     drop(keep);
 }
 
-/// Tool bên ngoài mang đúng giả định xấu nhất, và lời cảnh báo đi vào mô tả mà mô hình đọc.
+/// External tools carry the worst-case assumptions, and the warning reaches the description the model reads.
 #[tokio::test]
 async fn tool_ngoai_bi_gia_dinh_xau_nhat() {
     let (_ctx, registry, hub) = setup();
@@ -305,7 +293,7 @@ async fn tool_ngoai_bi_gia_dinh_xau_nhat() {
     assert!(schema.description.contains(UNTRUSTED_NOTICE));
 }
 
-/// Một server chết không làm mất tool của server khác, và cũng không làm mất tool nội bộ.
+/// A dead server costs neither another server's tools nor the internal ones.
 #[tokio::test]
 async fn mot_server_chet_khong_lam_mat_tool_cua_ai_khac() {
     let (_ctx, registry, hub) = setup();
@@ -318,7 +306,7 @@ async fn mot_server_chet_khong_lam_mat_tool_cua_ai_khac() {
     assert!(known(&registry, "ext.alpha.a1"));
     assert!(known(&registry, "ext.beta.b1"));
 
-    // Giết alpha và không cho nó dựng lại được.
+    // Kill alpha and stop it coming back.
     alpha.down.store(true, Ordering::SeqCst);
     alpha.kill.cancel();
 
@@ -331,13 +319,13 @@ async fn mot_server_chet_khong_lam_mat_tool_cua_ai_khac() {
         "trạng thái của alpha phải nói ra rằng nó hỏng"
     );
 
-    // Và mọi thứ khác vẫn nguyên.
+    // And everything else is untouched.
     assert!(known(&registry, "ext.beta.b1"));
     assert!(known(&registry, "bash"));
     drop(keep);
 }
 
-/// Một server không nối được ngay từ đầu cũng không kéo theo ai.
+/// A server that never connects takes nobody with it.
 #[tokio::test]
 async fn server_khong_noi_duoc_van_la_ok() {
     let (_ctx, registry, hub) = setup();
@@ -353,7 +341,7 @@ async fn server_khong_noi_duoc_van_la_ok() {
     drop(keep);
 }
 
-/// Thêm và bớt một server không cần khởi động lại gì cả, và không đụng tới server đang khoẻ.
+/// Adding and removing a server needs no restart and leaves healthy servers alone.
 #[tokio::test]
 async fn hot_reload_khong_dung_toi_server_khong_doi() {
     let (_ctx, registry, hub) = setup();
@@ -362,25 +350,25 @@ async fn hot_reload_khong_dung_toi_server_khong_doi() {
     let beta = Arc::new(FakeDialer::new(&["b1"]));
     hub.mount_dialer("beta", beta.clone(), fast()).await;
 
-    // Bớt một cái.
+    // Remove one.
     assert!(hub.unmount("alpha").await);
     assert!(!known(&registry, "ext.alpha.a1"));
     assert!(known(&registry, "ext.beta.b1"), "beta không được đụng tới");
     assert_eq!(hub.servers(), vec!["beta".to_string()]);
 
-    // Thêm một cái mới, ngay lúc đang chạy.
+    // Add a new one while running.
     hub.mount_dialer("gamma", Arc::new(FakeDialer::new(&["g1"])), fast())
         .await;
     assert!(known(&registry, "ext.gamma.g1"));
     assert!(known(&registry, "ext.beta.b1"));
 
-    // Gỡ hết: sổ đăng ký sạch, không còn dấu vết nào phải dọn bằng tay.
+    // Unmount everything: the registry is clean, with nothing left to sweep by hand.
     hub.shutdown().await;
     assert!(names(&registry).is_empty());
     assert!(hub.servers().is_empty());
 }
 
-/// Cắm đè lên một cái tên đang có là **thay thế**, không phải nhân đôi.
+/// Mounting over an existing name replaces it rather than duplicating it.
 #[tokio::test]
 async fn cam_de_len_mot_ten_dang_co_la_thay_the() {
     let (_ctx, registry, hub) = setup();
@@ -393,12 +381,7 @@ async fn cam_de_len_mot_ten_dang_co_la_thay_the() {
     assert_eq!(hub.servers(), vec!["srv".to_string()]);
 }
 
-/// `reload` chỉ đụng vào cái đã đổi.
-///
-/// Bài này chạy trên transport thật (một lệnh không tồn tại), vì thứ nó khoá là **phép so
-/// cấu hình**, không phải phép nối. Một server hỏng vẫn nằm trong danh sách — người dùng
-/// phải thấy được là nó hỏng — nên nó là chỗ tốt để hỏi "lần reload này có đụng vào nó
-/// không".
+/// `reload` touches only what changed; run on the real transport, since what it locks is the config diff, not dialing.
 #[tokio::test]
 async fn reload_chi_dung_vao_cai_da_doi() {
     let (_ctx, _registry, hub) = setup();
@@ -410,11 +393,11 @@ async fn reload_chi_dung_vao_cai_da_doi() {
     assert!(matches!(mount, Mount::Unavailable { .. }));
     assert_eq!(hub.servers(), vec!["dead".to_string()]);
 
-    // Cấu hình y hệt: không cắm lại, không báo cáo gì cả.
+    // Identical config: no remount and nothing reported.
     assert!(hub.reload(vec![config.clone()]).await.is_empty());
     assert_eq!(hub.servers(), vec!["dead".to_string()]);
 
-    // Đổi một chi tiết: cắm lại.
+    // Change one detail: remounted.
     let mut changed = config.clone();
     if let McpTransport::Stdio { args, .. } = &mut changed.transport {
         args.push("--khac".to_string());
@@ -422,22 +405,18 @@ async fn reload_chi_dung_vao_cai_da_doi() {
     assert_eq!(hub.reload(vec![changed]).await.len(), 1);
     assert_eq!(hub.servers(), vec!["dead".to_string()]);
 
-    // Bỏ khỏi danh sách: gỡ hẳn.
+    // Dropped from the list: unmounted for good.
     assert!(hub.reload(Vec::new()).await.is_empty());
     assert!(hub.servers().is_empty());
 
-    // Cấu hình sai được báo cáo chứ không làm hỏng cả lượt reload.
+    // Bad config is reported rather than breaking the whole reload.
     let report = hub.reload(vec![ServerConfig::stdio("a.b", "x")]).await;
     assert_eq!(report.len(), 1);
     assert!(report[0].1.is_err());
     assert!(hub.servers().is_empty());
 }
 
-/// `status()` hiện đúng cái tên mà mô hình gọi — tên **đã mang tiền tố**.
-///
-/// Hub biết tên trần vì đó là cái server công bố; giao diện phải hiện tên đầy đủ vì đó là
-/// cái duy nhất tra ra được trong sổ đăng ký. Lẫn hai thứ đó thì người dùng đọc một cái
-/// tên rồi đi tìm một tool không tồn tại.
+/// `status()` shows the prefixed name the model actually calls, the only one findable in the registry.
 #[tokio::test]
 async fn status_tra_ten_tool_da_mang_tien_to() {
     let (_ctx, _registry, hub) = setup();
@@ -464,7 +443,7 @@ async fn status_tra_ten_tool_da_mang_tien_to() {
         "chưa hỏng lần nào thì chưa có lý do"
     );
 
-    // Một server không nối được nói ra lý do, và giữ lại lý do đó.
+    // A server that cannot connect says why, and keeps saying it.
     let broken = Arc::new(FakeDialer::new(&["x"]));
     broken.down.store(true, Ordering::SeqCst);
     hub.mount_dialer("hong", broken, fast()).await;
@@ -486,11 +465,7 @@ async fn status_tra_ten_tool_da_mang_tien_to() {
     );
 }
 
-/// Tắt một server bằng `reload` **không** đụng tới tool của server khác.
-///
-/// Khẳng định bằng danh sách tool thật trong sổ đăng ký, vì đó là thứ mô hình nhìn thấy;
-/// một `state` nói "Ready" trong khi sổ đăng ký đã bị dọn sạch vẫn là bài kiểm chứng xanh
-/// và một ứng dụng hỏng.
+/// Disabling one server via `reload` leaves other servers' tools alone, asserted on the registry the model sees.
 #[tokio::test]
 async fn tat_mot_server_khong_lam_dut_tool_cua_server_khac() {
     let ctx = Context::root();

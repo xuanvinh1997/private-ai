@@ -1,19 +1,6 @@
-//! Sổ tay phiên chỉ-ghi-thêm — nguồn duy nhất của ngữ cảnh mà mô hình thấy.
-//!
-//! Bất biến trung tâm:
-//!
-//! > **Cái gì mô hình thấy được thì phải nằm trong sổ.** Mọi thứ đi vào một request đều
-//! > phải dựng lại được từ sổ. Vì thế thêm một loại đầu vào mới là thêm một loại sự kiện
-//! > mới, không phải thêm một trường ở đâu đó ngoài sổ.
-//!
-//! Hệ quả kiến trúc:
-//!
-//! - Không có `history: Vec<Message>` sống song song. Lịch sử được **chiếu** ra từ sổ
-//!   bằng [`SessionLog::derive_messages`], và chỉ ba loại sự kiện sinh ra message.
-//! - Nén ngữ cảnh **không xoá gì cả**: nó ghi thêm một sự kiện mang
-//!   [`SurfaceOp::Replace`] che một dải node. Bản ghi vẫn phát lại được nguyên vẹn.
-//! - Ghi vào sổ là chỉ-ghi-thêm với `seq` **liền mạch**. Một lỗ hổng trong `seq` nghĩa là
-//!   đã mất sự kiện, và mọi thứ chiếu ra từ đó đều không còn tin được.
+//! Append-only session log: the single source of the context the model sees.
+//! Anything the model sees must be reconstructible from the log, so history is projected from it
+//! rather than kept alongside, compaction only shadows nodes, and `seq` must have no gaps.
 
 pub mod error;
 pub mod event;

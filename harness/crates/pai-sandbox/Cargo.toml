@@ -16,7 +16,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-# Vòng giam thật. `libc` chỉ để hỏi kernel số ABI trước khi dựng gì cả.
+# The real ruleset; `libc` only asks the kernel for its ABI number before building anything.
 landlock = "0.4"
 libc = { workspace = true }
 

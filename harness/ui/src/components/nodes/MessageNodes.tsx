@@ -1,23 +1,17 @@
+import { S, t } from "../../lib/i18n";
 import type { NodeProps } from "../../lib/registry";
 import { useTranscriptActions } from "../../lib/transcriptActions";
 import Blocks from "../markdown/Blocks";
 import MessageShell, { type MessageAction } from "../MessageShell";
 
-/**
- * Giờ đến của một tin nhắn.
- *
- * Bản ghi nạp lại mang giờ **trong sổ**; lượt đang chạy thì không có gì để mang, nên nó
- * lấy lúc node xuất hiện. Hai nguồn cho hai tình huống, và cả hai đều đúng với tình
- * huống của mình. Chốt ở thân component nên nó cố định theo node, không nhảy theo mỗi
- * lần vẽ lại.
- */
+/** Arrival time: the journal's time when replayed, otherwise now, fixed once per node. */
 const arrivedAt = (at?: number) => at ?? Date.now();
 
 async function copy(text: string): Promise<void> {
   try {
     await navigator.clipboard.writeText(text);
   } catch (err) {
-    console.error("không chép được", err);
+    console.error("could not copy", err);
   }
 }
 
@@ -28,7 +22,7 @@ export function UserMessage(props: NodeProps<"user">) {
   const list = (): MessageAction[] => [
     {
       id: "copy",
-      label: "Chép tin nhắn",
+      label: t(S.tools.message.copy),
       icon: "copy",
       onSelect: () => void copy(props.node.text),
     },
@@ -36,7 +30,7 @@ export function UserMessage(props: NodeProps<"user">) {
       ? [
           {
             id: "retry",
-            label: "Gửi lại",
+            label: t(S.tools.message.resend),
             icon: "retry" as const,
             onSelect: () => actions.resend?.(props.node.text),
           },
@@ -44,7 +38,7 @@ export function UserMessage(props: NodeProps<"user">) {
       : []),
     {
       id: "delete",
-      label: "Xoá khỏi bản ghi",
+      label: t(S.tools.message.remove),
       icon: "trash",
       danger: true,
       onSelect: () => actions.remove(props.node.id),
@@ -52,20 +46,13 @@ export function UserMessage(props: NodeProps<"user">) {
   ];
 
   return (
-    <MessageShell role="user" name="Bạn" at={at} actions={list()}>
+    <MessageShell role="user" name={t(S.tools.message.you)} at={at} actions={list()}>
       <div class="text-base whitespace-pre-wrap">{props.node.text}</div>
     </MessageShell>
   );
 }
 
-/**
- * Tin nhắn trợ lý.
- *
- * `aria-live` phải có mặt **trước** khi chữ bắt đầu chảy vào, nếu không trình đọc màn
- * hình bỏ qua lần thay đổi đầu — nên khối này được tạo rỗng ngay từ token đầu tiên chứ
- * không đợi có nội dung. `polite` chứ không `assertive`: câu trả lời không được cắt
- * ngang những gì người dùng đang nghe.
- */
+/** Assistant message; `aria-live` must exist before text streams in, and stays polite. */
 export function AssistantMessage(props: NodeProps<"assistant">) {
   const at = arrivedAt(props.node.at);
   const actions = useTranscriptActions();
@@ -76,13 +63,13 @@ export function AssistantMessage(props: NodeProps<"assistant">) {
       : [
           {
             id: "copy",
-            label: "Chép câu trả lời",
+            label: t(S.tools.message.copyReply),
             icon: "copy",
             onSelect: () => void copy(props.node.text),
           },
           {
             id: "delete",
-            label: "Xoá khỏi bản ghi",
+            label: t(S.tools.message.remove),
             icon: "trash",
             danger: true,
             onSelect: () => actions.remove(props.node.id),
@@ -92,16 +79,13 @@ export function AssistantMessage(props: NodeProps<"assistant">) {
   return (
     <MessageShell
       role="assistant"
-      name="Trợ lý"
+      name={t(S.tools.message.assistant)}
       at={at}
       live={props.node.streaming}
       busy={props.node.streaming}
       actions={list()}
     >
-      {/* Chữ trợ lý đi qua bộ dựng khối: khối rào ```mermaid thành hình, khối rào khác
-          thành khối mã có nhãn, phần còn lại vẫn là chữ `whitespace-pre-wrap` như cũ.
-          Con trỏ nhấp nháy chuyển vào `Blocks` vì chỗ đặt nó phụ thuộc vào khối cuối
-          cùng đang là chữ hay đang là một khối mã chưa đóng rào. */}
+      {/* Assistant text goes through the block builder, which also places the caret. */}
       <Blocks text={props.node.text} streaming={props.node.streaming} />
     </MessageShell>
   );

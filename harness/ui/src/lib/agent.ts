@@ -8,13 +8,7 @@ import type {
   ToolScope,
 } from "./protocol";
 
-/**
- * Ứng dụng có chạy trong vỏ Tauri không.
- *
- * `npm run dev` mở trong trình duyệt thường xuyên hơn mở trong cửa sổ Tauri, và mọi
- * lệnh `invoke` ở đó đều ném. Chặn ở một chỗ để phần còn lại của giao diện không phải
- * rải try/catch — và để trang demo chạy được mà không cần backend.
- */
+/** Whether we run inside the Tauri shell; every `invoke` throws in a plain browser, so guard it in one place. */
 export const inTauri = (): boolean => {
   try {
     return isTauri();
@@ -23,20 +17,7 @@ export const inTauri = (): boolean => {
   }
 };
 
-/**
- * Gửi một lượt.
- *
- * Dùng `Channel` chứ không `listen`: channel gắn với đúng một lượt, giữ thứ tự, và tự
- * dọn khi bị bỏ — nên hai lượt chạy song song không trộn token vào nhau, và không có
- * listener nào sống sót qua lượt đã kết thúc.
- *
- * Việc gộp token (coalescing) nằm ở phía Rust: mỗi lần vượt biên IPC của Tauri đắt hơn
- * nhiều so với một signal của Qt, nên phát từng token một sẽ nghẽn khi mô hình chạy nhanh.
- *
- * `scope` đi kèm **mỗi lượt** và là tham số bắt buộc — lõi không có giá trị mặc định nào
- * để rơi vào. Đó là chủ ý: một mặc định ở đây nghĩa là quên gửi trường này thì lượt vẫn
- * chạy, im lặng, ở một mức quyền không ai chọn.
- */
+/** Send one turn over a `Channel`, which is ordered and per-turn; `scope` is required so no turn runs at an unchosen level. */
 export function sendMessage(
   sessionId: string,
   text: string,
@@ -48,13 +29,7 @@ export function sendMessage(
   return invoke("send_message", { input: { sessionId, text, scope }, onEvent: channel });
 }
 
-/**
- * Trả lời một yêu cầu duyệt.
- *
- * Fail-closed: nếu vì bất kỳ lý do gì lệnh này không tới được lõi, lõi phải coi như
- * *từ chối*. Đó là lý do hàm nuốt lỗi thay vì ném — chỗ gọi đã quyết định rồi, và một
- * exception ở đây chỉ làm hộp thoại kẹt mở trong khi lượt phía dưới đã bị chặn.
- */
+/** Answer an approval request. Fail-closed: if this never reaches the core, the core treats it as a refusal. */
 export async function answerApproval(
   requestId: string,
   decision: ApprovalDecision,
@@ -63,17 +38,17 @@ export async function answerApproval(
   try {
     await invoke("approval_result", { requestId, decision });
   } catch (err) {
-    console.error("không gửi được quyết định duyệt", err);
+    console.error("failed to send approval decision", err);
   }
 }
 
-/** Huỷ lượt đang chạy. Không có lõi thì im lặng — nút vẫn phải bấm được trong demo. */
+/** Cancel the running turn. Silent without a core, so the button still works in the demo. */
 export async function cancelTurn(sessionId: string): Promise<void> {
   if (!inTauri()) return;
   try {
     await invoke("cancel_turn", { sessionId });
   } catch (err) {
-    console.error("không huỷ được lượt", err);
+    console.error("failed to cancel turn", err);
   }
 }
 
@@ -82,7 +57,7 @@ export async function listSessions(): Promise<SessionSummary[]> {
   try {
     return await invoke<SessionSummary[]>("list_sessions");
   } catch (err) {
-    console.error("không đọc được danh sách phiên", err);
+    console.error("failed to list sessions", err);
     return [];
   }
 }
@@ -92,62 +67,40 @@ export async function createSession(title: string): Promise<SessionSummary | nul
   try {
     return await invoke<SessionSummary>("create_session", { title });
   } catch (err) {
-    console.error("không tạo được phiên", err);
+    console.error("failed to create session", err);
     return null;
   }
 }
 
-/**
- * Đổi tên một phiên.
- *
- * Nuốt lỗi và ghi log: tên hiển thị đã đổi trên màn hình rồi, và một hộp thoại lỗi vì
- * không ghi được cái tên chỉ làm gián đoạn việc người dùng đang làm.
- */
+/** Rename a session; failures are logged, not raised, because the on-screen title has already changed. */
 export async function renameSession(sessionId: string, title: string): Promise<void> {
   if (!inTauri()) return;
   try {
     await invoke("rename_session", { sessionId, title });
   } catch (err) {
-    console.error("không đổi được tên phiên", err);
+    console.error("failed to rename session", err);
   }
 }
 
-/**
- * Xoá một phiên.
- *
- * **Ném lỗi ra ngoài**, khác với `renameSession`: xoá là hành động không hoàn lại được,
- * nên "tưởng đã xoá mà chưa" là một trạng thái người dùng phải biết. Lõi cũng trả lỗi có
- * tên khi phiên không tồn tại, nên bấm Xoá hai lần thì lần sau hiện lỗi thay vì im lặng.
- */
+/** Delete a session, throwing on failure: deletion is irreversible, so "thought it was gone" must be visible. */
 export async function deleteSession(sessionId: string): Promise<void> {
   if (!inTauri()) return;
   await invoke("delete_session", { sessionId });
 }
 
-/**
- * Bản ghi đã lưu của một phiên.
- *
- * Không có lệnh này thì bấm vào một phiên cũ chỉ ra màn hình trống: danh sách phiên
- * trông có việc nhưng không dẫn tới đâu. Ném lỗi ra ngoài vì đây đúng là chỗ người dùng
- * đang chờ một thứ hiện lên — im lặng ở đây không phân biệt được với "phiên này rỗng".
- */
+/** Load a session's stored transcript; throws, because silence here is indistinguishable from an empty session. */
 export async function loadSession(sessionId: string): Promise<HistoryNode[]> {
   if (!inTauri()) return [];
   return await invoke<HistoryNode[]>("load_session", { sessionId });
 }
 
-/**
- * Mô hình máy chủ đang có.
- *
- * Danh sách rỗng nghĩa là **máy chủ không trả lời được**, không phải "không có mô hình
- * nào" — lõi đã nuốt lỗi mạng ở phía nó rồi. Người gọi phải nói đúng điều đó.
- */
+/** Models the server offers. An empty list means the server did not answer, not that there are no models. */
 export async function listModels(): Promise<ModelChoice[]> {
   if (!inTauri()) return [];
   try {
     return await invoke<ModelChoice[]>("list_models");
   } catch (err) {
-    console.error("không đọc được danh sách mô hình", err);
+    console.error("failed to list models", err);
     return [];
   }
 }

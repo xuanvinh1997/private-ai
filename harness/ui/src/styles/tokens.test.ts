@@ -2,18 +2,7 @@ import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { describe, expect, it } from "vitest";
 
-/**
- * Canh bảng token.
- *
- * Bài này sinh ra từ một lỗi thật: `ChangesPanel` đặt bề rộng bằng `w-(--changes-col-w)`
- * còn `tokens.css` chưa bao giờ khai biến ấy. CSS **bỏ im lặng** cả khai báo `width` khi
- * `var()` không phân giải được — không cảnh báo, không lỗi biên dịch, không dòng nào trong
- * console. Bảng chỉ đơn giản rộng theo nội dung, và không ai truy ra nguyên nhân vì chỗ
- * hỏng nằm ở một tệp không được nhắc tới.
- *
- * Đây đúng là loại lỗi mà con người không bắt được bằng mắt và máy bắt được trong một
- * phần nghìn giây.
- */
+/** Token guard: an unresolved `var()` makes CSS drop the whole declaration silently, with no warning. */
 
 const SRC = new URL("..", import.meta.url).pathname;
 
@@ -45,11 +34,21 @@ function usedTokens(): Map<string, string[]> {
     if (file.endsWith(".test.ts")) continue;
     const text = readFileSync(file, "utf8");
     for (const match of text.matchAll(/var\((--[a-z0-9-]+)/g)) note(match[1]!, file);
-    // Lối viết rút gọn của Tailwind v4: `w-(--foo)`, `px-(--foo)`.
+    // Tailwind v4 shorthand: `w-(--foo)`, `px-(--foo)`.
     for (const match of text.matchAll(/[a-z]-\((--[a-z0-9-]+)\)/g)) note(match[1]!, file);
   }
   return used;
 }
+
+describe("khung viewport", () => {
+  it("khóa cuộn tài liệu để vùng cuộn con không hở mép cửa sổ", () => {
+    const css = readFileSync(join(SRC, "styles/app.css"), "utf8");
+    const shell = css.match(/html,\s*body,\s*#root\s*\{([^}]*)\}/s)?.[1] ?? "";
+
+    expect(shell).toMatch(/overflow\s*:\s*hidden\s*;/);
+    expect(shell).toMatch(/overscroll-behavior\s*:\s*none\s*;/);
+  });
+});
 
 describe("token CSS", () => {
   it("mọi biến được dùng đều có chỗ khai", () => {
@@ -63,19 +62,20 @@ describe("token CSS", () => {
 
   it("có đủ token bố cục mà khung ứng dụng dựa vào", () => {
     const defined = definedTokens();
-    for (const token of ["--sidebar-w", "--changes-col-w", "--reading-measure", "--header-h"]) {
+    for (const token of [
+      "--sidebar-w",
+      "--workspace-panel-w",
+      "--reading-measure",
+      "--header-h",
+    ]) {
       expect(defined.has(token), `thiếu ${token}`).toBe(true);
     }
   });
 
-  // Mọi màu phải khai ở `:root` trần trước, rồi mới ghi đè trong khối tối. Khai lần đầu
-  // bên trong `[data-theme="dark"]` thì ở chế độ sáng nó không tồn tại, và thứ hỏng là màu
-  // chữ trên nền sáng — đúng lỗi không thấy được nếu người sửa đang để máy ở chế độ tối.
+  // Every colour must be declared on bare `:root` first; declaring it only in the dark block breaks light mode.
   it("token của khối tối đều đã có bản sáng", () => {
     const text = readFileSync(join(SRC, "styles/tokens.css"), "utf8");
-    // Mốc là **bộ chọn** `:root[data-theme="dark"]`, không phải chuỗi `[data-theme="dark"]`:
-    // chuỗi ấy cũng nằm trong khối chú thích ở đầu tệp, tức là trước cả `:root`, và cắt
-    // theo nó cho ra một lát ngược — bài kiểm chứng khi ấy hỏng vì chính nó, không vì CSS.
+    // Anchor on the selector `:root[data-theme="dark"]`; the bare string also occurs in the header comment.
     const darkAt = text.indexOf(':root[data-theme="dark"]');
     const rootBlock = text.slice(text.indexOf(":root {"), darkAt);
     const light = new Set([...rootBlock.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((m) => m[1]!));
@@ -85,17 +85,66 @@ describe("token CSS", () => {
 
     expect(dark.filter((token) => !light.has(token))).toEqual([]);
   });
+
+  it("chữ và đường biên điều khiển đủ tương phản ở cả hai theme", () => {
+    const css = readFileSync(join(SRC, "styles/tokens.css"), "utf8");
+    const darkAt = css.indexOf(':root[data-theme="dark"]');
+    const mediaAt = css.indexOf("@media (prefers-color-scheme: dark)");
+    const parse = (block: string) =>
+      new Map(
+        [...block.matchAll(/(--[a-z0-9-]+)\s*:\s*(#[0-9a-f]{6})\s*;/gi)].map((match) => [
+          match[1]!,
+          match[2]!,
+        ]),
+      );
+    const themes = {
+      light: parse(css.slice(css.indexOf(":root {"), darkAt)),
+      dark: parse(css.slice(darkAt, mediaAt)),
+    };
+    const luminance = (hex: string) => {
+      const channels = hex
+        .slice(1)
+        .match(/../g)!
+        .map((channel) => Number.parseInt(channel, 16) / 255)
+        .map((value) => (value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * channels[0]! + 0.7152 * channels[1]! + 0.0722 * channels[2]!;
+    };
+    const contrast = (foreground: string, background: string) => {
+      const a = luminance(foreground);
+      const b = luminance(background);
+      return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+    };
+
+    for (const [theme, tokens] of Object.entries(themes)) {
+      for (const background of ["--bg", "--surface"]) {
+        for (const foreground of ["--ink", "--text", "--muted", "--faint"]) {
+          expect(
+            contrast(tokens.get(foreground)!, tokens.get(background)!),
+            `${theme}: ${foreground} trên ${background}`,
+          ).toBeGreaterThanOrEqual(4.5);
+        }
+        expect(
+          contrast(tokens.get("--line-strong")!, tokens.get(background)!),
+          `${theme}: biên điều khiển trên ${background}`,
+        ).toBeGreaterThanOrEqual(3);
+      }
+
+      for (const [foreground, background] of [
+        ["--on-accent", "--accent"],
+        ["--accent-ink", "--accent-soft"],
+        ["--warn", "--warn-soft"],
+        ["--danger", "--danger-soft"],
+      ] as const) {
+        expect(
+          contrast(tokens.get(foreground)!, tokens.get(background)!),
+          `${theme}: ${foreground} trên ${background}`,
+        ).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  });
 });
 
-/**
- * Font đóng gói.
- *
- * Cùng một họ lỗi với bài ở trên: một `src: url(...)` trỏ vào tệp không tồn tại **không**
- * gây lỗi nào — trình duyệt bỏ qua khai báo `@font-face` ấy rồi lặng lẽ dùng font kế tiếp
- * trong stack. Trên máy người viết, người ấy thường đã cài sẵn Manrope nên chẳng thấy gì
- * khác; hỏng chỉ lộ ra trên máy người dùng, và lộ ra dưới dạng "app trông hơi lạ" chứ
- * không dưới dạng một dòng lỗi ai đó có thể tìm.
- */
+/** Bundled fonts: a `src: url(...)` pointing at a missing file is skipped silently, so only users ever see it. */
 describe("font đóng gói", () => {
   const FONTS_CSS = join(SRC, "styles/fonts.css");
   const css = readFileSync(FONTS_CSS, "utf8");
@@ -112,17 +161,15 @@ describe("font đóng gói", () => {
     expect(missing, "url() hỏng làm @font-face bị bỏ im lặng").toEqual([]);
   });
 
-  // App này viết bằng tiếng Việt. Thiếu subset `vietnamese` thì riêng ký tự có dấu rơi sang
-  // font hệ thống, và một câu hiện ra bằng hai họ chữ trộn lẫn — dễ thấy nhưng khó gọi tên,
-  // nên phải có bài kiểm gọi tên hộ.
+  // The app is in Vietnamese: without the `vietnamese` subset, accented characters fall back to another family.
   it("mỗi họ chữ đều có lát vietnamese", () => {
-    // U+1EA0-1EF9 là khối chữ Việt có dấu; nó là dấu nhận biết chắc chắn nhất của lát này.
+    // U+1EA0-1EF9 is the Vietnamese accented block, the surest marker of this subset.
     const withVietnamese = new Set(
       faces
         .filter((face) => field(face, "unicode-range").includes("U+1EA0-1EF9"))
         .map((face) => field(face, "font-family")),
     );
-    for (const family of ['"Manrope"', '"IBM Plex Mono"']) {
+    for (const family of ['"Manrope"', '"IBM Plex Mono"', '"EB Garamond"']) {
       expect(withVietnamese.has(family), `${family} thiếu subset vietnamese`).toBe(true);
     }
   });
@@ -134,21 +181,13 @@ describe("font đóng gói", () => {
     }
   });
 
-  // Không được để lọt một `@import`/`url()` tới máy chủ ngoài: CSP của app
-  // (harness/app/tauri.conf.json) chỉ cho `default-src 'self'`, nên font ngoài không tải
-  // được — và cũng không báo gì.
+  // No `@import`/`url()` to an outside host: the app CSP is `default-src 'self'`, so remote fonts fail silently.
   it("không có font nào lấy từ mạng", () => {
     expect(css).not.toMatch(/https?:/);
   });
 });
 
-/**
- * Thang cỡ chữ.
- *
- * Bài này giữ *chủ đích*, không giữ con số: bậc nhỏ nhất phải còn đọc được vì `text-2xs`
- * là cỡ của toàn bộ metadata, và cả thang phải đơn điệu tăng vì một thang lộn xộn thì
- * `text-sm` có thể to hơn `text-base` mà không ai nhận ra.
- */
+/** Type scale: guards intent, not numbers - the smallest step must stay readable and the scale monotonic. */
 describe("thang cỡ chữ", () => {
   const ORDER = ["2xs", "xs", "sm", "base", "md", "lg", "xl", "2xl", "display"];
 
@@ -164,9 +203,7 @@ describe("thang cỡ chữ", () => {
   }
 
   it("bậc nhỏ nhất không xuống dưới 12px", () => {
-    // Root là 15px (tokens.css), nên 0.8rem = 12px. Dưới ngưỡng đó, đọc một tên tệp hay
-    // một số dòng diff là phải nheo mắt — mà đó lại đúng là thứ người dùng cần đọc để
-    // biết trợ lý vừa làm gì.
+    // Root is 15px (tokens.css), so 0.8rem = 12px; below that, filenames and diff line counts need squinting.
     expect(scale().get("2xs")!).toBeGreaterThanOrEqual(0.8);
   });
 
@@ -175,8 +212,7 @@ describe("thang cỡ chữ", () => {
     const values = ORDER.map((name) => sizes.get(name)!);
     expect(values).toEqual([...values].sort((a, b) => a - b));
     expect(new Set(values).size, "hai bậc trùng cỡ là một bậc thừa").toBe(values.length);
-    // `--text-base` là cỡ mặc định của `body`; đẩy nó lên 1rem là đổi cả bố cục chứ không
-    // chỉ đổi cỡ chữ, và người muốn to hơn đã có :root[data-scale="large"].
+    // `--text-base` is body's default size; cap it at 1rem for density, :root[data-scale="large"] covers the rest.
     expect(sizes.get("base")!).toBeLessThanOrEqual(1);
   });
 });

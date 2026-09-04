@@ -1,12 +1,6 @@
-//! Tầng dây: byte đến từ socket, chunk đi ra.
-//!
-//! Một sự thật chi phối cả thư mục này: **một lần đọc socket không phải một đơn vị của
-//! giao thức.** TCP cắt ở đâu là chuyện của TCP. Một event SSE có thể đến làm ba lần
-//! đọc; một dòng NDJSON có thể bị cắt ngang; và điểm cắt có thể rơi vào giữa một ký tự
-//! UTF-8 nhiều byte, giữa một escape `\"`, hay giữa `\r` và `\n`.
-//!
-//! Vì thế mọi bộ giải mã ở đây đệm **byte**, không đệm chuỗi, và chỉ giải mã UTF-8 khi
-//! đã có trọn một dòng. Đảo thứ tự đó lại là cách chắc chắn nhất để làm hỏng tiếng Việt.
+//! Wire layer: bytes in from the socket, chunks out.
+//! One socket read is not a protocol unit, and a split can land mid UTF-8 character, so
+//! every decoder here buffers *bytes* and only decodes UTF-8 once a full line is in hand.
 
 pub mod ndjson;
 pub mod pump;

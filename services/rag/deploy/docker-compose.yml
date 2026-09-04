@@ -1,75 +1,48 @@
-# Hai kho dữ liệu của tầng RAG: Qdrant giữ vector đoạn tài liệu, Neo4j giữ knowledge
-# graph. Cả hai chỉ phục vụ đúng một client — tiến trình `pai-rag-service` chạy cùng máy.
-#
-# Vì chỉ có một người dùng và một máy, mọi lựa chọn dưới đây tối ưu cho *độ trễ một truy
-# vấn* và *dữ liệu không mất*, không phải cho thông lượng nhiều client hay khả năng chịu
-# lỗi nhiều node. Không có cluster, không có replica, không có consensus: một node mỗi
-# service là đúng hình dạng của bài toán, thêm node chỉ thêm chỗ hỏng.
-#
-# Khởi động: cp .env.example .env, điền hai mật khẩu, rồi `docker compose up -d`.
-# Chi tiết vận hành nằm trong README.md cùng thư mục.
+# The RAG layer's one data store: Qdrant, holding chunk vectors. The entity graph left this file
+# when it moved to embedded SurrealDB - the service opens a directory itself, so there is no
+# container, no JVM and no password to keep in sync.
+# One user, one machine, one client, so every setting favours single-query latency and
+# durability over throughput: one node each. Setup: cp .env.example .env, then up -d.
 
-# Không đặt `name:` ở đây: file này được `include:` từ docker-compose.yml ở gốc repo,
-# và tên project lấy theo file gốc. Hai chỗ cùng đặt tên là hai nguồn sự thật.
+# No `name:` here: this file is `include:`d from the repo-root compose file, which owns the project name.
 
 services:
-  # ---------------------------------------------------------------------------
-  # Qdrant — vector store cho dense embedding của từng chunk.
-  # ---------------------------------------------------------------------------
+  # Qdrant - vector store for the dense embedding of each chunk.
   qdrant:
-    # Ghim đúng một phiên bản. `latest` nghĩa là một lần `docker compose pull` vô tình có
-    # thể đổi định dạng segment trên đĩa dưới chân dữ liệu đang chạy; Qdrant nâng cấp
-    # storage được nhưng không hạ cấp được, nên trôi phiên bản là đường một chiều.
+    # Pin one version: Qdrant can upgrade storage but not downgrade, so version drift is one-way.
     image: qdrant/qdrant:v1.19.0
     container_name: pai-qdrant
     restart: unless-stopped
 
-    # Chỉ loopback. Địa chỉ này cố ý *không* lấy từ biến môi trường: đây là chỉ mục toàn
-    # bộ tài liệu cá nhân của người dùng, và Qdrant chỉ có một api-key phẳng, không có
-    # phân quyền theo collection. Một dòng `0.0.0.0` đặt nhầm là mở toàn bộ kho ra LAN.
-    # Muốn truy cập từ máy khác thì dựng SSH tunnel, đừng sửa dòng này.
+    # Loopback only, deliberately not from an env var: Qdrant has one flat api-key and no per-collection permissions. Use an SSH tunnel for remote access.
     ports:
       - "127.0.0.1:${QDRANT_HTTP_PORT:-6333}:6333"
       - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
 
     environment:
-      # Bí mật đi bằng biến môi trường, phần tinh chỉnh còn lại nằm trong
-      # qdrant/local.yaml (mount bên dưới) để số nào cũng có chỗ ghi lý do bên cạnh.
-      # `:?` làm compose dừng ngay với thông báo rõ ràng nếu .env chưa có khoá — tốt hơn
-      # nhiều so với một Qdrant mở toang chạy im lặng vì biến rỗng.
+      # Secrets via env, the rest in qdrant/local.yaml; `:?` stops compose loudly instead of running wide open on an empty variable.
       QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY:?chưa đặt QDRANT_API_KEY trong .env — xem .env.example}
-      # Ứng dụng này chạy hoàn toàn cục bộ; không có lý do gì để nó tự gọi ra ngoài.
+      # This app is fully local; it has no reason to call out.
       QDRANT__TELEMETRY_DISABLED: "true"
       QDRANT__LOG_LEVEL: INFO
 
     volumes:
       - pai-qdrant-storage:/qdrant/storage
-      # Snapshot để riêng khỏi storage: khi cần khôi phục, thứ cuối cùng bạn muốn là bản
-      # sao lưu nằm chung volume với dữ liệu vừa hỏng.
+      # Snapshots on their own volume: a backup sharing a volume with the data it restores is no backup.
       - pai-qdrant-snapshots:/qdrant/snapshots
       - ./qdrant/local.yaml:/qdrant/config/local.yaml:ro
 
-    # Qdrant nạp segment bằng mmap và mở nhiều file cho mỗi segment (vector, payload,
-    # HNSW graph, quantized vector). Giới hạn nofile mặc định của một số bản Docker cũ là
-    # 1024, đủ để chạy nhưng sẽ vỡ khi collection lớn dần. 65535 là mức thoải mái.
+    # Qdrant mmaps segments and opens several files per segment; the old 1024 nofile default breaks as collections grow.
     ulimits:
       nofile:
         soft: 65535
         hard: 65535
 
-    # Trần RAM. Với ~1M vector 2560 chiều thì bản int8 nằm RAM ~2.5 GB, bản gốc để rescore
-    # ~10 GB, cộng payload và HNSW graph — 16g là dư cho quy mô mục tiêu và vẫn chặn được
-    # trường hợp một lần nạp dữ liệu lỗi kéo cả WSL vào swap, làm Ollama chết theo.
+    # RAM ceiling: ~2.5 GB int8 plus ~10 GB originals for rescoring, and a cap keeps a bad ingest from swapping out Ollama.
     mem_limit: ${QDRANT_MEM_LIMIT:-16g}
 
     healthcheck:
-      # Image Qdrant dựng trên debian-slim và cố ý không có curl/wget. Nhưng nó có bash,
-      # nên ta tự nói HTTP qua /dev/tcp. `/readyz` được Qdrant whitelist khỏi api-key
-      # (xem api_key_whitelist trong src/actix/mod.rs) nên healthcheck không cần biết khoá,
-      # và khác với một phép thử "cổng có mở không", /readyz chỉ trả 200 sau khi mọi
-      # collection đã nạp xong — đúng thời điểm client được phép gọi.
-      # Dùng dạng CMD chứ không CMD-SHELL vì /dev/tcp là tính năng của bash, /bin/sh
-      # (dash) không có.
+      # The image has no curl/wget but does have bash, so speak HTTP over /dev/tcp; `/readyz` is api-key exempt and only returns 200 once collections are loaded.
       test:
         - CMD
         - bash
@@ -77,148 +50,21 @@ services:
         - 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf "GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n" >&3 && head -n 1 <&3 | grep -q " 200 "'
       interval: 10s
       timeout: 5s
-      # Qdrant khởi động nhanh khi kho nhỏ, nhưng lần đầu sau khi nạp cả triệu vector nó
-      # phải mmap lại toàn bộ segment. 30s đầu không tính là hỏng.
+      # Startup is fast on a small store, but the first run after a million vectors has to mmap every segment.
       start_period: 30s
       retries: 5
 
     stop_grace_period: 30s
 
-    # Máy cá nhân không có log rotation ở ngoài. Không giới hạn ở đây thì json log lớn dần
-    # đến khi đầy ổ, và đó là kiểu hỏng chỉ lộ ra sau vài tháng.
+    # No external log rotation on a personal machine, so cap it here or the json log fills the disk.
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
 
-  # ---------------------------------------------------------------------------
-  # Neo4j — knowledge graph: Document/Section/Chunk/Entity và quan hệ giữa chúng.
-  # ---------------------------------------------------------------------------
-  neo4j:
-    # 5.26 là nhánh LTS: vá lỗi lâu dài, không đổi hành vi giữa các bản vá. Bản 2026.x mới
-    # hơn nhưng đi theo lịch phát hành liên tục, không hợp với một kho dữ liệu cá nhân mà
-    # người dùng chỉ nâng cấp mỗi năm một lần. `community` vì Enterprise cần license và
-    # thứ nó thêm (cluster, online backup, multi-database) đều vô nghĩa trên một máy.
-    # Driver `neo4j>=5.26` trong pyproject.toml khớp đúng nhánh này.
-    image: neo4j:5.26.30-community
-    container_name: pai-neo4j
-    restart: unless-stopped
-
-    # Cũng chỉ loopback, cùng lý do như Qdrant. 7474 là Neo4j Browser (tiện khi cần soi
-    # graph bằng mắt), 7687 là Bolt — cổng duy nhất mà pai-rag-service dùng.
-    # Không mở 7473 (HTTPS): trên loopback nó chỉ thêm một chứng chỉ tự ký để quản lý.
-    ports:
-      - "127.0.0.1:${NEO4J_HTTP_PORT:-7474}:7474"
-      - "127.0.0.1:${NEO4J_BOLT_PORT:-7687}:7687"
-
-    environment:
-      # Mật khẩu chỉ được dùng ở *lần khởi tạo đầu tiên*; sau đó nó nằm trong volume
-      # /data. Đổi biến này về sau không đổi mật khẩu — xem README, mục đổi mật khẩu.
-      NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:?chưa đặt NEO4J_PASSWORD trong .env — xem .env.example}
-      # Healthcheck cần mật khẩu để đăng nhập Bolt. Tên biến *không* bắt đầu bằng NEO4J_
-      # là cố ý: entrypoint của image biến mọi biến NEO4J_* lạ thành khoá cấu hình, và
-      # `server.config.strict_validation` mặc định bật sẽ làm Neo4j từ chối khởi động vì
-      # một khoá tên "password" không tồn tại.
-      PAI_NEO4J_PASSWORD: ${NEO4J_PASSWORD:?chưa đặt NEO4J_PASSWORD trong .env}
-
-      # --- bộ nhớ ------------------------------------------------------------
-      # Mặc định của Neo4j được chọn để chạy được ở mọi nơi, kể cả container 2 GB, nên
-      # trên máy 96 GB nó bỏ phí gần như toàn bộ RAM và mọi truy vấn đều chạm đĩa.
-      #
-      # heap = 8G, initial == max. Heap *không* chứa dữ liệu graph — nó chứa trạng thái
-      # thực thi truy vấn và trạng thái transaction. Tải ở đây là một người dùng: vài truy
-      # vấn đồng thời là nhiều, còn transaction lớn nhất là một lô ingest vài nghìn node và
-      # quan hệ. 8G thừa sức cho việc đó. Đặt lớn hơn không nhanh hơn mà chỉ kéo dài pha
-      # dọn rác G1 và biến độ trễ thành thứ không đoán được. Cho initial bằng max để JVM
-      # không phải nới heap lúc đang chạy — mỗi lần nới là một lần full GC.
-      NEO4J_server_memory_heap_initial__size: ${NEO4J_HEAP_SIZE:-8G}
-      NEO4J_server_memory_heap_max__size: ${NEO4J_HEAP_SIZE:-8G}
-      # pagecache = 12G. Đây mới là chỗ chứa dữ liệu: node store, relationship store,
-      # property store, chuỗi văn bản và các index. Mục tiêu duy nhất của con số này là
-      # *toàn bộ graph nằm gọn trong RAM*, vì một lần đọc trượt page cache là một lần đi
-      # đĩa, và graph traversal 1–2 hop đọc rất nhiều page nhỏ rải rác — đúng kiểu truy cập
-      # mà SSD tệ nhất. Với vài trăm nghìn chunk cộng entity rút ra từ chúng, store thường
-      # rơi vào khoảng 5–10 GB; 12G phủ hết và còn chỗ cho corpus lớn gấp đôi.
-      NEO4J_server_memory_pagecache_size: ${NEO4J_PAGECACHE_SIZE:-12G}
-
-      # Trần bộ nhớ cho *tất cả* transaction đang chạy, lấy trong heap. Mặc định là 70%
-      # heap; đặt tường minh 6G để một truy vấn Cypher xổng chuồng bị huỷ kèm thông báo rõ
-      # ràng thay vì đẩy JVM vào OutOfMemoryError và kéo cả database xuống.
-      NEO4J_dbms_memory_transaction_total_max: 6G
-      # Trần cho *một* transaction. Lô ingest và graph expansion 1–2 hop không bao giờ cần
-      # tới 2G; cái gì vượt mức này là lỗi lập trình, và huỷ sớm thì dễ sửa hơn treo máy.
-      NEO4J_db_memory_transaction_max: 2G
-      # Mặc định là không có thời hạn: một truy vấn tệ sẽ chạy đến khi có người để ý.
-      # Trong một ứng dụng desktop thì "có người để ý" nghĩa là người dùng thấy giao diện
-      # đứng. 300s rộng rãi cho lô ingest lớn nhất mà vẫn cắt được vòng lặp vô hạn.
-      NEO4J_db_transaction_timeout: 300s
-
-      # --- APOC ---------------------------------------------------------------
-      # APOC Core đã nằm sẵn trong image tại /var/lib/neo4j/labs/apoc-*-core.jar và
-      # entrypoint copy từ đó (khoá "apoc" trong /startup/neo4j-plugins.json có trường
-      # "location"), nên khai báo này *không* tải gì từ Internet — quan trọng với một ứng
-      # dụng chạy offline. Cần APOC cho graph expansion (apoc.path.*), gom danh sách
-      # (apoc.coll.*) và soi schema (apoc.meta.*).
-      NEO4J_PLUGINS: '["apoc"]'
-      # Cho phép thủ tục APOC chạm vào phần internal của DB. Entrypoint cũng tự đặt đúng
-      # giá trị này khi thấy NEO4J_PLUGINS chứa "apoc"; viết ra đây để nó hiện diện chứ
-      # không ẩn trong script khởi động.
-      NEO4J_dbms_security_procedures_unrestricted: apoc.*
-      # Cố ý KHÔNG đặt dbms.security.procedures.allowlist. Mặc định của nó là `*`, và
-      # thu hẹp thành `apoc.*` sẽ chặn luôn các thủ tục dựng sẵn mà tầng RAG sống nhờ:
-      # db.index.vector.queryNodes (vector search), db.index.fulltext.queryNodes
-      # (full-text), db.labels. Hàng rào thật nằm ở chỗ khác — pai-rag-service chỉ chạy
-      # Cypher từ template có kiểm tra, không bao giờ chuyển thẳng Cypher do LLM sinh ra.
-
-    volumes:
-      - pai-neo4j-data:/data
-      # Log ra volume riêng để `docker compose down -v` khi cần làm lại chỉ mục không xoá
-      # mất debug.log của lần hỏng vừa rồi.
-      - pai-neo4j-logs:/logs
-
-    # heap 8G + pagecache 12G + phần native của JVM (metaspace, stack, direct buffer, bộ
-    # nhớ của index vector nằm ngoài heap) ~3G = ~23G. Đặt trần 24g để phần này không bao
-    # giờ tranh RAM với Ollama và ASR trong cùng WSL.
-    # LƯU Ý: WSL2 mặc định chỉ được cấp 50% RAM Windows (ở đây là ~48 GB). Nếu bạn đã ghim
-    # một mức thấp hơn trong %USERPROFILE%\.wslconfig thì hạ NEO4J_HEAP_SIZE và
-    # NEO4J_PAGECACHE_SIZE theo cùng tỉ lệ, nếu không OOM killer của Linux sẽ chọn hộ bạn.
-    mem_limit: ${NEO4J_MEM_LIMIT:-24g}
-
-    healthcheck:
-      # Mở hẳn một phiên Bolt và chạy truy vấn thật. Đây là điều kiện duy nhất đáng quan
-      # tâm: cổng mở chưa có nghĩa là database `neo4j` đã online, và trong lần khởi động
-      # đầu Neo4j nghe Bolt trước khi mật khẩu được đặt xong.
-      # `$$` để compose không nội suy biến này mà để nguyên cho shell trong container.
-      test:
-        - CMD-SHELL
-        - 'cypher-shell -u neo4j -p "$$PAI_NEO4J_PASSWORD" "RETURN 1" >/dev/null 2>&1 || exit 1'
-      interval: 15s
-      timeout: 10s
-      # JVM khởi động, nạp plugin, rồi recovery từ transaction log nếu lần trước tắt bẩn.
-      # 90s là khoảng an toàn để không báo unhealthy oan trong lúc đó.
-      start_period: 90s
-      retries: 6
-
-    # Neo4j cần kịp checkpoint và đóng store sạch sẽ; bị SIGKILL giữa chừng thì lần sau
-    # phải recovery từ transaction log, chậm và không cần thiết. 10s mặc định là quá ngắn.
-    stop_grace_period: 120s
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-# Named volume, có đặt `name:` tường minh để tên không phụ thuộc tên thư mục hay
-# COMPOSE_PROJECT_NAME. Nhờ vậy các lệnh sao lưu trong README luôn đúng, và `docker
-# compose down` (không kèm -v) dựng lại container mà dữ liệu vẫn nguyên.
 volumes:
   pai-qdrant-storage:
     name: pai-qdrant-storage
   pai-qdrant-snapshots:
     name: pai-qdrant-snapshots
-  pai-neo4j-data:
-    name: pai-neo4j-data
-  pai-neo4j-logs:
-    name: pai-neo4j-logs

@@ -1,9 +1,6 @@
-//! `glob` — find files by name pattern.
-//!
-//! Two small details decide whether the model uses this correctly, so they are written down:
-//! results contain **files only, never directories**, and a pattern without `/` matches
-//! **the file name at any depth**. Without the second rule `*.rs` returns nothing in every
-//! repo with subdirectories, and the model wrongly concludes the repo has no Rust files.
+//! `glob`: find files by name pattern. Results are files only, never directories, and a
+//! pattern without `/` matches the file name at any depth, or `*.rs` would return nothing
+//! in any repo with subdirectories.
 
 use std::path::{Path, PathBuf};
 
@@ -17,8 +14,7 @@ use serde_json::json;
 
 use crate::path::FileRoots;
 
-/// How many paths are shown. The remainder is not lost — it is in the content, and the
-/// pipeline spills long content to the store.
+/// How many paths are shown; the rest stay in the content, which the pipeline may spill.
 const DISPLAY_CAP: usize = 100;
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -41,8 +37,7 @@ impl GlobTool {
     }
 }
 
-/// A pattern without `/` matches the file name; with `/` it matches the path relative to
-/// the search root.
+/// Without `/` the pattern matches the file name; with `/`, the path relative to the search root.
 fn matcher(pattern: &str) -> Result<(GlobMatcher, bool), ToolError> {
     let by_name = !pattern.contains('/');
     let glob = Glob::new(pattern).map_err(|err| ToolError::Invalid(err.to_string()))?;
@@ -84,8 +79,7 @@ impl Tool for GlobTool {
         let (glob, by_name) = matcher(&args.pattern)?;
         let roots = self.roots.clone();
 
-        // Walking the tree is blocking work. Move it off the runtime, or a large repo
-        // holds the whole reactor for the duration of the scan.
+        // Walking the tree blocks, so keep it off the runtime or a large repo stalls the reactor.
         let found = tokio::task::spawn_blocking(move || {
             let mut hits: Vec<(PathBuf, std::time::SystemTime)> = Vec::new();
             for entry in WalkBuilder::new(&base).hidden(false).build().flatten() {
@@ -101,9 +95,7 @@ impl Tool for GlobTool {
                 if !glob.is_match(candidate) {
                     continue;
                 }
-                // Hidden from the listing, not merely blocked from reading: naming a
-                // protected file already tells the model something is there to go find
-                // another way to.
+                // Hidden, not just unreadable: naming a protected file already leaks its existence.
                 if roots.is_protected(path) {
                     continue;
                 }
@@ -114,8 +106,7 @@ impl Tool for GlobTool {
                     .unwrap_or(std::time::UNIX_EPOCH);
                 hits.push((path.to_path_buf(), mtime));
             }
-            // Most recent first: the file just touched is almost always the one being
-            // asked about.
+            // Most recent first: the file just touched is almost always the one being asked about.
             hits.sort_unstable_by_key(|(_, mtime)| std::cmp::Reverse(*mtime));
             hits.into_iter().map(|(path, _)| path).collect::<Vec<_>>()
         })

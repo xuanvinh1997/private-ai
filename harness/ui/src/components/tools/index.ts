@@ -6,13 +6,7 @@ import { GlobCard, GrepCard } from "./SearchCard";
 import GenericToolCard from "./ToolCard";
 import TodoToolCard from "./TodoToolCard";
 
-/**
- * Điểm mở rộng của tầng tool: thêm một tool mới nghĩa là thêm đúng một dòng ở đây.
- *
- * Khoá là **tên tool trên wire**, không phải nhãn hiển thị — nhãn đổi được, tên trên
- * wire là hợp đồng với lõi. Không có khoá thì rơi vào `GenericToolCard`, nên một tool
- * đến từ MCP vẫn hiện được ngay cả khi không ai từng nghe tên nó.
- */
+/** Tool-layer extension point, keyed by wire name; anything unkeyed falls back to the generic card. */
 registerToolFallback(GenericToolCard);
 
 registerToolCard("read", ReadCard);
@@ -23,5 +17,5 @@ registerToolCard("glob", GlobCard);
 registerToolCard("bash", BashCard);
 registerToolCard("todo_write", TodoToolCard);
 
-// Xem `clearToolRegistry`: hot reload nạp lại tệp này nhưng giữ nguyên sổ đăng ký.
+// See `clearToolRegistry`: hot reload re-runs this file but keeps the registry.
 if (import.meta.hot) import.meta.hot.dispose(() => clearToolRegistry());

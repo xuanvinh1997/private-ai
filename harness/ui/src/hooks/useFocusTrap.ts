@@ -9,16 +9,7 @@ const FOCUSABLE = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(",");
 
-/**
- * Giam tiêu điểm bàn phím trong một hộp thoại.
- *
- * `aria-modal` nói với trình đọc màn hình rằng phần còn lại của trang không tồn tại,
- * nhưng nó KHÔNG ngăn Tab đi ra ngoài — người dùng bàn phím sẽ lạc vào một cây DOM mà
- * trình đọc màn hình vừa bảo là không có. Nên phải tự vòng Tab lại.
- *
- * `onEscape` cũng nằm ở đây thay vì ở từng hộp thoại: mọi hộp thoại đều phải đóng bằng
- * Esc, và quên một chỗ là một cái bẫy im lặng.
- */
+/** Trap keyboard focus in a dialog: aria-modal hides the page from screen readers but does not stop Tab. */
 export function useFocusTrap(container: () => HTMLElement | undefined, onEscape: () => void) {
   let restore: HTMLElement | null = null;
 
@@ -59,8 +50,7 @@ export function useFocusTrap(container: () => HTMLElement | undefined, onEscape:
 
   onCleanup(() => {
     document.removeEventListener("keydown", onKeyDown, true);
-    // Trả tiêu điểm về chỗ cũ. Không làm thì sau khi đóng hộp thoại, Tab tiếp theo bắt
-    // đầu lại từ đầu trang.
+    // Restore focus; otherwise the next Tab after closing starts from the top of the page.
     restore?.focus();
   });
 }

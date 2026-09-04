@@ -1,16 +1,6 @@
-//! Kho mô hình LM Studio: `/api/v0/models` và `/api/v0/models/{id}`.
-//!
-//! Đây là `/api/show` của phía LM Studio, và nó trả lời được hai câu mà `/v1/models`
-//! không trả lời được: mô hình này **làm được gì**, và nó **có đang nằm trong VRAM
-//! không**. Cả hai đều đổi theo thời gian ở một máy chủ nạp theo yêu cầu, nên đoán theo
-//! tên không phải một xấp xỉ tệ — nó là một câu trả lời sai.
-//!
-//! Nửa vòng đời thì **cố ý khuyết**, và khuyết một cách nói ra được. LM Studio không có
-//! endpoint tải về, nhả, hay xoá: tải là việc của ứng dụng LM Studio (hoặc `lms get`),
-//! nhả là việc của bộ đếm `ttl`, xoá là việc của người dùng trong thư mục mô hình. Ba
-//! phương thức ấy trả [`LlmErrorCode::Unsupported`] kèm câu nói **phải làm gì thay thế**
-//! — khác hẳn với việc trả `None` từ [`crate::seam::LlmAdapter::admin`], vì `None` sẽ
-//! kéo mất cả `list` và `show`, tức là kéo mất chính thứ ta vừa xây.
+//! LM Studio model store: `/api/v0/models` and `/api/v0/models/{id}`.
+//! It answers what `/v1/models` cannot: what a model can do and whether it is in VRAM.
+//! Pull/unload/delete return `Unsupported` with a fix, rather than dropping `list`/`show`.
 
 use std::time::Duration;
 
@@ -23,11 +13,11 @@ use crate::error::{LlmError, LlmErrorCode};
 use crate::model::{ModelDetails, ModelInfo, ModelState, PullProgress, RunningModel};
 use crate::seam::ModelAdmin;
 
-/// Bao lâu thì coi như máy chủ đã chết, khi chỉ hỏi thăm sức khoẻ.
+/// How long before a health probe declares the server dead.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub struct LmStudioAdmin {
-    /// Gốc máy chủ, đã cắt mọi đuôi API — xem [`super::server_root`].
+    /// Server root with every API suffix stripped - see [`super::server_root`].
     base_url: String,
     api_key: String,
     http: reqwest::Client,
@@ -72,7 +62,7 @@ impl LmStudioAdmin {
         serde_json::from_str(&text).map_err(LlmError::from)
     }
 
-    /// Một câu giải thích dùng chung cho ba động từ không có ở đây.
+    /// One shared explanation for the three verbs that do not exist here.
     fn khong_co(verb: &str, thay_the: &str) -> LlmError {
         LlmError::new(
             LlmErrorCode::Unsupported,
@@ -83,20 +73,7 @@ impl LmStudioAdmin {
     }
 }
 
-/// Đọc một mục của `/api/v0/models` thành năng lực.
-///
-/// Ba nguồn, theo đúng thứ tự giảm dần độ tin cậy — và `source` phải nói đúng nguồn nào
-/// đã thắng, vì "mô hình này không gọi được tool" là một câu khác hẳn khi nó đọc từ máy
-/// chủ và khi nó chỉ là suy luận trên một cái tên:
-///
-/// 1. Mảng `capabilities` (bản LM Studio đủ mới), từ vựng riêng của họ.
-/// 2. Cờ boolean rời — `trained_for_tool_use`, `vision` — các bản trung gian dùng cái này.
-/// 3. `type`: `llm` / `vlm` / `embeddings`. Trường này có từ ngày đầu của `/api/v0` nên
-///    trên thực tế nó luôn có mặt, và nó đủ để phân biệt mô hình nhúng với mô hình trò
-///    chuyện — chuyện mà `/v1/models` không làm được và người dùng thì hay chọn nhầm.
-///
-/// Không nguồn nào trả lời được thì rơi xuống đoán theo tên cộng `arch`, y như nhánh dự
-/// phòng của Ollama khi `/api/show` im lặng.
+/// Read one `/api/v0/models` entry into capabilities, from three sources in falling order of trust - the `capabilities` array, the loose boolean flags, then `type` - and fall back to name plus `arch` when none answers.
 pub fn details_from_model(name: &str, entry: &Value) -> ModelDetails {
     let context_window = entry
         .get("loaded_context_length")
@@ -115,7 +92,7 @@ pub fn details_from_model(name: &str, entry: &Value) -> ModelDetails {
         }
     };
 
-    // (1) Từ vựng riêng của LM Studio, dịch sang từ vựng chung của crate này.
+    // (1) LM Studio's own vocabulary, translated into this crate's.
     if let Some(items) = entry.get("capabilities").and_then(Value::as_array) {
         for item in items.iter().filter_map(Value::as_str) {
             match item.to_lowercase().as_str() {
@@ -128,9 +105,7 @@ pub fn details_from_model(name: &str, entry: &Value) -> ModelDetails {
             }
         }
     }
-    // (2) Cờ rời. Chỉ đọc khi nó là `true`: một `false` ở đây thường là trường chưa được
-    // điền chứ không phải một lời khẳng định, và đọc nó thành "không có" là biến một chỗ
-    // trống thành một cảnh báo sai.
+    // (2) Loose flags, read only when `true`: a `false` here is usually an unfilled field, not a denial.
     if entry
         .get("trained_for_tool_use")
         .and_then(Value::as_bool)
@@ -141,7 +116,7 @@ pub fn details_from_model(name: &str, entry: &Value) -> ModelDetails {
     if entry.get("vision").and_then(Value::as_bool).unwrap_or(false) {
         push("vision");
     }
-    // (3) Loại mô hình.
+    // (3) Model type.
     match entry
         .get("type")
         .and_then(Value::as_str)
@@ -168,7 +143,7 @@ pub fn details_from_model(name: &str, entry: &Value) -> ModelDetails {
     ModelDetails {
         capabilities,
         family: arch,
-        // LM Studio không khai số tham số ở đâu cả; nó nằm trong tên tệp và ta không đoán.
+        // LM Studio publishes no parameter count anywhere; it lives in the filename and we do not guess.
         parameter_size: None,
         quantization: entry
             .get("quantization")
@@ -177,7 +152,7 @@ pub fn details_from_model(name: &str, entry: &Value) -> ModelDetails {
     }
 }
 
-/// Mục này có đang nằm trong VRAM không.
+/// Is this entry currently in VRAM?
 fn loaded(entry: &Value) -> bool {
     entry
         .get("state")
@@ -197,9 +172,7 @@ fn info_from_entry(entry: &Value) -> Option<ModelInfo> {
         } else {
             ModelState::Unloaded
         },
-        // LM Studio không khai kích thước tệp hay VRAM đang chiếm. Số 0 ở đây nghĩa là
-        // **chưa biết**, đúng như tài liệu của trường nói, và nó không được đoán: một con
-        // số bịa ra sẽ đi thẳng vào phép giữ chỗ VRAM của `required_bytes`.
+        // LM Studio reports neither file size nor VRAM use; 0 means unknown, and inventing a number would feed `required_bytes`.
         size_bytes: 0,
         vram_bytes: 0,
         quantization: details.quantization.clone(),
@@ -218,9 +191,7 @@ impl ModelAdmin for LmStudioAdmin {
                 "LM Studio trả về danh sách mô hình không hợp lệ",
             ));
         };
-        // Một lời gọi cho cả kho, không phải một lời gọi cho mỗi mô hình như Ollama phải
-        // làm: `/api/v0/models` đã mang sẵn `type`, `state` và cửa sổ ngữ cảnh của từng
-        // mục, nên không có gì để hỏi thêm.
+        // One call for the whole store, unlike Ollama: `/api/v0/models` already carries `type`, `state` and the context window per entry.
         let mut models: Vec<ModelInfo> = entries.iter().filter_map(info_from_entry).collect();
         models.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(models)
@@ -241,8 +212,7 @@ impl ModelAdmin for LmStudioAdmin {
                     name: entry.get("id").and_then(Value::as_str)?.to_string(),
                     size_bytes: 0,
                     vram_bytes: 0,
-                    // LM Studio nhả theo `ttl` của từng request chứ không theo một hạn
-                    // chung cho cả mô hình, nên không có mốc nào để in ra đây.
+                    // LM Studio expires per-request via `ttl`, not per model, so there is no deadline to print.
                     expires_at: None,
                 })
             })
@@ -250,8 +220,7 @@ impl ModelAdmin for LmStudioAdmin {
     }
 
     async fn show(&self, model: &str) -> Result<ModelDetails, LlmError> {
-        // Tên mô hình của LM Studio có dấu `/` (`lmstudio-community/qwen…`), nên nó phải
-        // được mã hoá — nếu không thì đường dẫn tự mọc thêm một đoạn và máy chủ trả 404.
+        // LM Studio model names contain `/`, so the segment must be encoded or the path grows a component and the server 404s.
         let payload = self
             .get(&format!("/api/v0/models/{}", encode_segment(model)))
             .await?;
@@ -287,8 +256,7 @@ impl ModelAdmin for LmStudioAdmin {
     }
 }
 
-/// Mã hoá một đoạn đường dẫn. Viết tay vì đây là chỗ duy nhất cần tới, và một crate mã
-/// hoá URL cho đúng một hàm là một phụ thuộc phải nuôi qua từng bản phát hành.
+/// Percent-encode one path segment; hand-written, because a URL crate for a single function is a dependency to maintain forever.
 fn encode_segment(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.as_bytes() {

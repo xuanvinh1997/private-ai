@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# Build "Private AI.app" for macOS.
-#
-#   ./packaging/build.sh                 # ad-hoc signature: runs on this machine
-#   ./packaging/build.sh --sign "Apple Development: you (TEAMID)"
-#   ./packaging/build.sh --dmg           # also produce a .dmg to hand to someone
-#
-# Read packaging/README.md before signing for anyone other than yourself: an Apple
-# Development certificate is not enough to make an app another Mac will open.
+# Build "Private AI.app" for macOS. Flags: --sign "<identity>", --dmg.
+# With no --sign the signature is ad-hoc and the app runs only on this machine.
+# Read packaging/README.md before signing for anyone else.
 
 set -euo pipefail
 
@@ -43,9 +38,7 @@ if ! "${PYTHON}" -c "import PyInstaller" >/dev/null 2>&1; then
 fi
 
 echo "==> Dọn thư mục build cũ"
-# Spotlight starts indexing a freshly signed bundle the moment it appears, and files
-# landing under dist/ while rm walks it make rm give up with "Directory not empty". One
-# retry is enough; the indexer is finished with a directory it can no longer see.
+# Spotlight indexes a freshly signed bundle immediately, which makes rm fail with "Directory not empty"; one retry is enough.
 for attempt in 1 2 3; do
   if rm -rf "${ROOT}/build" "${ROOT}/dist" 2>/dev/null; then break; fi
   [[ "${attempt}" == "3" ]] && { echo "Không xoá được ${ROOT}/dist." >&2; exit 1; }
@@ -63,8 +56,7 @@ if [[ ! -d "${APP}" ]]; then
   exit 1
 fi
 
-# Anything removed has to go before signing: the signature covers the bundle's contents,
-# and deleting a file afterwards invalidates it.
+# Anything removed has to go before signing: deleting a file afterwards invalidates the signature.
 echo "==> Cắt bớt phần không dùng"
 FRAMEWORKS="${APP}/Contents/Frameworks"
 for junk in \
@@ -88,18 +80,12 @@ done
 find "${FRAMEWORKS}" -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true
 find "${FRAMEWORKS}" -type d -name "tests" -path "*/numpy/*" -prune -exec rm -rf {} + 2>/dev/null || true
 
-# The compiled transcribe.cpp runtime, so dictation works on a machine with no compiler.
-# Must land before the signing step: install_name_tool rewrites Mach-O headers and voids
-# any signature already on them. A build machine that never ran `private-ai-asr setup` has
-# nothing to embed — say so and carry on, the app is fine without a microphone.
+# The compiled transcribe.cpp runtime, before signing because install_name_tool voids signatures; a build machine without it just ships no dictation.
 echo "==> Nhúng ASR native"
 "${PYTHON}" "${PACKAGING}/bundle_asr.py" "${APP}" || \
   echo "    bỏ qua: bản đóng gói này sẽ không có nhận dạng giọng nói" >&2
 
-# Info.plist promises a minimum macOS; every Mach-O in the bundle states the one it was
-# actually built against. Only the second is true. A promise that is too low does not make
-# the app run on an older Mac — it makes LaunchServices start it and dyld kill it a second
-# later with a message no user can act on. So the number is measured, never typed.
+# Info.plist promises a minimum macOS while every Mach-O states the real one; a too-low promise makes dyld kill the app, so the number is measured, never typed.
 echo "==> Đo phiên bản macOS tối thiểu thật"
 FLOOR="$(find "${APP}/Contents" -type f \( -name '*.so' -o -name '*.dylib' -o -name 'private-ai' \) -print0 \
   | xargs -0 -n 1 otool -l 2>/dev/null \
@@ -119,8 +105,7 @@ if [[ "${SIGN_IDENTITY}" == "-" ]]; then
     "${APP}"
 else
   echo "    ${SIGN_IDENTITY}"
-  # --deep is deprecated for real identities: sign the nested code first, then the bundle,
-  # so each Mach-O gets its own signature rather than one inherited stamp.
+  # --deep is deprecated for real identities: sign nested code first, then the bundle.
   find "${APP}/Contents" \( -name "*.so" -o -name "*.dylib" \) -print0 \
     | xargs -0 -n 32 codesign --force --timestamp --options runtime \
         --entitlements "${PACKAGING}/entitlements.plist" --sign "${SIGN_IDENTITY}"
@@ -133,10 +118,7 @@ fi
 
 codesign --verify --deep --strict --verbose=2 "${APP}" 2>&1 | tail -3
 
-# Replacing a bundle in place leaves LaunchServices holding the previous registration for
-# this identifier, and the next `open` can launch what was there before — which reads
-# exactly like a build that silently ignored your changes. Re-register so the first launch
-# after a build is the thing that was just built.
+# Replacing a bundle in place leaves LaunchServices holding the old registration, so the next `open` can launch the previous build; re-register to avoid that.
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister"
 [[ -x "${LSREGISTER}" ]] && "${LSREGISTER}" -f "${APP}" || true
 

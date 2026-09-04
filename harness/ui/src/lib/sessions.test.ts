@@ -14,7 +14,7 @@ describe("foldDiacritics", () => {
     expect(foldDiacritics("Sửa tài liệu")).toBe("sua tai lieu");
   });
 
-  // `đ` không phải `d` cộng dấu tổ hợp, nên `NFD` không tách nó — đây là ca dễ sót nhất.
+  // D-stroke is not `d` plus a combining mark, so `NFD` misses it; this is the easiest case to forget.
   it("đổi đ thành d, cả hoa lẫn thường", () => {
     expect(foldDiacritics("Đọc Đề")).toBe("doc de");
   });
@@ -33,7 +33,7 @@ describe("rankSessions", () => {
     session("e", "authentication", NOW - 5_000),
   ];
 
-  // Lý do cả hàm này tồn tại: gõ không dấu là cách người ta thật sự lọc danh sách.
+  // Why the function exists at all: people really do filter by typing without diacritics.
   it("truy vấn không dấu tìm ra tiêu đề có dấu", () => {
     expect(ids(rankSessions(sessions, "sua"))).toEqual(["a"]);
     expect(ids(rankSessions(sessions, "doc"))).toEqual(["d"]);
@@ -48,7 +48,7 @@ describe("rankSessions", () => {
     expect(ids(rankSessions(sessions, "authx"))).toEqual([]);
   });
 
-  // Khớp từ đầu tiêu đề ("e") đứng trên khớp đầu một từ ("a", "b"); "a" trên "b" vì mới hơn.
+  // A title-start match ("e") outranks a word-start match ("a", "b"); "a" beats "b" for being newer.
   it("khớp đầu tiêu đề đứng trước, rồi tới phiên mới hơn", () => {
     expect(ids(rankSessions(sessions, "authentication"))).toEqual(["e", "a", "b"]);
   });
@@ -66,7 +66,7 @@ describe("rankSessions", () => {
 });
 
 describe("titleFromMessage", () => {
-  // Cắt thô ở đúng 24 ký tự cho ra "…trong bộ n…"; ranh giới từ cho ra "…trong bộ…".
+  // A hard cut at 24 characters would split a word; the word boundary keeps it readable.
   it("cắt ở ranh giới từ chứ không giữa từ", () => {
     expect(titleFromMessage("Bỏ hết unwrap trong bộ nạp cấu hình của pai-core", 24)).toBe(
       "Bỏ hết unwrap trong bộ…",
@@ -83,7 +83,7 @@ describe("titleFromMessage", () => {
 });
 
 describe("groupSessions", () => {
-  // Mốc "hôm nay" là nửa đêm địa phương, không phải "trong 24 giờ qua".
+  // "Today" starts at local midnight, not a rolling 24 hours.
   it("một phiên 23h hôm qua không phải hôm nay, dù mới hơn 1h sáng nay", () => {
     const now = new Date(2024, 0, 15, 9, 0, 0).getTime();
     const lateYesterday = new Date(2024, 0, 14, 23, 0, 0).getTime();

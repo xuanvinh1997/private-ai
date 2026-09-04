@@ -1,7 +1,6 @@
-//! Registry provider và khai báo seam.
-//!
-//! Hai thứ nhỏ nhưng hay hỏng im lặng: cache adapter đánh khoá **theo chữ ký**, và seam
-//! cắm được vào cây plugin của `pai-core`.
+//! Provider registry and seam declaration.
+//! Two small things that fail silently: the adapter cache keyed by signature, and the
+//! seam plugging into `pai-core`'s plugin tree.
 
 use std::sync::Arc;
 
@@ -26,10 +25,7 @@ fn ollama(id: &str, url: &str) -> ProviderConfig {
     ProviderConfig::new(id, "Ollama cục bộ", ProviderKind::Ollama, url)
 }
 
-/// Cache khoá theo chữ ký, không theo id.
-///
-/// Người dùng sửa URL mà giữ nguyên id là trường hợp thật: nếu cache khoá theo id thì mọi
-/// request tiếp theo vẫn bay tới máy chủ cũ và **không có gì báo động**.
+/// The cache is keyed by signature, not id: editing a URL while keeping the id must not keep routing to the old server.
 #[test]
 fn sua_url_thi_adapter_cu_bi_vut() {
     let registry = AdapterRegistry::new(client());
@@ -49,7 +45,7 @@ fn sua_url_thi_adapter_cu_bi_vut() {
     assert_eq!(registry.cached(), 1, "bản cũ của cùng provider bị vứt");
 }
 
-/// Khoá API cũng nằm trong chữ ký: dán một khoá mới vào là phải có client mới.
+/// The API key is part of the signature too: pasting a new key must produce a new client.
 #[test]
 fn doi_khoa_api_cung_lam_moi_adapter() {
     let registry = AdapterRegistry::new(client());
@@ -85,7 +81,7 @@ fn provider_khac_nhau_khong_dap_len_nhau() {
     assert_eq!(registry.cached(), 2);
 }
 
-/// Provider từ xa trả lời "không áp dụng" bằng câu chữ, không bằng một `None` câm lặng.
+/// A remote provider answers "not applicable" in words, not with a silent `None`.
 #[test]
 fn provider_tu_xa_la_chi_doc() {
     let registry = AdapterRegistry::new(client());
@@ -107,7 +103,7 @@ fn provider_tu_xa_la_chi_doc() {
     );
 }
 
-/// Ba tầng dự phòng của `active_config`, giữ nguyên từ bản Python.
+/// The three `active_config` fallbacks, kept from the Python version.
 #[test]
 fn provider_dang_chon_co_ba_tang_du_phong() {
     let mut tat = ollama("tat", "http://a");
@@ -120,12 +116,12 @@ fn provider_dang_chon_co_ba_tang_du_phong() {
         active_config(&configs, "khac").map(|c| c.id.as_str()),
         Some("khac")
     );
-    // Cái được ghim đang tắt: rơi xuống cái đầu tiên còn bật.
+    // The pinned one is disabled: fall through to the first enabled one.
     assert_eq!(
         active_config(&configs, "tat").map(|c| c.id.as_str()),
         Some("bat")
     );
-    // Tất cả đều tắt: vẫn trả cái đầu tiên, vì "chưa cấu hình gì" là một câu sai.
+    // All disabled: still return the first, because "nothing configured" would be wrong.
     let all_off = vec![tat.clone()];
     assert_eq!(
         active_config(&all_off, "").map(|c| c.id.as_str()),
@@ -158,7 +154,7 @@ fn base_url_chap_nhan_ca_goc_api_lan_host_tran() {
         openai_base_url("https://x.test/v2").as_deref(),
         Ok("https://x.test/v2")
     );
-    // `vllm` bắt đầu bằng `v` nhưng phần sau không phải số — không được nhầm là phiên bản.
+    // `vllm` starts with `v` but the rest is not a number - it must not be read as a version.
     assert_eq!(
         openai_base_url("https://x.test/vllm").as_deref(),
         Ok("https://x.test/vllm/v1")
@@ -166,7 +162,7 @@ fn base_url_chap_nhan_ca_goc_api_lan_host_tran() {
     assert!(openai_base_url("   ").is_err());
 }
 
-/// Chữ ký không được in khoá API ra log.
+/// The signature must never print the API key into a log.
 #[test]
 fn chu_ky_khong_ro_ri_khoa() {
     let config = ProviderConfig::new(
@@ -202,7 +198,7 @@ impl LlmAdapter for Cam {
 
 use futures::StreamExt;
 
-/// Seam cắm vào cây plugin và lấy ra được qua marker type, không qua chuỗi.
+/// The seam plugs into the plugin tree and is retrieved by marker type, not by string.
 #[tokio::test]
 async fn seam_cam_duoc_vao_cay_plugin() {
     let ctx = Context::root();
@@ -220,7 +216,7 @@ async fn seam_cam_duoc_vao_cay_plugin() {
             .vision
     );
 
-    // Đăng ký là hiệu ứng gỡ lại được: thả guard là seam trống trở lại.
+    // Registration is a reversible effect: dropping the guard empties the seam again.
     drop(guard);
     assert!(ctx.get::<Llm>().is_none());
 }

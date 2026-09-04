@@ -1,21 +1,20 @@
 /**
- * Tách văn bản trợ lý thành đoạn chữ và khối mã có rào ba dấu huyền.
- *
- * Đây **không phải** một bộ dựng markdown — phần đó là việc của `Markdown.tsx`, chạy trên
- * cây token của `marked`. Bộ tách này đứng **trước** nó và cố ý giữ nguyên: khối rào phải
- * ra khỏi chuỗi trước khi `marked` nhìn thấy, vì hai thứ ở đây không phải markdown thường —
- * `mermaid` thành hình vẽ, và một khối **chưa đóng rào** phải hiện ra như mã đang chảy chứ
- * không bị nuốt. `marked` gộp cả hai vào cùng một token `code` và làm mất phân biệt đó.
+ * Split assistant text into prose segments and backtick-fenced code blocks.
+ * It runs before `Markdown.tsx`, because `marked` folds mermaid and unclosed fences into one
+ * `code` token and loses the distinction this file has to keep.
  */
+
+import { S, t } from "../../lib/i18n";
+import type { Msg } from "../../lib/i18n";
 
 export type Segment =
   | { kind: "text"; text: string }
-  /** `closed` là false khi rào mở mà chưa gặp rào đóng — tức là trợ lý còn đang gõ. */
+  /** `closed` is false while the opening fence has no match yet, meaning it is still being typed. */
   | { kind: "fence"; lang: string; code: string; closed: boolean };
 
-/** Rào mở: tối đa ba dấu cách thụt vào, từ ba dấu huyền trở lên, rồi chuỗi thông tin. */
+/** Opening fence: up to three spaces of indent, three or more backticks, then the info string. */
 const OPEN = /^ {0,3}(`{3,})[ \t]*([^`\n]*)$/;
-/** Rào đóng: cùng luật thụt, không có gì sau dãy dấu huyền. */
+/** Closing fence: same indent rule, nothing after the backticks. */
 const CLOSE = /^ {0,3}(`{3,})[ \t]*$/;
 
 export function splitFences(input: string): Segment[] {
@@ -26,7 +25,7 @@ export function splitFences(input: string): Segment[] {
   const flushText = (): void => {
     if (text.length === 0) return;
     const joined = text.join("\n");
-    // Đoạn chữ rỗng hoàn toàn giữa hai khối mã chỉ tạo thêm một khoảng trắng thừa.
+    // An empty text segment between two code blocks only adds a stray gap.
     if (joined.trim() !== "") out.push({ kind: "text", text: joined });
     text = [];
   };
@@ -61,11 +60,14 @@ export function splitFences(input: string): Segment[] {
   return out;
 }
 
-/** Nhãn ngôn ngữ hiện trên đầu khối mã. Tên lạ thì hiện nguyên tên. */
-const LANG_LABEL: Record<string, string> = {
-  "": "mã",
-  text: "văn bản",
-  txt: "văn bản",
+/** Language label above a code block; only the two word-like labels are translated, names are not. */
+const LANG_MSG: Record<string, Msg> = {
+  "": S.tools.code.plain,
+  text: S.tools.code.text,
+  txt: S.tools.code.text,
+};
+
+const LANG_ALIAS: Record<string, string> = {
   sh: "shell",
   bash: "shell",
   zsh: "shell",
@@ -80,4 +82,7 @@ const LANG_LABEL: Record<string, string> = {
   md: "markdown",
 };
 
-export const langLabel = (lang: string): string => LANG_LABEL[lang] ?? lang;
+export const langLabel = (lang: string): string => {
+  const msg = LANG_MSG[lang];
+  return msg === undefined ? (LANG_ALIAS[lang] ?? lang) : t(msg);
+};

@@ -1,14 +1,15 @@
 import { For, Show } from "solid-js";
+import { S, t, type Msg } from "../lib/i18n";
 import type { TodoItem, TodoStatus } from "../lib/protocol";
 
-const LABEL: Record<TodoStatus, string> = {
-  pending: "chưa làm",
-  in_progress: "đang làm",
-  done: "xong",
-  cancelled: "bỏ",
+const LABEL: Record<TodoStatus, Msg> = {
+  pending: S.chat.todo.statusPending,
+  in_progress: S.chat.todo.statusRunning,
+  done: S.chat.todo.statusDone,
+  cancelled: S.chat.todo.statusCancelled,
 };
 
-/** Ký hiệu chỉ là phần thị giác; ý nghĩa đi qua `aria-label` bên dưới. */
+/** The glyph is visual only; the meaning travels through the `aria-label` below. */
 const MARK: Record<TodoStatus, string> = {
   pending: "○",
   in_progress: "◐",
@@ -16,29 +17,23 @@ const MARK: Record<TodoStatus, string> = {
   cancelled: "×",
 };
 
-/**
- * Danh sách việc.
- *
- * Đây là *projection*, không phải dòng thời gian: mỗi lần lõi gửi là toàn bộ danh sách
- * mới, và giao diện ghi đè tại chỗ. Vì thế thẻ này không giữ trạng thái nào của riêng
- * nó — mọi thứ nhìn thấy đều đến từ lần gửi gần nhất.
- */
+/** Todo list: a projection, not a timeline, so the card keeps no state of its own and shows only the latest send. */
 export default function TodoCard(props: { items: TodoItem[] }) {
   const done = () => props.items.filter((item) => item.status === "done").length;
   return (
     <section
       class="flex flex-col gap-2xs rounded-panel border border-line bg-surface-soft px-md py-sm"
-      aria-label="Danh sách việc"
+      aria-label={t(S.chat.todo.title)}
     >
       <header class="flex items-baseline justify-between gap-sm">
-        <h3 class="m-0 text-xs font-medium text-ink">Danh sách việc</h3>
+        <h3 class="m-0 text-xs font-medium text-ink">{t(S.chat.todo.title)}</h3>
         <span class="tabular-nums text-2xs text-faint">
           {done()}/{props.items.length}
         </span>
       </header>
       <Show
         when={props.items.length > 0}
-        fallback={<p class="text-xs text-faint">Chưa có việc nào.</p>}
+        fallback={<p class="text-xs text-faint">{t(S.chat.todo.empty)}</p>}
       >
         <ul class="flex flex-col gap-3xs">
           <For each={props.items}>
@@ -47,7 +42,7 @@ export default function TodoCard(props: { items: TodoItem[] }) {
                 <span
                   class="mt-3xs shrink-0"
                   role="img"
-                  aria-label={LABEL[item.status]}
+                  aria-label={t(LABEL[item.status])}
                   classList={{
                     "text-faint": item.status === "pending",
                     "text-warn": item.status === "in_progress",

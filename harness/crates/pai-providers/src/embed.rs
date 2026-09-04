@@ -1,61 +1,36 @@
-//! Provider nào đang giữ vai nhúng, và tên mô hình nhúng của nó.
-//!
-//! Module này **không** nhúng gì cả — việc ấy nằm ở `services/rag/`, một tiến trình
-//! Python. Ở đây chỉ còn phần mà kho provider trả lời được: ai giữ vai, mô hình tên gì,
-//! gốc máy chủ ở đâu, và vì sao chưa sẵn sàng. Ba thứ đó được ghi vào tệp cấu hình mà
-//! service đọc.
-//!
-//! Luật quan trọng nhất vẫn là luật **không** làm: khi provider giữ vai nhúng chưa chọn
-//! mô hình nhúng, đừng mượn tạm `model` của vai hội thoại. `qwen3:8b` không có endpoint
-//! embed; mượn nó là đổi một câu "chưa chọn mô hình nhúng" đọc được thành một lỗi 400 ở
-//! mọi lần nạp tài liệu.
+//! Which provider holds the embedding role, and under what model name. Embedding itself happens in
+//! `services/rag/`; this module only answers who, which model, which host, and why not ready.
+//! Never borrow the chat role's `model`: it has no embed endpoint, turning a clear message into a 400.
 
 
 use pai_llm::ProviderKind;
 
 use crate::store::StoredProvider;
 
-/// Mô hình nhúng gợi ý cho một máy chủ Ollama.
-///
-/// Hằng số công khai vì giao diện điền sẵn nó vào ô nhập còn tầng dưới dùng nó để nói ra
-/// gợi ý trong [`embedding_reason`]: hai chỗ hiện cùng một cái tên thì phải đọc cùng một
-/// giá trị, nếu không thì người dùng thấy một tên và ứng dụng chờ một tên khác.
-/// `qwen3-embedding:4b` chứ không phải `nomic-embed-text`.
-///
-/// `nomic-embed-text` thiên về tiếng Anh, trong khi thư viện tài liệu ở đây là tiếng
-/// Việt. Đây là một trong hai bản vá về chất lượng truy hồi đi cùng việc chuyển tầng RAG
-/// sang `services/rag/` — cái còn lại là tiền tố bất đối xứng cho câu hỏi và cho đoạn
-/// (xem `pai_rag_service.embed.PREFIXES`). Giữ khớp với `DEFAULT_EMBED_MODEL` bên đó.
+/// Suggested embedding model for an Ollama host; public so the UI prefill and [`embedding_reason`] read
+/// one value. `qwen3-embedding:4b` rather than the English-leaning `nomic-embed-text`, since the document
+/// library is Vietnamese. Keep it matching `DEFAULT_EMBED_MODEL` in `services/rag/`.
 pub const DEFAULT_EMBEDDING_MODEL_OLLAMA: &str = "qwen3-embedding:4b";
 
-/// Mô hình nhúng gợi ý cho mọi máy chủ nói giao thức OpenAI.
+/// Suggested embedding model for any OpenAI-protocol host.
 pub const DEFAULT_EMBEDDING_MODEL_OPENAI: &str = "text-embedding-3-small";
 
-/// Mô hình nhúng gợi ý cho LM Studio: tên trong kho của họ, không phải tên của OpenAI.
+/// Suggested embedding model for LM Studio: their catalogue's name, not OpenAI's.
 pub const DEFAULT_EMBEDDING_MODEL_LMSTUDIO: &str = "text-embedding-nomic-embed-text-v1.5";
 
-/// Gợi ý theo loại provider. Chỉ là **gợi ý cho ô nhập**, cùng tinh thần với
-/// [`crate::presets::Preset::default_model`]: một máy chủ tự vận hành có thể chẳng có mô
-/// hình nào mang tên này.
+/// Per-kind suggestion, only a form prefill like [`crate::presets::Preset::default_model`]: a self-hosted server may have no such model.
 pub fn default_embedding_model(kind: ProviderKind) -> &'static str {
     match kind {
         ProviderKind::Ollama => DEFAULT_EMBEDDING_MODEL_OLLAMA,
-        // LM Studio nhúng qua `/v1/embeddings` như mọi máy chủ OpenAI-compatible, nhưng
-        // gợi ý thì khác: kho của nó không có `text-embedding-3-small` — đó là mô hình
-        // của OpenAI — mà có bản GGUF của `nomic-embed-text`. Gợi ý sai còn tệ hơn không
-        // gợi ý: người dùng dán nó vào rồi ngồi đọc một lỗi 404 không nói được vì sao.
+        // LM Studio embeds via `/v1/embeddings` like any OpenAI-compatible host, but its catalogue has GGUF
+        // `nomic-embed-text`, not OpenAI's `text-embedding-3-small`; a wrong suggestion just yields a 404.
         ProviderKind::LmStudio => DEFAULT_EMBEDDING_MODEL_LMSTUDIO,
         ProviderKind::OpenAiCompatible => DEFAULT_EMBEDDING_MODEL_OPENAI,
     }
 }
 
-/// Vì sao chưa nhúng được, khi chưa nhúng được. `None` nghĩa là đang sẵn sàng.
-///
-/// Có mặt vì ba tình huống khác nhau cùng dẫn tới "chưa nhúng được", và một giao diện
-/// chỉ biết chừng ấy thì không nói được cho người dùng phải bấm vào đâu. Chuỗi này đi
-/// vào tệp cấu hình của `pai-rag-service` và lên thẳng dải trạng thái thư viện.
-/// Nhận `Option` chứ không nhận `&StoredProvider` để trả lời được cả trường hợp thường gặp
-/// nhất — chưa ai giữ vai nhúng cả.
+/// Why embedding is not ready, or `None` when it is: three distinct situations share that state and the
+/// UI must tell the user where to click. Takes an `Option` so it covers the common "nobody holds the role".
 pub fn embedding_reason(provider: Option<&StoredProvider>) -> Option<String> {
     let Some(provider) = provider else {
         return Some(

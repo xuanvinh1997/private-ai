@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { S, t } from "./i18n";
 import { goiY } from "./prompts";
 import type { PromptSeeds } from "./protocol";
 
@@ -8,7 +9,7 @@ const RONG: PromptSeeds = { symbols: [], directories: [], documents: [] };
 const seeds = (part: Partial<PromptSeeds>): PromptSeeds => ({ ...RONG, ...part });
 
 describe("goiY — không có nguyên liệu", () => {
-  // Luật quan trọng nhất của cả tệp: màn hình trống không bao giờ được trống.
+  // The most important rule here: the empty screen is never actually empty.
   it("lùi về bộ tĩnh cho cả ba loại dự án", () => {
     for (const kind of ["code", "docs", null] as const) {
       const ra = goiY(kind, RONG);
@@ -28,17 +29,17 @@ describe("goiY — dự án mã nguồn", () => {
   it("dựng câu từ ký hiệu và thư mục có thật", () => {
     const ra = goiY("code", seeds({ symbols: ["CodeIndex", "Harness"], directories: ["crates/pai-rag"] }));
     expect(ra.slice(0, 3)).toEqual([
-      "`CodeIndex` làm gì?",
-      "Ai gọi `Harness`?",
-      "Có gì trong `crates/pai-rag`?",
+      t(S.libs.prompt.symbolWhat, { name: "CodeIndex" }),
+      t(S.libs.prompt.symbolCallers, { name: "Harness" }),
+      t(S.libs.prompt.dirContents, { path: "crates/pai-rag" }),
     ]);
   });
 
   it("bộ tĩnh lấp phần đuôi, tổng vẫn là năm", () => {
     const ra = goiY("code", seeds({ symbols: ["CodeIndex"] }));
     expect(ra).toHaveLength(5);
-    expect(ra[0]).toBe("`CodeIndex` làm gì?");
-    expect(ra[1]).toBe("Giải thích kiến trúc của dự án này");
+    expect(ra[0]).toBe(t(S.libs.prompt.symbolWhat, { name: "CodeIndex" }));
+    expect(ra[1]).toBe(t(S.libs.prompt.codeArchitecture));
   });
 
   it("không lấy tài liệu cho dự án mã nguồn", () => {
@@ -50,15 +51,17 @@ describe("goiY — dự án tài liệu", () => {
   it("dựng câu từ tên tài liệu có thật", () => {
     const ra = goiY("docs", seeds({ documents: ["Hợp đồng thuê nhà", "Quy trình khôi phục"] }));
     expect(ra.slice(0, 2)).toEqual([
-      "Tóm tắt “Hợp đồng thuê nhà” trong một câu",
-      "“Hợp đồng thuê nhà” và “Quy trình khôi phục” khác nhau chỗ nào?",
+      t(S.libs.prompt.docSummary, { title: "Hợp đồng thuê nhà" }),
+      t(S.libs.prompt.docCompare, { first: "Hợp đồng thuê nhà", second: "Quy trình khôi phục" }),
     ]);
   });
 
-  // Mời so sánh trong một thư viện một tệp là một gợi ý tự mâu thuẫn.
+  // Offering a comparison in a one-document library is a self-contradicting suggestion.
   it("một tài liệu thì không mời so sánh", () => {
     const ra = goiY("docs", seeds({ documents: ["Hợp đồng thuê nhà"] }));
-    expect(ra.filter((cau) => cau.includes("khác nhau chỗ nào"))).toHaveLength(0);
+    const soSanh = t(S.libs.prompt.docCompare, { first: "Hợp đồng thuê nhà", second: "x" });
+    expect(ra).not.toContain(soSanh);
+    expect(ra.filter((cau) => cau.includes("Hợp đồng thuê nhà"))).toHaveLength(1);
   });
 
   it("không lấy ký hiệu cho dự án tài liệu", () => {

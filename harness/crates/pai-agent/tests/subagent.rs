@@ -1,12 +1,6 @@
-//! Giao việc cho agent con.
-//!
-//! Hai bất biến, và cả hai đều là chuyện tiền bạc chứ không phải chuyện đúng sai:
-//!
-//! **Ngữ cảnh của con không tràn sang cha.** Cả điểm của việc giao việc là một việc tốn
-//! năm mươi nghìn token trả về một đoạn văn năm dòng. Trả về cả bản ghi thì thà đừng giao.
-//!
-//! **Có đáy.** Không có trần thì một mô hình đang bí sẽ giao việc cho chính hình ảnh của
-//! nó, mãi mãi, và thứ chặn lại là hết tiền chứ không phải một dòng mã.
+//! Delegating to subagents; both invariants are about cost, not correctness.
+//! The child's context must not spill into the parent, which is the whole point, and there
+//! must be a floor, or a stuck model delegates to itself until the money runs out.
 
 use std::sync::Arc;
 
@@ -23,7 +17,7 @@ use pai_tools::{Invocation, Tool, ToolName, Tools, ToolsPlugin};
 use parking_lot::Mutex;
 use serde_json::{Map, Value, json};
 
-/// Mô hình giả: mọi lượt đều trả về đúng một câu.
+/// A fake model: every turn returns exactly one sentence.
 struct Fixed {
     text: String,
     calls: Mutex<usize>,
@@ -117,7 +111,7 @@ async fn bao_cao_la_loi_cuoi_cua_con_chu_khong_phai_ca_ban_ghi() {
         .expect("giao được việc");
 
     assert!(outcome.content.contains("ba chỗ"));
-    // Bản ghi đầy đủ vẫn còn — trong sổ của **con**, không trong ngữ cảnh của cha.
+    // The full record survives in the child's journal, not in the parent's context.
     let structured = outcome.structured.expect("có phần structured");
     let child = structured["session_id"].as_str().expect("có id phiên con");
     let opened = sessions.open(child).await.expect("mở lại được sổ của con");
@@ -132,7 +126,7 @@ async fn den_day_thi_khong_giao_tiep_duoc_nua() {
     let llm = Fixed::new("xong");
     let (_ctx, provider, _) = bench(llm).await;
 
-    // Ở đúng đáy: lời từ chối phải nói rõ và bảo mô hình tự làm, chứ không im lặng hỏng.
+    // At the floor the refusal must say so and tell the model to do the work itself.
     let err = Task::new(provider.clone(), MAX_DEPTH)
         .execute(&call(json!({ "prompt": "giao tiếp đi" })))
         .await
@@ -149,7 +143,7 @@ async fn con_o_tang_cuoi_khong_con_nhin_thay_tool_task() {
         .register(Arc::new(Task::new(provider.clone(), 0)))
         .leak();
 
-    // Cha thấy `task`.
+    // The parent sees `task`.
     let parent: Vec<String> = registry
         .schemas(ctx.scope_key())
         .into_iter()
@@ -157,9 +151,7 @@ async fn con_o_tang_cuoi_khong_con_nhin_thay_tool_task() {
         .collect();
     assert!(parent.contains(&Task::NAME.to_string()));
 
-    // Con ở tầng cuối thì không — nó bị **rút khỏi danh sách**, không phải để nó gọi rồi
-    // nhận một lời từ chối. Một tool nhìn thấy được mà lần nào cũng hỏng là một tool dạy
-    // mô hình bỏ qua danh sách.
+    // The last-level child does not: it is removed from the list rather than left to fail on every call.
     provider
         .delegate("làm gì đó", MAX_DEPTH - 1)
         .await

@@ -11,7 +11,7 @@ describe("findTrigger — lệnh", () => {
     expect(findTrigger("/", 1)?.query).toBe("");
   });
 
-  // Luật quan trọng nhất của cả tệp: đường dẫn là thứ gõ suốt ngày trong ứng dụng này.
+  // The most important rule here: paths are typed all day long in this app.
   it("KHÔNG mở khi `/` nằm giữa một đường dẫn", () => {
     expect(findTrigger("src/lib", 7)).toBeNull();
     expect(findTrigger("xem crates/pai-fs", 17)).toBeNull();
@@ -46,7 +46,7 @@ describe("findTrigger — tệp", () => {
   });
 
   it("chỉ nhìn phần trước con trỏ", () => {
-    // Con trỏ đứng sau `@st`; phần `ore` phía sau không thuộc truy vấn.
+    // The caret sits after `@st`; the trailing `ore` is not part of the query.
     expect(findTrigger("@store", 3)?.query).toBe("st");
   });
 
@@ -79,8 +79,9 @@ describe("rankCommands", () => {
     expect(rankCommands("m")[0]?.name).toBe("mcp");
   });
 
+  // Hints go through i18n and default to `en`, so the query must match the displayed text.
   it("tìm được qua câu mô tả, không chỉ qua tên", () => {
-    expect(rankCommands("phím tắt").map((c) => c.name)).toContain("phimtat");
+    expect(rankCommands("keyboard").map((c) => c.name)).toContain("phimtat");
   });
 
   it("không khớp thì rỗng", () => {

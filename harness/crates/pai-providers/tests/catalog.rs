@@ -1,7 +1,5 @@
-//! Danh mục dựng sẵn và phép thử một cấu hình.
-//!
-//! Không bài nào gọi ra Internet: bài thử dùng một cổng loopback vừa đóng, còn bài danh
-//! mục chỉ **dựng** adapter chứ không nói chuyện với nó.
+//! The built-in catalogue and probing a configuration; nothing here reaches the Internet.
+//! The probe test uses a just-closed loopback port, and the catalogue test only builds adapters.
 
 use pai_llm::{AdapterRegistry, ProviderConfig, ProviderKind};
 use pai_providers::{PRESETS, probe};
@@ -20,9 +18,7 @@ fn moi_muc_dung_duoc_thanh_adapter() {
             .adapter(&config)
             .unwrap_or_else(|err| panic!("{} không dựng được adapter: {err}", preset.name));
         assert!(!preset.hint.is_empty(), "{} thiếu lời nhắc", preset.name);
-        // `on_device` của mục phải khớp với cái mà tầng mô hình tự suy ra từ URL. Hai
-        // nguồn sự thật cho cùng một câu "dữ liệu có rời máy này không" là chỗ giao diện
-        // nói một đằng còn thực tế một nẻo.
+        // A preset's `on_device` must match what the model layer infers from the URL; two sources for "does data leave this machine" would diverge.
         assert_eq!(
             preset.on_device,
             config.on_device(),
@@ -54,8 +50,7 @@ fn danh_muc_co_du_cac_muc_bat_buoc() {
     }
 }
 
-/// Một cổng loopback vừa được nhả ra: chắc chắn không có ai nghe, và chắc chắn không ra
-/// khỏi máy này.
+/// A just-released loopback port: guaranteed nobody listening, and guaranteed not to leave this machine.
 fn cong_dong() -> u16 {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("mượn cổng");
     let port = listener.local_addr().expect("địa chỉ").port();
@@ -81,8 +76,7 @@ async fn khong_noi_duoc_thi_dung_do_cho_cai_khoa() {
         "phải thuộc nhóm không nối được: {}",
         result.message
     );
-    // Nhóm sai khoá là một hành động khác hẳn của người dùng. Nhắc tới khoá ở đây là đẩy
-    // họ đi sửa nhầm chỗ.
+    // The bad-key case calls for a different user action; mentioning the key here sends them to fix the wrong thing.
     assert!(
         !result.message.to_lowercase().contains("khoá"),
         "không được đổ cho khoá: {}",

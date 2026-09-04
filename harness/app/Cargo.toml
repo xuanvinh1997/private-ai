@@ -16,8 +16,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-# Hộp thoại chọn thư mục của hệ điều hành. Chỉ `open`: ứng dụng không bao giờ ghi tệp
-# qua hộp thoại — mọi đường ghi đều đi qua tool đã bị `pai-fs` chặn theo gốc dự án.
+# Native directory picker, `open` only: the app never writes through a dialog, since all writes go through `pai-fs`-scoped tools.
 tauri-plugin-dialog = "2"
 pai-core = { workspace = true }
 pai-tools = { workspace = true }

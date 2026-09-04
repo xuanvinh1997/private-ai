@@ -1,8 +1,6 @@
-//! Cổng HTTP: bốn lớp canh, kiểm từng lớp một mà không mở cổng nào.
-//!
-//! [`HttpGuard`] cố tình không biết gì về socket, nên bài kiểm chứng dựng thẳng một
-//! `http::Request` rồi hỏi. Một luật bảo mật chỉ kiểm được qua một cổng thật là một luật
-//! sẽ không có ai kiểm.
+//! The HTTP gate: four layers, each tested without opening a port.
+//! [`HttpGuard`] knows nothing about sockets, so a test builds an `http::Request` and asks
+//! it directly; a rule testable only through a real port is a rule nobody tests.
 
 use std::net::SocketAddr;
 
@@ -17,7 +15,7 @@ fn guard(origins: &[&str]) -> HttpGuard {
     )
 }
 
-/// Dựng phần đầu của một request. `headers` là các cặp `(tên, giá trị)`.
+/// Build a request head; `headers` are `(name, value)` pairs.
 fn head(headers: &[(&str, &str)]) -> http::request::Parts {
     let mut builder = http::Request::builder().uri("/mcp");
     for (name, value) in headers {
@@ -30,14 +28,14 @@ fn bearer() -> String {
     format!("Bearer {SECRET}")
 }
 
-/// Token đúng, `Host` loopback, không `Origin` — đường của một client MCP thật.
+/// Right token, loopback `Host`, no `Origin` — the path a real MCP client takes.
 #[test]
 fn duong_hop_le_di_qua() {
     let parts = head(&[("host", "127.0.0.1:9000"), ("authorization", &bearer())]);
     assert_eq!(guard(&[]).check(&parts), Ok(()));
 }
 
-/// **Token sai bị từ chối.** Không có lớp này thì mọi tiến trình trên máy đều gọi được `bash`.
+/// A wrong token is refused; without this layer every process on the machine could call `bash`.
 #[test]
 fn token_sai_bi_tu_choi() {
     let wrong = format!("Bearer {}", "0".repeat(SECRET.len()));
@@ -45,7 +43,7 @@ fn token_sai_bi_tu_choi() {
     assert_eq!(guard(&[]).check(&parts), Err(Denied::Auth));
 }
 
-/// Thiếu token, sai lược đồ, hay token đúng nhưng cụt một ký tự — đều là từ chối.
+/// Missing token, wrong scheme, or the right token one character short: all refused.
 #[test]
 fn moi_kieu_token_hong_deu_bi_tu_choi() {
     let g = guard(&[]);
@@ -76,10 +74,7 @@ fn moi_kieu_token_hong_deu_bi_tu_choi() {
     );
 }
 
-/// **Chống DNS rebinding**: kết nối *là* loopback, nhưng `Host` mang tên miền kẻ tấn công.
-///
-/// Đây là thứ mà "chỉ bind 127.0.0.1" không nhìn thấy được: trang web trỏ tên miền của nó
-/// về loopback rồi cho JavaScript gọi vào đây, và socket trông hoàn toàn bình thường.
+/// DNS rebinding: the connection really is loopback, but `Host` carries the attacker's domain, which the bind cannot see.
 #[test]
 fn host_khong_phai_loopback_bi_tu_choi() {
     let g = guard(&[]);
@@ -90,14 +85,14 @@ fn host_khong_phai_loopback_bi_tu_choi() {
             "{host} không được coi là loopback"
         );
     }
-    // Không có `Host` thì không kiểm được, và không kiểm được là từ chối.
+    // With no `Host` there is nothing to check, and unable to check means refuse.
     assert_eq!(
         g.check(&head(&[("authorization", &bearer())])),
         Err(Denied::Host)
     );
 }
 
-/// Ba cách viết loopback đều được nhận, có cổng hay không.
+/// All three spellings of loopback are accepted, with or without a port.
 #[test]
 fn moi_cach_viet_loopback_deu_duoc_nhan() {
     let g = guard(&[]);
@@ -117,10 +112,7 @@ fn moi_cach_viet_loopback_deu_duoc_nhan() {
     }
 }
 
-/// Danh sách `Origin` rỗng = từ chối mọi request có mang `Origin`.
-///
-/// Chỉ trình duyệt gửi `Origin`; một client MCP thì không. Cấu hình trống là cấu hình chặt
-/// nhất, đúng như `FileRoots` không có gốc nào thì không đọc được gì.
+/// An empty `Origin` list refuses every request carrying one; only browsers send `Origin`.
 #[test]
 fn origin_khong_trong_danh_sach_trang_bi_tu_choi() {
     let parts = head(&[
@@ -140,7 +132,7 @@ fn origin_khong_trong_danh_sach_trang_bi_tu_choi() {
     );
 }
 
-/// Lớp `Host` chạy trước lớp token: một request rebinding bị chặn trước khi ta nhìn tới bí mật.
+/// The `Host` layer runs before the token layer, so a rebinding request is blocked before the secret is touched.
 #[test]
 fn host_duoc_kiem_truoc_token() {
     let parts = head(&[
@@ -150,7 +142,7 @@ fn host_duoc_kiem_truoc_token() {
     assert_eq!(guard(&[]).check(&parts), Err(Denied::Host));
 }
 
-/// So sánh hằng thời gian vẫn phải là một phép so sánh đúng.
+/// Constant-time comparison still has to be a correct comparison.
 #[test]
 fn so_sanh_hang_thoi_gian_van_dung_ket_qua() {
     assert!(constant_time_eq(b"abc", b"abc"));
@@ -161,7 +153,7 @@ fn so_sanh_hang_thoi_gian_van_dung_ket_qua() {
     assert!(!constant_time_eq(b"", b"a"));
 }
 
-/// Token sinh một lần, cất ở `data_dir/mcp-token`, và **không** đổi giữa hai lần khởi động.
+/// The token is generated once, kept in `data_dir/mcp-token`, and does not change between runs.
 #[test]
 fn token_sinh_mot_lan_va_giu_nguyen() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
@@ -178,7 +170,7 @@ fn token_sinh_mot_lan_va_giu_nguyen() {
     assert!(!second.matches("sai"));
 }
 
-/// Tệp token không in bí mật ra khi bị `Debug`. Một token lọt vào log là một token đã mất.
+/// `Debug` never prints the secret: a logged token is a lost token.
 #[test]
 fn token_khong_lot_vao_log() {
     let token = McpToken::from_value(SECRET);
@@ -186,7 +178,7 @@ fn token_khong_lot_vao_log() {
 }
 
 #[cfg(unix)]
-/// Tệp token sinh ra **đã** là `0600`, và một tệp lỏng quyền bị siết lại lúc đọc.
+/// The token file is born `0600`, and a loose one is tightened on read.
 #[test]
 fn tep_token_luon_la_0600() {
     use std::os::unix::fs::PermissionsExt;
@@ -201,7 +193,7 @@ fn tep_token_luon_la_0600() {
         .mode();
     assert_eq!(mode & 0o777, 0o600);
 
-    // Ai đó nới quyền ra; lần đọc sau phải siết lại.
+    // Someone loosened the permissions; the next read must tighten them again.
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644))
         .expect("đổi được quyền");
     let again = McpToken::load_or_create(&path).expect("đọc lại token");
@@ -213,7 +205,7 @@ fn tep_token_luon_la_0600() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
-/// Cổng HTTP từ chối bind ra ngoài loopback — sổ đăng ký tool không phải một dịch vụ mạng.
+/// The HTTP port refuses to bind beyond loopback: the tool registry is not a network service.
 #[tokio::test]
 async fn khong_bind_duoc_ra_ngoai_loopback() {
     use std::sync::Arc;
@@ -239,11 +231,8 @@ async fn khong_bind_duoc_ra_ngoai_loopback() {
     assert!(result.is_err(), "bind 0.0.0.0 phải bị từ chối");
 }
 
-// --- cổng thật, trên loopback ------------------------------------------------------------
-//
-// Bốn bài dưới đây mở một cổng ở `127.0.0.1:0` và gõ HTTP thô vào nó bằng một `TcpStream`.
-// Không có gói tin nào rời máy và không có phụ thuộc nào vào Internet — cái được kiểm là
-// đoạn keo giữa `hyper` và `HttpGuard`, thứ mà một bài kiểm chứng thuần hàm không chạm tới.
+// --- a real port, on loopback -------------------------------------------------------------
+// The four tests below open `127.0.0.1:0` and speak raw HTTP to it, covering the glue between `hyper` and `HttpGuard`.
 
 use std::sync::Arc;
 
@@ -266,11 +255,11 @@ async fn open_gateway(origins: &[&str]) -> (HttpEndpoint, Context) {
     )
     .await
     .expect("mở được cổng loopback");
-    // `ctx` phải sống tiếp: thả nó là thả cả sổ đăng ký mà server đang cầm.
+    // `ctx` has to stay alive: dropping it drops the registry the server holds.
     (endpoint, ctx)
 }
 
-/// Gõ một `initialize` thô vào cổng và trả về dòng trạng thái.
+/// Send a raw `initialize` to the port and return the status line.
 async fn post(addr: SocketAddr, headers: &[(&str, &str)]) -> String {
     let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}"#;
     let mut request = format!(
@@ -303,7 +292,7 @@ async fn post(addr: SocketAddr, headers: &[(&str, &str)]) -> String {
         .to_string()
 }
 
-/// Token đúng đi qua được cổng thật.
+/// The right token gets through the real port.
 #[tokio::test]
 async fn cong_that_cho_token_dung_di_qua() {
     let (endpoint, _ctx) = open_gateway(&[]).await;
@@ -315,7 +304,7 @@ async fn cong_that_cho_token_dung_di_qua() {
     endpoint.shutdown().await;
 }
 
-/// Token sai bị cổng thật từ chối, trước khi chạm tới bất cứ thứ gì có trạng thái.
+/// The real port refuses a wrong token before anything stateful is touched.
 #[tokio::test]
 async fn cong_that_tu_choi_token_sai() {
     let (endpoint, _ctx) = open_gateway(&[]).await;
@@ -324,12 +313,12 @@ async fn cong_that_tu_choi_token_sai() {
             .await
             .contains(" 401")
     );
-    // Không có header nào cũng vậy.
+    // The same with no header at all.
     assert!(post(endpoint.addr(), &[]).await.contains(" 401"));
     endpoint.shutdown().await;
 }
 
-/// `Origin` của một trang web bị từ chối dù token có đúng.
+/// A web page's `Origin` is refused even with the right token.
 #[tokio::test]
 async fn cong_that_tu_choi_origin_la() {
     let (endpoint, _ctx) = open_gateway(&[]).await;

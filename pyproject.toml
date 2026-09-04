@@ -20,8 +20,7 @@ dependencies = [
     "lightrag-hku>=1.5,<1.6",
     "markitdown[docx,pdf,pptx,xlsx]",
     "markitdown-ocr",
-    # Reading .docx/.pptx arrives with markitdown; writing them is ours, so both are
-    # declared directly rather than relied on as a transitive extra.
+    # Reading .docx/.pptx comes with markitdown; writing them is ours, so both are declared directly.
     "python-docx",
     "python-pptx",
     "pypdf",
@@ -51,9 +50,7 @@ private-ai-mcp-summary = "private_ai.mcp.servers.rag_summary:run"
 private-ai-mcp-web = "private_ai.mcp.servers.rag_web:run"
 
 [tool.hatch.build]
-# Hatchling ships everything inside the package directory, which is what the built-in
-# skill packs need: ``agent/skills/builtin/*/SKILL.md`` is data the registry reads at
-# runtime, not source, and an installed app with no SKILL.md has no skills at all.
+# Hatchling ships everything inside the package dir, which the built-in skill packs need: `agent/skills/builtin/*/SKILL.md` is runtime data, not source.
 exclude = ["**/__pycache__", "**/*.pyc"]
 
 [tool.hatch.build.targets.wheel]

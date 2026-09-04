@@ -8,24 +8,9 @@ import type {
   ProviderProbe,
 } from "../protocol";
 
-/**
- * Provider giả cho `?demo=1`.
- *
- * Bộ mẫu được chọn theo *trạng thái khó*, không theo "trông giống thật": một provider từ
- * xa đã có khoá đang giữ vai hội thoại, một provider chạy tại chỗ đang giữ vai nhúng,
- * một provider đang tắt, một provider từ xa **chưa** có khoá, và một danh sách mô hình có
- * mục `tools: false`. Trạng thái không nằm trong bộ mẫu là trạng thái chưa ai nhìn thấy
- * bao giờ — nó chỉ xuất hiện lần đầu trên máy người dùng, và ở đó thì không ai đang nhìn.
- *
- * **Cấu hình ghép chéo là mặc định của bộ mẫu**, không phải một nhánh phụ: nhúng bằng
- * một mô hình nhỏ tại chỗ (tài liệu không rời khỏi máy) trong khi trò chuyện bằng một mô
- * hình lớn từ xa là đúng cấu hình mà việc tách hai vai tồn tại để phục vụ. Bộ mẫu mở ra ở
- * trạng thái nào thì đó là trạng thái người ta tin là bình thường.
- *
- * Kho là một mảng **có thể sửa**, không phải một hằng số trả về bản sao mới mỗi lần. Một
- * trang demo mà bấm bật/tắt xong không có gì đổi thì không dựng lại được cái vòng thật:
- * bấm → lưu → nạp lại danh sách.
- */
+/** Fake providers for `?demo=1`, chosen by hard state: remote-with-key on chat, local on embedding, one disabled,
+ * one remote without a key, and a model list containing `tools: false`. The cross-wired pairing is the default,
+ * and the store is a mutable array so the click-save-reload loop actually happens. */
 
 let store: Provider[] | null = null;
 
@@ -55,8 +40,7 @@ function seed(): Provider[] {
       activeChat: true,
       activeEmbedding: false,
       model: "gpt-4o-mini",
-      // Có mô hình nhúng đã lưu mà **không** giữ vai nhúng: đúng cái phân biệt mà biểu
-      // mẫu provider phải nói ra được — ô này chỉ là "dùng cái gì *nếu* được giao vai".
+      // A stored embedding model without the embedding role: the field means "what to use *if* given the role".
       embeddingModel: "text-embedding-3-small",
     },
     {
@@ -72,8 +56,7 @@ function seed(): Provider[] {
       model: null,
       embeddingModel: null,
     },
-    // Từ xa mà chưa có khoá: hàng duy nhất mà biểu mẫu phải mở ra với ô khoá *trống*
-    // thay vì mở ra với chữ "đã đặt". Không có nó thì nhánh đó không bao giờ được nhìn.
+    // Remote without a key: the only row where the form opens with an *empty* key field rather than "set".
     {
       id: "pv-vllm",
       name: "vLLM nội bộ",
@@ -102,16 +85,12 @@ export function demoProviders(): Provider[] {
 const OLLAMA_MODELS: ModelChoice[] = [
   { id: "qwen2.5-coder:14b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
   { id: "qwen2.5-coder:32b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
-  // Mô hình không gọi được tool. Đây là trạng thái *duy nhất* mà bộ chọn mô hình phải
-  // cảnh báo, nên nó phải có mặt ở đây, cạnh những mô hình bình thường.
+  // A model that cannot call tools: the *only* state the model picker must warn about.
   { id: "gemma3:12b", tools: false, chat: true, embedding: false, contextWindow: 8192 },
   { id: "llama3.2:3b", tools: false, chat: true, embedding: false, contextWindow: 131072 },
-  // **Chỉ** nhúng được, nên bộ chọn mô hình hội thoại phải giấu nó đi. Nó nằm đây vì máy
-  // chủ Ollama thật trả về đúng như vậy: một danh sách trộn lẫn hai vai. Không có nó trong
-  // bộ mẫu thì đường lọc là đường chưa ai nhìn thấy bao giờ.
+  // Embedding-only, so the chat picker must hide it; a real Ollama server returns both roles in one list.
   { id: "embeddinggemma:latest", tools: false, chat: false, embedding: true, contextWindow: 2048 },
-  // Vừa nhúng vừa trò chuyện được: nhóm **không** bị lọc, và là lý do luật lọc là
-  // `embedding && !chat` chứ không phải `chat`.
+  // Both embedding and chat: not filtered, and the reason the rule is `embedding && !chat` rather than `chat`.
   { id: "nomic-embed-text", tools: false, chat: true, embedding: true, contextWindow: 8192 },
 ];
 
@@ -122,32 +101,19 @@ const OPENAI_MODELS: ModelChoice[] = [
   { id: "text-embedding-3-small", tools: false, chat: false, embedding: true, contextWindow: 8191 },
 ];
 
-/** Cùng một danh sách, nhưng qua con mắt của `probe_provider`: cờ `tools` bị gạt sạch. */
+/** The same list as `probe_provider` sees it: every `tools` flag cleared. */
 function probed(models: ModelChoice[]): ModelChoice[] {
   return models.map((entry) => ({ ...entry, tools: false }));
 }
 
-/**
- * Mô hình của provider đang hoạt động — bản mẫu của `list_models`.
- *
- * Đây là **nguồn duy nhất** trong bộ mẫu mang cờ `tools` đúng, y như phía lõi: chỉ
- * `list_models` mới thật sự hỏi từng mô hình. Bộ chọn mô hình đọc từ đây, nên `tools:
- * false` phải có mặt ở đây chứ không phải ở kết quả thử.
- */
+/** Models of the active provider, the fixture for `list_models` and the only source here with true `tools` flags. */
 export function demoActiveModels(): ModelChoice[] {
   const entry = all().find((provider) => provider.activeChat) ?? null;
   if (entry === null || !entry.enabled) return [];
   return entry.kind === "ollama" ? [...OLLAMA_MODELS] : [...OPENAI_MODELS];
 }
 
-/**
- * Kho mô hình của một provider bất kỳ — bản mẫu của `provider_models`.
- *
- * Đi theo đúng địa chỉ như `demoProbeProvider` để hai lệnh không kể hai câu chuyện khác
- * nhau về cùng một máy chủ. Hai hàng trả về **rỗng** là phần quan trọng nhất của bộ mẫu
- * này: rỗng nghĩa là *không hỏi được*, và màn hình mô hình nhúng phải rơi về ô nhập tay
- * ở đó chứ không được khoá lại.
- */
+/** Models of any provider, the fixture for `provider_models`; the two empty rows mean "unreachable", not "none". */
 export function demoProviderModels(providerId: string): ModelChoice[] {
   const entry = all().find((provider) => provider.id === providerId) ?? null;
   if (entry === null) return [];
@@ -156,18 +122,8 @@ export function demoProviderModels(providerId: string): ModelChoice[] {
   return entry.kind === "ollama" ? [...OLLAMA_MODELS] : [...OPENAI_MODELS];
 }
 
-/**
- * Ba kiểu hỏng, ba câu khác nhau.
- *
- * "Không nối được", "nối được nhưng khoá bị từ chối" và "nối được nhưng chưa có mô hình
- * nào" dẫn tới ba việc phải làm khác hẳn nhau. Lõi thật phân biệt ba cái đó trong
- * `message`; bộ mẫu phải dựng lại đủ cả ba, nếu không thì màn hình chỉ được kiểm với
- * đúng một câu.
- *
- * `tools` trả về **luôn `false`**, đúng như lõi: một lần thử không trả tiền hỏi năng lực
- * gọi tool của từng mô hình. Bản mẫu nói dối chỗ này thì giao diện sẽ được dựng quanh
- * một cờ nó không thật sự có.
- */
+/** Three kinds of failure with three different messages, each implying a different fix; `tools` is always `false`,
+ * exactly as the core reports it, so the UI is not built around a flag a probe never provides. */
 export function demoProbeProvider(input: ProviderInput): ProviderProbe {
   const url = input.baseUrl.trim();
   if (url === "") {
@@ -188,8 +144,7 @@ export function demoProbeProvider(input: ProviderInput): ProviderProbe {
     };
   }
   if (url.includes("api.openai.com")) {
-    // `apiKey === ""` là *xoá khoá*, `null` là giữ nguyên khoá đã lưu — và chỉ trường hợp
-    // đầu mới cho ra 401. Đúng phân biệt đó là thứ biểu mẫu dễ làm sai nhất.
+    // `apiKey === ""` clears the key and `null` keeps it; only the first yields a 401.
     if (input.apiKey !== null && input.apiKey.trim() === "") {
       return {
         ok: false,
@@ -208,9 +163,7 @@ export function demoProbeProvider(input: ProviderInput): ProviderProbe {
 
 export function demoSaveProvider(input: ProviderInput): Provider {
   const list = all();
-  // Bộ mẫu đứng thay **lõi**, nên nó được phép tính `onDevice`. Giao diện thì không: huy
-  // hiệu "chạy trên máy này" là một lời hứa về quyền riêng tư, và hai chỗ cùng suy ra nó
-  // là hai chỗ sẽ lệch nhau sau lần sửa lõi đầu tiên.
+  // The fixture stands in for the *core*, so it may compute `onDevice`; the UI may not, since that badge is a promise.
   const onDevice = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1])/i.test(input.baseUrl.trim());
   const at = input.id === null ? -1 : list.findIndex((entry) => entry.id === input.id);
   const previous = at < 0 ? null : list[at]!;
@@ -220,14 +173,11 @@ export function demoSaveProvider(input: ProviderInput): Provider {
     name: input.name,
     kind: input.kind,
     baseUrl: input.baseUrl,
-    // Luật khoá của hợp đồng, dựng lại nguyên vẹn: `null` giữ nguyên, `""` xoá, chuỗi
-    // khác là đặt mới. Bản mẫu làm sai chỗ này thì biểu mẫu "chạy đúng" trong demo và
-    // làm mất khoá của người dùng ở lần chạy thật đầu tiên.
+    // The contract's key rule, reproduced exactly: `null` keeps, `""` clears, anything else sets.
     hasKey: input.apiKey === null ? (previous?.hasKey ?? false) : input.apiKey.trim() !== "",
     enabled: input.enabled,
     onDevice,
-    // Hai vai do `set_active_provider` và `set_embedding` đặt, không do biểu mẫu. Lưu một
-    // provider mà vô tình đổi vai của nó là kiểu hỏng không ai đọc ra từ màn hình.
+    // The two roles are set by `set_active_provider` and `set_embedding`, never by the form.
     activeChat: previous?.activeChat ?? false,
     activeEmbedding: previous?.activeEmbedding ?? false,
     model: input.model,
@@ -243,7 +193,7 @@ export function demoRemoveProvider(id: string): void {
   store = all().filter((entry) => entry.id !== id);
 }
 
-/** Chỉ đặt vai **hội thoại**. Vai nhúng đi qua `demoSetEmbedding`. */
+/** Sets the *chat* role only; the embedding role goes through `demoSetEmbedding`. */
 export function demoSetActiveProvider(id: string): void {
   for (const entry of all()) entry.activeChat = entry.id === id;
 }
@@ -253,13 +203,7 @@ export function demoSetProviderModel(id: string, model: string): void {
   if (hit) hit.model = model;
 }
 
-/**
- * Số chiều thật của vài mô hình nhúng hay gặp.
- *
- * Có mặt ở đây để bộ mẫu **không** trả về một con số tròn trịa bịa ra: màn hình khoe con
- * số này như bằng chứng "đã nhúng thật một câu", và một bằng chứng giả trong demo dạy
- * người đọc mã tin vào một thứ lõi không hứa.
- */
+/** Real dimensions of common embedding models, so the fixture never invents a round number as evidence. */
 const EMBEDDING_DIMS: Record<string, number> = {
   "nomic-embed-text": 768,
   "mxbai-embed-large": 1024,
@@ -286,8 +230,7 @@ export function demoEmbeddingSetting(): EmbeddingSetting {
     model: entry.embeddingModel,
     onDevice: entry.onDevice,
   };
-  // `reason` là *lý do cấu hình chưa dùng được*, không phải một ghi chú chung. Cả ba
-  // nhánh dưới đây đều cho ra một cấu hình có tên nhưng không nhúng được câu nào.
+  // `reason` says *why the config is unusable*, not a general note; all three branches name a config that cannot embed.
   if (!entry.enabled) return { ...base, reason: `${entry.name} đang bị tắt.` };
   if (entry.embeddingModel === null) {
     return { ...base, reason: `Chưa chọn mô hình nhúng cho ${entry.name}.` };
@@ -302,13 +245,7 @@ export function demoSetEmbedding(providerId: string, model: string): void {
   }
 }
 
-/**
- * Thử **nhúng thật một câu**.
- *
- * Trạng thái đáng giá nhất trong bộ mẫu là nhánh cuối: một mô hình hội thoại được gõ
- * nhầm vào ô mô hình nhúng. `/api/tags` liệt kê nó y hệt mọi mô hình khác, nên chỉ có
- * gửi một câu đi mới lộ ra, và đó chính là lý do nút thử này tồn tại.
- */
+/** Actually embed one sentence; the best case here is the last branch, a chat model typed into the embedding field. */
 export function demoProbeEmbedding(providerId: string, model: string): EmbeddingProbe {
   const entry = all().find((provider) => provider.id === providerId) ?? null;
   if (entry === null) {

@@ -1,25 +1,6 @@
-//! The plugin tree, built from layered config.
-//!
-//! This whole architecture rests on the claim "everything is replaceable from config".
-//! While the plugin list lives in code, that claim is only an intention. This file makes
-//! it true.
-//!
-//! Three concepts, taken straight from dsh:
-//!
-//! - **Row** — one plugin plus its config, carrying a stable `id`.
-//! - **Layer** — a set of operations on the row list: insert, replace, or disable.
-//! - **Composition** — layers applied in turn onto an empty list, in the given order.
-//!
-//! Two decisions differ from dsh, both because this is a desktop application rather than a
-//! developer CLI:
-//!
-//! **No expressions in config.** dsh allows `!!js` in the config file, which is arbitrary
-//! code execution from a file. Acceptable for a command-line tool; not acceptable for an
-//! application a user installs from a `.dmg`.
-//!
-//! **Disable, never delete.** An upper layer can only **disable** a lower layer's row.
-//! With real deletion, a row missing from an upper layer quietly comes back the day
-//! somebody reorders the layers, whereas `disabled` is always visible in `dump`.
+//! The plugin tree, built from layered config: rows, layers, and their composition.
+//! No expressions in config, because a desktop app must not run code from a file.
+//! Upper layers disable rather than delete, so a suppressed row stays visible in `dump`.
 
 use std::collections::HashMap;
 
@@ -29,8 +10,7 @@ use serde_json::Value;
 /// One plugin in the tree, along with its config.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Row {
-    /// A stable identity. Upper layers target rows by `id`, so changing an `id` loses
-    /// every patch pointing at it.
+    /// Stable identity: upper layers target rows by `id`, so changing one loses its patches.
     pub id: String,
     /// The plugin name, matching what was registered in [`PluginCatalog`].
     pub plugin: String,
@@ -44,13 +24,9 @@ pub struct Row {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case")]
 pub enum Patch {
-    /// Add a new row. Colliding with an existing `id` is a config error, not a silent
-    /// overwrite — whoever wrote the layer almost certainly meant `replace`.
+    /// Add a row; a colliding `id` is a config error, since the author likely meant `replace`.
     Insert(Row),
-    /// Replace a row's config **wholesale**.
-    ///
-    /// The whole block rather than a merge: with a merge there is no way to remove a field,
-    /// and whoever writes the patch has to guess which of the lower layer's fields survive.
+    /// Replace a row's config wholesale: a merge could never remove a field.
     Replace {
         id: String,
         config: Value,
@@ -103,7 +79,7 @@ pub enum ConfigError {
 #[derive(Clone, Debug, Default)]
 pub struct Composed {
     pub rows: Vec<Row>,
-    /// `id` → where it was created, then everywhere that edited it, in order.
+    /// `id` -> where it was created, then everywhere that edited it, in order.
     pub provenance: HashMap<String, Vec<String>>,
 }
 
@@ -113,14 +89,7 @@ impl Composed {
         self.rows.iter().filter(|row| !row.disabled)
     }
 
-    /// The human-readable dump — the equivalent of dsh's `--dump-config`.
-    ///
-    /// Here for the same reason: in an architecture where everything is replaceable from
-    /// config, the first question when something is wrong is always "what is actually
-    /// running".
-    ///
-    /// The `[tắt]` marker is parsed by the settings screen (`settings/harness.ts`), so it
-    /// is a wire contract, not display text. Changing it silently breaks that parser.
+    /// Human-readable dump; the disabled marker is a wire contract parsed by settings/harness.ts.
     pub fn dump(&self) -> String {
         self.rows
             .iter()
@@ -197,10 +166,7 @@ fn note(provenance: &mut HashMap<String, Vec<String>>, id: &str, origin: &str) {
         .push(origin.to_string());
 }
 
-/// Plugin name → how to build it from config.
-///
-/// This is the only place a string in a config file turns into code. The list is closed and
-/// declared at startup: a config file cannot reach anything nobody registered here.
+/// Plugin name -> builder: the only place a config string becomes code, from a closed list.
 #[derive(Default)]
 pub struct PluginCatalog {
     builders: HashMap<String, Builder>,

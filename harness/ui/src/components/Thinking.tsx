@@ -1,23 +1,11 @@
 import { createEffect, createSignal, onCleanup, Show } from "solid-js";
+import { S, t } from "../lib/i18n";
 import type { ConversationNode } from "../lib/protocol";
 import Icon from "./Icon";
 import { toolLabel } from "./tools/ToolCard";
 
-/**
- * Chỉ báo "trợ lý đang làm việc".
- *
- * Nó lấp đúng khoảng lặng mà bản ghi không có gì để vẽ: từ lúc câu hỏi rời đi cho tới
- * token đầu tiên, và mọi khoảng giữa hai bước sau đó. Khoảng ấy dài nhất đúng ở chỗ mô
- * hình chạy tại chỗ — vài giây nạp trọng số trên một màn hình đứng im, và người dùng
- * kết luận là bấm hụt rồi gửi lại.
- *
- * Nó **tự tắt khi chữ bắt đầu chảy**: khối trợ lý đang stream đã có con trỏ nhấp nháy
- * của riêng nó, và hai chỉ báo cùng nói một điều thì cái thứ hai chỉ là nhiễu.
- *
- * Nhãn đi theo việc đang làm chứ không phải một câu cố định: "đang chạy lệnh" trả lời
- * được câu hỏi *chờ cái gì*, còn "đang suy nghĩ" trong lúc một tool chạy hai mươi giây
- * thì nói sai.
- */
+/** The "assistant is working" indicator, filling the silence a local model's load time creates. It switches off
+ * once text streams, and its label follows the current step so it answers "waiting on what". */
 export default function Thinking(props: { nodes: ConversationNode[]; busy: boolean }) {
   const last = () => props.nodes[props.nodes.length - 1];
 
@@ -27,9 +15,7 @@ export default function Thinking(props: { nodes: ConversationNode[]; busy: boole
     return !(node?.kind === "assistant" && node.streaming);
   };
 
-  /** Tool đang chạy gần nhất — quét ngược chứ không chỉ nhìn node cuối: danh sách việc
-   *  và thông báo chen vào *sau* một `tool_start` là chuyện thường, và nhìn mỗi node cuối
-   *  thì nhãn tụt về "đang suy nghĩ" giữa lúc một lệnh vẫn đang chạy. */
+  /** Most recent running tool, found by scanning backwards, since todos and notices often follow a `tool_start`. */
   const running = () => {
     for (let i = props.nodes.length - 1; i >= 0; i--) {
       const node = props.nodes[i]!;
@@ -42,17 +28,17 @@ export default function Thinking(props: { nodes: ConversationNode[]; busy: boole
     const name = running();
     if (name !== null) {
       const pretty = toolLabel(name);
-      // Tool có nhãn tiếng Việt thì ghép thành câu; tên lạ (thường là tool từ MCP) giữ
-      // nguyên dạng gốc — hạ chữ hoa một chuỗi như `mcp__jira__search` chỉ làm nó khó đọc.
-      return pretty === name ? `Đang chạy ${name}` : `Đang ${pretty.toLowerCase()}`;
+      // Known tools get a phrase; unknown names (usually MCP) keep their original form, which lower-casing would harm.
+      return pretty === name
+        ? t(S.chat.thinking.running, { name })
+        : t(S.chat.thinking.doing, { what: pretty.toLowerCase() });
     }
     const node = last();
     if (node?.kind === "progress") return node.label;
-    return "Đang suy nghĩ";
+    return t(S.chat.thinking.idle);
   };
 
-  // Đồng hồ đếm từ lúc lượt bắt đầu, không phải từ lúc đổi pha: người dùng muốn biết
-  // *đã chờ bao lâu*, và một con số nhảy về 0 sau mỗi tool trả lời sai câu hỏi đó.
+  // The clock counts from the start of the turn, not the phase: a counter resetting per tool answers the wrong question.
   const [secs, setSecs] = createSignal(0);
   createEffect(() => {
     if (!props.busy) {
@@ -67,9 +53,7 @@ export default function Thinking(props: { nodes: ConversationNode[]; busy: boole
 
   return (
     <Show when={show()}>
-      {/* `role="status"` + `aria-live="polite"`: trình đọc màn hình nói một lần khi nhãn
-          đổi, và không cắt ngang thứ người dùng đang nghe. Ba chấm là trang trí thuần
-          nên chúng ẩn khỏi cây trợ năng. */}
+      {/* `role="status"` plus `aria-live="polite"`: announced once per label change, never interrupting. */}
       <div class="flex gap-md" role="status" aria-live="polite">
         <div
           aria-hidden="true"
@@ -85,8 +69,7 @@ export default function Thinking(props: { nodes: ConversationNode[]; busy: boole
             <span />
             <span />
           </span>
-          {/* Con số chỉ xuất hiện khi chờ đã đủ lâu để thành một câu hỏi. Hiện nó ngay từ
-              giây đầu là biến mọi câu trả lời nhanh thành một cái đồng hồ nháy. */}
+          {/* The number appears only once the wait is long enough to be a question. */}
           <Show when={secs() >= 3}>
             <span class="shrink-0 text-2xs text-faint tabular-nums">{secs()}s</span>
           </Show>

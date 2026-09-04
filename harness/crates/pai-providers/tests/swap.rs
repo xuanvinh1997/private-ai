@@ -1,12 +1,6 @@
-//! Đổi provider giữa một lượt đang chạy.
-//!
-//! Bất biến được khoá ở đây: **một lượt nói chuyện với đúng một máy chủ và đúng một mô
-//! hình**, kể cả khi người dùng bấm đổi trong lúc lượt đang dở. Bài này chạy một lượt
-//! thật hai bước, dừng đúng lúc mô hình vừa nhận request đầu tiên, đổi mô hình, rồi xem
-//! bước thứ hai gửi đi tên nào.
-//!
-//! Adapter giả dừng lại bằng một [`Semaphore`] chứ không bằng `sleep`: một bài kiểm chứng
-//! dựa trên thời gian là một bài kiểm chứng sẽ chớp tắt trên máy bận.
+//! Switching providers mid-turn. The invariant: one turn talks to exactly one server and one model, even
+//! if the user switches while it runs. A real two-step turn pauses after the first request, swaps the model,
+//! and checks which name step two sends. The fake adapter blocks on a [`Semaphore`], never on time.
 
 use std::sync::{Arc, Mutex};
 
@@ -24,8 +18,7 @@ use tokio::sync::Semaphore;
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio_util::sync::CancellationToken;
 
-/// Mô hình giả: ghi lại tên mô hình của từng request, và đứng chờ một giấy phép trước khi
-/// phát ra chunk nào.
+/// Fake model: records each request's model name and waits for a permit before emitting any chunk.
 struct Cong {
     models: Mutex<Vec<String>>,
     kich_ban: Mutex<Vec<Vec<StreamChunk>>>,
@@ -53,8 +46,7 @@ impl LlmAdapter for Cong {
         let bao = self.bao.clone();
         let cong = self.cong.clone();
         stream::once(async move {
-            // Báo là request đã được dựng — tức là tên mô hình đã được chốt — rồi đứng
-            // lại. Bài kiểm chứng đổi mô hình đúng trong khoảng này.
+            // Signal that the request is built (so the model name is fixed), then block; the test swaps in this window.
             let _ = bao.send(());
             if let Ok(permit) = cong.acquire().await {
                 permit.forget();
@@ -123,8 +115,7 @@ async fn doi_mo_hinh_giua_luot_khong_dong_toi_luot_dang_chay() {
 
     let (bao, mut nhan) = unbounded_channel();
     let cong = Arc::new(Semaphore::new(0));
-    // Hai bước: bước một gọi một tool không tồn tại (đường ống trả về một câu từ chối,
-    // và vòng lặp đi tiếp), bước hai trả lời rồi đóng lượt.
+    // Two steps: the first calls a nonexistent tool (the pipeline refuses and the loop continues), the second answers and ends the turn.
     let adapter = Arc::new(Cong {
         models: Mutex::new(Vec::new()),
         kich_ban: Mutex::new(vec![goi_tool(), tra_loi()]),
@@ -182,7 +173,7 @@ async fn doi_mo_hinh_giua_luot_khong_dong_toi_luot_dang_chay() {
         vec!["mo-hinh-cu".to_string(), "mo-hinh-cu".to_string()],
         "bước hai của cùng một lượt phải giữ nguyên mô hình đã chốt lúc mở lượt"
     );
-    // Cú đổi không bị mất: nó chờ tới lượt sau.
+    // The switch is not lost: it waits for the next turn.
     assert_eq!(driver.model(), "mo-hinh-moi");
 }
 

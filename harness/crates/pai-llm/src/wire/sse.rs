@@ -1,38 +1,26 @@
-//! Bộ phân tích Server-Sent Events, viết tay.
-//!
-//! Không dùng crate có sẵn vì phần SSE mà một máy chủ OpenAI-compatible thực sự dùng chỉ
-//! là ba dòng luật, còn cái ta cần kiểm soát chặt — điểm cắt giữa hai lần đọc socket —
-//! thì crate nào cũng giấu đi. Sáu chục dòng đổi lấy quyền viết bài test cho đúng chỗ
-//! hay hỏng là một món hời.
-//!
-//! Luật cài đặt (theo WHATWG, đã lược phần không máy chủ nào dùng):
-//!
-//! - Dòng bắt đầu bằng `:` là chú thích. Một số proxy gửi `: keep-alive` định kỳ.
-//! - `field: value`; một dấu cách sau dấu hai chấm bị bỏ. Dòng không có `:` là field rỗng.
-//! - Nhiều dòng `data:` trong một event được nối bằng `\n`.
-//! - **Dòng trống mới là thứ phát ra event.** Đây là chỗ cắt giữa chừng gây hại: đọc
-//!   xong `data: {...}` mà chưa thấy dòng trống thì chưa được phát gì cả.
-//! - `id:` và `retry:` bị bỏ qua: ở đây không có kết nối lại, huỷ là thả stream.
+//! Hand-written Server-Sent Events parser.
+//! No crate, because the SSE an OpenAI-compatible server actually uses is three rules and
+//! every crate hides the one thing we must control: the split between two socket reads.
 
 use crate::wire::ndjson::LineDecoder;
 
-/// Một event đã trọn vẹn.
+/// One complete event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SseEvent {
-    /// Trường `event:`. Máy chủ OpenAI-compatible hầu như không gửi, nhưng vài bản có.
+    /// The `event:` field. OpenAI-compatible servers rarely send it, but some do.
     pub name: Option<String>,
-    /// Các dòng `data:` đã nối.
+    /// The joined `data:` lines.
     pub data: String,
 }
 
 impl SseEvent {
-    /// Dấu hiệu kết thúc luồng của OpenAI. Không phải JSON, nên phải chặn trước khi parse.
+    /// OpenAI's end-of-stream marker. Not JSON, so it must be caught before parsing.
     pub fn is_done(&self) -> bool {
         self.data.trim() == "[DONE]"
     }
 }
 
-/// Bộ giải mã có trạng thái, ăn byte và nhả event.
+/// Stateful decoder: eats bytes, yields events.
 #[derive(Debug, Default)]
 pub struct SseDecoder {
     lines: LineDecoder,
@@ -46,7 +34,7 @@ impl SseDecoder {
         Self::default()
     }
 
-    /// Ăn một mảnh byte, trả về mọi event đã trọn vẹn.
+    /// Eat a byte slice and return every complete event.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<SseEvent> {
         let mut events = Vec::new();
         for line in self.lines.push(bytes) {
@@ -57,8 +45,7 @@ impl SseDecoder {
         events
     }
 
-    /// Event dở dang khi luồng đóng mà thiếu dòng trống cuối. Vài máy chủ đóng kết nối
-    /// ngay sau `data: [DONE]` và không gửi `\n\n`.
+    /// The partial event when the stream closes without a final blank line; some servers close right after `data: [DONE]`.
     pub fn flush(&mut self) -> Option<SseEvent> {
         if let Some(rest) = self.lines.flush()
             && let Some(event) = self.line(&rest)
@@ -95,7 +82,7 @@ impl SseDecoder {
 
     fn dispatch(&mut self) -> Option<SseEvent> {
         if !self.has_data {
-            // Dòng trống thừa giữa hai event: không phát event rỗng, chỉ dọn `event:` lẻ.
+            // Extra blank line between events: emit nothing, just clear a stray `event:`.
             self.name = None;
             return None;
         }

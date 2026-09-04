@@ -1,12 +1,6 @@
-//! Background commands.
-//!
-//! A backgrounded `bash` returns a `job_id` immediately and keeps running after the turn
-//! has ended. That is what makes it useful (start `npm run dev`, then do something else)
-//! and also what makes it dangerous: a process that outlives the thing that spawned it is
-//! a process nobody remembers to clean up.
-//!
-//! So the job table's lifetime is tied to the plugin: disposing the plugin kills them all.
-//! There is no path by which a job survives unloading, not even if someone forgets.
+//! Background commands: a backgrounded `bash` returns a `job_id` and outlives the turn.
+//! The job table's lifetime is tied to the plugin, so disposing it kills every job; no job
+//! can survive unloading.
 
 use std::collections::HashMap;
 use std::sync::Arc;

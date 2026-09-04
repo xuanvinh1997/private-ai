@@ -1,4 +1,4 @@
-//! Cắm sổ tay phiên vào cây plugin.
+//! Wires the session log into the plugin tree.
 
 use std::sync::Arc;
 
@@ -7,11 +7,7 @@ use pai_core::{Context, Plugin};
 
 use crate::store::{NoTitle, SessionStore, SessionTitle, Sessions};
 
-/// Cắm một provider cho seam [`Sessions`], và provider duy nhất của v0.1 cho
-/// [`SessionTitle`].
-///
-/// Kho được truyền vào chứ không dựng ở đây: chọn SQLite hay một kho khác là quyết định
-/// của nơi ráp ứng dụng, không phải của plugin này.
+/// Provides the [`Sessions`] seam plus v0.1's only [`SessionTitle`]; the store is injected, since picking one is the app's call.
 pub struct SessionPlugin {
     store: Arc<dyn SessionStore>,
 }

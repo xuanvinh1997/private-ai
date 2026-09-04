@@ -1,4 +1,4 @@
-//! Một phiên đang mở, và những việc làm được với một phiên.
+//! An open session, and what can be done with one.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -10,18 +10,15 @@ use crate::message::Message;
 use crate::sqlite::now_ms;
 use crate::store::{NewSession, SessionHeader, SessionId, SessionStore};
 
-/// Bao nhiêu mảnh stream được phép nằm chờ trong bộ nhớ trước khi bắt buộc ghi xuống.
-///
-/// Cửa sổ này là toàn bộ phần dữ liệu có thể mất khi tiến trình chết giữa một câu trả lời.
-/// Một trăm mảnh cỡ một token là chưa tới một dòng chữ — đủ nhỏ để không tiếc, đủ lớn để
-/// việc gõ chữ không phải chờ ổ đĩa.
+/// How many stream chunks may wait in memory before a forced write; this window is everything a crash
+/// mid-answer can lose, and a hundred token-sized chunks is under a line of text.
 const PENDING_LIMIT: usize = 100;
 
 pub struct Session {
     header: SessionHeader,
     log: SessionLog,
     store: Arc<dyn SessionStore>,
-    /// Sự kiện đã vào sổ trong bộ nhớ nhưng chưa xuống đĩa.
+    /// Events already in the in-memory log but not yet on disk.
     pending: Vec<SessionEventEnvelope>,
 }
 
@@ -38,32 +35,26 @@ impl Session {
         &self.log
     }
 
-    /// Lịch sử mà mô hình thấy, chiếu ra từ sổ.
+    /// The history the model sees, projected from the log.
     pub fn derive_messages(&self) -> Vec<Message> {
         self.log.derive_messages()
     }
 
-    /// Ghi thêm một sự kiện log-only.
-    ///
-    /// Sự kiện surface đi cửa khác. Tách hai cửa để một `user/message` không thể lọt vào
-    /// sổ mà quên `surface_op` — cái sai đó im lặng, và nó làm mô hình mất một message.
+    /// Append a log-only event; surface events use a separate entry point so none can land without a `surface_op`.
     pub async fn append(&mut self, event: SessionEvent) -> Result<Seq> {
         let seq = self.log.append(event, now_ms())?;
         self.stage(seq).await?;
         Ok(seq)
     }
 
-    /// Ghi thêm một sự kiện surface vào cuối lịch sử.
+    /// Append a surface event at the end of history.
     pub async fn append_surface(&mut self, event: SessionEvent) -> Result<Seq> {
         let seq = self.log.append_surface(event, now_ms())?;
         self.stage(seq).await?;
         Ok(seq)
     }
 
-    /// Ghi thêm một sự kiện surface che dải node `start..end` (vị trí, không phải seq).
-    ///
-    /// Không xoá gì cả: dải cũ vẫn nằm nguyên trong sổ và vẫn phát lại được. Chỉ phép
-    /// chiếu ngừng nhìn thấy nó.
+    /// Append a surface event shadowing nodes `start..end` (positions, not seqs); nothing is deleted, only hidden from the projection.
     pub async fn append_replacing(
         &mut self,
         event: SessionEvent,
@@ -89,10 +80,7 @@ impl Session {
         Ok(())
     }
 
-    /// Đẩy phần đang chờ xuống đĩa trong một giao dịch.
-    ///
-    /// Ghi hỏng thì lô được **giữ lại** chứ không bị vứt: mất một lô là thủng một lỗ trong
-    /// `seq`, mà một lỗ thì không vá được bằng lần ghi sau.
+    /// Flush pending events in one transaction; a failed write keeps the batch, since losing it would leave a `seq` gap.
     pub async fn flush(&mut self) -> Result<()> {
         if self.pending.is_empty() {
             return Ok(());
@@ -107,19 +95,14 @@ impl Session {
         }
     }
 
-    /// Đặt tiêu đề. Tiêu đề nằm ở metadata, không nằm trong sổ — nó đổi được, còn sổ thì
-    /// không.
+    /// Set the title; titles live in metadata, not the log, because they are mutable and the log is not.
     pub async fn set_title(&mut self, title: &str) -> Result<()> {
         self.store.set_title(&self.header.id, title).await?;
         self.header.title = Some(title.to_owned());
         Ok(())
     }
 
-    /// Đóng một lượt mồ côi sau sự cố.
-    ///
-    /// Không cắt cụt sổ: sự kiện đã ghi là đã xảy ra. Thay vào đó ghi thêm một `turn/end`
-    /// với lý do `interrupted` — lý do duy nhất vòng lặp không bao giờ tự phát, nên thấy
-    /// nó là biết chắc đã có một lần chết giữa chừng.
+    /// Close a turn orphaned by a crash by appending `turn/end` with `interrupted`; the log is never truncated.
     async fn heal_open_turn(&mut self) -> Result<()> {
         if self.log.is_empty() {
             return Ok(());
@@ -137,7 +120,7 @@ impl Session {
     }
 }
 
-/// Cửa vào của mọi thao tác trên phiên.
+/// The entry point for every session operation.
 #[derive(Clone)]
 pub struct SessionService {
     store: Arc<dyn SessionStore>,
@@ -166,7 +149,7 @@ impl SessionService {
         self.store.list(limit).await
     }
 
-    /// Mở lại một phiên: đọc lại toàn bộ sổ và dựng lại phép chiếu từ đầu.
+    /// Reopen a session: reload the whole log and rebuild the projection from scratch.
     pub async fn open(&self, id: &str) -> Result<Session> {
         let header = self.store.header(id).await?;
         let log = SessionLog::replay(self.store.load(id).await?)?;
@@ -180,11 +163,7 @@ impl SessionService {
         Ok(session)
     }
 
-    /// Tách một phiên con mang `[0..=boundary]` làm hạt giống.
-    ///
-    /// `boundary` để trống là sự kiện cuối. Ranh giới sai **không** được làm tròn: một
-    /// ranh giới sai là một ý định sai, và làm tròn nó đẻ ra một phiên con không ai yêu cầu.
-    /// Dòng phụ cho danh sách phiên. Xem [`SessionStore::previews`].
+    /// Subtitle line for the session list. See [`SessionStore::previews`].
     pub async fn previews(&self, ids: &[String]) -> Result<HashMap<String, String>> {
         self.store.previews(ids).await
     }
@@ -225,16 +204,14 @@ impl SessionService {
                 id: None,
                 cwd: parent.cwd.clone(),
                 parent_session: Some(SessionId::from(source)),
-                // Ranh giới lineage, bền vững. Khác với "đã phát lại bao nhiêu trong vòng
-                // đời này", vốn chỉ là chuyện lúc chạy.
+                // The durable lineage boundary, unlike "how much was replayed this run", which is runtime-only.
                 seed_length: Some(boundary + 1),
                 origin: parent.origin,
                 delegation_depth: parent.delegation_depth,
                 agent_preset: parent.agent_preset.clone(),
             })
             .await?;
-        // Hạt giống giữ nguyên `seq` và `time`: phiên con phải phát lại ra đúng thứ phiên
-        // cha đã gửi cho mô hình, và sự kiện mới nối tiếp từ `boundary + 1`.
+        // The seed keeps its `seq` and `time`: the child must replay exactly what the parent sent, continuing at `boundary + 1`.
         self.store.append(&header.id, seed.clone()).await?;
         Ok(Session {
             header,

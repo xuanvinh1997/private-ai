@@ -1,6 +1,7 @@
 import { Key } from "@solid-primitives/keyed";
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { useDragDrop } from "../../hooks/useDragDrop";
+import { S, t, type Msg } from "../../lib/i18n";
 import { originHost } from "../../lib/projects";
 import type { Project, ProjectKind } from "../../lib/protocol";
 import { relativeTime } from "../../lib/sessions";
@@ -14,32 +15,18 @@ import NewProjectDialog from "./NewProjectDialog";
 
 type Filter = "all" | ProjectKind;
 
-/**
- * Màn hình dự án: một trang đầy đủ, không phải một menu thả xuống.
- *
- * Menu cũ đủ dùng khi có ba dự án và không đủ khi có ba mươi — ở đó không có chỗ cho bộ
- * lọc, cho ô tìm, cũng không có chỗ để nói ba lối tạo dự án khác nhau ở điểm nào. Menu
- * vẫn còn giá trị của nó (đổi nhanh khi đang làm việc); trang này là chỗ *quyết định*.
- *
- * Hai câu chữ trên trang được viết rất cẩn thận và không nên rút gọn:
- *
- *   - "Bỏ khỏi danh sách" chứ không phải "Xoá". Lệnh phía dưới chỉ gỡ một dòng khỏi danh
- *     sách gần đây; thư mục trên đĩa không bị đụng. Người đọc "xoá dự án" hiểu là mất
- *     việc, và không có cách nào lấy lại niềm tin đó sau khi họ đã không dám bấm.
- *   - Dự án đang mở nói trước rằng nó không bỏ được. Lõi từ chối việc đó, nên để người
- *     dùng bấm rồi nhận một thông báo lỗi là bắt họ học một luật mà giao diện đã biết.
- */
+/** The projects screen as a full page, not a dropdown: it has room for search, filters and the three ways in. Its wording says "remove from the list" rather than "delete", and the open project shows up front that it cannot be removed. */
 export default function ProjectsView(props: {
   projects: Project[];
-  /** Lõi đang tháo và cắm lại nhánh plugin: cả trang khoá cho tới khi xong. */
+  /** The core is remounting the plugin branch, so the page locks until it finishes. */
   switching?: boolean;
-  /** Lỗi từ lần mở hoặc lần bỏ gần nhất, do chỗ gọi giữ. */
+  /** Error from the last open or removal, held by the caller. */
   error?: string | null;
   onOpen: (project: Project) => void;
-  /** Mở một thư mục **chưa có trong danh sách** — lối vào duy nhất của nó là cú kéo thả. */
+  /** Open a folder that is not in the list yet; drag and drop is its only entrance. */
   onOpenPath: (path: string) => void;
   onForget: (project: Project) => void;
-  /** Lõi đã tạo/clone xong; chỗ gọi nạp lại danh sách và chuyển sang dự án này. */
+  /** The core finished creating or cloning; the caller reloads and switches to it. */
   onCreated: (project: Project) => void;
 }) {
   const [query, setQuery] = createSignal("");
@@ -48,20 +35,7 @@ export default function ProjectsView(props: {
   const [cloning, setCloning] = createSignal(false);
   const [forgetting, setForgetting] = createSignal<Project | null>(null);
 
-  /**
-   * Thả một thư mục vào cửa sổ là mở nó thành dự án — và việc ấy sống ở **màn hình này**.
-   *
-   * `useDragDrop` phát cho mọi chỗ đang nghe, nên cú thả phải có đúng một chủ trên mỗi màn
-   * hình. Trước đây vỏ ứng dụng nghe cú thả ở khắp nơi trừ hai màn hình có chủ, nên một tệp
-   * thả vào ô soạn tin vừa được đính kèm vừa bị đem đi mở thành dự án — hai việc từ một cử
-   * chỉ, và một trong hai luôn là việc người dùng không định làm. Ở đây thì không có gì để
-   * lẫn: trang này nói về dự án, và thứ duy nhất thả vào nó có nghĩa là một thư mục.
-   *
-   * Hộp thoại đang mở thì nhường: `NewProjectDialog` nhận cú thả vào ô đường dẫn của nó, và
-   * mở ngay ở đây là trả lời hộ người dùng đúng câu hỏi khó mà hộp thoại đang chờ họ trả
-   * lời. Hai hộp thoại kia không nhận cú thả, nhưng một dự án mở ra sau lưng một câu hỏi
-   * "bỏ khỏi danh sách?" thì cũng khó hiểu ngang thế.
-   */
+  /** A drop opens a folder as a project, and this screen owns that gesture; it defers while any dialog is open, since the drop belongs to the dialog then. */
   useDragDrop((paths) => {
     if (props.switching === true) return;
     if (newKind() !== null || cloning() || forgetting() !== null) return;
@@ -69,8 +43,7 @@ export default function ProjectsView(props: {
     if (first !== undefined) props.onOpenPath(first);
   });
 
-  // Mới nhất trước, giống menu dự án. Dự án đang mở không bị ghim lên đầu: nó đã có dấu
-  // riêng rồi, và ghim thêm làm thứ tự nhảy mỗi lần đổi dự án.
+  // Newest first; the open project is not pinned, as it is already marked and pinning reorders.
   const visible = createMemo(() => {
     const needle = query().trim().toLowerCase();
     const kind = filter();
@@ -100,11 +73,11 @@ export default function ProjectsView(props: {
               <Icon name="folder" size={15} />
             </span>
             <div class="flex min-w-0 flex-col gap-3xs">
-              <h2 class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
-                Dự án
-                <InfoDot text="Trợ lý chỉ nhìn thấy thư mục của dự án đang mở." />
+              <h2 class="m-0 flex items-center gap-2xs text-md font-medium text-ink">
+                {t(S.projects.title)}
+                <InfoDot text={t(S.projects.scopeHint)} />
               </h2>
-              <p class="m-0 text-xs text-muted">Mỗi dự án là một thư mục trên máy.</p>
+              <p class="m-0 text-xs text-muted">{t(S.projects.subtitle)}</p>
             </div>
           </div>
 
@@ -122,9 +95,9 @@ export default function ProjectsView(props: {
                 >
                   <span class="flex items-center gap-2xs text-sm font-medium text-ink">
                     <Icon name={entrance.icon} size={15} />
-                    {entrance.label}
+                    {t(entrance.label)}
                   </span>
-                  <span class="text-2xs text-muted">{entrance.hint}</span>
+                  <span class="text-2xs text-muted">{t(entrance.hint)}</span>
                 </button>
               )}
             </For>
@@ -141,7 +114,7 @@ export default function ProjectsView(props: {
 
         <section class="flex flex-col gap-md">
           <div class="flex flex-wrap items-center gap-sm">
-            <label class="flex min-w-[220px] flex-1 items-center gap-2xs rounded-btn border border-line bg-surface px-sm focus-within:border-accent">
+            <label class="flex min-w-[220px] flex-1 items-center gap-2xs rounded-btn border border-line-strong bg-surface px-sm transition-colors duration-[var(--dur-fast)] focus-within:border-accent">
               <span class="shrink-0 text-faint">
                 <Icon name="search" size={14} />
               </span>
@@ -149,29 +122,50 @@ export default function ProjectsView(props: {
                 type="search"
                 value={query()}
                 spellcheck={false}
-                placeholder="Tìm theo tên hoặc đường dẫn"
-                aria-label="Tìm dự án theo tên hoặc đường dẫn"
+                placeholder={t(S.projects.searchPlaceholder)}
+                aria-label={t(S.projects.searchLabel)}
                 onInput={(event) => setQuery(event.currentTarget.value)}
                 class="h-(--control-h) min-w-0 flex-1 bg-transparent text-xs text-text outline-none placeholder:text-faint"
               />
             </label>
 
-            <div role="radiogroup" aria-label="Lọc theo loại dự án" class="flex gap-2xs">
+            <div
+              role="radiogroup"
+              aria-label={t(S.projects.filterLabel)}
+              class="flex gap-2xs"
+              onKeyDown={(event) => {
+                if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+                event.preventDefault();
+                const buttons = [
+                  ...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+                ];
+                const current = Math.max(
+                  0,
+                  buttons.indexOf(document.activeElement as HTMLButtonElement),
+                );
+                const delta = event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1;
+                const next = (current + delta + buttons.length) % buttons.length;
+                const option = FILTERS[next];
+                buttons[next]?.focus();
+                if (option !== undefined) setFilter(option.id);
+              }}
+            >
               <For each={FILTERS}>
                 {(option) => (
                   <button
                     type="button"
                     role="radio"
                     aria-checked={filter() === option.id}
+                    tabIndex={filter() === option.id ? 0 : -1}
                     onClick={() => setFilter(option.id)}
-                    class="flex items-center gap-2xs rounded-pill border px-md py-2xs text-xs transition-colors duration-[var(--dur-fast)]"
+                    class="flex h-(--control-h) items-center gap-2xs rounded-pill border px-md text-xs font-medium transition-colors duration-[var(--dur-fast)]"
                     classList={{
                       "border-line text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
                         filter() !== option.id,
                       "border-accent bg-accent-soft text-accent-ink": filter() === option.id,
                     }}
                   >
-                    {option.label}
+                    {t(option.label)}
                     <span class="tabular-nums">{counts()[option.id]}</span>
                   </button>
                 )}
@@ -187,17 +181,15 @@ export default function ProjectsView(props: {
                   <Icon name="folder-open" size={24} />
                 </span>
                 <div class="flex flex-col gap-2xs">
-                  <p class="m-0 text-sm font-medium text-ink">Chưa có dự án nào</p>
-                  <p class="m-0 max-w-[44ch] text-xs text-muted">
-                    Mở một thư mục để bắt đầu.
-                  </p>
+                  <p class="m-0 text-sm font-medium text-ink">{t(S.projects.emptyTitle)}</p>
+                  <p class="m-0 max-w-[44ch] text-xs text-muted">{t(S.projects.emptyHint)}</p>
                 </div>
                 <div class="flex flex-wrap justify-center gap-sm">
                   <Button variant="outline" icon="folder-open" onClick={() => setNewKind("code")}>
-                    Mở thư mục mã nguồn
+                    {t(S.projects.newCode)}
                   </Button>
                   <Button variant="outline" icon="library" onClick={() => setNewKind("docs")}>
-                    Tạo thư viện tài liệu
+                    {t(S.projects.newDocs)}
                   </Button>
                 </div>
               </div>
@@ -207,14 +199,12 @@ export default function ProjectsView(props: {
               when={visible().length > 0}
               fallback={
                 <p class="m-0 rounded-card border border-dashed border-line px-(--card-pad-x) py-2xl text-center text-xs text-muted">
-                  Không có dự án nào khớp bộ lọc.
+                  {t(S.projects.noMatch)}
                 </p>
               }
             >
               <ul class="m-0 flex list-none flex-col gap-sm p-0">
-                {/* Keyed theo id: danh sách sắp xếp lại theo `lastOpenedAt` mỗi lần mở
-                    một dự án, và keyed theo vị trí thì mọi hàng bị dựng lại — tiêu điểm
-                    bàn phím rơi về `body` ngay giữa lúc người dùng đang đi bằng Tab. */}
+                {/* Keyed by id: the list reorders on every open, and index keying would drop focus. */}
                 <Key each={visible()} by={(project) => project.id}>
                   {(keyed) => (
                     <Row
@@ -258,11 +248,11 @@ export default function ProjectsView(props: {
         {(project) => (
           <ConfirmDialog
             icon="trash"
-            title={`Bỏ "${project().name}" khỏi danh sách?`}
-            body="Thư mục trên đĩa không bị đụng tới."
-            more="Chỉ danh sách dự án gần đây bị đổi. Thư mục và toàn bộ tệp bên trong vẫn nguyên trên đĩa — mở lại thư mục này bất cứ lúc nào là dự án trở lại."
+            title={t(S.projects.forgetTitle, { name: project().name })}
+            body={t(S.projects.forgetBody)}
+            more={t(S.projects.forgetMore)}
             detail={project().path}
-            confirmLabel="Bỏ khỏi danh sách"
+            confirmLabel={t(S.projects.forgetConfirm)}
             onClose={() => setForgetting(null)}
             onConfirm={() => {
               const target = project();
@@ -276,7 +266,7 @@ export default function ProjectsView(props: {
   );
 }
 
-/** Một dự án. Hàng chứ không phải thẻ: đường dẫn dài cần cả bề ngang mới đọc được. */
+/** One project as a row, not a card: a long path needs the full width to stay readable. */
 function Row(props: {
   project: Project;
   disabled: boolean;
@@ -306,10 +296,8 @@ function Row(props: {
       <div class="flex min-w-0 flex-1 flex-col gap-3xs">
         <div class="flex flex-wrap items-center gap-2xs">
           <span class="min-w-0 truncate text-sm font-medium text-ink">{props.project.name}</span>
-          <Chip>{props.project.kind === "docs" ? "Tài liệu" : "Mã nguồn"}</Chip>
-          {/* Huy hiệu nguồn gốc chỉ hiện host: một URL clone đầy đủ dài hơn cả tên dự án,
-              và phần phân biệt được hai bản sao cùng tên là *máy chủ* chứ không phải
-              đường dẫn. URL đầy đủ vẫn nằm ở `title` cho ai cần. */}
+          <Chip>{props.project.kind === "docs" ? t(S.common.docs) : t(S.projects.kindCode)}</Chip>
+          {/* The origin badge shows the host only; the full URL stays in `title`. */}
           <Show when={props.project.origin}>
             {(origin) => (
               <span title={origin()}>
@@ -321,10 +309,10 @@ function Row(props: {
             )}
           </Show>
           <Show when={current()}>
-            <Chip tone="accent">Đang mở</Chip>
+            <Chip tone="accent">{t(S.projects.current)}</Chip>
           </Show>
         </div>
-        {/* Đường dẫn cắt ở *đầu*: hai dự án cùng tên chỉ khác nhau ở phần đuôi. */}
+        {/* The path truncates at the start: two same-named projects differ at the end. */}
         <span class="min-w-0 truncate text-2xs text-faint" dir="rtl" title={props.project.path}>
           <bdi>{props.project.path}</bdi>
         </span>
@@ -339,9 +327,11 @@ function Row(props: {
           variant="outline"
           disabled={props.disabled || current()}
           onClick={props.onOpen}
-          label={current() ? `"${props.project.name}" đang mở` : `Mở "${props.project.name}"`}
+          label={t(current() ? S.projects.rowCurrentLabel : S.projects.rowOpenLabel, {
+            name: props.project.name,
+          })}
         >
-          {current() ? "Đang mở" : "Mở"}
+          {current() ? t(S.projects.current) : t(S.common.open)}
         </Button>
         <IconButton
           icon="trash"
@@ -349,11 +339,9 @@ function Row(props: {
           danger
           disabled={props.disabled || current()}
           onClick={props.onForget}
-          label={
-            current()
-              ? `"${props.project.name}" đang mở, không bỏ được`
-              : `Bỏ "${props.project.name}" khỏi danh sách`
-          }
+          label={t(current() ? S.projects.forgetBlockedLabel : S.projects.forgetLabel, {
+            name: props.project.name,
+          })}
           tip="left"
         />
       </div>
@@ -361,35 +349,30 @@ function Row(props: {
   );
 }
 
-const FILTERS: { id: Filter; label: string }[] = [
-  { id: "all", label: "Tất cả" },
-  { id: "code", label: "Mã nguồn" },
-  { id: "docs", label: "Tài liệu" },
+const FILTERS: { id: Filter; label: Msg }[] = [
+  { id: "all", label: S.projects.filterAll },
+  { id: "code", label: S.projects.kindCode },
+  { id: "docs", label: S.common.docs },
 ];
 
-/**
- * Ba lối tạo dự án, hiện thành ba nút chứ không gộp thành một menu.
- *
- * Gộp lại thì lối clone và lối tạo thư viện nằm sau một cú bấm nữa, và một tính năng nằm
- * sau một cú bấm không ai biết là có thì bằng không tồn tại.
- */
-const ENTRANCES: { id: ProjectKind | "clone"; label: string; icon: IconName; hint: string }[] = [
+/** Three entrances as three buttons, not one menu: a feature behind an extra click is invisible. */
+const ENTRANCES: { id: ProjectKind | "clone"; label: Msg; icon: IconName; hint: Msg }[] = [
   {
     id: "code",
-    label: "Mở thư mục mã nguồn",
+    label: S.projects.newCode,
     icon: "folder-open",
-    hint: "Trợ lý đọc, sửa tệp và chạy lệnh ở đó.",
+    hint: S.projects.newCodeHint,
   },
   {
     id: "clone",
-    label: "Clone từ Git",
+    label: S.projects.cloneTitle,
     icon: "git-branch",
-    hint: "Tải repo về máy rồi mở làm dự án.",
+    hint: S.projects.cloneHint,
   },
   {
     id: "docs",
-    label: "Tạo thư viện tài liệu",
+    label: S.projects.newDocs,
     icon: "library",
-    hint: "Nạp PDF, Word, Markdown… để hỏi đáp; không sửa tệp.",
+    hint: S.projects.newDocsHint,
   },
 ];

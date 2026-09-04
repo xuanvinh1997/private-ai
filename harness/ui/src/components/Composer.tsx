@@ -3,6 +3,7 @@ import { useDragDrop } from "../hooks/useDragDrop";
 import { type Attachment, pickFiles, resolveAttachments } from "../lib/attach";
 import { applyCompletion, completePaths, findTrigger, rankCommands } from "../lib/complete";
 import CompletionPopup, { type Suggestion } from "./CompletionPopup";
+import { S, t, tn, type Msg } from "../lib/i18n";
 import { displayMode } from "../lib/prefs";
 import { notify } from "../lib/toast";
 import type { ModelChoice, ProjectKind, ToolScope } from "../lib/protocol";
@@ -11,13 +12,7 @@ import Menu from "./Menu";
 import ModelPicker from "./ModelPicker";
 import { IconButton } from "./primitives";
 
-/**
- * Biểu tượng của từng lệnh `/`.
- *
- * Ở đây chứ không trong `lib/complete.ts`: bộ biểu tượng là chuyện của tầng vẽ, và danh
- * sách lệnh phải kiểm chứng được mà không cần biết ứng dụng vẽ chúng bằng hình gì. Hình
- * gánh phần nghĩa mà câu mô tả một dòng phải bỏ lại.
- */
+/** Icon per `/` command; kept here, not in `lib/complete.ts`, so the command list stays testable without the UI. */
 const COMMAND_ICON: Record<string, IconName> = {
   moi: "plus",
   tim: "search",
@@ -31,124 +26,65 @@ const COMMAND_ICON: Record<string, IconName> = {
   caidat: "settings",
 };
 
-const SCOPE_LABEL: Record<ToolScope, string> = {
-  read: "Chỉ đọc",
-  write: "Đọc và ghi",
-  shell: "Đọc, ghi và chạy lệnh",
+const SCOPE_LABEL: Record<ToolScope, Msg> = {
+  read: S.chat.composer.scopeRead,
+  write: S.chat.composer.scopeWrite,
+  shell: S.chat.composer.scopeShell,
 };
 
-/**
- * Một mảnh của dòng trạng thái dưới ô soạn tin.
- *
- * Khai ở đây chứ không lôi vào `primitives.tsx`: hình dạng này chỉ đúng cho đúng một dòng
- * trong toàn ứng dụng, và một primitive dùng chung mà chỉ có một chỗ gọi là một primitive
- * chưa biết mình phải làm gì.
- *
- * `note` là phần phụ chìm hơn một bậc — loại dự án đứng sau tên dự án — chứ không phải một
- * mảnh riêng: nó không tự đứng một mình mà có nghĩa. `warn` chỉ dành cho mảnh **đang** đáng
- * lo, không phải cho mọi mảnh có con số.
- */
+/** One piece of the status line under the composer; local because a shared primitive with one caller is premature.
+ * `note` is a quieter suffix rather than its own piece, and `warn` is only for a piece that is actually worrying. */
 type MetaBit = { icon: IconName; text: string; note?: string; warn?: boolean };
 
-/**
- * Ô soạn tin: một khối bo tròn nằm giữa dưới, và **mọi** nút nằm trong viền của nó.
- *
- * Được điều khiển từ ngoài (`value`/`onChange`) vì kéo thả tệp phải chèn được đường dẫn
- * vào bản nháp, và bản nháp phải sống sót qua việc đổi phiên.
- *
- * Hàng công cụ nằm *trong* khung viền chứ không ở trên nó: mô hình và phạm vi tool là
- * thuộc tính của tin nhắn sắp gửi, không phải của cả màn hình, và đặt chúng ngoài khung
- * là mời người dùng quên mất chúng tồn tại. Cùng lý do khiến ChatGPT dời bộ chọn mô hình
- * từ thanh trên xuống đây.
- *
- * Phạm vi tool thì **không** giấu sau menu "+" như ChatGPT giấu tool của nó: chọn "chạy
- * lệnh" là cấp cho mô hình quyền chạy lệnh trên máy này, và một quyền đang mở phải đọc
- * được mà không cần bấm vào đâu cả. Cùng luật đó bắt nó phải *tắt đi trông thấy* khi chưa
- * có dự án — xem `hasProject`.
- *
- * Mức đang hiện là **mức sẽ đi kèm lượt kế**, không phải một thiết lập được lưu ở đâu đó:
- * mỗi lần gửi, giá trị này đi thẳng vào `send_message` và lõi siết sổ đăng ký tool theo
- * nó cho đúng lượt ấy. Nhãn ở đây vì vậy đọc được như một lời hứa kiểm chứng được, chứ
- * không phải một cái công tắc trang trí.
- *
- * Mọi thứ quanh ô nhập xếp thành **ba tầng**, và tầng quyết định hình dạng chứ không phải
- * chỗ ngồi:
- *
- *  1. Thứ *bấm được và đổi được lượt kế* — quyền, mô hình, nút Gửi — mang hình viên thuốc
- *     có nền riêng. Chúng luôn có mặt, kể cả khi giá trị đang là mặc định.
- *  2. Thứ *chỉ để đọc* — dự án, MCP, ngữ cảnh — là chữ thường màu `--muted` trên một hàng
- *     duy nhất. Trước đây chúng cũng đeo viên thuốc, và một hàng sáu viên thuốc đồng hạng
- *     dạy mắt rằng cái nào cũng bấm được, cái nào cũng quan trọng ngang nhau — nên rốt cuộc
- *     không cái nào được đọc, kể cả cái quyền. Chữ vẫn nói đủ từng ấy thông tin.
- *  3. Thứ *chỉ đúng khi có việc* — cảnh báo mô hình, gợi ý đính kèm, "chưa mở dự án" — nằm
- *     trong một hàng biết xuống dòng và biến mất hẳn khi không có việc gì.
- *
- * Ba tầng ấy là cách hạ nhiễu **mà không giấu gì**: không có thông tin nào lui vào sau một
- * nút phải bấm mới thấy, chỉ có thông tin bị hạ xuống đúng giọng của nó.
- */
+/** The composer: one rounded block at the bottom with every control inside its border, controlled from outside so
+ * a dropped path can reach the draft and the draft survives a session switch. Tool scope is never hidden behind a
+ * menu, since an open permission must be readable without clicking, and it ships with the next turn rather than
+ * being stored. Everything around the input sits in three tiers - actionable pills, read-only text, and
+ * conditional warnings - which lowers noise without hiding anything. */
 export default function Composer(props: {
   value: string;
   onChange: (text: string) => void;
   onSubmit: () => void;
-  /**
-   * Khoá cứng ô nhập. Chỉ dùng cho việc đổi dự án — lúc đó mọi thứ trên màn hình còn nói
-   * về dự án cũ. **Không** dùng cho "trợ lý đang trả lời": gõ tiếp trong lúc chờ là việc
-   * bình thường, và câu vừa gõ đi vào `queued`.
-   */
+  /** Hard-lock the input, only while switching projects; never for a running turn, which queues instead. */
   disabled: boolean;
   busy: boolean;
-  /** Câu đang chờ lượt hiện tại kết thúc. Chuỗi rỗng nghĩa là không có gì chờ. */
+  /** Message waiting for the current turn to end; an empty string means nothing is queued. */
   queued?: string;
-  /** Bỏ câu đang chờ. */
+  /** Drop the queued message. */
   onUnqueue?: () => void;
   onStop: () => void;
   model: string;
   models: ModelChoice[];
   onPickModel: (model: string) => void;
-  /** Mở cài đặt → nhà cung cấp mô hình, từ trong bộ chọn mô hình. */
+  /** Open settings, model providers, from inside the model picker. */
   onManageProviders: () => void;
-  /** Câu cảnh báo dưới ô chọn mô hình. `undefined` khi không có gì phải nói. */
+  /** Warning under the model picker; `undefined` when there is nothing to say. */
   modelWarning?: string;
   scope: ToolScope;
   onPickScope: (scope: ToolScope) => void;
-  /**
-   * Có dự án đang mở hay không.
-   *
-   * Không có thì lõi **không cắm tool nào** của tầng dự án, nên cả ba mức phạm vi đều
-   * không có gì đằng sau. Bộ chọn phải nói ra điều đó thay vì đứng yên trông như đang bật:
-   * một quyền trông như đang mở mà thực ra rỗng là kiểu nói dối tệ nhất một giao diện
-   * quyền hạn làm được — người dùng dựa vào nó để quyết định có gửi câu tiếp theo không.
-   */
+  /** Whether a project is open; without one no project tools are plugged in, so the scope picker must say so
+   * rather than looking enabled, which is the worst lie a permissions UI can tell. */
   hasProject: boolean;
-  /** Tên dự án đang mở, cho dòng trạng thái dưới ô soạn tin. */
+  /** Name of the open project, for the status line under the composer. */
   projectName?: string;
   projectKind?: ProjectKind;
-  /**
-   * Số server MCP **đang nối** — không phải số server đã khai báo.
-   *
-   * `0` không được viết ra thành chữ: xem `meta` bên dưới, chỗ dựng dòng trạng thái.
-   */
+  /** Number of *connected* MCP servers, not declared ones; `0` is never spelled out (see `meta` below). */
   mcpConnected: number;
-  /** Còn thứ khác nằm dưới ô soạn tin (mấy câu gợi ý), nên đáy thu lại một nấc. */
+  /** Something else sits below the composer (the prompt chips), so the bottom padding drops a step. */
   moreBelow?: boolean;
-  /** Chạy một lệnh `/`. Không truyền thì bộ lệnh không mở. */
+  /** Run a `/` command; omitted, the command palette never opens. */
   onCommand?: (name: string) => void;
-  /**
-   * Ngữ cảnh đã dùng ở bước gần nhất. `null` khi lượt nào cũng chưa chạy trong phiên này.
-   *
-   * `window` là `null` khi không hỏi được cửa sổ của mô hình — khi ấy chip chỉ hiện con số
-   * token, không hiện phần trăm: một tỉ lệ không có mẫu số là một con số bịa.
-   */
+  /** Context used by the latest step; a `null` `window` means no denominator, so only the token count is shown. */
   usage?: { used: number; window: number | null } | null;
 }) {
   let composing = false;
   let field: HTMLTextAreaElement | undefined;
   const [focused, setFocused] = createSignal(false);
 
-  // ---- hoàn thành `@` và `/` ------------------------------------------------
+  // ---- `@` and `/` completion -----------------------------------------------
   //
-  // Con trỏ giữ ở đây chứ không đọc thẳng từ `field.selectionStart` mỗi lần vẽ: đọc thẳng
-  // là đọc DOM trong lúc dựng, và Solid không vẽ lại khi con trỏ dịch mà chữ không đổi.
+  // The caret is tracked here rather than read from `field.selectionStart` during render, which reads the DOM
+  // mid-build and never updates when the caret moves without the text changing.
   const [caret, setCaret] = createSignal(0);
   const [dismissed, setDismissed] = createSignal(false);
   const [cursor, setCursor] = createSignal(0);
@@ -160,8 +96,7 @@ export default function Composer(props: {
     return found;
   });
 
-  // Chỉ hỏi lõi khi đang thật sự gõ một đường dẫn. `createResource` gộp các lần gõ liên
-  // tiếp: lần gọi cũ bị bỏ khi truy vấn đổi, nên gõ nhanh không xếp thành một hàng đợi.
+  // Only ask the core while a path is actually being typed; `createResource` drops the previous call per keystroke.
   const [paths] = createResource(
     () => (trigger()?.kind === "path" ? trigger()!.query : null),
     (query) => completePaths(query, 8),
@@ -176,15 +111,16 @@ export default function Composer(props: {
         label: `/${command.name}`,
         icon: COMMAND_ICON[command.name] ?? "terminal",
         hint:
-          command.needsProject === true && !props.hasProject ? "cần một dự án" : command.hint,
+          command.needsProject === true && !props.hasProject
+            ? t(S.chat.composer.needsProject)
+            : command.hint,
         disabled: command.needsProject === true && !props.hasProject,
       }));
     }
     return (paths() ?? []).map((path) => ({ value: path }));
   });
 
-  // Truy vấn đổi thì con trỏ về đầu: giữ nguyên chỉ số cũ là để nó trỏ vào một hàng khác
-  // hẳn sau khi danh sách đã thay, và Enter chèn thứ người dùng không nhìn.
+  // A changed query resets the cursor: keeping the index would point at a different row and Enter would insert it.
   createEffect(() => {
     items();
     setCursor(0);
@@ -198,7 +134,7 @@ export default function Composer(props: {
     setCursor((current) => (current + delta + count) % count);
   };
 
-  /** Ghi lại chỗ con trỏ sau khi trình duyệt đã dịch nó. */
+  /** Record the caret position after the browser has moved it. */
   const syncCaret = (el: HTMLTextAreaElement) => setCaret(el.selectionStart ?? 0);
 
   const choose = (item: Suggestion) => {
@@ -213,8 +149,7 @@ export default function Composer(props: {
     }
     const next = applyCompletion(props.value, found, item.value);
     props.onChange(next.text);
-    // Đặt lại con trỏ **sau** khi Solid ghi giá trị mới xuống DOM, nếu không trình duyệt
-    // đẩy nó về cuối chuỗi và người dùng mất chỗ đang gõ giữa câu.
+    // Restore the caret *after* Solid writes the new value, or the browser pushes it to the end of the string.
     queueMicrotask(() => {
       if (!field) return;
       field.setSelectionRange(next.caret, next.caret);
@@ -225,7 +160,7 @@ export default function Composer(props: {
 
   const optionId = (index: number) => `composer-opt-${index}`;
 
-  /** Tỉ lệ lấp đầy ngữ cảnh, hoặc `null` khi chưa đáng nói ra. */
+  /** Context fill ratio, or `null` when it is not yet worth saying. */
   const contextPressure = createMemo(() => {
     const counted = props.usage;
     if (!counted || counted.window === null || counted.window <= 0) return null;
@@ -233,51 +168,37 @@ export default function Composer(props: {
     return ratio >= 0.6 ? { ratio: Math.min(ratio, 1) } : null;
   });
 
-  /**
-   * Dòng trạng thái dưới ô soạn tin: **lượt sắp gửi sẽ chạy với những gì**.
-   *
-   * Dựng thành mảng chứ không viết thẳng ba khối JSX cạnh nhau, vì dấu `·` chỉ được đứng
-   * *giữa* hai mảnh có thật — viết tay thì mỗi lần một mảnh vắng mặt lại còn một dấu chấm
-   * treo lơ lửng ở đầu hoặc cuối dòng.
-   *
-   * Mảnh nào **chỉ có ý nghĩa khi khác mặc định** thì vắng mặt ở mặc định. "0 server MCP"
-   * và "chưa có dự án" là hai câu trả lời "không" mà sự vắng mặt cũng nói được, còn quyền
-   * và mô hình thì luôn hiện ở tầng trên — hai thứ ấy không có ngoại lệ nào cả. Riêng
-   * "chưa có dự án" còn được nói thành câu đầy đủ ở tầng cảnh báo, kèm cả hệ quả của nó,
-   * nên lặp lại ở đây chỉ là lặp.
-   */
+  /** Status line under the composer: what the next turn will run with. Built as an array so the separator only
+   * appears *between* real pieces, and pieces that only matter when non-default are absent at their default. */
   const meta = createMemo<MetaBit[]>(() => {
     const rows: MetaBit[] = [];
 
     if (props.hasProject) {
       rows.push({
         icon: "folder-open",
-        text: props.projectName ?? "Dự án",
-        note: props.projectKind === "docs" ? "tài liệu" : "mã nguồn",
+        text: props.projectName ?? t(S.common.project),
+        note: t(
+          props.projectKind === "docs" ? S.chat.composer.kindDocs : S.chat.composer.kindCode,
+        ),
       });
     }
 
-    // Số server, không phải tên: dòng này chỉ cần trả lời "có thêm tool không". Ai muốn
-    // biết những tool nào thì đã có trang Server MCP, và nhét bốn cái tên vào đây là đẩy
-    // dòng trạng thái dài hơn cả câu người dùng sắp gõ.
+    // A count, not names: this line only answers "are there extra tools"; the MCP page answers which.
     if (props.mcpConnected > 0) {
-      rows.push({ icon: "plug", text: `${props.mcpConnected} server MCP` });
+      rows.push({
+        icon: "plug",
+        text: tn(props.mcpConnected, S.chat.composer.mcpOne, S.chat.composer.mcpMany),
+      });
     }
 
-    // Áp lực ngữ cảnh — **chỉ hiện khi đã đáng lo**.
-    //
-    // Ngưỡng 60% là có chủ ý: dưới mức đó con số không đổi được quyết định nào của người
-    // dùng, và một con số đứng đó suốt phiên chỉ dạy mắt bỏ qua đúng chỗ mà về sau nó cần
-    // nhìn. Trên mức đó thì nó trả lời một câu thật: còn bao nhiêu chỗ trước khi phần đầu
-    // cuộc trò chuyện bị rút gọn.
-    //
-    // Mẫu số là cửa sổ mà **plugin nén** dùng làm ngưỡng, không phải cửa sổ của mô hình —
-    // nên nó chạm mức cảnh báo đúng lúc nén sắp chạy, chứ không sau đó.
+    // Context pressure, shown only once it is worth worrying about: below 60% the number changes no decision, and
+    // a permanent number trains the eye to skip the spot it will later need. The denominator is the compaction
+    // plugin's threshold window, not the model's, so the warning lands just before compaction runs.
     const pressure = contextPressure();
     if (pressure) {
       rows.push({
         icon: "model",
-        text: `Ngữ cảnh ${Math.round(pressure.ratio * 100)}%`,
+        text: t(S.chat.composer.context, { n: Math.round(pressure.ratio * 100) }),
         warn: pressure.ratio >= 0.85,
       });
     }
@@ -285,17 +206,8 @@ export default function Composer(props: {
     return rows;
   });
 
-  /**
-   * Chèn đường dẫn vào bản nháp, sau khi lõi đã nhìn vào đĩa và duyệt từng cái một.
-   *
-   * Chèn vào **cuối** thay vì thay thế: người dùng thường đã gõ dở câu hỏi rồi mới đi tìm
-   * tệp. Mỗi đường dẫn một dòng, vì đường dẫn có dấu cách trong đó và một danh sách ngăn
-   * bằng dấu cách thì không tách lại được — cả người đọc lẫn mô hình.
-   *
-   * Một tệp bị từ chối **không** chặn những tệp còn lại: thả năm tệp mà một cái nằm ngoài
-   * dự án thì bốn cái kia vẫn vào, và câu lỗi nói về đúng cái thứ năm. Bỏ cả lô vì một
-   * đường dẫn hỏng là bắt người dùng làm lại một việc đã gần xong.
-   */
+  /** Append resolved paths to the draft, one per line because paths contain spaces; a rejected file never blocks
+   * the rest of the batch, and the error names exactly the one that failed. */
   const attach = async (paths: string[]) => {
     if (paths.length === 0) return;
 
@@ -303,23 +215,23 @@ export default function Composer(props: {
     try {
       resolved = await resolveAttachments(paths);
     } catch (err) {
-      // Lõi từ chối cả lô — gần như luôn là "chưa mở dự án". Nguyên văn từ lõi: chỉ nó
-      // biết vì sao, và một câu ta tự viết ở đây sẽ đoán sai vào đúng lần nó đoán khác.
+      // The core rejected the whole batch, almost always "no project"; quote it verbatim, since only it knows why.
       notify("error", String(err));
       return;
     }
 
     const usable = resolved.filter((entry) => entry.error === null);
     const refused = resolved.filter((entry) => entry.error !== null);
-    // Một thông báo cho cả lô, không phải một thông báo mỗi tệp: thả nhầm cả thư mục
-    // Downloads vào đây thì hai mươi thẻ giống hệt nhau không nói được gì mà một thẻ không
-    // nói được. Câu đầu là câu cụ thể — có tên tệp trong đó — rồi mới tới con số.
+    // One notice per batch, not per file; the first sentence is the specific one, naming a file, then the count.
     if (refused.length > 0) {
       notify(
         "error",
         refused.length === 1
           ? refused[0]!.error!
-          : `${refused[0]!.error} (và ${refused.length - 1} tệp nữa không đính kèm được)`,
+          : t(S.chat.composer.attachRefusedMore, {
+              err: refused[0]!.error!,
+              n: refused.length - 1,
+            }),
       );
     }
 
@@ -329,58 +241,40 @@ export default function Composer(props: {
     field?.focus();
   };
 
-  /**
-   * Kéo thả: cùng đường đi với nút đính kèm, không phải một đường riêng.
-   *
-   * `useDragDrop` phát cho **mọi** chỗ đang nghe, nên cú thả phải có đúng một chủ trên mỗi
-   * màn hình. Ở hội thoại chủ đó là ô soạn tin. Trước đây vỏ ứng dụng cũng nghe cú thả ở
-   * màn hình này và đem đường dẫn đi mở thành dự án, nên một cú thả làm hai việc: tệp thì
-   * vừa được đính kèm vừa nhận một câu lỗi "không phải một thư mục", còn thư mục thì vừa
-   * được đính kèm vừa âm thầm đổi cả dự án dưới chân phiên đang chạy.
-   */
+  /** Drag and drop takes the same path as the attach button; `useDragDrop` broadcasts, so a drop must have exactly
+   * one owner per screen, and in the conversation that owner is the composer. */
   useDragDrop((paths) => void attach(paths));
 
-  /**
-   * Lối vào thứ hai của cùng việc ấy: hộp thoại của hệ điều hành.
-   *
-   * Mỗi đường ra khỏi hàm này đều **nói một câu**, trừ đúng một đường: người dùng bấm Huỷ.
-   * Đó là luật của một nút — bấm vào mà không có gì xảy ra và không có gì được nói ra thì
-   * nút ấy hỏng, kể cả khi bên trong nó mọi thứ chạy đúng như đã viết.
-   */
+  /** The second entrance to the same job, the OS dialog; every exit path says something except an explicit cancel. */
   const browse = async () => {
-    // Chưa có dự án thì trả lời ngay, không mở hộp thoại: bắt người dùng đi chọn tệp rồi
-    // mới nói là không nhận được nó là lấy công của họ để nói một câu đã biết trước.
+    // With no project, answer immediately rather than opening a dialog only to refuse what they picked.
     if (!props.hasProject) {
-      notify("error", "Chưa mở dự án nên chưa đính kèm tệp được.");
+      notify("error", t(S.chat.composer.attachNoProject));
       return;
     }
     try {
       const picked = await pickFiles();
       if (picked === null) {
-        notify("error", "Hộp thoại chọn tệp chỉ có trong ứng dụng.");
+        notify("error", t(S.chat.composer.attachNoPicker));
         return;
       }
       await attach(picked);
     } catch (err) {
-      notify("error", `Không mở được hộp thoại chọn tệp: ${err}`);
+      notify("error", t(S.chat.composer.attachPickerFailed, { err: String(err) }));
     }
   };
 
-  // Không chặn khi `busy`: App nhận câu này và xếp nó vào ô chờ. Chặn ở đây thì Enter
-  // giữa lượt lại không làm gì cả, đúng cái im lặng vừa bỏ đi.
+  // Not blocked while `busy`: App queues the message, and blocking here would make Enter do nothing mid-turn.
   const submit = () => {
     if (props.disabled || props.value.trim() === "") return;
     props.onSubmit();
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
-    // Bộ gõ tiếng Việt gửi Enter để chốt từ đang gõ. Không có guard này thì mỗi lần
-    // chốt dấu là một lần gửi nhầm — chat_view.py:453 đã vấp đúng chỗ đó.
+    // A Vietnamese IME sends Enter to commit a word; without this guard every commit would send the message.
     if (composing || event.isComposing) return;
 
-    // Danh sách gợi ý đang mở thì nó **giành trước** các phím điều hướng. Enter ở đây chèn
-    // một gợi ý chứ không gửi tin: người vừa gõ `@sto` và thấy một danh sách đang chờ thì
-    // Enter của họ nói về danh sách ấy, không nói về cả tin nhắn.
+    // An open suggestion list claims the navigation keys first: Enter there inserts a suggestion, it does not send.
     if (open()) {
       if (event.key === "ArrowDown") {
         event.preventDefault();
@@ -402,8 +296,7 @@ export default function Composer(props: {
       }
       if (event.key === "Escape") {
         event.preventDefault();
-        // Đóng danh sách, **giữ nguyên chữ**. Xoá luôn phần đã gõ là phạt người dùng vì đã
-        // gõ một dấu `@` — và Esc ở mọi chỗ khác trong ứng dụng cũng chỉ đóng, không xoá.
+        // Close the list but keep the text; Esc everywhere else in the app closes without deleting.
         setDismissed(true);
         return;
       }
@@ -416,8 +309,7 @@ export default function Composer(props: {
     }
   };
 
-  // Ô nhập cao theo nội dung, tối đa ~10 dòng. Đo bằng `scrollHeight` sau khi ép về 0:
-  // không ép thì ô đã cao rồi sẽ không bao giờ thấp xuống lại khi người dùng xoá bớt.
+  // Auto-height up to ~10 lines, measured via `scrollHeight` after resetting to 0, or it can never shrink again.
   const resize = (el: HTMLTextAreaElement) => {
     el.style.height = "0px";
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
@@ -435,11 +327,8 @@ export default function Composer(props: {
         submit();
       }}
     >
-      {/* Câu đang chờ, hiện **trên** ô soạn tin và rộng đúng bằng nó.
-
-          Xếp hàng mà không hiện ra thì Enter đọc như một cú bấm rơi vào hư không, và người
-          dùng gõ lại câu đó lần nữa. Kèm nút bỏ vì đổi ý giữa lúc chờ là chuyện thường —
-          câu trả lời đang chảy ngay trên kia có thể vừa trả lời xong chính nó. */}
+      {/* The queued message, shown above the composer at the same width: an invisible queue makes Enter feel
+          like a lost click. It carries a cancel button, since the streaming answer may already have answered it. */}
       <Show when={(props.queued ?? "") !== ""}>
         <div
           class="mx-auto mb-xs flex w-full items-center gap-xs rounded-panel border border-line bg-surface-soft px-md py-xs"
@@ -449,33 +338,25 @@ export default function Composer(props: {
           }}
         >
           <Icon name="clock" size={13} />
-          <span class="shrink-0 text-xs text-faint">Gửi khi xong</span>
+          <span class="shrink-0 text-xs text-faint">{t(S.chat.composer.queued)}</span>
           <span class="min-w-0 flex-1 truncate text-sm text-text">{props.queued}</span>
-          {/* Cao 28px chứ không co theo chữ: đây là lối thoát duy nhất khỏi hàng chờ, và
-              một lối thoát rộng bằng hai chữ là một lối thoát bấm trượt. */}
+          {/* A fixed 28px height: this is the only way out of the queue, and a two-word target gets missed. */}
           <button
             type="button"
             onClick={() => props.onUnqueue?.()}
-            aria-label="Bỏ câu đang chờ"
+            aria-label={t(S.chat.composer.unqueue)}
             class="flex h-7 shrink-0 items-center rounded-btn px-2xs text-xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-text"
           >
-            Bỏ
+            {t(S.common.remove)}
           </button>
         </div>
       </Show>
 
       <div
-        // Ô soạn tin rộng đúng bằng cột chữ phía trên nó: lệch một chút thôi là mắt đọc
-        // ra hai khối không thuộc về nhau.
-        //
-        // Lúc có tiêu điểm, viền đổi sang màu nhấn **và** một quầng sáng rất mỏng nở ra
-        // quanh khung. Quầng ấy là chuyển động duy nhất của cả ô soạn tin, và nó có lý do:
-        // ô này nằm sát đáy một cửa sổ đầy chữ, nên "con trỏ đang ở đâu" phải đọc được từ
-        // khoé mắt chứ không phải bằng cách đi tìm cái nháy. Đổi mỗi màu viền là một pixel
-        // đổi màu — ngoại vi của mắt không bắt được. `transition` (không phải
-        // `transition-colors`) vì `box-shadow` phải trôi cùng nhịp với viền, nếu không
-        // quầng bật ra trước rồi viền đuổi theo sau. Người chọn giảm chuyển động vẫn có
-        // đủ hai tín hiệu — app.css cắt thời lượng chứ không cắt trạng thái cuối.
+        // The composer matches the width of the text column above it, or the two read as unrelated blocks.
+        // On focus the border takes the accent colour *and* a thin halo blooms: a one-pixel colour change is
+        // invisible to peripheral vision, and this input sits at the bottom of a text-filled window. `transition`
+        // rather than `transition-colors`, so the shadow and the border move together.
         class="relative mx-auto flex w-full flex-col rounded-composer border bg-surface shadow-float transition duration-[var(--dur-base)] ease-[var(--ease-out)]"
         classList={{
           "border-accent ring-[3px] ring-accent/15": focused(),
@@ -492,7 +373,9 @@ export default function Composer(props: {
           onPick={choose}
           onHover={setCursor}
           empty={
-            trigger()?.kind === "path" && !paths.loading ? "Không có tệp nào khớp." : undefined
+            trigger()?.kind === "path" && !paths.loading
+              ? t(S.chat.composer.noPathMatch)
+              : undefined
           }
         />
 
@@ -504,12 +387,10 @@ export default function Composer(props: {
           rows={1}
           value={props.value}
           disabled={props.disabled}
-          placeholder={
-            props.busy
-              ? "Gõ câu tiếp theo…  (Enter để xếp hàng chờ)"
-              : "Nhập…  (Enter để gửi, Shift+Enter xuống dòng)"
-          }
-          aria-label="Nội dung tin nhắn"
+          placeholder={t(
+            props.busy ? S.chat.composer.placeholderBusy : S.chat.composer.placeholder,
+          )}
+          aria-label={t(S.chat.composer.field)}
           aria-keyshortcuts="Enter Meta+Enter Control+Enter"
           onCompositionStart={() => (composing = true)}
           onCompositionEnd={() => (composing = false)}
@@ -523,8 +404,7 @@ export default function Composer(props: {
           onInput={(event) => {
             props.onChange(event.currentTarget.value);
             resize(event.currentTarget);
-            // Gõ tiếp sau khi đã Esc là một lời gọi mới, không phải phần đuôi của lời gọi
-            // vừa bị đóng — nếu không, Esc một lần là tắt hoàn thành cho tới hết câu.
+            // Typing after Esc starts a new trigger, or one Esc would disable completion for the rest of the line.
             setDismissed(false);
             syncCaret(event.currentTarget);
           }}
@@ -534,35 +414,18 @@ export default function Composer(props: {
           class="max-h-[220px] w-full resize-none bg-transparent px-md pt-md pb-2xs text-base text-text outline-none placeholder:text-faint"
         />
 
-        {/* Tầng ba: mọi câu **chỉ đúng khi có việc**, gom vào **một hàng biết xuống dòng**
-            chứ không xếp chồng thành ba dải.
-
-            Ô soạn tin chỉ cao vài chục pixel, và mỗi dải chữ thêm vào đẩy hàng nút xuống
-            một nấc — ba dải rời là ba nấc, và người dùng thấy đáy cửa sổ nhấp nhô mỗi lần
-            một điều kiện bật tắt. Nằm cùng hàng thì hai câu ngắn ở chung một dòng, và chỉ
-            khi cửa sổ hẹp chúng mới tự rơi xuống.
-
-            `role="status"` chứ không `alert` ở cả hai: đây là những điều kiện đang tồn tại,
-            không phải sự kiện vừa xảy ra — trình đọc màn hình nên đọc chúng khi tới lượt.
-
-            Và vì thế **không có câu lỗi nào** ở đây. Đó là luật chứ không phải chỗ còn
-            trống: một cú đính kèm hỏng là chuyện vừa xảy ra, nó chỉ đúng trong vài giây, và
-            nó phải tự đi — nên nó ra thông báo nổi (`lib/toast.ts`), nơi nó vẫn nói được cả
-            khi người dùng đã chuyển sang tab khác. Hàng này từng giữ một câu như thế, và
-            cái giá là một dải chữ nhấp nháy theo từng cú bấm ngay dưới chỗ đang gõ. */}
+        {/* Tier three: every conditional line, gathered into one wrapping row rather than three stacked strips,
+            so toggling a condition does not shunt the button row up and down. `role="status"`, not `alert`,
+            because these are standing conditions. No error text belongs here by rule: a failed attach describes
+            something that just happened, so it goes to a toast (`lib/toast.ts`) instead. */}
         <Show when={!props.hasProject || props.modelWarning}>
           <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-xs">
-            {/* Câu chốt lại bằng "vẫn gửi được": đây là một giới hạn đang tồn tại, không
-                phải một thứ vừa hỏng, và người đọc phải rời câu này với niềm tin rằng ô
-                soạn tin bên dưới còn dùng được.
-
-                Đây cũng là **chỗ duy nhất** nói "chưa có dự án" bằng chữ, kể từ khi dòng
-                trạng thái phía dưới thôi mang một viên thuốc "Chưa có dự án" chỉ để nói
-                đúng chừng ấy mà không nói được hệ quả. */}
+            {/* The sentence ends on "you can still send": a standing limit, not a breakage, and this is now the
+                only place that says "no project" in words, together with its consequence. */}
             <Show when={!props.hasProject}>
               <p class="m-0 flex items-center gap-2xs text-muted" role="status">
                 <Icon name="tools" size={12} />
-                Chưa có dự án: chưa có tool, vẫn gửi được.
+                {t(S.chat.composer.noProject)}
               </p>
             </Show>
 
@@ -577,51 +440,22 @@ export default function Composer(props: {
           </div>
         </Show>
 
-        {/* Tầng một, và là hàng duy nhất còn đeo viên thuốc: đính kèm ở mép trái, **quyền**
-            ngay cạnh nó, và mô hình dạt sang phải cạnh nút Gửi. Thứ tự này không tuỳ tiện —
-            trái sang phải là "đưa gì vào → được làm gì với nó → ai làm", và cái đắt nhất
-            trong ba cái đó là quyền, nên nó đứng ở chỗ mắt chạm tới trước.
-
-            Bốn thứ ở đây đều **đổi được lượt kế**, và cả bốn đều cao 32px nên vẫn bấm trúng
-            bằng ngón tay. Dự án/MCP/ngữ cảnh đã rời khỏi hình viên thuốc chính vì không đổi
-            được gì cả: chúng chỉ báo cáo lại một lựa chọn đã làm ở nơi khác. */}
+        {/* Tier one, the only row still wearing pills: attach, then scope, then model beside Send. Left to right
+            reads "what goes in, what may be done with it, who does it", and all four change the next turn. */}
         <div class="flex flex-wrap items-center gap-2xs px-2xs pb-2xs">
-          {/* Nút này **mở hộp thoại chọn tệp**, không mở một câu giải thích.
-
-              Nó từng chỉ bật tắt một dòng chữ hướng dẫn kéo thả, với lý do rằng chỉ tầng
-              hệ điều hành mới đưa được đường dẫn tuyệt đối. Vế sau đúng, vế trước sai:
-              hộp thoại của Tauri *là* tầng hệ điều hành và trả về đúng đường dẫn ấy — thư
-              viện tài liệu đã dùng nó từ đầu. Cái không đưa được đường dẫn là
-              `<input type="file">` của trình duyệt, không phải mọi hộp thoại.
-
-              Kéo thả vẫn còn, và ở lại đúng vai của nó: một lối tắt cho người đang mở sẵn
-              một cửa sổ thư mục, chứ không phải cử chỉ duy nhất mở được đường vào. Nó được
-              nhắc trong `aria-label` và trong chú giải, tức ở chỗ người ta hỏi "nút này
-              làm gì", chứ không chiếm một dòng thường trực dưới ô soạn tin.
-
-              **Không** tắt khi chưa mở dự án, dù lúc ấy chẳng tệp nào đính kèm được. Một
-              nút xám không nói được vì sao nó xám; người dùng bấm, không thấy gì, và học
-              được đúng một điều — cái nút này hỏng. Nó ở lại bấm được và trả lời bằng chữ,
-              ngay trên đầu nó. Cùng luật với nút dừng trong bản demo (`lib/agent.ts`). */}
+          {/* This button opens the OS file dialog: Tauri's dialog *is* the OS layer and returns absolute paths;
+              it is `<input type="file">` that cannot. Drag and drop stays as a shortcut, mentioned in the label.
+              It is never disabled without a project: a grey button cannot say why it is grey, so it stays
+              clickable and answers in words above itself. */}
           <IconButton
             icon="paperclip"
-            label="Đính kèm tệp, hoặc kéo thả vào cửa sổ"
+            label={t(S.chat.composer.attach)}
             onClick={() => void browse()}
           />
 
-          {/* Vô hiệu chứ không ẩn hẳn: chỗ ngồi của bộ chọn giữ nguyên qua hai trạng thái,
-              nên người vừa đóng dự án nhìn thấy *cái gì đã đổi* thay vì thấy một nút biến
-              mất. Nó ra khỏi vòng Tab luôn — không còn lựa chọn nào để đi tới, và lý do
-              nằm ở dòng chữ ngay trên, chỗ trình đọc màn hình cũng đọc được.
-
-              Nói "chưa dùng được" bằng chữ chứ **không gạch ngang** cái nhãn: chữ bị gạch
-              đọc ra là một thứ vừa hỏng hoặc vừa bị bỏ đi, mà đây là một quyền đang tắt vì
-              chưa có gì để cấp. "Chưa xong" và "hỏng" là hai trạng thái.
-
-              Cỡ chữ ở đây bám `text-xs` để khớp *đúng từng pixel* với viên thuốc thật do
-              `Menu variant="pill"` vẽ ra — chỗ ngồi chỉ giữ nguyên nếu cả bề cao lẫn bề
-              ngang đều giữ nguyên, và bề ngang đi theo cỡ chữ. Đổi một bên là phải đổi
-              bên kia cùng lúc, kể cả bộ chọn mô hình đứng cạnh. */}
+          {/* Disabled, not hidden, so the picker keeps its place and the change is visible; it also leaves the tab
+              order, since there is nothing to choose. Said in words rather than struck through, because this is a
+              permission with nothing to grant, not a broken one. `text-xs` matches the real pill pixel for pixel. */}
           <Show
             when={props.hasProject}
             fallback={
@@ -630,25 +464,23 @@ export default function Composer(props: {
                 class="flex h-(--control-h) items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-sm text-xs text-faint"
               >
                 <Icon name="hand" size={13} />
-                {SCOPE_LABEL[props.scope]}
-                <span class="opacity-70">· chưa dùng được</span>
+                {t(SCOPE_LABEL[props.scope])}
+                <span class="opacity-70">{t(S.chat.composer.scopeIdle)}</span>
               </span>
             }
           >
-            {/* Bàn tay thay cho cái cờ lê: cờ lê nói "có công cụ", còn hàng này nói **được
-                phép làm tới đâu** — cùng một hình cho hai ý khác nhau là chỗ người ta đọc
-                lướt qua rồi tưởng mình đã hiểu. */}
+            {/* A hand rather than a wrench: the wrench says "there are tools", this row says how far they may go. */}
             <Menu
               variant="pill"
               placement="up"
               align="left"
               icon="hand"
-              text={SCOPE_LABEL[props.scope]}
+              text={t(SCOPE_LABEL[props.scope])}
               tone={props.scope === "shell" ? "warn" : "neutral"}
-              label={`Phạm vi tool: ${SCOPE_LABEL[props.scope]}`}
+              label={t(S.chat.composer.scopeMenu, { scope: t(SCOPE_LABEL[props.scope]) })}
               items={(["read", "write", "shell"] as ToolScope[]).map((scope) => ({
                 id: scope,
-                label: SCOPE_LABEL[scope],
+                label: t(SCOPE_LABEL[scope]),
                 icon: "hand" as const,
                 onSelect: () => props.onPickScope(scope),
               }))}
@@ -669,8 +501,9 @@ export default function Composer(props: {
             fallback={
               <button
                 type="submit"
+                aria-label={t(S.chat.composer.send)}
                 disabled={props.disabled || props.value.trim() === ""}
-                class="flex h-(--control-h) items-center gap-2xs rounded-pill bg-accent px-md text-sm font-medium text-on-accent transition-colors duration-[var(--dur-fast)] hover:bg-accent-hover disabled:opacity-40"
+                class="pai-btn pai-btn-primary"
               >
                 <Icon name="send" size={14} />
               </button>
@@ -678,8 +511,9 @@ export default function Composer(props: {
           >
             <button
               type="button"
+              aria-label={t(S.chat.composer.stop)}
               onClick={props.onStop}
-              class="flex h-(--control-h) items-center gap-2xs rounded-pill border border-line-strong px-md text-sm font-medium text-text transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)]"
+              class="pai-btn pai-btn-secondary"
             >
               <Icon name="stop" size={14} />
             </button>
@@ -687,29 +521,15 @@ export default function Composer(props: {
         </div>
       </div>
 
-      {/* Tầng hai — dòng trạng thái: **lượt sắp gửi sẽ chạy với những gì**.
-
-          Nó ở ngoài viền ô soạn tin chứ không trong: mọi thứ trong viền đều bấm được và đổi
-          được, còn mấy mảnh này chỉ báo cáo lại trạng thái đã chọn ở nơi khác. Trộn hai loại
-          vào một khung là mời người dùng bấm vào một cái nhãn — và đó chính là lời mời mà
-          hình viên thuốc cũ phát ra: nền riêng, góc bo tròn, đứng ngay dưới ba cái nút thật.
-
-          Nên bây giờ chúng là **chữ**: `--muted`, không nền, không viền, cách nhau bằng dấu
-          `·`, biểu tượng nhỏ giữ lại để nhận ra từng mảnh mà không phải đọc. Chữ vẫn nói đủ
-          những câu người ta thật sự hỏi trước khi bấm Gửi — nó đọc thư mục nào, có thêm tool
-          nào ngoài tool dựng sẵn — chỉ là nói bằng giọng của một dòng chân trang, đúng hạng
-          của nó.
-
-          `text-xs` chứ không nhỏ hơn: hạ hạng không có nghĩa là hạ tới mức phải nheo mắt,
-          và đây là dòng duy nhất nói ra thư mục mà trợ lý sắp đọc.
-
-          Cố ý **không** có mảnh mô hình ở đây. Tên mô hình đã nằm trong bộ chọn ngay phía
-          trên, cách chưa tới ba mươi pixel; lặp lại nó chỉ làm dài thêm một dòng vốn tồn tại
-          để trả lời những câu bộ chọn *không* trả lời được. */}
+      {/* Tier two, the status line: what the next turn will run with. Outside the border, because everything
+          inside it is clickable while these pieces only report choices made elsewhere - so they are plain
+          `--muted` text with small icons, not pills. `text-xs`, not smaller: this is the only line naming the
+          directory the assistant is about to read. The model is deliberately absent, since its picker is inches
+          above and this line exists to answer what the picker cannot. */}
       <Show when={meta().length > 0}>
         <div
           role="group"
-          aria-label="Lượt kế sẽ chạy với"
+          aria-label={t(S.chat.composer.metaLabel)}
           class="mx-auto mt-xs flex w-full flex-wrap items-center gap-x-2xs gap-y-3xs px-md text-xs text-muted"
           classList={{
             "max-w-(--reading-measure)": displayMode() === "bubble",
@@ -722,13 +542,9 @@ export default function Composer(props: {
                 class="inline-flex items-center gap-2xs"
                 classList={{ "text-warn": item.warn === true }}
               >
-                {/* Dấu phân cách `aria-hidden`: mắt cần nó để tách hai mảnh, còn trình đọc
-                    màn hình đã có khoảng nghỉ giữa hai phần tử rồi — đọc thêm "chấm giữa"
-                    vào giữa mỗi mảnh là biến một dòng ngắn thành một câu lắp bắp.
-
-                    Nó nằm *trong* mảnh chứ không đứng riêng để `flex-wrap` không bao giờ
-                    bỏ một dấu chấm trơ trọi ở cuối dòng trên. Màu `--faint` đè lên cả màu
-                    cảnh báo của mảnh: dấu ngăn cách không phải thứ đang cảnh báo. */}
+                {/* The separator is `aria-hidden`: the eye needs it, a screen reader already pauses between
+                    elements. It lives *inside* the piece so `flex-wrap` never strands it at the end of a line,
+                    and it stays `--faint` even on a warning piece, since the separator is not what warns. */}
                 <Show when={index() > 0}>
                   <span aria-hidden="true" class="text-faint">
                     ·

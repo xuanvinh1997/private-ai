@@ -1,48 +1,41 @@
-//! Hỏng hóc của tầng mô hình, phân loại bằng mã chứ không bằng câu chữ.
-//!
-//! Bản Python có một cây exception (`llm/__init__.py`): `ProviderUnavailable` ←
-//! `NoProviderConfigured`, cộng `ProviderReadOnly` và `UnknownProvider`. Cây ấy chỉ dùng
-//! được bằng `except`, nên mọi nơi muốn phân nhánh đều phải import đúng lớp. Ở đây gộp
-//! thành **một kiểu, một trường `code`**: người gọi `match` trên `code`, và câu chữ
-//! tiếng Việt chỉ để hiện cho người dùng.
-//!
-//! Luật: **không bao giờ route theo `message`.** Câu chữ được phép đổi bất cứ lúc nào.
+//! Model-layer failures, classified by code rather than by wording.
+//! One type with a `code` field: callers `match` on the code, and the Vietnamese text is
+//! only for display. Rule: never route on `message`, the wording may change at any time.
 
 use std::fmt;
 
-/// Mã lỗi ổn định. Thêm biến thể là chuyện thường; đổi nghĩa một biến thể thì không.
+/// Stable error code. Adding a variant is routine; changing what one means is not.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum LlmErrorCode {
-    /// Không còn provider nào được cấu hình (`NoProviderConfigured`).
+    /// No provider is configured any more (`NoProviderConfigured`).
     NoProviderConfigured,
-    /// Provider có đó nhưng không phục vụ được (`ProviderUnavailable`).
+    /// The provider exists but cannot serve (`ProviderUnavailable`).
     ProviderUnavailable,
-    /// Provider giữ mô hình ở nơi khác, nên vòng đời cục bộ không áp dụng
-    /// (`ProviderReadOnly`).
+    /// The provider keeps models elsewhere, so local lifecycle does not apply (`ProviderReadOnly`).
     ProviderReadOnly,
-    /// Không hàng nào mang id được hỏi (`UnknownProvider`).
+    /// No row carries the requested id (`UnknownProvider`).
     UnknownProvider,
-    /// Máy chủ đòi khoá mà cấu hình không có.
+    /// The server wants a key the config does not have.
     MissingCredential,
     /// 401/403.
     Auth,
     /// 429.
     RateLimit,
-    /// Prompt vượt cửa sổ ngữ cảnh của mô hình.
+    /// The prompt exceeds the model's context window.
     ContextWindowExceeded,
-    /// Máy chủ trả thứ không đúng giao thức: JSON hỏng, thiếu trường bắt buộc.
+    /// The server returned something off-protocol: broken JSON, a missing required field.
     InvalidResponse,
-    /// Hết thời gian chờ.
+    /// Timed out.
     Timeout,
-    /// Người dùng huỷ.
+    /// Cancelled by the user.
     Cancelled,
-    /// Adapter này không làm được việc đó (ví dụ nhúng trên một máy chủ chỉ có chat).
+    /// This adapter cannot do that (for example embedding on a chat-only server).
     Unsupported,
 }
 
 impl LlmErrorCode {
-    /// Tên ngắn cho log. Không dùng để so sánh — so sánh bằng chính biến thể.
+    /// Short name for logs. Not for comparison - compare the variant itself.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NoProviderConfigured => "NO_PROVIDER_CONFIGURED",
@@ -61,12 +54,12 @@ impl LlmErrorCode {
     }
 }
 
-/// Một hỏng hóc, kèm đủ dữ kiện để vừa phân nhánh vừa hiện ra màn hình.
+/// One failure, carrying enough to both branch on and show on screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LlmError {
     pub code: LlmErrorCode,
     pub message: String,
-    /// Mã HTTP nếu hỏng hóc đến từ một phản hồi. `None` cho lỗi tầng vận chuyển.
+    /// HTTP status when the failure came from a response. `None` for transport errors.
     pub status: Option<u16>,
 }
 
@@ -100,12 +93,7 @@ impl LlmError {
         self
     }
 
-    /// Đọc một phản hồi lỗi thành mã.
-    ///
-    /// Thân phản hồi *có* được ngó tới ở đúng một chỗ: cửa sổ ngữ cảnh bị tràn trả về
-    /// 400 y hệt như một request sai cú pháp, và hai thứ đó cần hai cách xử lý khác hẳn
-    /// nhau — một cái nén ngữ cảnh rồi thử lại, một cái là bug. Không máy chủ nào phân
-    /// biệt chúng bằng mã, nên chỗ này buộc phải đoán.
+    /// Read an error response into a code; the body is inspected in exactly one place, because a blown context window returns the same 400 as a malformed request.
     pub fn from_status(status: u16, body: &str) -> Self {
         let lowered = body.to_lowercase();
         let code = match status {
@@ -127,7 +115,7 @@ impl LlmError {
         let message = if detail.is_empty() {
             format!("Máy chủ trả về HTTP {status}")
         } else {
-            // Cắt: thân lỗi của vLLM có thể là cả một traceback.
+            // Truncate: a vLLM error body can be a whole traceback.
             let mut shown: String = detail.chars().take(400).collect();
             if detail.chars().count() > 400 {
                 shown.push('…');

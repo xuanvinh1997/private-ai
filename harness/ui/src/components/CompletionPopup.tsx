@@ -1,54 +1,37 @@
 import { createEffect, For, Show } from "solid-js";
 import Icon, { type IconName } from "./Icon";
 
-/** Một dòng trong danh sách gợi ý. */
+/** One row in the suggestion list. */
 export interface Suggestion {
-  /** Chuỗi sẽ được chèn vào ô nhập. */
+  /** The string inserted into the input. */
   value: string;
-  /** Chữ hiện đậm ở đầu dòng. Mặc định bằng `value`. */
+  /** Bold text at the start of the row; defaults to `value`. */
   label?: string;
-  /**
-   * Biểu tượng đứng đầu dòng.
-   *
-   * Nó gánh phần nghĩa mà câu phụ một dòng phải bỏ lại: tên lệnh cộng một hình quen
-   * thuộc nhận ra nhanh hơn hẳn hai chữ đọc lướt trong lúc đang gõ.
-   */
+  /** Leading icon; a familiar shape beside a command name is recognised faster than a hint read mid-typing. */
   icon?: IconName;
-  /** Câu phụ bên phải. */
+  /** Secondary text on the right. */
   hint?: string;
-  /** Không chọn được, kèm lý do nói ra ở `hint`. */
+  /** Not selectable, with the reason given in `hint`. */
   disabled?: boolean;
 }
 
-/**
- * Danh sách gợi ý nổi trên ô soạn tin, cho cả `@` lẫn `/`.
- *
- * # Vì sao tiêu điểm không rời ô nhập
- *
- * Người dùng đang **gõ**. Đưa tiêu điểm sang danh sách thì mỗi phím tiếp theo đi nhầm chỗ,
- * và họ phải bấm quay lại để gõ tiếp — một cái bẫy cho đúng thao tác mà bộ hoàn thành sinh
- * ra để làm nhanh hơn. Nên danh sách chỉ vẽ một con trỏ, còn phím vẫn thuộc về ô nhập.
- *
- * Cái giá của lựa chọn ấy là ARIA phải làm đúng: ô nhập bên kia khai `combobox` và trỏ vào
- * hàng đang sáng bằng `aria-activedescendant`. Thiếu nó thì người dùng trình đọc màn hình
- * bấm mũi tên và **không nghe thấy gì**, vì thứ duy nhất đổi là một màu nền. Đây là đúng
- * lỗi mà bảng lệnh phiên đã mắc, nên nó được viết ra ở cả hai chỗ.
- */
+/** Suggestion list floating over the composer, for both `@` and `/`. Focus stays in the input, so the list only
+ * draws a cursor; that makes `aria-activedescendant` on the input mandatory or arrow keys announce nothing. */
 export default function CompletionPopup(props: {
   items: Suggestion[];
   cursor: number;
-  /** Id của phần tử danh sách, để ô nhập trỏ `aria-controls` vào. */
+  /** Id of the list element, for the input's `aria-controls`. */
   id: string;
-  /** Dựng id cho từng hàng, để ô nhập trỏ `aria-activedescendant` vào. */
+  /** Builds a row id, for the input's `aria-activedescendant`. */
   optionId: (index: number) => string;
   onPick: (item: Suggestion) => void;
   onHover: (index: number) => void;
-  /** Câu hiện khi không có gợi ý nào. Không truyền thì danh sách rỗng không vẽ gì. */
+  /** Text shown when there are no suggestions; omitted, an empty list renders nothing. */
   empty?: string;
 }) {
   let list: HTMLUListElement | undefined;
 
-  // Con trỏ đi bằng bàn phím phải kéo theo khung nhìn, cùng lý do như ở bảng lệnh phiên.
+  // A keyboard cursor must drag the viewport with it, as in the session palette.
   createEffect(() => {
     const index = props.cursor;
     if (props.items.length === 0) return;
@@ -59,8 +42,7 @@ export default function CompletionPopup(props: {
     <Show when={props.items.length > 0 || props.empty !== undefined}>
       <div
         class="absolute bottom-full left-0 right-0 z-20 mb-2xs overflow-hidden rounded-panel border border-line bg-surface shadow-pop"
-        // Bấm vào danh sách không được cướp tiêu điểm khỏi ô nhập: mất tiêu điểm là ô soạn
-        // tin thu lại và danh sách đóng trước cả khi cú bấm kịp thành một lựa chọn.
+        // Clicking the list must not steal focus: losing it collapses the composer before the click lands.
         onMouseDown={(event) => event.preventDefault()}
       >
         <Show

@@ -1,12 +1,9 @@
 @import "tailwindcss";
 @import "./tokens.css";
-/* Phải nằm ở đây chứ không phải index.html: `--font-ui`/`--font-mono` gọi tên hai họ chữ
- * mà không máy nào chắc chắn có sẵn, nên tệp khai `@font-face` là thứ duy nhất giữ cho
- * giao diện còn giữ được cá tính khi rời khỏi máy của người viết nó. */
+/* Must live here, not index.html: `--font-ui`/`--font-mono` name families no machine is guaranteed to have. */
 @import "./fonts.css";
 
-/* Tailwind đọc token từ CSS variable thay vì giữ bản sao riêng: đổi một chỗ ở
- * tokens.css là cả utility lẫn CSS viết tay cùng đổi. */
+/* Tailwind reads tokens from CSS variables, so one edit in tokens.css moves utilities and hand-written CSS alike. */
 @theme inline {
   --color-bg: var(--bg);
   --color-sidebar: var(--sidebar);
@@ -33,61 +30,63 @@
 
   --font-sans: var(--font-ui);
   --font-mono: var(--font-mono);
+  --font-display: var(--font-display);
 
-  /* Bậc thấp nhất của thang là chỗ đau nhất. `--text-2xs` từng là 0.74rem — ở root 15px
-   * ra đúng 11px — mà `text-2xs` lại là lớp dùng cho gần như toàn bộ metadata: tên tệp
-   * trong bảng thay đổi, số dòng của diff, đường dẫn cwd, phím tắt, tên công cụ. Đó không
-   * phải chữ trang trí để liếc qua, đó là thứ người dùng phải **đọc** để biết trợ lý vừa
-   * đụng vào cái gì. 11px là cỡ của thanh trạng thái một IDE, và dùng nó ở đây là lý do
-   * app đọc ra như một console của lập trình viên chứ không như một ứng dụng.
-   *
-   * Bốn bậc dưới vì thế dồn lại trong khoảng 12-14.25px: chúng vốn không dùng để tạo tương
-   * phản với nhau — tương phản thật nằm ở khoảng cách tới `--text-md` trở lên — mà chỉ để
-   * hạ giọng dần cho thông tin phụ. Bước 0.05rem là đủ để mắt xếp được thứ bậc mà không
-   * bậc nào tụt xuống dưới ngưỡng đọc thoải mái.
-   *
-   * `--text-base` giữ dưới 1rem có chủ đích: nó là cỡ mặc định của `body`, và đẩy nó lên
-   * 1rem thì mọi lớp `text-md` trở lên phải giãn theo, tức là đổi cả bố cục chứ không chỉ
-   * đổi cỡ chữ. Ai muốn to hơn đã có `:root[data-scale="large"]` ở tokens.css. */
+  /* The lower steps stay in 12-15px: `text-2xs` carries metadata users must read, not decoration. */
   --text-2xs: 0.8rem;
-  --text-xs: 0.85rem;
-  --text-sm: 0.9rem;
-  --text-base: 0.95rem;
-  --text-md: 1rem;
+  --text-2xs--line-height: 1.45;
+  --text-xs: 0.875rem;
+  --text-xs--line-height: 1.45;
+  --text-sm: 0.95rem;
+  --text-sm--line-height: 1.5;
+  --text-base: 1rem;
+  --text-base--line-height: 1.55;
+  --text-md: 1.1rem;
+  --text-md--line-height: 1.45;
 
-  /* Manrope ở cỡ nhỏ khép chữ lại khá chặt; nới một chút tracking đúng ở hai bậc dày đặc
-   * nhất giúp tên tệp và đường dẫn không dính thành một khối. Các bậc lớn không cần —
-   * thêm tracking cho tiêu đề chỉ làm chúng loãng ra. */
+  /* Manrope sets tight at small sizes; a little tracking keeps filenames and paths from clumping. */
   --text-2xs--letter-spacing: 0.008em;
   --text-xs--letter-spacing: 0.005em;
-  --text-lg: 1.18rem;
-  --text-xl: 1.42rem;
-  --text-2xl: 1.73rem;
-  --text-display: 2.13rem;
+  --text-lg: 1.3rem;
+  --text-lg--line-height: 1.3;
+  --text-xl: 1.62rem;
+  --text-xl--line-height: 1.2;
+  --text-2xl: 2rem;
+  --text-2xl--line-height: 1.12;
+  --text-display: 2.35rem;
+  --text-display--line-height: 1.08;
 
-  /* Trỏ vào `--sp-*` của `tokens.css` thay vì chép lại con số. Hai thang đo cùng nội
-     dung ở hai tệp thì sớm muộn lệch nhau, và lúc đó `gap-md` và `var(--sp-md)` — hai
-     cách viết cho cùng một ý — cho ra hai khoảng cách khác nhau. */
+  /* Point at `tokens.css` `--sp-*` instead of copying the numbers; two copies of a scale always drift apart. */
   --spacing-3xs: var(--sp-3xs); --spacing-2xs: var(--sp-2xs); --spacing-xs: var(--sp-xs);
   --spacing-sm: var(--sp-sm); --spacing-md: var(--sp-md); --spacing-lg: var(--sp-lg);
   --spacing-xl: var(--sp-xl); --spacing-2xl: var(--sp-2xl); --spacing-3xl: var(--sp-3xl);
   --spacing-4xl: var(--sp-4xl);
 
-  --radius-icon: 8px; --radius-btn: 9px; --radius-panel: 10px;
-  --radius-menu: 12px; --radius-card: 14px; --radius-pill: 999px;
-  --radius-bubble: 16px; --radius-composer: 18px;
+  /* DESIGN.md's radius scale is a hierarchy, not a ramp: 8px for anything you press, 12px for
+     anything holding content, 16px for the two largest blocks, 999px for badges only. */
+  --radius-icon: 8px; --radius-btn: 8px; --radius-panel: 12px;
+  --radius-menu: 12px; --radius-card: 12px; --radius-pill: 999px;
+  --radius-bubble: 16px; --radius-composer: 16px;
 
-  /* Hai bậc độ nổi, và cả hai đều mở đầu bằng `--edge-top` — xem tokens.css để biết vì
-     sao một vệt sáng ở mép trên lại làm được việc mà bóng đổ không làm nổi trên nền tối. */
-  --shadow-pop: var(--edge-top), 0 12px 32px var(--shadow);
-  --shadow-float: var(--edge-top), 0 4px 14px var(--shadow);
+  /* No drop shadows: DESIGN.md builds depth colour-block first, shadow rare, and every raised
+     surface here already carries `border border-line` plus its own background step. What stays is
+     `--edge-top`, a highlight *inside* the top edge - see tokens.css for why only it reads on dark.
+     Both names still resolve to it; they are Tailwind theme keys, and renaming costs 15 files. */
+  --shadow-pop: var(--edge-top);
+  --shadow-float: var(--edge-top);
 }
 
-/* Nút đổi theme phải thắng cả media query, nên biến thể dark bám [data-theme]
- * chứ không bám prefers-color-scheme. */
+/* The theme toggle must beat the media query, so the dark variant keys off [data-theme]. */
 @custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
 
-html, body, #root { height: 100%; }
+/* The application owns its scroll regions (transcript, sidebars, settings). Letting the
+   document scroll as well creates a second scroll chain: after an inner region reaches
+   its end, a trackpad swipe moves the page and exposes an empty strip below the shell. */
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
 
 body {
   margin: 0;
@@ -96,25 +95,19 @@ body {
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
-  /* Chữ số của Manrope mặc định rộng hẹp khác nhau, mà nửa giao diện này là số **đang
-   * chạy**: bộ đếm token, thời lượng một lượt, số dòng thêm/bớt. Số tỉ lệ làm mỗi lần
-   * đếm nhảy một chữ số là cả hàng bên cạnh xê dịch theo — một cái rung liên tục ở đuôi
-   * mắt trong suốt lúc trợ lý trả lời. Số đều bề ngang thì con số đổi mà bố cục đứng yên. */
+  /* Half this UI is live counters; proportional digits shift the whole row on every tick. */
   font-variant-numeric: tabular-nums;
 }
 
-/* Cửa sổ Tauri dùng titleBarStyle "Overlay": phần kéo cửa sổ là của chúng ta.
- * Mọi control nằm trong vùng đó phải tự khai báo no-drag, nếu không sẽ không bấm được. */
+button, input, textarea, select { font: inherit; }
+button:not(:disabled) { cursor: pointer; }
+::selection { color: var(--ink); background: var(--accent-soft); }
+
+/* Tauri titleBarStyle "Overlay": the drag region is ours, so controls inside it must opt out with no-drag. */
 [data-tauri-drag-region] { app-region: drag; -webkit-app-region: drag; }
 button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no-drag; }
 
-/* Thanh cuộn, chép hành vi của LobeChat (src/styles/global.ts).
- *
- * Điểm cốt lõi không phải độ mảnh mà là **thumb trong suốt cho tới khi rê chuột vào
- * vùng cuộn**: một ứng dụng có bốn cột cuộn được sẽ có bốn vệt xám đứng im nếu thumb
- * luôn hiện, và bốn vệt đó cắt bố cục thành từng mảnh trước cả khi người dùng đọc gì.
- * `background-clip: content-box` cộng viền trong suốt là cách duy nhất làm thumb mảnh
- * hơn máng mà không đổi chiều rộng máng — đổi chiều rộng thì nội dung nhảy khi hover. */
+/* Scrollbars (after LobeChat): thumb transparent until hover; content-box clip thins it without resizing the track. */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--line) transparent;
@@ -128,18 +121,7 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
   border: 3px solid transparent;
 }
 
-/* Vòng tiêu điểm dùng chung. Trình duyệt vẽ vòng mặc định bằng màu hệ thống, thứ có thể
- * biến mất hoàn toàn trên nền tối của ta — nên vẽ lại bằng màu nhấn của chính bảng màu.
- *
- * **Phải nằm trong `@layer base`.** CSS không xếp lớp luôn thắng mọi `@layer`, kể cả
- * `utilities` của Tailwind — nên ở ngoài lớp, luật này đè cả `outline-none` mà từng ô
- * nhập viết ra một cách cố ý. Ô soạn tin vì thế mọc hai vòng xanh lồng nhau: một vòng của
- * khung ngoài (`border-accent` lúc focus) và một vòng nữa quanh riêng `textarea`. Nằm
- * trong `base` thì `outline-none` thắng, đúng như chỗ gọi mong đợi, và những chỗ **không**
- * tự lo tiêu điểm vẫn giữ nguyên vòng này.
- *
- * `border-radius` cũng vậy: nó có để vòng ôm tròn quanh phần tử vốn không bo góc, nhưng ở
- * ngoài lớp thì nó bẻ vuông cả nút `rounded-pill` mỗi lần nút được focus. */
+/* Shared focus ring; must sit in `@layer base` so a caller's `outline-none` still wins and pills keep their radius. */
 @layer base {
   :focus-visible {
     outline: 2px solid var(--accent);
@@ -148,7 +130,97 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
   }
 }
 
-/* Người dùng chọn giảm chuyển động thì tôn trọng, không có ngoại lệ. */
+/* Serif for titles, sans for everything else - DESIGN.md calls the split unbreakable, and it is the
+   one thing that stops a warm palette from still reading as a generic tool. Scoped to h1/h2 on
+   purpose: h3 is where this app keeps 12px group labels, and a 12px serif label reads as a misprint.
+   Negative tracking is not decoration; Garamond set at 0 looks loose next to Manrope body copy. */
+@layer base {
+  h1, h2 {
+    font-family: var(--font-display);
+    letter-spacing: -0.015em;
+  }
+}
+
+/* Buttons.
+ *
+ * These used to be one hand-written class string per call site - eight of them, agreeing on nothing:
+ * three radii, two heights, `font-semibold` in some and `font-medium` in others. DESIGN.md specifies
+ * exactly one button (coral fill, 8px radius, weight 500, 12x20 padding), so it becomes one class.
+ *
+ * Secondary stays cream-on-cream with a hairline rather than inverting - the system never puts a
+ * light button on a dark surface, and there is no ghost-outline variant to reach for. */
+@layer components {
+  .pai-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--sp-2xs);
+    height: var(--control-h);
+    padding-inline: var(--sp-md);
+    border: 1px solid transparent;
+    border-radius: var(--radius-btn);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    white-space: nowrap;
+    transition: background-color var(--dur-fast) var(--ease-out),
+      border-color var(--dur-fast) var(--ease-out),
+      color var(--dur-fast) var(--ease-out);
+  }
+
+  /* The CTA size from DESIGN.md: 40px tall, 20px side padding. Dialog confirms and the composer's
+     send button use it; everything in a toolbar stays at `--control-h`. */
+  .pai-btn-cta {
+    height: var(--cta-h);
+    padding-inline: var(--sp-xl);
+  }
+
+  .pai-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.4;
+  }
+
+  .pai-btn-primary {
+    border-color: var(--accent);
+    background: var(--accent);
+    color: var(--on-accent);
+  }
+  .pai-btn-primary:not(:disabled):hover {
+    border-color: var(--accent-hover);
+    background: var(--accent-hover);
+  }
+
+  .pai-btn-secondary {
+    border-color: var(--line-strong);
+    background: var(--surface);
+    color: var(--text);
+  }
+  .pai-btn-secondary:not(:disabled):hover {
+    background: var(--surface-hover);
+    color: var(--ink);
+  }
+
+  /* Ghost carries no fill until hover: toolbars put six of these in a row, and six outlined boxes
+     read as a fence across the panel. */
+  .pai-btn-ghost {
+    background: transparent;
+    color: var(--muted);
+  }
+  .pai-btn-ghost:not(:disabled):hover {
+    background: var(--overlay-hover);
+    color: var(--ink);
+  }
+
+  .pai-btn-danger {
+    border-color: var(--danger);
+    background: var(--danger);
+    color: var(--on-accent);
+  }
+  .pai-btn-danger:not(:disabled):hover {
+    opacity: 0.9;
+  }
+}
+
+/* Honour reduced-motion, no exceptions. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
@@ -156,18 +228,13 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
   }
 }
 
-/* Menu bung ra: dịch 4px và mờ dần. Đủ để mắt bắt được nó *đến từ đâu*, ngắn hơn thì
- * thành một cú nháy, dài hơn thì thành một thứ phải chờ. */
+/* Menu pop: a 4px shift plus fade, enough to show where it came from without becoming a wait. */
 @keyframes pai-pop {
   from { opacity: 0; transform: translateY(-4px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-/* Ba chấm của chỉ báo "đang làm việc" (components/Thinking.tsx).
- *
- * Sóng chạy qua ba chấm chứ không phải cả ba cùng thở: ba chấm nhấp nháy đồng pha đọc ra
- * là một cái đèn báo lỗi, còn sóng đọc ra là *đang tiến*. Biên độ giữ ở 2px — đủ để mắt
- * bắt được chuyển động ở đuôi tầm nhìn mà không kéo mắt rời khỏi chữ đang đọc. */
+/* Working-indicator dots (components/Thinking.tsx): a wave, not a synchronised blink that reads as an error light. */
 .pai-dots > span {
   width: 4px;
   height: 4px;
@@ -183,9 +250,7 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
   35% { opacity: 1; transform: translateY(-2px); }
 }
 
-/* Luật giảm chuyển động ở trên rút mọi animation về 0.01ms, tức ba chấm đứng lại ở
- * khung cuối — mờ 0.28, gần như vô hình. Chỉ báo mà không thấy thì không còn là chỉ báo,
- * nên ở chế độ ấy chúng đứng yên nhưng **đứng ở độ mờ đọc được**. */
+/* Reduced motion freezes the dots on the last frame at 0.28 opacity; hold them at a readable one instead. */
 @media (prefers-reduced-motion: reduce) {
   .pai-dots > span { opacity: 0.65; }
 }

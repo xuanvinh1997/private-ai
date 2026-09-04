@@ -1,8 +1,5 @@
-//! Invariants a coding agent losing means losing the user's files.
-//!
-//! Every test here locks a sentence written in the documentation. If one goes red then
-//! either the code is wrong or the sentence has stopped being true — there is no third
-//! possibility.
+//! Invariants whose loss means losing the user's files. Each test locks a documented
+//! sentence: a red test means either the code is wrong or that sentence no longer holds.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,11 +13,7 @@ use pai_tools::{Invocation, Overflow, Tool, ToolName, ToolOutcome};
 use serde_json::{Map, Value, json};
 use tempfile::TempDir;
 
-/// A budget with no spill store behind it, so it truncates nothing.
-///
-/// Deliberate: the tests in this file check path policy and result shapes, and a fold
-/// slipping in between would make them go red for an unrelated reason. Folding is tested
-/// separately in `budget.rs`.
+/// A budget with no spill store, so nothing folds here; folding is tested in `budget.rs`.
 fn no_budget() -> Overflow {
     Overflow::new(&Context::root())
 }
@@ -71,7 +64,7 @@ async fn dot_dot_and_symlinks_cannot_escape_the_root() {
         .await;
     assert!(err.is_err(), "`..` must not escape the root");
 
-    // Going out through a symlink that lives *inside* the root.
+    // Going out through a symlink that lives inside the root.
     #[cfg(unix)]
     {
         let link = root.join("loi-tat.txt");
@@ -107,8 +100,7 @@ async fn a_protected_path_is_unreadable_and_absent_from_listings() {
         "the reason has to be the right one: {err}"
     );
 
-    // Nor may it leak through the listing path — blocking the read while still naming the
-    // file has already told the model something is there to go find another way to.
+    // Nor may it leak through a listing: naming the file already reveals it exists.
     let listing = GlobTool::new(roots)
         .execute(&call("glob", json!({ "pattern": "*" })))
         .await
@@ -194,8 +186,7 @@ async fn hunk_line_numbers_are_the_real_line_numbers_in_the_file() {
     let (dir, roots, fs, ledger) = bench();
     let root = dir.path().canonicalize().unwrap();
     let file = root.join("a.txt");
-    // The change sits on line 12, far enough to tell "counted within the hunk" apart from
-    // "counted within the file".
+    // The change sits on line 12, far enough to tell hunk-relative from file-relative counting.
     let before: String = (1..=20).map(|n| format!("dòng {n}\n")).collect();
     std::fs::write(&file, &before).unwrap();
 
@@ -248,8 +239,7 @@ async fn writing_a_new_file_gives_old_text_null_not_an_empty_string() {
         .get("diffs")
         .and_then(|v| v.as_array())
         .expect("diffs are present");
-    // `null` means "new file"; an empty string means "the old file was empty". The UI draws
-    // those two differently, so they must not be conflated.
+    // `null` means new file, an empty string means an empty old file; the UI draws them apart.
     assert_eq!(diffs[0]["old_text"], Value::Null);
 }
 
@@ -291,8 +281,7 @@ async fn glob_lists_no_directories_and_a_slashless_pattern_matches_at_any_depth(
         .await
         .expect("searches");
 
-    // Without the "match the file name at any depth" rule this result is empty, and the
-    // model wrongly concludes the repo has no Rust files.
+    // Without match-at-any-depth this is empty and the model concludes there are no Rust files.
     assert!(outcome.content.contains("a.rs"));
     assert!(
         outcome.content.contains("b.rs"),

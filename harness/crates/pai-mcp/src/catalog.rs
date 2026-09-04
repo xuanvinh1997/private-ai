@@ -1,67 +1,44 @@
-//! Danh mục server dựng sẵn — cắm bằng một cú bấm.
-//!
-//! Tồn tại vì bước khó nhất của MCP không phải là chạy một server, mà là **biết gõ gì**.
-//! Tên gói đúng, đối số đúng, biến môi trường đúng: ba thứ đó nằm rải trong ba trang tài
-//! liệu khác nhau, và gõ sai một trong ba cho ra cùng một kết quả — một server `failed`
-//! sau hai mươi giây, không nói vì sao.
-//!
-//! Hai luật cho bảng dưới đây:
-//!
-//! **Tên gói phải là tên đang sống.** Nhiều server tham chiếu đã bị bỏ khỏi
-//! `@modelcontextprotocol/*` và chuyển sang chỗ khác; một `npx` trỏ vào gói đã ngừng phát
-//! hành là một server hỏng mà người dùng không có cách nào đoán ra. Mục nào ở đây cũng đã
-//! được tra trên chính sổ đăng ký phát hành gói, không lấy theo trí nhớ.
-//!
-//! **`requires` là để cảnh báo trước.** Một server stdio cần `node` trên một máy không có
-//! `node` không hỏng ngay: nó hỏng sau khi hết thời gian chờ. Hai mươi giây im lặng rồi
-//! một chữ "failed" là trải nghiệm tệ nhất có thể; giao diện phải nói được điều đó **trước**
-//! khi người dùng bấm.
+//! A catalogue of ready-made servers, mountable in one click.
+//! Two rules for the table: every package name is checked against the live registry, since
+//! a dead one just times out, and `requires` lets the UI warn before the user clicks.
 
 use std::collections::BTreeMap;
 
 use crate::config::{ConfigError, McpTransport, ServerConfig};
 
-/// Một giá trị người dùng phải điền trước khi cắm.
+/// A value the user must supply before mounting.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct EnvVar {
     pub key: &'static str,
-    /// Chữ hiện cạnh ô nhập.
+    /// The text shown beside the input.
     pub label: &'static str,
     pub required: bool,
-    /// Che khi gõ, và đừng ghi ra log. Khoá API và chuỗi kết nối có mật khẩu ở trong.
+    /// Mask while typing and keep out of logs: API keys and connection strings hold passwords.
     pub secret: bool,
 }
 
-/// Một server dựng sẵn.
+/// One ready-made server.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CatalogEntry {
-    /// Cũng là tên server mặc định, nên nó phải qua được [`ServerConfig::validate`].
+    /// Also the default server name, so it has to pass [`ServerConfig::validate`].
     pub id: &'static str,
     pub name: &'static str,
-    /// Một câu: nó làm được gì cho người đang đọc.
+    /// One sentence: what it does for the reader.
     pub summary: &'static str,
     pub command: &'static str,
-    /// Chỗ nào cần giá trị người dùng thì viết `${TÊN_BIẾN}` — xem [`instantiate`].
+    /// Write `${VAR_NAME}` wherever a user value belongs — see [`instantiate`].
     pub args: &'static [&'static str],
     pub env: &'static [EnvVar],
     pub homepage: &'static str,
-    /// `node`, `python` hoặc `docker`. Rỗng với một mục chạy từ xa — nó không cần gì trên
-    /// máy này cả, và đó chính là điểm của nó.
+    /// `node`, `python` or `docker`; empty for a remote entry, which needs nothing installed here.
     pub requires: &'static [&'static str],
-    /// Endpoint HTTP, cho server **chạy từ xa**.
-    ///
-    /// `None` là mục chạy tại chỗ: [`instantiate`] dựng một tiến trình con qua `command`.
-    /// `Some` thì `command`, `args` và `requires` không được dùng tới — server đã chạy ở
-    /// đâu đó rồi, và ta chỉ quay số tới nó.
-    ///
-    /// Cùng chỗ điền `${TÊN_BIẾN}` như `args`, nên một endpoint có tenant hay vùng trong
-    /// đường dẫn vẫn khai được bằng một hàng trong bảng.
+    /// HTTP endpoint for a remotely hosted server; `Some` makes `command`, `args` and `requires` unused.
     pub url: Option<&'static str>,
 }
 
-/// Cần `node` để chạy `npx`.
+/// Needs `node` to run `npx`.
 const NODE: &[&str] = &["node"];
-/// Cần `python` để chạy `uvx`.
+/// Needs `python` to run `uvx`.
 const PYTHON: &[&str] = &["python"];
 
 pub const CATALOG: &[CatalogEntry] = &[
@@ -70,8 +47,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         name: "Filesystem",
         summary: "Đọc, ghi và tìm tệp trong những thư mục bạn cho phép, và chỉ những thư mục đó.",
         command: "npx",
-        // Thư mục là **đối số dòng lệnh**, không phải biến môi trường: đó là cách server
-        // này khai vùng được phép, và cũng là ranh giới an toàn của nó.
+        // The directory is a command-line argument, not an env var: that is how this server declares its allowed area.
         args: &[
             "-y",
             "@modelcontextprotocol/server-filesystem",
@@ -107,10 +83,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         id: "github",
         name: "GitHub",
         summary: "Đọc và viết issue, pull request, mã nguồn và Actions trên GitHub.",
-        // GitHub chạy server này **cho** ta, nên không có tiến trình con nào ở đây và
-        // `command` không bao giờ được gọi tới. Bản Docker vẫn chạy được, nhưng nó bắt
-        // người dùng cài Docker chỉ để nói chuyện với một máy chủ vốn đã đứng sẵn trên
-        // Internet — một yêu cầu vài gigabyte cho một việc không cần gì cả.
+        // GitHub hosts this server, so there is no child process and `command` is never used.
         command: "",
         args: &[],
         env: &[EnvVar {
@@ -177,8 +150,7 @@ pub const CATALOG: &[CatalogEntry] = &[
         name: "PostgreSQL",
         summary: "Đọc lược đồ, chạy truy vấn và soi hiệu năng trên một cơ sở dữ liệu Postgres.",
         command: "uvx",
-        // `restricted` là chế độ chỉ đọc của server này. Mặc định phải là cái hẹp hơn:
-        // một chuỗi trong tài liệu người dùng vừa nạp không được biến thành một `DROP`.
+        // `restricted` is this server's read-only mode; a line in a freshly loaded document must not become a `DROP`.
         args: &["postgres-mcp", "--access-mode=restricted"],
         env: &[EnvVar {
             key: "DATABASE_URI",
@@ -240,23 +212,13 @@ pub const CATALOG: &[CatalogEntry] = &[
     },
 ];
 
-/// Tra một mục theo `id`.
+/// Look up an entry by `id`.
 pub fn find(id: &str) -> Option<&'static CatalogEntry> {
     CATALOG.iter().find(|entry| entry.id == id)
 }
 
-/// Dựng cấu hình từ một mục danh mục cộng những gì người dùng vừa điền.
-///
-/// Giá trị đi vào một trong hai chỗ, và **không bao giờ cả hai**:
-///
-/// - Nếu `args` có `${KEY}` thì giá trị được thay vào đó. Một đối số còn sót lại một chỗ
-///   trống chưa điền bị **bỏ hẳn** — đó là lý do các đối số tuỳ chọn ở bảng trên viết dạng
-///   `--cờ=${KEY}`: bỏ một đối số dính liền thì bỏ cả cờ lẫn giá trị, còn bỏ nửa sau của
-///   một cặp rời thì cái cờ trơ lại và server từ chối khởi động.
-/// - Ngược lại, giá trị đi vào môi trường của tiến trình con.
-///
-/// Không nhân đôi vì một bí mật đã nằm trên dòng lệnh thì nó hiện trong `ps` của mọi tiến
-/// trình khác; đưa thêm vào môi trường chỉ là thêm một chỗ nữa để nó rò ra.
+/// Build a config from a catalogue entry plus the user's values, which go either into an `${KEY}` slot or the child's
+/// environment, never both; an argument with an unfilled slot is dropped whole, hence the `--flag=${KEY}` form.
 pub fn instantiate(
     entry: &CatalogEntry,
     values: &BTreeMap<String, String>,
@@ -291,8 +253,7 @@ pub fn instantiate(
                 continue;
             }
             let Some(value) = filled(var.key) else {
-                // Chỗ trống không có gì điền vào: bỏ cả đối số. Đã kiểm ở trên nên chỉ
-                // biến **không bắt buộc** rơi vào nhánh này.
+                // Nothing to fill the slot, so drop the argument; the check above leaves only optional vars here.
                 continue 'outer;
             };
             arg = arg.replace(&slot, value);
@@ -310,9 +271,7 @@ pub fn instantiate(
 
     let mut config = ServerConfig::stdio(entry.id, entry.command);
     config.transport = match entry.url {
-        // Từ xa: biến của người dùng đi vào **header**, không vào môi trường. Một token dán
-        // vào biến môi trường của tiến trình này thì chẳng tới được máy chủ ở đầu kia, và
-        // hỏng theo kiểu im lặng — server trả 401 còn người dùng vừa dán đúng token.
+        // Remote: user values become headers, not env vars, which would never reach the far server and fail as a silent 401.
         Some(template) => {
             let mut url = template.to_string();
             for var in entry.env {
@@ -333,8 +292,7 @@ pub fn instantiate(
             cwd: None,
         },
     };
-    // Kiểm ngay tại đây chứ không tin bảng ở trên: bảng là dữ liệu, và một `id` gõ sai lúc
-    // thêm mục mới phải hỏng ở bài kiểm chứng chứ không phải ở máy người dùng.
+    // Validate here rather than trusting the table: a mistyped `id` must fail in tests, not on a user's machine.
     config.validate()?;
     Ok(config)
 }

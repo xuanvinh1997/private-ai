@@ -1,9 +1,11 @@
 import { Key } from "@solid-primitives/keyed";
 import { createResource, createSignal, For, onMount, Show } from "solid-js";
+import { locale, S, t } from "../../lib/i18n";
 import {
   activeModels,
   inputOf,
   listProviders,
+  presetHint,
   providerPresets,
   removeProvider,
   saveProvider,
@@ -24,20 +26,7 @@ type Sheet =
   | { kind: "form"; provider: Provider | null; preset: ProviderPreset | null }
   | { kind: "delete"; provider: Provider };
 
-/**
- * Màn hình nhà cung cấp mô hình.
- *
- * Ba câu hỏi, theo đúng thứ tự người dùng hỏi chúng: *cái nào đang chạy*, *dữ liệu của
- * tôi có rời khỏi máy không*, và *mô hình này có làm được việc không*. Bố cục bám theo
- * thứ tự đó — vai đang giữ và huy hiệu "chạy trên máy này" nằm trên cùng một hàng với cái
- * tên, còn bộ chọn mô hình bung ra ngay dưới provider giữ vai hội thoại chứ không nằm ở
- * một khu riêng, vì mô hình chỉ có nghĩa khi đi kèm provider của nó.
- *
- * Một provider giữ **hai vai độc lập**: hội thoại và nhúng. Nó có thể giữ cả hai, một,
- * hoặc không vai nào, và ba trạng thái đó phải phân biệt được bằng mắt — nên "không vai
- * nào" cũng có nhãn riêng chứ không phải chỗ trống. Vai nhúng chỉ *hiện* ở đây; nó được
- * *chọn* ở màn hình mô hình nhúng, vì chọn nó là chọn nơi nhận toàn văn tài liệu.
- */
+/** The model providers screen, laid out in the order the questions come: which one is running, whether data leaves the machine, and whether the model can work. A provider holds two independent roles, chat and embedding, and the embedding role is only shown here, never chosen here. */
 export default function ProvidersView() {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [presets, setPresets] = createSignal<ProviderPreset[]>([]);
@@ -47,20 +36,10 @@ export default function ProvidersView() {
   const [error, setError] = createSignal<string | null>(null);
   const [formError, setFormError] = createSignal<string | null>(null);
 
-  /** Provider giữ vai **hội thoại**. Vai nhúng không đi qua màn hình này. */
+  /** The provider holding the chat role; the embedding role does not pass through this screen. */
   const active = () => providers().find((entry) => entry.activeChat) ?? null;
 
-  /**
-   * Mô hình của provider đang hoạt động.
-   *
-   * Qua `activeModels()` — tức `list_models` — chứ không qua `probe_provider`: chỉ ở đó
-   * cờ `tools` mới có thẩm quyền, và cả bộ chọn mô hình bên dưới treo một cảnh báo lên
-   * đúng cái cờ đó.
-   *
-   * Khoá theo *nội dung* cấu hình chứ không theo tham chiếu mảng: `providers()` dựng lại
-   * một mảng mới sau mỗi lần bật/tắt, và khoá theo tham chiếu sẽ gọi lại máy chủ mỗi lần
-   * người dùng gạt một công tắc chẳng liên quan.
-   */
+  /** The active provider's models, via `list_models` where the `tools` flag is authoritative, keyed by config content so an unrelated toggle does not refetch. */
   const activeKey = () => {
     const entry = active();
     return entry === null ? null : `${entry.id}|${entry.kind}|${entry.baseUrl}|${entry.enabled}`;
@@ -69,11 +48,7 @@ export default function ProvidersView() {
     active() === null ? Promise.resolve<ModelChoice[]>([]) : activeModels(),
   );
 
-  /**
-   * Mỗi lần danh sách máy chủ đổi thì con số này tăng, và mục nhúng ở cuối trang hỏi lại
-   * lõi. Một con số chứ không phải một `Provider[]` truyền xuống: mục nhúng cần cả cấu
-   * hình nhúng đang có hiệu lực nữa, và thứ đó chỉ lõi mới trả lời được.
-   */
+  /** Bumped whenever the server list changes, so the embedding section re-asks the core itself. */
   const [stamp, setStamp] = createSignal(0);
 
   const refresh = async () => {
@@ -90,7 +65,7 @@ export default function ProvidersView() {
     })();
   });
 
-  /** Bọc một hành động đi sau cú bấm: lỗi hiện lên chứ không rơi vào console. */
+  /** Wrap an action behind a click, so failures reach the screen instead of the console. */
   const act = async (what: string, run: () => Promise<void>) => {
     setBusy(true);
     setError(null);
@@ -111,8 +86,7 @@ export default function ProvidersView() {
       await saveProvider(input);
       await refresh();
       setSheet({ kind: "none" });
-      // Cấu hình vừa đổi có thể trỏ sang một máy chủ khác hẳn, nên danh sách mô hình cũ
-      // không còn nói về cùng một thứ nữa.
+      // The saved config may point at a different server, so the old model list is stale.
       void refetchModels();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : String(err));
@@ -121,8 +95,7 @@ export default function ProvidersView() {
     }
   };
 
-  // Bóc tách kiểu hợp nhất một lần ở đây thay vì lồng hai `<Show>` ở chỗ dùng: mỗi lớp
-  // `<Show>` thêm vào chỉ để thu hẹp kiểu là một lớp nữa che mất cái đang được vẽ.
+  // Narrow the union once here, rather than nesting `<Show>` layers just for the types.
   const formSheet = () => {
     const current = sheet();
     return current.kind === "form" ? current : null;
@@ -138,15 +111,15 @@ export default function ProvidersView() {
   return (
     <div class="flex flex-col gap-2xl">
       <SectionHead
-        title="Nhà cung cấp mô hình"
+        title={t(S.providers.title)}
         icon="server"
-        desc="Mỗi lúc chỉ một nhà cung cấp được dùng để trò chuyện."
-        more="Mỗi lúc chỉ một nhà cung cấp được dùng để trò chuyện. Nhà cung cấp nhúng tài liệu chọn riêng ở mục bên dưới."
+        desc={t(S.providers.desc)}
+        more={t(S.providers.more)}
       />
 
       <Show when={error()}>
         {(message) => (
-          <Banner tone="danger" icon="warn" role="alert" title="Không làm được">
+          <Banner tone="danger" icon="warn" role="alert" title={t(S.providers.actionFailed)}>
             {message()}
           </Banner>
         )}
@@ -157,9 +130,7 @@ export default function ProvidersView() {
           <ActiveNotice provider={active()} model={chosen()} loading={models.loading} />
 
           <RowGroup>
-            {/* Keyed theo id: danh sách được nạp lại sau mỗi thao tác, và với `<For>` thì
-                mọi hàng bị dựng lại — công tắc đang giữ tiêu điểm bàn phím rơi về body
-                ngay giữa lúc người dùng vừa gạt nó. */}
+            {/* Keyed by id: the list reloads after every action, and index keying would drop focus. */}
             <Key each={providers()} by="id">
               {(entry) => (
                 <ProviderRow
@@ -167,14 +138,18 @@ export default function ProvidersView() {
                   busy={busy()}
                   models={models() ?? []}
                   modelsLoading={models.loading}
-                  onActivate={() => void act("Không đổi được nhà cung cấp đang dùng", () => setActiveProvider(entry().id))}
+                  onActivate={() =>
+                    void act(t(S.providers.err.activate), () => setActiveProvider(entry().id))
+                  }
                   onToggle={(next) =>
-                    void act("Không đổi được trạng thái", () =>
+                    void act(t(S.providers.err.toggle), () =>
                       saveProvider({ ...inputOf(entry()), enabled: next }).then(() => undefined),
                     )
                   }
                   onPickModel={(model) =>
-                    void act("Không chọn được mô hình", () => setProviderModel(entry().id, model))
+                    void act(t(S.providers.err.pickModel), () =>
+                      setProviderModel(entry().id, model),
+                    )
                   }
                   onRefreshModels={() => void refetchModels()}
                   onEdit={() => {
@@ -202,17 +177,7 @@ export default function ProvidersView() {
           }}
         />
 
-        {/* Vai nhúng, cùng trang, dưới cùng danh sách máy chủ.
-            Nó **không** phải một tuỳ chọn nâng cao của việc chọn mô hình hội thoại — hai
-            vai độc lập, và cấu hình đáng dùng nhất lại là cấu hình ghép chéo: nhúng bằng
-            một mô hình nhỏ chạy tại chỗ, trò chuyện bằng một mô hình lớn từ xa. Nhưng cả
-            hai đều được giao **từ đúng danh sách provider ở trên**, nên bắt người dùng
-            sang một trang khác để giao vai thứ hai là bắt họ đi qua cùng một danh sách hai
-            lần. Đứng dưới, sau danh mục, để thứ tự đọc trùng thứ tự làm: thêm máy chủ
-            trước, giao vai sau.
-
-            Chỉ hiện khi đã có provider: một ô chọn mô hình nhúng trên một máy không có máy
-            chủ nào là một câu hỏi chưa ai trả lời được. */}
+        {/* The embedding role sits on this page, below the same list, so reading order matches doing order; shown only once a provider exists. */}
         <Show when={providers().length > 0}>
           <div class="border-t border-line pt-2xl">
             <EmbeddingView reloadKey={stamp()} />
@@ -237,14 +202,14 @@ export default function ProvidersView() {
       <Show when={deleteTarget()} keyed>
         {(target) => (
           <ConfirmDialog
-            title={`Xoá ${target.name}?`}
-            body="Xoá vĩnh viễn cấu hình và khoá API khỏi máy."
-            more="Cấu hình và khoá API của nhà cung cấp này bị xoá khỏi máy. Thao tác không hoàn tác được."
+            title={t(S.providers.del.title, { name: target.name })}
+            body={t(S.providers.del.body)}
+            more={t(S.providers.del.more)}
             detail={target.baseUrl}
-            confirmLabel="Xoá nhà cung cấp"
+            confirmLabel={t(S.providers.del.confirm)}
             busy={busy()}
             onConfirm={() =>
-              void act("Không xoá được nhà cung cấp", async () => {
+              void act(t(S.providers.err.remove), async () => {
                 await removeProvider(target.id);
                 setSheet({ kind: "none" });
               })
@@ -257,26 +222,11 @@ export default function ProvidersView() {
   );
 }
 
-/**
- * Danh mục nhà cung cấp — **đứng thẳng trên trang**, không nằm sau một hộp thoại.
- *
- * Bản trước giấu nó sau nút "Thêm provider", nên trang này mở ra chỉ trả lời được câu hỏi
- * của người *đã có* provider. Người mở nó ra vì chưa có cái nào thì gặp một ô rỗng và một
- * cái nút, rồi một hộp thoại danh mục, rồi một hộp thoại biểu mẫu **chồng lên** hộp thoại
- * đó — ba lớp cho một việc mà đối thủ làm bằng một cú bấm trên một hàng.
- *
- * Chỗ gập là điểm chính, và nó **không** phải "năm mục đầu" tuỳ tiện: mở sẵn là nhóm
- * **chạy trên máy này**, còn nhóm gửi dữ liệu ra ngoài nằm sau một cú bấm. Trong một ứng
- * dụng mà cả kiến trúc dựng quanh việc dữ liệu không rời khỏi máy, thứ tự mặc định của
- * danh mục là một câu khẳng định chứ không phải một chi tiết sắp xếp.
- *
- * Nút "Nối" là `outline`, không phải nút chính: mười hàng, mười nút xanh thì không nút nào
- * còn là hành động chính nữa.
- */
+/** The provider catalogue, on the page rather than behind a dialog; on-device entries are open by default and remote ones sit behind a click, which is a statement, not a sort order. */
 function Catalog(props: {
   presets: ProviderPreset[];
   added: Provider[];
-  /** Chưa có provider nào — khi ấy danh mục là nội dung chính của trang, không phải phần đuôi. */
+  /** No providers yet, so the catalogue is the page's main content rather than its tail. */
   empty: boolean;
   onPick: (preset: ProviderPreset) => void;
   onManual: () => void;
@@ -285,36 +235,35 @@ function Catalog(props: {
   const local = () => props.presets.filter((entry) => entry.onDevice);
   const remote = () => props.presets.filter((entry) => !entry.onDevice);
 
-  /** Đã có một provider trỏ vào đúng địa chỉ ấy chưa. Dấu `/` cuối không tính là khác. */
+  /** Does a provider already point at that address; a trailing `/` does not count as different. */
   const already = (preset: ProviderPreset) => {
     const bare = (url: string) => url.trim().replace(/\/+$/, "").toLowerCase();
     return props.added.some((entry) => bare(entry.baseUrl) === bare(preset.baseUrl));
   };
 
-  /**
-   * Một hàng danh mục: biểu tượng, tên, nút. **Không có dòng mô tả.**
-   *
-   * `hint` của mỗi mục dài mười tám chữ — nó nói cả điều kiện chạy được ("phải bật máy chủ
-   * cục bộ trong tab Developer") chứ không chỉ nói mục này là gì. Trải bốn câu như thế
-   * xuống bốn hàng thì danh mục thành một trang chữ, mà người đang lướt danh mục thì chưa
-   * cần điều kiện của mục họ chưa chọn. Nên nó vào `InfoDot`, và nó hiện đầy đủ ở hộp
-   * thoại — đúng lúc người dùng vừa bấm "Nối" và sắp cần tới nó.
-   */
+  /** One catalogue row: icon, name, button, and no description line; each `hint` lives in an `InfoDot`. */
   const entry = (preset: ProviderPreset) => (
     <Row
       label={preset.name}
       icon={preset.onDevice ? "plug" : "cloud"}
-      more={`${preset.hint} Địa chỉ mặc định ${preset.baseUrl}.${preset.needsKey ? " Cần khoá API." : ""}`}
+      more={t(preset.needsKey ? S.providers.catalog.rowMoreKey : S.providers.catalog.rowMore, {
+        hint: presetHint(preset),
+        url: preset.baseUrl,
+      })}
       control={() => (
         <>
-          {/* "Đã thêm" không khoá cái nút: hai máy chủ Ollama ở hai cổng khác nhau là một
-              cấu hình hợp lệ, và một hàng bị khoá thì không có gì nói ra vì sao. */}
+          {/* "Added" does not disable the button: two Ollama servers on two ports is valid. */}
           <Show when={already(preset)}>
             <span class="rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-faint">
-              đã thêm
+              {t(S.providers.catalog.added)}
             </span>
           </Show>
-          <Button label="Kết nối" variant="outline" icon="plus" onClick={() => props.onPick(preset)} />
+          <Button
+            label={t(S.providers.catalog.connect)}
+            variant="outline"
+            icon="plus"
+            onClick={() => props.onPick(preset)}
+          />
         </>
       )}
     />
@@ -323,29 +272,32 @@ function Catalog(props: {
   return (
     <section class="flex flex-col gap-sm">
       <h3 class="m-0 flex items-center gap-2xs text-xs font-semibold text-ink">
-        {props.empty ? "Chọn một nhà cung cấp để bắt đầu" : "Thêm nhà cung cấp"}
+        {props.empty ? t(S.providers.catalog.headingEmpty) : t(S.providers.catalog.heading)}
         <InfoDot
-          label="Về danh mục nhà cung cấp"
-          text="Những mục đầu chạy ngay trên máy này: mã nguồn và câu hỏi của bạn không đi đâu cả. Các dịch vụ từ xa nằm sau nút xem thêm — chúng nhanh và mạnh hơn, nhưng mọi thứ bạn gửi đều rời khỏi máy. Máy chủ không có trong danh sách thì dùng mục Máy chủ khác."
+          label={t(S.providers.catalog.aboutLabel)}
+          text={t(S.providers.catalog.aboutText)}
         />
       </h3>
 
       <RowGroup>
         <For each={local()}>{entry}</For>
 
-        {/* Tự khai báo là một hàng như mọi hàng khác, không phải một nút lạc ở chân hộp
-            thoại: `llama-server`, một cổng nội bộ, một máy chủ tự dựng — đó là những thứ
-            người dùng của ứng dụng này thật sự chạy, chứ không phải trường hợp ngoại lệ. */}
+        {/* Manual entry is a row like any other: a self-hosted server is normal here, not an exception. */}
         <Row
-          label="Máy chủ khác"
+          label={t(S.providers.catalog.otherLabel)}
           icon="sparkle"
-          more="Dùng cho máy chủ không có trong danh sách: llama.cpp tự dựng, một cổng trung chuyển nội bộ, hay một dịch vụ tương thích OpenAI khác. Bạn tự điền tên, loại API và địa chỉ."
+          more={t(S.providers.catalog.otherMore)}
           control={() => (
             <>
               <span class="rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-faint">
-                tuỳ chỉnh
+                {t(S.providers.catalog.otherBadge)}
               </span>
-              <Button label="Khai báo" variant="outline" icon="plus" onClick={props.onManual} />
+              <Button
+                label={t(S.providers.catalog.otherAction)}
+                variant="outline"
+                icon="plus"
+                onClick={props.onManual}
+              />
             </>
           )}
         />
@@ -358,7 +310,7 @@ function Catalog(props: {
       <Show when={!more() && remote().length > 0}>
         <div>
           <Button
-            label={`Xem thêm ${remote().length} dịch vụ từ xa`}
+            label={t(S.providers.catalog.showRemote, { n: remote().length })}
             variant="ghost"
             icon="cloud"
             onClick={() => setMore(true)}
@@ -369,13 +321,7 @@ function Catalog(props: {
   );
 }
 
-/**
- * Lời cảnh báo đứng trên đầu danh sách.
- *
- * Một mô hình `tools: false` là kiểu hỏng tệ nhất mà màn hình này có thể để lọt: trợ lý
- * vẫn trả lời trôi chảy, chỉ là không bao giờ đọc hay sửa được gì. Không có câu này thì
- * người dùng kết luận "agent này dở", chứ không kết luận "mình chọn nhầm mô hình".
- */
+/** The notices above the list; a `tools: false` model answers fluently but can never read or edit anything, which reads as a bad agent rather than a wrong model. */
 function ActiveNotice(props: { provider: Provider | null; model: ModelChoice | null; loading: boolean }) {
   return (
     <>
@@ -383,22 +329,22 @@ function ActiveNotice(props: { provider: Provider | null; model: ModelChoice | n
         <Banner
           tone="warn"
           icon="warn"
-          title="Chưa chọn nhà cung cấp để trò chuyện"
-          more={'Trợ lý chưa gọi được mô hình nào. Bấm "Dùng để trò chuyện" ở một hàng bên dưới.'}
+          title={t(S.providers.notice.noProviderTitle)}
+          more={t(S.providers.notice.noProviderMore)}
         >
-          Bấm "Dùng để trò chuyện" ở một hàng bên dưới.
+          {t(S.providers.notice.noProviderBody)}
         </Banner>
       </Show>
 
       <Show when={props.provider !== null && props.provider?.enabled === false}>
-        <Banner tone="warn" icon="warn" title="Nhà cung cấp đang dùng để trò chuyện lại bị tắt">
-          Bật nó lên, hoặc giao vai cho provider khác.
+        <Banner tone="warn" icon="warn" title={t(S.providers.notice.disabledTitle)}>
+          {t(S.providers.notice.disabledBody)}
         </Banner>
       </Show>
 
       <Show when={props.provider !== null && props.provider?.model === null && !props.loading}>
-        <Banner tone="warn" icon="warn" title="Chưa chọn mô hình hội thoại">
-          Chọn mô hình ở hàng provider đang giữ vai.
+        <Banner tone="warn" icon="warn" title={t(S.providers.notice.noModelTitle)}>
+          {t(S.providers.notice.noModelBody)}
         </Banner>
       </Show>
 
@@ -406,11 +352,12 @@ function ActiveNotice(props: { provider: Provider | null; model: ModelChoice | n
         <Banner
           tone="danger"
           icon="warn"
-          title="Mô hình đang chọn không gọi được tool"
-          more={`${props.model?.id ?? "Mô hình này"} vẫn trả lời được, nhưng nó không đọc tệp, không sửa mã và không chạy lệnh — mọi câu trả lời sẽ là phỏng đoán từ trí nhớ. Chọn một mô hình có tool nếu bạn cần nó làm việc trong dự án.`}
+          title={t(S.providers.notice.noToolsTitle)}
+          more={t(S.providers.notice.noToolsMore, {
+            model: props.model?.id ?? t(S.providers.notice.noToolsFallback),
+          })}
         >
-          <code class="font-mono">{props.model?.id}</code> không đọc tệp, không sửa mã,
-          không chạy lệnh.
+          <code class="font-mono">{props.model?.id}</code> {t(S.providers.notice.noToolsBody)}
         </Banner>
       </Show>
     </>
@@ -429,14 +376,14 @@ function ProviderRow(props: {
   onEdit: () => void;
   onDelete: () => void;
 }) {
-  /** Tên loại API, hoặc `null` khi nó chỉ nhắc lại tên provider. */
+  /** The API kind's name, or `null` when it only repeats the provider's name. */
   const kindLabel = () => {
     const label =
       props.provider.kind === "ollama"
         ? "Ollama"
         : props.provider.kind === "lmstudio"
           ? "LM Studio"
-          : "Tương thích OpenAI";
+          : t(S.providers.kind.openai);
     const bare = (value: string) => value.trim().toLowerCase();
     return bare(props.provider.name).includes(bare(label)) ? null : label;
   };
@@ -444,12 +391,7 @@ function ProviderRow(props: {
   return (
     <Row
       label={props.provider.name}
-      /* Icon dẫn hàng **mang màu**, và nó nói nốt phần mà huy hiệu "Chạy trên máy này"
-         từng nói bằng chữ. Chữ ấy lặp xuống mọi hàng tại chỗ — mà đa số hàng của ứng dụng
-         này là hàng tại chỗ — nên nó là một đoạn văn bản không ai đọc tới lần thứ hai. Ổ
-         cắm trong ô nhấn xanh đọc được trong một nhịp mắt, và `title` giữ nguyên câu đầy
-         đủ cho người cần nó. Cờ lấy thẳng từ lõi, không đoán lại từ URL: một lời hứa đoán
-         sai là lời hứa tệ nhất trong ứng dụng. */
+      /* The lead icon carries the on-device fact in colour, with the full sentence in `title`; the flag comes straight from the core, never guessed from the URL. */
       lead={() => (
         <span
           class="grid size-7 shrink-0 place-items-center rounded-panel"
@@ -458,9 +400,7 @@ function ProviderRow(props: {
             "bg-[var(--overlay-faint)] text-muted": !props.provider.onDevice,
           }}
           title={
-            props.provider.onDevice
-              ? "Chạy trên máy này — dữ liệu không rời khỏi đây."
-              : "Máy chủ từ xa — mọi thứ bạn gửi đều rời khỏi máy này."
+            props.provider.onDevice ? t(S.providers.row.onDevice) : t(S.providers.row.remote)
           }
         >
           <Icon name={props.provider.onDevice ? "plug" : "cloud"} size={14} />
@@ -471,22 +411,29 @@ function ProviderRow(props: {
         <>
           <Show when={!props.provider.activeChat}>
             <Button
-              label="Dùng để trò chuyện"
+              label={t(S.providers.row.useForChat)}
               variant="outline"
               disabled={props.busy || !props.provider.enabled}
               onClick={props.onActivate}
             />
           </Show>
           <Toggle
-            label={`${props.provider.enabled ? "Tắt" : "Bật"} ${props.provider.name}`}
+            label={t(props.provider.enabled ? S.providers.row.turnOff : S.providers.row.turnOn, {
+              name: props.provider.name,
+            })}
             checked={props.provider.enabled}
             busy={props.busy}
             onChange={props.onToggle}
           />
-          <IconButton icon="pencil" label={`Sửa ${props.provider.name}`} size="sm" onClick={props.onEdit} />
+          <IconButton
+            icon="pencil"
+            label={t(S.providers.row.edit, { name: props.provider.name })}
+            size="sm"
+            onClick={props.onEdit}
+          />
           <IconButton
             icon="trash"
-            label={`Xoá ${props.provider.name}`}
+            label={t(S.providers.row.remove, { name: props.provider.name })}
             size="sm"
             danger
             onClick={props.onDelete}
@@ -498,29 +445,22 @@ function ProviderRow(props: {
           <div class="flex min-w-0 flex-wrap items-center gap-2xs">
             <Roles provider={props.provider} />
 
-            {/* Chỉ **chiều đi ra ngoài** mới có huy hiệu chữ. Nhãn dán lên mọi hàng thì
-                không còn là cảnh báo; nhãn dán lên đúng ngoại lệ thì mới là. Chiều an
-                toàn đã nằm trong ô ổ cắm xanh ở đầu hàng. */}
+            {/* Only the outbound case gets a worded badge; a label on every row stops being a warning. */}
             <Show when={!props.provider.onDevice}>
               <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-warn-soft px-2xs py-3xs text-2xs font-medium text-warn">
                 <Icon name="cloud" size={10} />
-                Gửi ra ngoài
+                {t(S.providers.row.leaves)}
               </span>
             </Show>
 
-            {/* Loại API chỉ hiện khi nó **nói thêm** được gì. "Ollama" dán dưới một hàng
-                tên là Ollama là một chữ không mang tin; còn "Tương thích OpenAI" dưới một
-                hàng tên LM Studio thì đúng là thứ giải thích vì sao hàng ấy không đọc được
-                danh sách mô hình. */}
+            {/* The API kind shows only when it adds something the provider's name does not. */}
             <Show when={kindLabel() !== null}>
               <span class="inline-flex shrink-0 items-center rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs text-muted">
                 {kindLabel()}
               </span>
             </Show>
 
-            {/* Chỉ ở hàng **không** giữ vai hội thoại: hàng đang hoạt động đã có cả một bộ
-                chọn mô hình bên dưới, và nhắc lại cùng một tên hai lần cách nhau một dòng
-                là mời người đọc đi tìm xem hai chỗ ấy có khác nhau không. */}
+            {/* Only on rows without the chat role: the active row already has a model picker below. */}
             <Show when={!props.provider.activeChat}>
               <span
                 class="inline-flex min-w-0 shrink items-center gap-3xs rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-2xs"
@@ -532,18 +472,17 @@ function ProviderRow(props: {
               >
                 <Icon name="model" size={10} />
                 <span class="min-w-0 truncate font-mono">
-                  {props.provider.model ?? "chưa chọn mô hình"}
+                  {props.provider.model ?? t(S.providers.row.noModel)}
                 </span>
               </span>
             </Show>
 
-            {/* Chìa khoá đứng một mình. Hai chữ "Có khoá" lặp xuống mọi hàng từ xa, và
-                cái ổ khoá thì không lặp lại gì cả. */}
+            {/* The key icon stands alone; the words would repeat down every remote row. */}
             <Show when={props.provider.hasKey}>
               <span
                 class="inline-flex shrink-0 items-center rounded-pill bg-[var(--overlay-faint)] px-2xs py-3xs text-muted"
-                title="Đã lưu khoá API cho nhà cung cấp này"
-                aria-label="Đã lưu khoá API"
+                title={t(S.providers.row.keyTitle)}
+                aria-label={t(S.providers.row.keyLabel)}
               >
                 <Icon name="key" size={11} />
               </span>
@@ -570,17 +509,7 @@ function ProviderRow(props: {
   );
 }
 
-/**
- * Vai mà provider này đang giữ: cả hai, một, hoặc không vai nào.
- *
- * "Không vai nào" cũng có nhãn riêng chứ không phải một khoảng trống. Chỗ trống đọc ra là
- * "chưa nạp xong" hoặc "hàng này bị lỗi vẽ", còn ba trạng thái ở đây phải phân biệt được
- * ngay bằng mắt — đó là toàn bộ thông tin mà một hàng provider mang.
- *
- * Vai nhúng hiện ở đây nhưng **không đổi được** ở đây: nó là một quyết định về nơi nhận
- * toàn văn tài liệu, nên nó đứng cùng chỗ với câu giải thích của nó ở màn hình mô hình
- * nhúng, chứ không nấp sau một cái nhãn nhỏ giữa danh sách.
- */
+/** Which roles this provider holds: both, one, or none, where none gets its own label rather than a blank; the embedding role is shown but not changeable here. */
 function Roles(props: { provider: Provider }) {
   const none = () => !props.provider.activeChat && !props.provider.activeEmbedding;
   return (
@@ -588,40 +517,30 @@ function Roles(props: { provider: Provider }) {
       <Show when={props.provider.activeChat}>
         <span class="inline-flex shrink-0 items-center gap-3xs rounded-pill bg-accent px-2xs py-3xs text-2xs font-medium text-on-accent">
           <Icon name="chat" size={10} />
-          Hội thoại
         </span>
       </Show>
 
       <Show when={props.provider.activeEmbedding}>
         <span
           class="inline-flex shrink-0 items-center gap-3xs rounded-pill border border-accent px-2xs py-3xs text-2xs font-medium text-accent-ink"
-          title={`Đang nhúng tài liệu bằng ${props.provider.embeddingModel ?? "mô hình chưa chọn"}`}
+          title={t(S.providers.row.roleEmbedding, {
+            model: props.provider.embeddingModel ?? t(S.providers.row.roleEmbeddingNone),
+          })}
         >
           <Icon name="library" size={10} />
-          Nhúng
         </span>
       </Show>
 
       <Show when={none()}>
         <span class="inline-flex shrink-0 items-center rounded-pill border border-dashed border-line-strong px-2xs py-3xs text-2xs text-faint">
-          Chưa giao vai
+          {t(S.providers.row.noRole)}
         </span>
       </Show>
     </>
   );
 }
 
-/**
- * Bộ chọn mô hình hội thoại của provider đang giữ vai đó.
- *
- * `<select>` thật thay cho danh sách nút cũ: một máy chủ Ollama đầy đủ trả về hàng chục
- * mô hình, và một danh sách dài như thế phải tự cuộn — tức là một vùng cuộn nữa nằm trong
- * vùng cuộn của trang cài đặt, đúng thứ mà hình dạng hàng gọn tồn tại để tránh.
- *
- * Cảnh báo `tools: false` đi theo *tên mô hình* trong từng dòng của danh sách, và lặp lại
- * thành một băng riêng ở đầu trang cho mô hình **đang chọn** — vì đó là mô hình duy nhất
- * mà cờ đó thật sự gây hậu quả.
- */
+/** The chat model picker for the active provider: a real `<select>`, since a full server lists dozens of models, with the `tools: false` warning on each option and again above for the selected one. */
 function ModelPicker(props: {
   models: ModelChoice[];
   loading: boolean;
@@ -631,28 +550,31 @@ function ModelPicker(props: {
   onRefresh: () => void;
 }) {
   const options = () => {
-    const list = props.models.map((choice) => ({
-      id: choice.id,
-      label: `${choice.id}${choice.tools ? "" : " — không gọi được tool"}${
+    const list = props.models.map((choice) => {
+      const id = choice.id;
+      const n =
         choice.contextWindow === null
-          ? ""
-          : ` · ${Intl.NumberFormat("vi-VN").format(choice.contextWindow)} token`
-      }`,
-    }));
-    // Chưa chọn gì thì phải có một mục rỗng, nếu không trình duyệt hiện mục đầu tiên và
-    // màn hình nói dối rằng mô hình đó đang được dùng.
-    return props.selected === null ? [{ id: "", label: "— chưa chọn —" }, ...list] : list;
+          ? null
+          : Intl.NumberFormat(locale() === "vi" ? "vi-VN" : "en-US").format(choice.contextWindow);
+      const label = choice.tools
+        ? n === null
+          ? id
+          : t(S.providers.opt.ctx, { id, n })
+        : n === null
+          ? t(S.providers.opt.noTools, { id })
+          : t(S.providers.opt.noToolsCtx, { id, n });
+      return { id, label };
+    });
+    // With nothing chosen there must be an empty option, or the browser shows the first as chosen.
+    return props.selected === null
+      ? [{ id: "", label: t(S.providers.opt.none) }, ...list]
+      : list;
   };
 
   return (
     <div class="flex flex-wrap items-center gap-sm border-t border-line pt-sm">
-      {/* Biểu tượng thay cho dòng chữ "Mô hình hội thoại".
-          Cái nhãn ấy không nói gì mà hàng chưa nói: hàng này đeo huy hiệu "Hội thoại", và
-          thứ nằm trong ô chọn là một tên mô hình. Nó chỉ có mặt ở đúng một hàng trong danh
-          sách, nên nó cũng không phải một tiêu đề cột — nó là mười lăm ký tự chiếm chỗ của
-          chính cái tên mô hình. Tên đầy đủ vẫn tới được trình đọc màn hình qua `aria-label`
-          của `<select>`. */}
-      <span class="shrink-0 text-faint" title="Mô hình dùng để trò chuyện">
+      {/* An icon instead of a "chat model" label, which the row already says; the `<select>` keeps the `aria-label`. */}
+      <span class="shrink-0 text-faint" title={t(S.providers.picker.chatModel)}>
         <Icon name="model" size={13} />
       </span>
 
@@ -660,7 +582,7 @@ function ModelPicker(props: {
         when={!props.loading}
         fallback={
           <span class="text-2xs text-muted" role="status" aria-busy="true">
-            Đang lấy danh sách mô hình…
+            {t(S.providers.picker.loading)}
           </span>
         }
       >
@@ -668,16 +590,16 @@ function ModelPicker(props: {
           when={props.models.length > 0}
           fallback={
             <span class="flex min-w-0 flex-1 items-center gap-2xs text-xs text-warn">
-              Không đọc được danh sách mô hình từ máy chủ này.
+              {t(S.providers.picker.unreadable)}
               <InfoDot
-                label="Xem thêm về danh sách mô hình"
-                text={'Mở "Sửa" — hộp thoại tự hỏi lại máy chủ và nói ra nó trả lời gì.'}
+                label={t(S.providers.picker.unreadableLabel)}
+                text={t(S.providers.picker.unreadableText)}
               />
             </span>
           }
         >
           <Select
-            label="Mô hình dùng để trò chuyện"
+            label={t(S.providers.picker.chatModel)}
             mono
             value={props.selected ?? ""}
             options={options()}
@@ -687,12 +609,17 @@ function ModelPicker(props: {
         </Show>
       </Show>
 
-      <IconButton icon="refresh" label="Nạp lại danh sách mô hình" size="sm" onClick={props.onRefresh} />
+      <IconButton
+        icon="refresh"
+        label={t(S.providers.picker.reload)}
+        size="sm"
+        onClick={props.onRefresh}
+      />
     </div>
   );
 }
 
-/** Khung xương lúc nạp: giữ đúng chiều cao hàng để danh sách không giật khi hiện ra. */
+/** Loading skeleton, at row height so the list does not jump when it arrives. */
 function Skeleton() {
   return (
     <div

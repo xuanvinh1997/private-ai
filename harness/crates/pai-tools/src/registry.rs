@@ -1,15 +1,6 @@
-//! Sổ đăng ký tool, có phạm vi.
-//!
-//! Bất biến trung tâm của cả crate nằm ở đây, và nó là **lọc hai tầng**:
-//!
-//! > Danh sách quảng cáo chỉ là gợi ý. Quyền phải được kiểm lại lúc gọi, **sau khi đã
-//! > giải mã tên**, vì một mô hình đoán ra `documents__delete` đi thẳng vào hàm gọi mà
-//! > không bao giờ đi qua hàm liệt kê.
-//!
-//! Bản Python làm đúng chỗ này (`adapter.py:141-152`) và đó là lý do nó được chép sang
-//! nguyên vẹn. Cách sắp xếp ở đây cố tình khiến chỗ sai khó viết ra: hàm liệt kê và hàm
-//! tra cứu gọi **cùng một** [`ToolRegistry::permits`], nên không có đường nào để hai
-//! tầng lọc trôi ra khỏi nhau qua thời gian.
+//! The scoped tool registry, holding the crate's central invariant: two-stage filtering.
+//! The advertised list is only a hint, so permission is rechecked at call time after name
+//! decoding, and both stages call the same [`ToolRegistry::permits`] so they cannot drift.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -25,11 +16,7 @@ use crate::pipeline::ToolGuard;
 use crate::schema::ToolSchema;
 use crate::tool::Tool;
 
-/// Một hạn chế đặt lên một phạm vi.
-///
-/// `allow = None` nghĩa là "không giới hạn danh sách trắng", **không** phải "cấm hết".
-/// Đó là mặc định của một agent bình thường; danh sách trắng là thứ một agent bị siết
-/// phải nói ra tường minh.
+/// A restriction on one scope; `allow = None` means "no allow-list", not "deny everything".
 #[derive(Clone, Debug, Default)]
 pub struct ToolRestriction {
     pub allow: Option<HashSet<ToolName>>,
@@ -37,7 +24,7 @@ pub struct ToolRestriction {
 }
 
 impl ToolRestriction {
-    /// Chỉ những tên này, không gì khác.
+    /// These names and nothing else.
     pub fn allow_only<I: IntoIterator<Item = N>, N: Into<ToolName>>(names: I) -> ToolRestriction {
         ToolRestriction {
             allow: Some(names.into_iter().map(Into::into).collect()),
@@ -45,7 +32,7 @@ impl ToolRestriction {
         }
     }
 
-    /// Mọi thứ trừ những tên này.
+    /// Everything except these names.
     pub fn deny_only<I: IntoIterator<Item = N>, N: Into<ToolName>>(names: I) -> ToolRestriction {
         ToolRestriction {
             allow: None,
@@ -53,8 +40,7 @@ impl ToolRestriction {
         }
     }
 
-    /// `deny` thắng `allow`. Một cái tên nằm ở cả hai bên là một mâu thuẫn cấu hình, và
-    /// cách giải quyết an toàn duy nhất là nghiêng về phía từ chối.
+    /// `deny` beats `allow`: a name on both sides is a contradiction, and refusing is the only safe resolution.
     pub fn permits(&self, name: &ToolName) -> bool {
         if self.deny.contains(name) {
             return false;
@@ -66,18 +52,18 @@ impl ToolRestriction {
     }
 }
 
-/// Kết quả tra cứu một cái tên đến từ mô hình.
+/// The result of resolving a name that came from the model.
 pub enum Resolution {
     Found(Arc<dyn Tool>, ToolName),
-    /// Có tool này, nhưng phạm vi hiện tại không được dùng.
+    /// The tool exists, but this scope may not use it.
     Denied(ToolName),
-    /// Không có tool nào tên như vậy trong phạm vi này.
+    /// No tool of that name exists in this scope.
     Unknown(ToolName),
 }
 
 struct ToolEntry {
     id: u64,
-    /// `None` là đăng ký toàn cục.
+    /// `None` means a global registration.
     scope: Option<ScopeKey>,
     name: ToolName,
     tool: Arc<dyn Tool>,
@@ -102,11 +88,10 @@ struct GuardEntry {
     guard: Arc<dyn ToolGuard>,
 }
 
-/// Mọi tool mà ứng dụng với tới được, cộng chính sách gắn theo phạm vi.
+/// Every tool the application can reach, plus the policy attached per scope.
 #[derive(Default)]
 pub struct ToolRegistry {
-    /// Cây phạm vi của lõi. Sổ đăng ký giữ phạm vi trong dữ liệu của mình nên không có
-    /// sẵn một `Context` đúng nhánh lúc tra cứu; nó hỏi cây trực tiếp.
+    /// The core's scope tree, asked directly, because lookups have no `Context` on the right branch.
     scopes: Arc<ScopeTree>,
     tools: RwLock<Vec<ToolEntry>>,
     restrictions: RwLock<Vec<RestrictionEntry>>,
@@ -127,17 +112,14 @@ impl ToolRegistry {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    // --- đăng ký -----------------------------------------------------------------------
+    // --- registration --------------------------------------------------------------------
 
-    /// Đăng ký toàn cục: mọi phạm vi đều thấy, trừ khi bị hạn chế che đi.
+    /// A global registration: every scope sees it unless a restriction hides it.
     pub fn register(self: &Arc<Self>, tool: Arc<dyn Tool>) -> Guard {
         self.install(None, tool)
     }
 
-    /// Đăng ký trong một phạm vi. **Che** đăng ký toàn cục cùng tên.
-    ///
-    /// Đây là cách một agent con thay một tool bằng bản của riêng nó — một `bash` bị giam
-    /// trong sandbox chẳng hạn — mà không đụng tới agent khác.
+    /// A scoped registration shadowing the global one of the same name, so a child can swap in its own version.
     pub fn register_in(self: &Arc<Self>, scope: ScopeKey, tool: Arc<dyn Tool>) -> Guard {
         self.install(Some(scope), tool)
     }
@@ -145,14 +127,11 @@ impl ToolRegistry {
     fn install(self: &Arc<Self>, scope: Option<ScopeKey>, tool: Arc<dyn Tool>) -> Guard {
         let name = tool.schema().name;
 
-        // Một cái tên chứa sẵn `__` phá mất tính khả nghịch của phép chiếu sang wire: hai
-        // tool khác nhau va vào cùng một tên mô hình gõ được, và bộ lọc quyền hết là bộ
-        // lọc. Từ chối đăng ký là fail-closed — tool không tồn tại, thay vì tồn tại dưới
-        // một cái tên mà chính sách không kiểm được.
+        // A name containing `__` makes the wire mapping irreversible, so refusing to register is the fail-closed answer.
         if !name.round_trips() {
             tracing::error!(
                 tool = %name,
-                "từ chối đăng ký: tên chứa `__` nên không mã hoá sang wire một cách khả nghịch"
+                "refusing registration: the name contains `__`, so the wire encoding is not reversible"
             );
             return Guard::new(|| {});
         }
@@ -170,11 +149,7 @@ impl ToolRegistry {
         })
     }
 
-    /// Siết một phạm vi. Nhiều hạn chế trên cùng phạm vi thì **giao nhau**.
-    ///
-    /// Phạm vi là bắt buộc, và đó là một quyết định chứ không phải một thiếu sót của API:
-    /// một hạn chế toàn cục bịt mắt mọi agent cùng lúc, kể cả cái đang chạy việc mà người
-    /// dùng vừa bấm nút. Siết thì siết đúng agent cần siết.
+    /// Restrict a scope; several restrictions on one scope intersect, and the scope is required rather than global.
     pub fn restrict(self: &Arc<Self>, scope: ScopeKey, restriction: ToolRestriction) -> Guard {
         let id = self.id();
         self.restrictions.write().push(RestrictionEntry {
@@ -188,11 +163,7 @@ impl ToolRegistry {
         })
     }
 
-    /// Ghim một tham số cho cả phạm vi.
-    ///
-    /// Nửa đầu: tham số biến mất khỏi schema. Nửa sau: nó bị **ghi đè** lúc gọi. Ghi đè
-    /// chứ không phải điền mặc định — một mô hình tự gửi kèm id của mình không được phép
-    /// với sang workspace khác chỉ vì nó đoán trúng một id.
+    /// Pin a parameter across a scope: it leaves the schema and is overridden at call time, never merely defaulted.
     pub fn pin(self: &Arc<Self>, scope: ScopeKey, field: impl Into<String>, value: Value) -> Guard {
         let id = self.id();
         self.pins.write().push(PinEntry {
@@ -207,11 +178,7 @@ impl ToolRegistry {
         })
     }
 
-    /// Cắm một canh gác đơn điệu.
-    ///
-    /// Toàn cục được phép ở đây, khác với [`Self::restrict`], vì một canh gác **chỉ từ
-    /// chối được**: thêm nó vào chỉ có thể thu hẹp, không bao giờ mở rộng. Xem
-    /// [`ToolGuard`].
+    /// Add a monotonic guard; global is allowed here, unlike [`Self::restrict`], because a guard can only narrow.
     pub fn add_guard(
         self: &Arc<Self>,
         scope: Option<ScopeKey>,
@@ -225,21 +192,16 @@ impl ToolRegistry {
         })
     }
 
-    // --- tra cứu -----------------------------------------------------------------------
+    // --- lookup --------------------------------------------------------------------------
 
-    /// Phạm vi `at` có nhìn thấy đăng ký gắn ở `tag` không.
-    ///
-    /// Đi ngược cây: một agent con thấy tool mà cha nó đăng ký. Đây là ngữ nghĩa đúng vì
-    /// công cụ để **thu hẹp** quyền của agent con là `ToolRestriction`, thứ nói ra ý
-    /// định ngay tại chỗ đọc. Bắt phạm vi kiêm luôn việc thu hẹp thì một agent con mất
-    /// tool mà không có dòng nào nói rằng nó đã bị lấy đi.
+    /// Whether scope `at` sees a registration tagged `tag`; it walks up the tree, since narrowing is `ToolRestriction`'s job.
     fn admits(&self, at: Option<ScopeKey>, tag: Option<ScopeKey>) -> bool {
         self.scopes.admits(at, tag)
     }
 
     fn find(&self, scope: Option<ScopeKey>, name: &ToolName) -> Option<Arc<dyn Tool>> {
         let tools = self.tools.read();
-        // Đăng ký có phạm vi che đăng ký toàn cục; trong cùng một tầng, cái mới nhất thắng.
+        // Scoped registrations shadow global ones; within a tier, the newest wins.
         let scoped = tools
             .iter()
             .rfind(|e| e.scope.is_some() && self.admits(scope, e.scope) && &e.name == name);
@@ -247,25 +209,21 @@ impl ToolRegistry {
         scoped.or_else(global).map(|entry| entry.tool.clone())
     }
 
-    /// Phạm vi này có được dùng tool này không. **Một hàm duy nhất cho cả hai tầng lọc.**
+    /// Whether this scope may use this tool; one function for both filtering stages.
     pub fn permits(&self, scope: Option<ScopeKey>, name: &ToolName) -> bool {
         let Some(scope) = scope else {
-            // Không có phạm vi thì không có hạn chế nào áp được — đây là đường của host,
-            // không phải đường của agent.
+            // With no scope, no restriction can apply: this is the host's path, not an agent's.
             return true;
         };
         self.restrictions
             .read()
             .iter()
             .filter(|entry| entry.scope == scope)
-            // Giao nhau: một cái tên phải qua được **mọi** hạn chế đang đặt trên phạm vi.
+            // Intersection: a name has to pass every restriction on the scope.
             .all(|entry| entry.restriction.permits(name))
     }
 
-    /// Tầng lọc thứ hai. Nhận cái tên **mô hình gửi** và trả về tool đã được duyệt.
-    ///
-    /// Thứ tự thử: khớp đúng trước, rồi mới giải mã `__`. Vì đăng ký đã từ chối mọi tên
-    /// chứa `__`, hai đường không bao giờ trỏ vào hai tool khác nhau.
+    /// The second filter: takes the model's name and returns an approved tool, trying an exact match before decoding `__`.
     pub fn resolve(&self, scope: Option<ScopeKey>, raw: &str) -> Resolution {
         let direct = ToolName::new(raw);
         let name = if self.find(scope, &direct).is_some() {
@@ -286,7 +244,7 @@ impl ToolRegistry {
         }
     }
 
-    /// Tầng lọc thứ nhất: cái gì được quảng cáo cho phạm vi này.
+    /// The first filter: what gets advertised to this scope.
     pub fn visible(&self, scope: Option<ScopeKey>) -> Vec<Arc<dyn Tool>> {
         let mut seen: HashSet<ToolName> = HashSet::new();
         let mut names: Vec<ToolName> = Vec::new();
@@ -305,7 +263,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Schema đúng như mô hình sẽ thấy: đã lọc quyền, đã chèn cảnh báo, đã giấu tham số ghim.
+    /// Schemas exactly as the model will see them: permission-filtered, notice-framed, pins hidden.
     pub fn schemas(&self, scope: Option<ScopeKey>) -> Vec<ToolSchema> {
         let pinned = self.pinned_fields(scope);
         self.visible(scope)
@@ -321,7 +279,7 @@ impl ToolRegistry {
             .collect()
     }
 
-    /// Tên các tham số bị ghim trong phạm vi này.
+    /// The names of the parameters pinned in this scope.
     pub fn pinned_fields(&self, scope: Option<ScopeKey>) -> Vec<String> {
         let Some(scope) = scope else {
             return Vec::new();
@@ -338,7 +296,7 @@ impl ToolRegistry {
         fields
     }
 
-    /// Ghi đè tham số ghim lên tham số mô hình gửi.
+    /// Overwrite the model's arguments with the pinned values.
     pub fn apply_pins(&self, scope: Option<ScopeKey>, arguments: &mut Map<String, Value>) {
         let Some(scope) = scope else { return };
         for entry in self.pins.read().iter().filter(|entry| entry.scope == scope) {
@@ -346,10 +304,7 @@ impl ToolRegistry {
         }
     }
 
-    /// Canh gác áp dụng cho phạm vi này, theo thứ tự đăng ký.
-    ///
-    /// Thứ tự chỉ ảnh hưởng tới **lý do** nào được báo trước, không ảnh hưởng tới việc có
-    /// bị từ chối hay không — xem [`ToolGuard`].
+    /// Guards applying to this scope, in registration order, which only affects which reason is reported first.
     pub fn guards(&self, scope: Option<ScopeKey>) -> Vec<Arc<dyn ToolGuard>> {
         self.guards
             .read()

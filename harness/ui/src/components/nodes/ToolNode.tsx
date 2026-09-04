@@ -3,12 +3,7 @@ import { Dynamic } from "solid-js/web";
 import { toolCard } from "../../lib/registry";
 import type { NodeProps } from "../../lib/registry";
 
-/**
- * Cầu nối giữa hai sổ đăng ký: node `tool` tra tiếp sang sổ thẻ tool theo **tên tool**.
- *
- * Tách hai tầng như vậy để `Transcript` không bao giờ phải biết tool nào tồn tại — nó
- * chỉ biết "có một node kind là tool". Tầng thứ hai mới là nơi tên tool có nghĩa.
- */
+/** Bridge between the two registries, so `Transcript` never needs to know which tools exist. */
 export function ToolNode(props: NodeProps<"tool">) {
   const card = () => toolCard(props.node.call.name);
   return (

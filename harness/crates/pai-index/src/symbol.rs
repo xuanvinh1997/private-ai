@@ -1,4 +1,4 @@
-//! Từ vựng của chỉ mục: một ký hiệu, và bốn loại ký hiệu.
+//! The index vocabulary: a symbol, and four symbol kinds.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -44,28 +44,23 @@ impl SymbolKind {
     }
 }
 
-/// Một ký hiệu đã trích.
-///
-/// `path` là đường **tuyệt đối đã phân giải**, giống hệt thứ `read` nhận vào. Lưu đường
-/// tương đối thì rẻ hơn vài chục byte và đắt hơn một lớp ghép chuỗi ở mọi chỗ đọc; và
-/// mô hình sẽ chép thẳng đường dẫn này sang lần gọi `read` tiếp theo.
+/// An extracted symbol; `path` is absolute and resolved, exactly what `read` takes and what the model copies on.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Symbol {
     pub name: String,
     pub kind: SymbolKind,
     pub path: String,
-    /// Đánh số từ 1, để khớp với cái người ta thấy trong trình soạn thảo.
+    /// 1-based, to match what the editor shows.
     pub start_line: u32,
     pub end_line: u32,
-    /// Tên ký hiệu bao ngoài, nếu có. Chỉ một tầng — xem [`Symbol::qualified`].
+    /// The enclosing symbol's name, if any. One level only — see [`Symbol::qualified`].
     pub parent: Option<String>,
-    /// Dòng khai báo, đã cắt. Đây là thứ để mô hình quyết định có đáng `read` hay không.
+    /// The truncated declaration line; what the model uses to decide whether a `read` is worth it.
     pub signature: String,
 }
 
 impl Symbol {
-    /// `Foo::bar` thay vì `bar`. Chỉ ghép một tầng cha, vì cha của cha đã là thông tin mà
-    /// người đọc lấy được từ đường dẫn tệp.
+    /// `Foo::bar` rather than `bar`; one parent level only, since the grandparent is already in the file path.
     pub fn qualified(&self) -> String {
         match &self.parent {
             Some(parent) => format!("{parent}::{}", self.name),

@@ -1,9 +1,5 @@
-//! Seam lưu bền, và seam đặt tiêu đề.
-//!
-//! Theo đúng khuôn của `pai-core`: khoá là một marker type không khởi tạo được, giá trị
-//! là một trait object. Consumer viết `ctx.require::<Sessions>()` và không bao giờ nhắc
-//! tên bản cài đặt — đổi SQLite sang JSONL hay sang một kho từ xa là đổi một dòng cắm
-//! provider, không phải sửa call site.
+//! The persistence seam and the titling seam, following `pai-core`'s pattern: an uninhabited marker
+//! key plus a trait object, so swapping SQLite for JSONL or a remote store changes one provider line.
 
 use async_trait::async_trait;
 use pai_core::ServiceKey;
@@ -15,7 +11,7 @@ use crate::error::Result;
 use crate::event::{SESSION_FORMAT_VERSION, Seq, SessionEventEnvelope};
 use crate::log::SessionLog;
 
-/// Danh tính công khai của một phiên. UUID v7 để sắp theo thời gian tạo.
+/// A session's public identity; UUID v7 so ids sort by creation time.
 pub type SessionId = String;
 
 pub fn new_session_id() -> SessionId {
@@ -43,8 +39,7 @@ impl Origin {
     }
 }
 
-/// Metadata của phiên. Tách khỏi sổ có chủ ý: sổ chỉ-ghi-thêm không có chỗ cho những
-/// trường đổi được như tiêu đề.
+/// Session metadata, deliberately outside the log: an append-only log has no room for mutable fields like the title.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct SessionHeader {
     pub id: SessionId,
@@ -52,18 +47,17 @@ pub struct SessionHeader {
     pub created_at: i64,
     pub updated_at: i64,
     pub title: Option<String>,
-    /// Tuyệt đối, đã canonicalize. `None` = phiên không gắn thư mục nào.
+    /// Absolute and canonicalized. `None` means the session is not bound to a directory.
     pub cwd: Option<String>,
     pub parent_session: Option<SessionId>,
-    /// Bao nhiêu sự kiện đầu là kế thừa từ phiên cha. Ranh giới fork gốc, bền vững —
-    /// khác với "đã phát lại bao nhiêu trong vòng đời này", vốn là chuyện lúc chạy.
+    /// How many leading events were inherited from the parent: the durable fork boundary, not a runtime replay count.
     pub seed_length: Option<u64>,
     pub origin: Option<Origin>,
     pub delegation_depth: Option<u32>,
     pub agent_preset: Option<String>,
 }
 
-/// Yêu cầu tạo phiên. `id` để trống thì kho tự sinh.
+/// Session creation request; an empty `id` lets the store generate one.
 #[derive(Clone, Debug, Default)]
 pub struct NewSession {
     pub id: Option<SessionId>,
@@ -88,49 +82,36 @@ impl NewSession {
     }
 }
 
-/// Kho phiên.
-///
-/// `append` nhận **một lô**, không phải một sự kiện. Mảnh stream đến rất dày, và một
-/// transaction cho mỗi mảnh là cách chắc chắn nhất để biến ổ đĩa thành nút cổ chai.
+/// The session store. `append` takes a batch, not one event: chunks arrive densely and a transaction per chunk makes the disk the bottleneck.
 #[async_trait]
 pub trait SessionStore: Send + Sync + 'static {
     async fn create(&self, spec: NewSession) -> Result<SessionHeader>;
 
-    /// Mới nhất trước.
+    /// Newest first.
     async fn list(&self, limit: Option<u32>) -> Result<Vec<SessionHeader>>;
 
     async fn header(&self, id: &str) -> Result<SessionHeader>;
 
-    /// Lô phải bắt đầu đúng ở `last_seq + 1` của phiên. Kho từ chối nếu không —
-    /// đây là chốt chặn cuối cho bất biến "seq liền mạch" khi có hai tiến trình cùng ghi.
+    /// The batch must start exactly at the session's `last_seq + 1`; this is the last defence of the gapless-seq invariant.
     async fn append(&self, id: &str, events: Vec<SessionEventEnvelope>) -> Result<()>;
 
-    /// Đọc lại từ đầu, theo thứ tự seq.
+    /// Read everything back in seq order.
     async fn load(&self, id: &str) -> Result<Vec<SessionEventEnvelope>>;
 
-    /// Số hàng thật sự nằm trong bảng — khác số sự kiện, vì nhiều mảnh stream chung một
-    /// hàng. Dùng để đo, và để bài kiểm chứng gói mảnh có cái mà khẳng định.
+    /// Actual rows in the table, which differs from the event count because chunks share rows; used for metrics and tests.
     async fn row_count(&self, id: &str) -> Result<u64>;
 
     async fn set_title(&self, id: &str, title: &str) -> Result<()>;
 
-    /// Câu cuối cùng đã nói trong mỗi phiên, để làm dòng phụ trong danh sách.
-    ///
-    /// Nhận **cả lô** chứ không từng phiên một: danh sách phiên hỏi cho tất cả cùng lúc,
-    /// và một vòng lặp gọi hàm async cho từng phiên là một vòng lặp giành khoá kho đúng
-    /// bằng số phiên. Phiên chưa nói gì thì vắng mặt trong kết quả — không có dòng phụ
-    /// vẫn đọc được, dòng phụ bịa thì không.
+    /// Last line said in each session, for list subtitles; batched because a per-session async loop would
+    /// contend on the store lock once per session. Sessions with nothing said are simply absent.
     async fn previews(&self, ids: &[String]) -> Result<HashMap<String, String>>;
 
-    /// Xoá hẳn một phiên và toàn bộ sự kiện của nó.
-    ///
-    /// Đây **không** phá bất biến chỉ-ghi-thêm: bất biến đó nói về việc sửa lịch sử bên
-    /// trong một phiên, còn đây là người dùng vứt cả phiên đi. Hai chuyện khác nhau, và
-    /// gộp chúng lại nghĩa là người dùng không bao giờ dọn được thứ họ không muốn giữ.
+    /// Delete a session and all its events; append-only governs editing history within a session, not discarding one.
     async fn delete(&self, id: &str) -> Result<()>;
 }
 
-/// Seam kho phiên.
+/// The session-store seam.
 pub enum Sessions {}
 
 impl ServiceKey for Sessions {
@@ -138,13 +119,10 @@ impl ServiceKey for Sessions {
     const NAME: &'static str = "sessions";
 }
 
-/// Seam đặt tiêu đề phiên.
-///
-/// Tách khỏi kho vì nó là một chính sách, không phải một cách lưu: một bản cài đặt sẽ gọi
-/// mô hình, một bản khác cắt câu đầu, một bản khác nữa để người dùng tự gõ.
+/// The session-titling seam, separate from the store because titling is policy: ask the model, take the first line, or let the user type it.
 #[async_trait]
 pub trait SessionTitler: Send + Sync + 'static {
-    /// `None` = chưa đủ căn cứ để đặt tên. Đó là một câu trả lời hợp lệ, không phải lỗi.
+    /// `None` means not enough to go on yet -- a valid answer, not an error.
     async fn title(&self, log: &SessionLog) -> Result<Option<String>>;
 }
 
@@ -155,10 +133,7 @@ impl ServiceKey for SessionTitle {
     const NAME: &'static str = "session.title";
 }
 
-/// Provider duy nhất của v0.1: chưa đặt tên gì cả.
-///
-/// Có mặt để seam tồn tại từ đầu. Consumer viết đúng một lần với `Option<String>`, và bản
-/// gọi mô hình sau này cắm vào mà không ai phải sửa gì.
+/// v0.1's only provider: no titling at all, present so the seam exists and consumers code against `Option<String>` once.
 pub struct NoTitle;
 
 #[async_trait]
@@ -168,6 +143,6 @@ impl SessionTitler for NoTitle {
     }
 }
 
-/// Ranh giới fork: `seq` **bao gồm cả nó**.
+/// Fork boundary; the `seq` is inclusive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Boundary(pub Seq);

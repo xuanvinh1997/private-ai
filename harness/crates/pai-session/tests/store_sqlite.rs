@@ -1,4 +1,4 @@
-//! Kho SQLite: vòng đời phiên, gói mảnh stream, fork, và những luật đọc.
+//! The SQLite store: session lifecycle, chunk packing, forking, and the read rules.
 
 use std::sync::Arc;
 
@@ -31,7 +31,7 @@ fn assistant(text: &str) -> SessionEvent {
     })
 }
 
-/// Một lượt trọn vẹn, y như vòng lặp agent sẽ ghi.
+/// One complete turn, exactly as the agent loop would write it.
 async fn mot_luot(session: &mut pai_session::Session, turn: u64, hoi: &str, dap: &str) {
     session
         .append(SessionEvent::TurnStart(TurnStart { turn }))
@@ -124,10 +124,10 @@ async fn nhieu_manh_stream_di_chung_mot_hang() {
 
     let rows = sessions.store().row_count(&id).await.expect("đếm hàng");
     assert_eq!(session.log().len(), 303);
-    // 300 mảnh gói vào ba hàng (cửa sổ chờ là 100), cộng ba sự kiện thường.
+    // 300 chunks pack into three rows (the pending window is 100), plus three ordinary events.
     assert!(rows <= 8, "300 mảnh phải gói lại còn vài hàng, gặp {rows}");
 
-    // Mở gói phải dựng lại đúng từng seq và từng mốc thời gian.
+    // Unpacking must reproduce every seq and every timestamp exactly.
     let reopened = sessions.open(&id).await.expect("mở lại");
     assert_eq!(reopened.log().len(), 303);
     for (before, after) in session.log().events().iter().zip(reopened.log().events()) {
@@ -171,7 +171,7 @@ async fn fork_cam_cat_giua_mot_luot_dang_mo() {
     let sessions = service();
     let mut session = sessions.create(NewSession::default()).await.expect("tạo");
     mot_luot(&mut session, 0, "một", "hai").await;
-    // Lượt thứ hai để dở: có turn/start, chưa có turn/end.
+    // The second turn is left open: turn/start with no turn/end.
     session
         .append(SessionEvent::TurnStart(TurnStart { turn: 1 }))
         .await
@@ -187,7 +187,7 @@ async fn fork_cam_cat_giua_mot_luot_dang_mo() {
         Err(SessionError::OpenTurn { turn: 1, .. }) => {}
         other => panic!("phải là OpenTurn, gặp {:?}", other.err()),
     }
-    // Không tự làm tròn về `turn/end` gần nhất: chỉ có một phiên duy nhất tồn tại.
+    // No rounding back to the nearest `turn/end`: only one session ever exists.
     assert_eq!(sessions.list(None).await.expect("liệt kê").len(), 1);
 }
 
@@ -222,7 +222,7 @@ async fn fork_tai_ranh_gioi_dong_thi_ke_thua_hat_giong() {
         "kế thừa thư mục"
     );
     assert_eq!(child.log().len() as u64, cuoi_luot_dau + 1);
-    // Hạt giống giữ nguyên seq, nên sự kiện mới nối tiếp chứ không đánh số lại.
+    // The seed keeps its seqs, so new events continue rather than being renumbered.
     assert_eq!(child.log().next_seq(), cuoi_luot_dau + 1);
     assert_eq!(
         child.derive_messages(),
@@ -261,7 +261,7 @@ async fn luot_mo_coi_duoc_dong_lai_chu_khong_bi_cat_cut() {
     session.flush().await.expect("ghi");
     let truoc = session.log().len();
 
-    // Một tiến trình khác mở lại sau sự cố.
+    // Another process reopens after the crash.
     let healed = sessions.open(session.id()).await.expect("mở lại");
     assert_eq!(healed.log().len(), truoc + 1, "ghi thêm, không cắt cụt");
     match &healed.log().events()[truoc].event {
@@ -271,7 +271,7 @@ async fn luot_mo_coi_duoc_dong_lai_chu_khong_bi_cat_cut() {
         }
         other => panic!("phải là turn/end interrupted, gặp {other:?}"),
     }
-    // Đóng rồi thì fork ở cuối sổ hợp lệ trở lại.
+    // Once closed, forking at the end of the log is valid again.
     sessions
         .fork(healed.id(), None)
         .await
@@ -285,7 +285,7 @@ async fn loai_su_kien_la_khong_ignorable_thi_tu_choi_ca_so() {
     let session = sessions.create(NewSession::default()).await.expect("tạo");
     let id = session.id().to_owned();
 
-    // Giả lập một bản mới hơn đã ghi vào sổ này.
+    // Simulate a newer build having written into this log.
     let tu_tuong_lai = pai_session::SessionEventEnvelope {
         seq: 0,
         time: 0,
@@ -428,8 +428,7 @@ async fn xoa_phien_thi_su_kien_cua_no_di_theo() {
         service.open(&id).await.is_err(),
         "phiên đã xoá mà vẫn mở được"
     );
-    // Sự kiện phải đi theo. Đây là bài kiểm chứng cho `ON DELETE CASCADE` trong schema,
-    // không phải cho một câu DELETE viết tay — nếu cascade bị bỏ, chỗ này đỏ.
+    // Events must follow: this tests the schema's `ON DELETE CASCADE`, so dropping the cascade turns this red.
     assert!(
         service
             .store()
@@ -439,8 +438,7 @@ async fn xoa_phien_thi_su_kien_cua_no_di_theo() {
             .unwrap_or(true),
         "sự kiện còn sót lại sau khi phiên đã bị xoá"
     );
-    // Xoá một phiên không tồn tại là lỗi có tên, không phải một lần bỏ qua im lặng: nút
-    // Xoá bấm hai lần phải nói ra, chứ không để người dùng tưởng lần đầu đã hỏng.
+    // Deleting a missing session is a named error, not a silent no-op, so a double-clicked Delete says so.
     assert!(service.delete(&id).await.is_err());
 }
 
@@ -502,8 +500,7 @@ async fn dong_phu_lay_cau_cuoi_cung_va_bo_qua_phien_chua_noi_gi() {
         previews.get(&talked).map(String::as_str),
         Some("câu cuối cùng")
     );
-    // Phiên chưa nói gì **vắng mặt**, không phải có một chuỗi rỗng: không có dòng phụ vẫn
-    // đọc được, một hàng hai dòng mà dòng dưới trống thì không.
+    // A session with nothing said is absent rather than an empty string: no subtitle reads fine, a blank one does not.
     assert!(!previews.contains_key(&silent));
 }
 
@@ -530,8 +527,7 @@ async fn dong_phu_cat_cau_dai_va_lam_phang_xuong_dong() {
         .await
         .expect("lấy được");
     let line = previews.get(&id).expect("có dòng phụ");
-    // Cắt ở kho chứ không ở giao diện: một câu trả lời dài đi qua wire cho mỗi hàng là
-    // băng thông trả cho thứ bị cắt ngay khi vẽ.
+    // Truncate in the store, not the UI: a long answer per row is bandwidth spent on text cut at render time.
     assert!(
         line.chars().count() <= 161,
         "dài {} ký tự",

@@ -1,8 +1,6 @@
-//! Ngân sách token và vòng lấy lại phần tràn.
-//!
-//! Bài quan trọng nhất ở đây là bài cuối: nó đi đúng con đường mô hình đi — đọc mã vé
-//! **từ chính văn bản kết quả**, rồi gọi `spill_read` bằng mã đó. Một lời nhắn "toàn văn
-//! vẫn còn" mà không ai đi lại được đường đó thì chỉ là một câu để tin rồi đi tiếp.
+//! Token budgets and the spill round trip.
+//! The last test walks the model's own path: read the ticket id out of the result text, then
+//! call `spill_read` with it, since a promise nobody can follow is only a promise.
 
 use std::sync::Arc;
 
@@ -14,7 +12,7 @@ use pai_tools::{
 };
 use serde_json::json;
 
-/// Một tool nhả ra rất nhiều dòng đánh số — đủ để nhận ra dòng nào bị bỏ.
+/// A tool emitting many numbered lines, enough to tell which ones were dropped.
 struct Numbered;
 
 #[async_trait]
@@ -38,8 +36,7 @@ impl Tool for Numbered {
     }
 }
 
-/// Khoá: **byte chia bốn, không phải số dòng.** Hai chuỗi cùng số dòng mà khác kích thước
-/// phải cho hai con số khác nhau; đó chính là chỗ trần theo dòng đo nhầm.
+/// Locks bytes-over-four rather than line counts: two strings of equal line count but different size must differ.
 #[test]
 fn ngan_sach_dem_byte_chu_khong_dem_dong() {
     let thua: String = (0..100).map(|_| "x\n".to_string()).collect();
@@ -51,8 +48,7 @@ fn ngan_sach_dem_byte_chu_khong_dem_dong() {
     );
 }
 
-/// Khoá: **vòng lấy lại khép kín.** Đường ống gấp kết quả, nói ra mã vé trong nội dung,
-/// và `spill_read` gọi bằng đúng mã đó trả về phần giữa đã bị bỏ.
+/// Locks the closed round trip: the pipeline folds, names the ticket in the content, and `spill_read` returns the middle.
 #[tokio::test]
 async fn ma_ve_in_ra_trong_noi_dung_goi_lai_duoc_bang_spill_read() {
     let ctx = Context::root();
@@ -73,15 +69,13 @@ async fn ma_ve_in_ra_trong_noi_dung_goi_lai_duoc_bang_spill_read() {
         "phần giữa lẽ ra phải bị gấp đi"
     );
 
-    // Đọc mã vé ra khỏi **văn bản mô hình đọc**, không phải khỏi `meta` — `meta` không đi
-    // ra tới mô hình, nên một mã chỉ nằm ở đó là một mã mô hình không gõ lại được.
+    // Read the id from the text the model reads, not from `meta`, which never reaches the model.
     let marker = "`spill_read` với `id: \"";
     let start = cut.content.find(marker).expect("nội dung phải in ra mã vé") + marker.len();
     let id = &cut.content[start..start + cut.content[start..].find('"').expect("mã có dấu đóng")];
 
     let back = pipeline
-        // `limit` nhỏ vì chính `spill_read` cũng chịu ngân sách — đọc lại nguyên khối
-        // chỉ chuyển chỗ tràn chứ không giải quyết gì.
+        // A small `limit`, since `spill_read` is budgeted too and reading it whole just moves the overflow.
         .execute(
             "c2",
             "spill_read",
@@ -96,7 +90,7 @@ async fn ma_ve_in_ra_trong_noi_dung_goi_lai_duoc_bang_spill_read() {
     );
 }
 
-/// Khoá: **vé không còn giá trị là một câu trả lời đọc được, không phải một lỗi câm.**
+/// Locks that an expired ticket is a readable answer, not a silent error.
 #[tokio::test]
 async fn ve_khong_ton_tai_thi_noi_ro_phai_lam_gi() {
     let ctx = Context::root();

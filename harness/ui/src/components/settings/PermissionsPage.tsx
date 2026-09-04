@@ -1,80 +1,59 @@
 import { createResource, For, Show } from "solid-js";
 import { inTauri } from "../../lib/agent";
+import { S, t, tn, TRich, type Msg } from "../../lib/i18n";
 import { defaultToolScope, setDefaultToolScope } from "../../lib/prefs";
 import type { ToolScope } from "../../lib/protocol";
 import { Disclosure } from "../primitives";
 import { Banner, Row, RowGroup, SectionHead, Select } from "./FormKit";
 import { describeHarness, docCayPlugin, sandboxStatus } from "./harness";
 
-/**
- * Trang Quyền.
- *
- * Hai mục, và ranh giới giữa chúng là ranh giới quan trọng nhất của cả trang: **mục trên
- * đổi được, mục dưới chỉ đọc**. Mức phạm vi là quyết định của người dùng; vòng giam là sự
- * thật về máy đang chạy, và một sự thật về máy mà giao diện cho bấm vào là một lời hứa
- * giao diện không giữ được.
- *
- * Câu mô tả của mức `Chạy lệnh` nói thẳng hậu quả thay vì nói "cấp thêm quyền". Nó có tác
- * dụng đúng một lần — lúc người ta đọc trước khi đổi — và một câu tử tế chung chung ở
- * đúng chỗ đó là cách chắc chắn nhất để người ta bấm qua mà không nhớ mình vừa bật gì.
- */
+/** The Permissions page, in two sections: the upper one is editable because scope is the user's decision, the lower is read-only because confinement is a fact about the machine. */
 
-const NHAN: Record<ToolScope, string> = {
-  read: "Chỉ đọc",
-  write: "Đọc và ghi",
-  shell: "Đọc, ghi và chạy lệnh",
+const NHAN: Record<ToolScope, Msg> = {
+  read: S.settings.perms.scopeRead,
+  write: S.settings.perms.scopeWrite,
+  shell: S.settings.perms.scopeShell,
 };
 
-/**
- * Hậu quả của từng mức, viết theo thứ tự *cái gì mở ra* rồi *cái gì vẫn đóng*.
- *
- * Nói cả phần vẫn đóng là cố ý: một câu chỉ liệt kê quyền mới mở đọc ra như một lời cảnh
- * báo, và người dùng học rất nhanh cách bỏ qua lời cảnh báo. Nói rõ ranh giới thì họ chọn
- * được thay vì chỉ đồng ý.
- */
-const HAU_QUA: Record<ToolScope, string> = {
-  read: "Đọc được tệp và tìm trong dự án, chỉ thế.",
-  write: "Đọc và sửa được tệp trong thư mục dự án.",
-  shell: "Chạy được lệnh trên máy này, dưới quyền của bạn.",
+/** What each scope means, saying what opens and then what stays closed, so it reads as a choice. */
+const HAU_QUA: Record<ToolScope, Msg> = {
+  read: S.settings.perms.scopeReadDesc,
+  write: S.settings.perms.scopeWriteDesc,
+  shell: S.settings.perms.scopeShellDesc,
 };
 
-/** Cùng ba câu ấy, bản đầy đủ — nằm trong `InfoDot` chứ không trải ra trang. */
-const HAU_QUA_DAI: Record<ToolScope, string> = {
-  read: "Trợ lý đọc được tệp và tìm trong dự án, và chỉ thế. Nó không sửa được tệp nào và không chạy được lệnh nào.",
-  write:
-    "Trợ lý đọc và sửa được tệp trong thư mục dự án. Nó vẫn không chạy được lệnh nào trên máy này.",
-  shell:
-    "Trợ lý được thi hành lệnh trên máy này — build, cài gói, xoá tệp — và mỗi lệnh chạy dưới đúng tài khoản của bạn, với đúng quyền của bạn.",
+/** The same three sentences in full, kept in an `InfoDot` rather than spread on the page. */
+const HAU_QUA_DAI: Record<ToolScope, Msg> = {
+  read: S.settings.perms.scopeReadMore,
+  write: S.settings.perms.scopeWriteMore,
+  shell: S.settings.perms.scopeShellMore,
 };
 
-/** Câu trả lời cho "hàng `sandbox` có đang cắm không", kèm màu để đọc lướt. */
-type TrangThai = { text: string; tone: "faint" | "ok" | "warn" | "danger" };
+/** Whether the `sandbox` row is mounted, with a colour so it can be skimmed. */
+type TrangThai = { text: Msg; tone: "faint" | "ok" | "warn" | "danger" };
 
-/** Nhãn mức giam, và nó nói gì. Ba mức, ba câu khác nhau — gộp lại là mất đúng thông tin. */
-const MUC_GIAM: Record<string, { nhan: string; tone: "ok" | "warn" | "danger" }> = {
-  full: { nhan: "Đầy đủ", tone: "ok" },
-  partial: { nhan: "Một phần", tone: "warn" },
-  none: { nhan: "Không giam", tone: "danger" },
+/** Confinement level labels: three levels, three different sentences, never merged. */
+const MUC_GIAM: Record<string, { nhan: Msg; tone: "ok" | "warn" | "danger" }> = {
+  full: { nhan: S.settings.perms.levelFull, tone: "ok" },
+  partial: { nhan: S.settings.perms.levelPartial, tone: "warn" },
+  none: { nhan: S.settings.perms.levelNone, tone: "danger" },
 };
 
 export default function PermissionsPage() {
-  // Hỏi lõi mức giam thật. `null` nghĩa là **không hỏi được**, khác hẳn `none` nghĩa là
-  // **không có vòng giam** — câu thứ hai là một khẳng định về an toàn, câu thứ nhất thì
-  // không, và hiện nhầm câu này thành câu kia là nói dối theo hướng nguy hiểm.
+  // Ask the core for the real level; `null` means unanswerable, which is not the same as `none`.
   const [giam] = createResource(sandboxStatus);
 
-  // Cây plugin, hỏi để trả lời **một** câu: vòng giam có đang được cắm không. Hỏi mỗi lần
-  // mở trang chứ không nhớ lại, vì cây được dựng lại theo dự án đang mở.
+  // The plugin tree answers one question, and is re-asked per visit since it follows the project.
   const [cay] = createResource(async () => docCayPlugin(await describeHarness()));
 
   const sandbox = (): TrangThai => {
-    if (!inTauri()) return { text: "không có lõi ở bản demo", tone: "faint" };
-    if (cay.loading) return { text: "đang hỏi…", tone: "faint" };
-    if (cay.error !== undefined) return { text: "không hỏi được lõi", tone: "danger" };
+    if (!inTauri()) return { text: S.settings.perms.pluggedDemo, tone: "faint" };
+    if (cay.loading) return { text: S.settings.perms.pluggedAsking, tone: "faint" };
+    if (cay.error !== undefined) return { text: S.settings.perms.pluggedError, tone: "danger" };
     const row = cay()?.find((item) => item.id === "sandbox");
-    if (row === undefined) return { text: "không có trong cây", tone: "warn" };
-    if (row.disabled) return { text: "đang bị tắt", tone: "warn" };
-    return { text: "có", tone: "ok" };
+    if (row === undefined) return { text: S.settings.perms.pluggedMissing, tone: "warn" };
+    if (row.disabled) return { text: S.settings.perms.pluggedOff, tone: "warn" };
+    return { text: S.settings.perms.pluggedYes, tone: "ok" };
   };
 
   return (
@@ -82,23 +61,23 @@ export default function PermissionsPage() {
       <section class="flex flex-col gap-md">
         <SectionHead
           icon="hand"
-          title="Quyền mặc định"
-          desc="Mức mà một lượt mới bắt đầu ở đó."
+          title={t(S.settings.perms.defaultTitle)}
+          desc={t(S.settings.perms.defaultDesc)}
         />
         <RowGroup>
           <Row
             icon="shield"
-            label="Phạm vi tool cho lượt mới"
-            desc={HAU_QUA[defaultToolScope()]}
-            more={HAU_QUA_DAI[defaultToolScope()]}
+            label={t(S.settings.perms.scopeRow)}
+            desc={t(HAU_QUA[defaultToolScope()])}
+            more={t(HAU_QUA_DAI[defaultToolScope()])}
             control={() => (
               <Select
-                label="Phạm vi tool cho lượt mới"
+                label={t(S.settings.perms.scopeSelect)}
                 value={defaultToolScope()}
                 onPick={(value) => setDefaultToolScope(value as ToolScope)}
                 options={(["read", "write", "shell"] as ToolScope[]).map((scope) => ({
                   id: scope,
-                  label: NHAN[scope],
+                  label: t(NHAN[scope]),
                 }))}
               />
             )}
@@ -107,20 +86,22 @@ export default function PermissionsPage() {
                 <Banner
                   tone="warn"
                   icon="warn"
-                  title="Mức này mở lệnh shell ngay từ lượt đầu"
-                  more="Vòng giam chỉ chặn phần ghi ra ngoài thư mục dự án. Nó không chặn mạng và không chặn việc đọc: một lệnh vẫn tải được mọi thứ về, vẫn đọc được khoá nằm trong ~/.ssh, và vẫn gửi được mọi thứ đi. Thứ duy nhất còn đứng chắn là hộp thoại duyệt — nó hỏi trước mỗi lệnh, và nó nói luôn vòng giam trên máy này đang ở mức nào."
+                  title={t(S.settings.perms.shellWarnTitle)}
+                  more={t(S.settings.perms.shellWarnMore)}
                 >
-                  Vòng giam <b>không chặn mạng</b> và không chặn đọc{" "}
-                  <code class="font-mono">~/.ssh</code>.
+                  {/* One whole sentence, never assembled from fragments: clause order differs per language. */}
+                  <b>
+                    <TRich msg={S.settings.perms.shellWarnBody} />
+                  </b>
                 </Banner>
               </Show>
             )}
           />
           <Row
             icon="pencil"
-            label="Bộ chọn trong ô soạn tin"
-            desc="Đổi ở đó chỉ áp cho lượt đang mở."
-            more="Vẫn là của từng lượt. Thiết lập ở trên chỉ quyết định lượt mới mở ra ở mức nào; đổi trong ô soạn tin không ghi đè lại nó."
+            label={t(S.settings.perms.composerPicker)}
+            desc={t(S.settings.perms.composerPickerDesc)}
+            more={t(S.settings.perms.composerPickerMore)}
           />
         </RowGroup>
       </section>
@@ -128,21 +109,23 @@ export default function PermissionsPage() {
       <section class="flex flex-col gap-md">
         <SectionHead
           icon="shield"
-          title="Vòng giam tiến trình"
-          desc="Chỉ đọc: đây là sự thật về máy đang chạy."
-          more="Chỉ đọc. Vòng giam là sự thật về máy đang chạy, không phải một tuỳ chọn."
+          title={t(S.settings.perms.sandboxTitle)}
+          desc={t(S.settings.perms.sandboxDesc)}
+          more={t(S.settings.perms.sandboxMore)}
         />
 
         <RowGroup>
           <Row
             icon="monitor"
-            label="Mức giam trên máy này"
-            desc={giam()?.reason ?? "Kernel thi hành đúng cái đã khai."}
-            more="Kernel thi hành đúng cái đã khai: ghi ra ngoài vùng cho phép là thất bại, không phải là “thường thì thất bại”."
+            label={t(S.settings.perms.levelRow)}
+            desc={giam()?.reason ?? t(S.settings.perms.levelDesc)}
+            more={t(S.settings.perms.levelMore)}
             control={() => (
               <Show
                 when={giam()}
-                fallback={<span class="text-2xs text-faint">chưa hỏi được lõi</span>}
+                fallback={
+                  <span class="text-2xs text-faint">{t(S.settings.perms.levelUnknown)}</span>
+                }
               >
                 {(muc) => (
                   <span
@@ -153,7 +136,10 @@ export default function PermissionsPage() {
                       "text-danger": MUC_GIAM[muc().mode]?.tone === "danger",
                     }}
                   >
-                    {MUC_GIAM[muc().mode]?.nhan ?? muc().mode}
+                    {(() => {
+                      const muc_giam = MUC_GIAM[muc().mode];
+                      return muc_giam === undefined ? muc().mode : t(muc_giam.nhan);
+                    })()}
                   </span>
                 )}
               </Show>
@@ -162,9 +148,9 @@ export default function PermissionsPage() {
           <Show when={giam()?.writableRoots.length}>
             <Row
               icon="folder"
-              label="Thư mục ghi được"
-              desc="Lệnh chỉ ghi được vào những thư mục này."
-              more="Lệnh chỉ ghi được vào đây. Mọi chỗ khác trên đĩa là chỉ đọc — nhưng đọc thì không bị chặn ở đâu cả."
+              label={t(S.settings.perms.rootsRow)}
+              desc={t(S.settings.perms.rootsDesc)}
+              more={t(S.settings.perms.rootsMore)}
               below={() => (
                 <ul class="m-0 flex list-none flex-col gap-3xs p-0 pt-2xs">
                   <For each={giam()?.writableRoots ?? []}>
@@ -178,15 +164,15 @@ export default function PermissionsPage() {
           </Show>
           <Row
             icon="hand"
-            label="Vòng giam chặn gì"
-            desc="Chỉ chặn ghi tệp ngoài thư mục dự án."
-            more="Chỉ hiệu ứng ghi lên tệp, và chỉ phần nằm ngoài thư mục dự án. Không chế độ nào chặn mạng, và cả ba chế độ đều cho đọc toàn máy."
+            label={t(S.settings.perms.blocksRow)}
+            desc={t(S.settings.perms.blocksDesc)}
+            more={t(S.settings.perms.blocksMore)}
           />
           <Row
             icon="plug"
-            label="Vòng giam đang được cắm"
-            desc="Hàng `sandbox` có trong cây plugin hay không."
-            more="Hàng `sandbox` có trong cây plugin đang chạy hay không. Có mặt vẫn chưa chắc giam được: nơi chưa hỗ trợ thì nó cắm rồi tự khai là không giam."
+            label={t(S.settings.perms.pluggedRow)}
+            desc={t(S.settings.perms.pluggedDesc)}
+            more={t(S.settings.perms.pluggedMore)}
             control={() => (
               <span
                 class="text-2xs"
@@ -197,17 +183,22 @@ export default function PermissionsPage() {
                   "text-danger": sandbox().tone === "danger",
                 }}
               >
-                {sandbox().text}
+                {t(sandbox().text)}
               </span>
             )}
           />
         </RowGroup>
 
         <Show when={(cay()?.length ?? 0) > 0}>
-          {/* Bản in nguyên văn của lõi, không diễn giải lại. Đây là câu trả lời cho "bản
-              đang chạy thật sự gồm những gì" — câu hỏi đầu tiên khi có gì đó sai — và một
-              bản tóm tắt gọn gàng ở chỗ này sẽ giấu mất đúng cái hàng đang gây chuyện. */}
-          <Disclosure label="Cây plugin đang chạy" hint={`${cay()?.length ?? 0} hàng`}>
+          {/* The core's dump verbatim: a tidy summary would hide the very row causing trouble. */}
+          <Disclosure
+            label={t(S.settings.perms.treeLabel)}
+            hint={tn(
+              cay()?.length ?? 0,
+              S.settings.perms.treeRowOne,
+              S.settings.perms.treeRowMany,
+            )}
+          >
             <ul class="m-0 flex list-none flex-col gap-2xs rounded-card border border-line bg-surface px-(--card-pad-x) py-sm">
               <For each={cay()}>
                 {(row) => (
@@ -215,7 +206,7 @@ export default function PermissionsPage() {
                     <span class="text-ink">{row.id}</span>
                     <span class="text-muted">{row.plugin}</span>
                     <Show when={row.disabled}>
-                      <span class="text-warn">[tắt]</span>
+                      <span class="text-warn">{t(S.settings.perms.treeOff)}</span>
                     </Show>
                     <span class="min-w-0 text-faint">{row.origin}</span>
                   </li>

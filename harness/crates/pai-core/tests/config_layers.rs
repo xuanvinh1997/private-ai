@@ -1,8 +1,5 @@
-//! Composing config layers.
-//!
-//! The plugin tree decides what the application consists of, so a silent failure here
-//! shows up as "that feature disappeared" rather than as an error message. Which is why
-//! every operation that does not match is a named error, not a skipped step.
+//! Composing config layers. The plugin tree decides what the application consists of, so
+//! every operation that does not match must be a named error rather than a skipped step.
 
 use pai_core::{ConfigError, Layer, Patch, Row, compose};
 use serde_json::json;
@@ -45,11 +42,7 @@ fn disabling_does_not_delete_and_stays_visible_in_the_dump() {
 
     let composed = compose(&[base, user]).expect("composes");
     assert_eq!(composed.active().count(), 1);
-    // A missing row quietly comes back the day somebody reorders the layers; a disabled
-    // row is always visible.
-    //
-    // The `[tắt]` marker is deliberately Vietnamese: `settings/harness.ts` parses this
-    // exact string, so it is a wire contract rather than display text.
+    // A disabled row stays visible, and the marker below is a wire contract for settings/harness.ts.
     assert!(composed.dump().contains("shell: shell [tắt]"));
 }
 
@@ -78,8 +71,7 @@ fn inserting_a_duplicate_id_is_an_error_not_a_silent_overwrite() {
     let base = Layer::base("base", vec![row("fs", "fs")]);
     let other = Layer::base("other", vec![row("fs", "fs-other")]);
 
-    // Whoever wrote the layer almost certainly meant `replace`; swallowing this leaves them
-    // hunting all afternoon for why their config has no effect.
+    // The layer author almost certainly meant `replace`; swallowing this hides a dead config.
     let err = compose(&[base, other]).expect_err("must be an error");
     assert!(matches!(err, ConfigError::Duplicate { .. }), "{err}");
 }
@@ -90,8 +82,7 @@ fn targeting_a_row_that_does_not_exist_is_a_named_error() {
     let user = Layer::new("user", vec![Patch::Disable { id: "shel".into() }]);
 
     let err = compose(&[base, user]).expect_err("must be an error");
-    // The error has to name both the layer and the string that was typed — a one-character
-    // typo is ordinary, and "nothing happened" is the worst possible answer to it.
+    // The error must name both the layer and the string typed, so a one-character typo is findable.
     let text = err.to_string();
     assert!(text.contains("user") && text.contains("shel"), "{text}");
 }

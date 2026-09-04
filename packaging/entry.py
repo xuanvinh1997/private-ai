@@ -1,19 +1,6 @@
-"""The frozen application's entry point — one binary, three roles.
-
-A PyInstaller bundle contains exactly one executable, but Private AI is three programs:
-the desktop shell, the ingestion worker, and the MCP servers an external client may want
-to speak to over stdio. The console scripts in ``pyproject.toml`` cover that for a source
-install; inside an ``.app`` there is no ``bin/`` and no PATH, so the role is chosen from
-``argv`` instead and ``sys.executable`` — the bundle's own binary — is how one role starts
-another.
-
-The shell starts the worker itself. Reading a document is CPU-bound Python that holds the
-GIL for as long as the file takes, which is precisely why ``private_ai.worker.loop`` is a
-separate process; a bundled app that skipped it would freeze its own window on every
-upload. Losing the worker is not fatal, though: the upload dialog processes inline when
-nothing holds the claim, so a worker that fails to start costs responsiveness, not
-function, and must never stop the app from opening.
-"""
+"""The frozen application's entry point - one binary, three roles.
+A PyInstaller bundle has no `bin/` and no PATH, so the role comes from `argv` and
+`sys.executable` is how one role starts another. A missing worker costs speed, not function."""
 
 from __future__ import annotations
 
@@ -42,8 +29,7 @@ MCP_SERVERS = {
     "web": "rag_web",
 }
 
-# Long enough for the worker to finish the chunk it is on and drop its claim, short
-# enough that quitting the app never feels stuck.
+# Long enough for the worker to drop its claim, short enough that quitting never feels stuck.
 WORKER_STOP_TIMEOUT_SECONDS = 5.0
 
 
@@ -55,13 +41,7 @@ def _run_worker() -> int:
 
 
 def _run_asr(arguments: list[str]) -> int:
-    """``--asr status`` reports what the speech stack found, ``--asr setup`` builds it.
-
-    A packaged build ships the compiled runtime and downloads the weights from the models
-    screen, so neither should be needed. ``status`` stays because it is the one question
-    worth asking when someone reports that the microphone is grey, and it answers it
-    without a debugger.
-    """
+    """`--asr status` reports what the speech stack found, `--asr setup` builds it; `status` stays because it answers "why is the microphone grey" without a debugger."""
     from private_ai.asr import manager
 
     sys.argv = [sys.argv[0], *arguments]
@@ -94,7 +74,7 @@ def _start_worker() -> subprocess.Popen | None:
             start_new_session=True,
         )
     except OSError:
-        logger.exception("Không khởi động được tiến trình xử lý tài liệu")
+        logger.exception("Could not start the document worker process")
         return None
 
 
@@ -109,8 +89,7 @@ def _stop_worker(worker: subprocess.Popen | None) -> None:
 
 
 def main() -> int:
-    # Required before anything else on a frozen build: without it a child process would
-    # re-enter this function and start a second copy of the whole application.
+    # Required first on a frozen build, or a child re-enters this function and starts a second app.
     multiprocessing.freeze_support()
 
     argv = sys.argv[1:]

@@ -1,9 +1,6 @@
-//! Hỏng hóc của tầng provider.
-//!
-//! Gộp bốn nguồn về một kiểu vì phía trên chỉ có một việc để làm với chúng: hiện một câu
-//! tiếng Việt cho người dùng. Lỗi của tầng mô hình được giữ nguyên hình dạng ([`LlmError`]
-//! có `code`) thay vì bị bóp thành chuỗi: chỗ gọi cần phân biệt "chưa cấu hình gì" với
-//! "sai khoá", và **không được** phân biệt bằng cách so câu chữ.
+//! Provider-layer failures: four sources in one type, since callers only ever show one sentence to the
+//! user. [`LlmError`] keeps its shape and `code`, so "not configured" and "bad key" are told apart by
+//! code rather than by comparing message text.
 
 use pai_llm::LlmError;
 

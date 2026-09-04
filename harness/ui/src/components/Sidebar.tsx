@@ -1,5 +1,6 @@
 import { Key } from "@solid-primitives/keyed";
 import { createMemo, createSignal, For, Show, type JSX } from "solid-js";
+import { S, t, type Msg } from "../lib/i18n";
 import type { ProjectKind, SessionSummary } from "../lib/protocol";
 import { groupSessions, relativeTime } from "../lib/sessions";
 import { setTheme, theme, type ThemeChoice } from "../lib/theme";
@@ -8,39 +9,26 @@ import Icon, { type IconName } from "./Icon";
 import Menu from "./Menu";
 import { IconButton } from "./primitives";
 
-/**
- * Màn hình đang mở. Danh sách này ngắn là kết quả của một quyết định, không phải của việc
- * chưa làm xong: ứng dụng lấy ChatGPT và Codex làm khung, mà cả hai đều không có trình
- * duyệt mã nguồn hay terminal riêng — người dùng đã có editor của họ rồi.
- */
+/** The open screen. This list is short by decision, not omission: users already have their own editor. */
 export type TabId = "chat" | "diff" | "library" | "projects" | "settings";
 
-/**
- * Màn hình chỉ sống được **bên trong một dự án**, và **loại dự án nào thấy được nó**.
- *
- * Chúng không còn đứng trong nhóm điều hướng chung: cả hai chỉ có nghĩa khi có một thư mục
- * đang mở, nên chỗ đúng của chúng là *thụt vào dưới dự án đang mở* — đọc một lần là biết
- * chúng thuộc về ai. Đứng ngang hàng với "Phiên mới" thì chúng trông như hai màn hình toàn
- * cục lúc có lúc không, và cái "lúc không" ấy không giải thích được cho ai cả.
- *
- * Cắt mục **của loại kia** đi chứ không làm mờ nó: một hàng mờ nói rằng có thứ gì đó đang
- * bị khoá và người dùng phải tìm cách mở, trong khi sự thật là nó không áp dụng ở đây.
- */
-const PROJECT_TABS: { id: TabId; label: string; icon: IconName; kinds: ProjectKind[] }[] = [
-  { id: "diff", label: "Thay đổi", icon: "diff", kinds: ["code"] },
-  { id: "library", label: "Thư viện tài liệu", icon: "library", kinds: ["docs"] },
+/** Screens that exist only *inside a project*, and which project kind sees them; they are indented under the open
+ * project so they read as belonging to it, and the other kind's entry is removed rather than dimmed. */
+const PROJECT_TABS: { id: TabId; label: Msg; icon: IconName; kinds: ProjectKind[] }[] = [
+  { id: "diff", label: S.chat.sidebar.tabChanges, icon: "diff", kinds: ["code"] },
+  { id: "library", label: S.chat.sidebar.tabDocs, icon: "library", kinds: ["docs"] },
 ];
 
-/** Mục con của dự án đang mở. Không có dự án (`kind` vắng) thì không có mục nào. */
+/** Sub-entries of the open project; with no project (`kind` absent) there are none. */
 export function projectTabs(
   kind: ProjectKind | undefined,
 ): { id: TabId; label: string; icon: IconName }[] {
   return PROJECT_TABS.filter((item) => kind !== undefined && item.kinds.includes(kind)).map(
-    (item) => ({ id: item.id, label: item.label, icon: item.icon }),
+    (item) => ({ id: item.id, label: t(item.label), icon: item.icon }),
   );
 }
 
-/** Màn hình mở được với một loại dự án. `App` dùng nó để sửa màn hình khi đổi dự án. */
+/** Screens reachable for a project kind; `App` uses it to fix the current screen when the project changes. */
 export function tabsFor(kind: ProjectKind | undefined): TabId[] {
   return ["chat", ...projectTabs(kind).map((item) => item.id), "projects", "settings"];
 }
@@ -57,71 +45,51 @@ const THEME_ICON: Record<ThemeChoice, IconName> = {
   system: "monitor",
 };
 
-const THEME_LABEL: Record<ThemeChoice, string> = {
-  light: "Giao diện sáng",
-  dark: "Giao diện tối",
-  system: "Theo hệ thống",
+const THEME_LABEL: Record<ThemeChoice, Msg> = {
+  light: S.chat.sidebar.themeLight,
+  dark: S.chat.sidebar.themeDark,
+  system: S.chat.sidebar.themeSystem,
 };
 
 export interface SidebarProps {
   sessions: SessionSummary[];
   currentId: string;
   loading: boolean;
-  /** Màn hình đang mở, để hàng tương ứng mang `aria-current`. */
+  /** The open screen, so its row carries `aria-current`. */
   view: TabId;
-  /** Số server MCP đang nối, làm huy hiệu cho hàng "Server MCP". */
+  /** Number of connected MCP servers, used as the badge on that row. */
   mcpCount?: number;
-  /**
-   * Nhóm "Dự án", đặt giữa nhóm điều hướng và danh sách phiên.
-   *
-   * Nhận vào như một mảnh JSX thay vì như dữ liệu dự án: cột này biết về phiên, và cho nó
-   * biết thêm về dự án nghĩa là mỗi lần hợp đồng dự án đổi thì cả danh sách phiên phải
-   * biên dịch lại cùng.
-   *
-   * Là **hàm** chứ không phải `JSX.Element`, và đó không phải chuyện phong cách: Solid
-   * biên dịch prop mang JSX thành getter, nên mỗi lần đọc prop là một lần dựng component
-   * mới. Đọc nó hai lần — một cho `Show`, một để render — sinh ra hai bản; bản không được
-   * gắn vào DOM vẫn kịp đăng ký listener toàn cục của nó và phá bản thật.
-   */
+  /** The "Projects" group, passed as JSX so this column need not know the project contract. A *function*, not a
+   * `JSX.Element`: Solid compiles a JSX prop into a getter, so reading it twice builds two live components. */
   projectsSlot?: () => JSX.Element;
-  /** Đang chuyển dự án: danh sách dưới đây đang nói về dự án sắp không còn mở nữa. */
+  /** Switching projects: the list below still describes the project about to close. */
   disabled?: boolean;
-  /** Dòng phụ của mỗi phiên: câu cuối đã nói. Thiếu thì bỏ dòng đó. */
+  /** Secondary line per session: the last thing said. Absent, the line is dropped. */
   subtitle?: (session: SessionSummary) => string | undefined;
   onSelect: (id: string) => void;
   onCreate: () => void;
   onRename: (id: string) => void;
   onDelete: (id: string) => void;
   onGo: (view: TabId) => void;
-  /** Server MCP — plugin của ứng dụng này. Dẫn thẳng tới trang MCP trong Cài đặt. */
+  /** MCP servers, this app's plugins; links straight to the MCP page in Settings. */
   onOpenMcp: () => void;
   onCollapse: () => void;
 }
 
-/**
- * Thanh bên — cột duy nhất bên trái, và là toàn bộ hệ điều hướng của ứng dụng.
- *
- * Xếp theo đúng thứ tự của ChatGPT desktop, vì thứ tự ấy kể một câu chuyện: hàng đầu là
- * *ứng dụng nào*, rồi tới *việc làm được ngay*, rồi *dự án*, rồi *đã làm gì*, rồi mới tới
- * cấu hình ở chân cột. Mỗi nhóm có một tiêu đề chữ nhỏ màu mờ — tiêu đề là **nhãn**, không
- * phải nút: bấm được vào một tiêu đề nhóm thì người ta sẽ bấm, và không có gì xảy ra.
- *
- * Ô lọc phiên nấp sau biểu tượng kính lúp ở hàng đầu thay vì chiếm một hàng cố định: với
- * vài chục phiên thì nó không được dùng tới trong phần lớn thời gian, mà một ô nhập rỗng
- * đứng thường trực vẫn tốn đúng chỗ như một ô đang dùng. ⌘K vẫn còn đó cho lúc danh sách dài.
- */
+/** The sidebar: the only left column, and the whole navigation system. Ordered to tell a story - which app, what
+ * you can do now, projects, what was done, then configuration at the foot. Group headings are labels, not buttons.
+ * The session filter hides behind a magnifier rather than occupying a permanent row. */
 export default function Sidebar(props: SidebarProps) {
   const [query, setQuery] = createSignal("");
   const [searching, setSearching] = createSignal(false);
-  // Hàng đang mở menu phải giữ nút "…" hiện ra kể cả khi chuột đã rời đi — nếu không,
-  // menu sẽ đứng lơ lửng bên cạnh một hàng trông như không có gì được chọn.
+  // A row with an open menu keeps its trigger visible after the pointer leaves, or the menu floats beside nothing.
   const [menuOn, setMenuOn] = createSignal<string | null>(null);
   let searchField: HTMLInputElement | undefined;
 
   const toggleSearch = () => {
     const next = !searching();
     setSearching(next);
-    // Đóng ô lọc mà giữ lại chuỗi đang lọc là giấu mất lý do danh sách còn ba hàng.
+    // Closing the filter while keeping the query would hide why the list is down to three rows.
     if (!next) setQuery("");
     else queueMicrotask(() => searchField?.focus());
   };
@@ -136,28 +104,29 @@ export default function Sidebar(props: SidebarProps) {
 
   return (
     <aside
-      aria-label="Điều hướng"
+      aria-label={t(S.chat.sidebar.nav)}
       class="flex w-(--sidebar-w) shrink-0 flex-col border-r border-line bg-sidebar"
     >
-      {/* Dải kéo cửa sổ, và cũng là chỗ trống cho ba nút giao thông của macOS. Nó ở lại
-          rỗng: mọi thứ ta muốn đặt vào đây sẽ nằm dưới ba cái nút ấy. */}
+      {/* Window drag strip and the space for the macOS traffic lights; it stays empty because they sit on top. */}
       <div class="h-(--titlebar-h) shrink-0" data-tauri-drag-region />
 
-      {/* Hàng đầu: dấu hiệu thương hiệu bên trái, hai nút nhỏ bên phải.
-          `pb-xs` chứ không `pb-2xs`: hàng này giờ cao hơn hàng điều hướng bên dưới, và
-          hai hàng cao gần bằng nhau dính sát nhau thì cái trên đọc ra là mục đầu tiên
-          của danh sách chứ không ra là đầu đề của cả cột. */}
+      {/* Top row: brand on the left, two small buttons on the right. `pb-xs` so it reads as a header, not a row. */}
       <div class="flex shrink-0 items-center gap-2xs px-sm pb-xs">
         <BrandLockup class="flex-1" />
         <IconButton
           icon="search"
-          label={searching() ? "Đóng ô tìm phiên" : "Tìm phiên"}
+          label={t(searching() ? S.chat.sidebar.searchClose : S.chat.sidebar.searchOpen)}
           size="sm"
           active={searching()}
           expanded={searching()}
           onClick={toggleSearch}
         />
-        <IconButton icon="panel-left" label="Thu gọn thanh bên" size="sm" onClick={props.onCollapse} />
+        <IconButton
+          icon="panel-left"
+          label={t(S.chat.sidebar.collapse)}
+          size="sm"
+          onClick={props.onCollapse}
+        />
       </div>
 
       <Show when={searching()}>
@@ -173,38 +142,35 @@ export default function Sidebar(props: SidebarProps) {
                 toggleSearch();
               }
             }}
-            placeholder="Tìm phiên…"
-            aria-label="Tìm phiên theo tên"
+            placeholder={t(S.chat.sessionSearch)}
+            aria-label={t(S.chat.sidebar.searchField)}
             disabled={props.disabled}
-            class="h-(--control-h) w-full rounded-btn border border-line bg-surface px-sm text-xs text-text outline-none transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
+            class="h-(--control-h) w-full rounded-btn border border-line-strong bg-surface px-sm text-xs text-text transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
           />
         </div>
       </Show>
 
-      {/* Từ đây xuống hết "Gần đây" là một vùng cuộn duy nhất: dự án và phiên cùng dài ra
-          theo thời gian, và hai vùng cuộn lồng nhau trong một cột 260px là hai thanh cuộn
-          không ai bắt trúng. */}
+      {/* One scroll region down to the end of "Recent": two nested scrollbars in a 260px column are unhittable. */}
       <div
         class="flex min-h-0 flex-1 flex-col overflow-y-auto transition-opacity duration-[var(--dur-base)]"
         aria-busy={props.disabled}
         classList={{ "pointer-events-none opacity-40": props.disabled === true }}
       >
-        <nav aria-label="Điều hướng chính" class="shrink-0 px-sm pb-sm">
+        <nav aria-label={t(S.chat.sidebar.navMain)} class="shrink-0 px-sm pb-sm">
           <ul class="m-0 flex list-none flex-col gap-3xs p-0">
             <li>
               <NavRow
                 icon="plus"
-                label="Phiên mới"
+                label={t(S.chat.sidebar.newSession)}
                 disabled={props.disabled}
                 onClick={props.onCreate}
               />
             </li>
             <li>
-              {/* Server MCP là chỗ của ta tương ứng với "Plugins": mỗi server cắm thêm một
-                  rổ tool vào trợ lý, và đó đúng là định nghĩa của plugin ở đây. */}
+              {/* MCP servers are this app's "Plugins": each one adds a basket of tools to the assistant. */}
               <NavRow
                 icon="plug"
-                label="Server MCP"
+                label={t(S.chat.sidebar.mcp)}
                 badge={props.mcpCount ?? 0}
                 disabled={props.disabled}
                 onClick={props.onOpenMcp}
@@ -216,36 +182,35 @@ export default function Sidebar(props: SidebarProps) {
         <Show when={props.projectsSlot}>
           {(slot) => (
             <section class="shrink-0 px-sm pb-sm">
-              <GroupTitle>Dự án</GroupTitle>
+              <GroupTitle>{t(S.chat.sidebar.projects)}</GroupTitle>
               {slot()()}
             </section>
           )}
         </Show>
 
         <section class="shrink-0 px-sm pb-md">
-          <GroupTitle>Gần đây</GroupTitle>
+          <GroupTitle>{t(S.chat.sidebar.recent)}</GroupTitle>
           <Show when={!props.loading} fallback={<SessionSkeleton />}>
             <Show
               when={groups().length > 0}
               fallback={
                 <p class="m-0 flex items-center gap-2xs px-sm py-xs text-2xs text-faint">
                   <Icon name={props.sessions.length === 0 ? "bubble" : "search"} size={12} />
-                  {props.sessions.length === 0 ? "Chưa có phiên nào." : "Không có phiên nào khớp."}
+                  {t(
+                    props.sessions.length === 0 ? S.chat.sidebar.noSessions : S.chat.noSessionMatch,
+                  )}
                 </p>
               }
             >
               <For each={groups()}>
                 {(group) => (
                   <div class="mb-xs">
-                    {/* Nhóm theo ngày nằm **dưới** tiêu đề "Gần đây" và nhỏ hơn nó một bậc:
-                        hai cấp tiêu đề cùng cỡ chữ đọc ra là hai nhóm ngang hàng. */}
-                    <h3 class="sticky top-0 z-10 m-0 bg-sidebar px-sm py-3xs text-[10px] font-medium tracking-wide text-faint uppercase">
+                    {/* Date groups sit under "Recent" one size down; equal sizes would read as sibling groups. */}
+                    <h3 class="sticky top-0 z-10 m-0 bg-sidebar px-sm py-3xs text-2xs font-semibold tracking-wide text-faint">
                       {group.label}
                     </h3>
                     <ul class="m-0 flex list-none flex-col gap-3xs p-0">
-                      {/* Keyed theo `id`: danh sách xếp lại theo `updatedAt` sau mỗi lượt,
-                          và keyed theo vị trí thì mọi hàng bị dựng lại — tiêu điểm bàn phím
-                          rơi về `body` ngay giữa lúc người dùng đang đi bằng Tab. */}
+                      {/* Keyed by `id`: the list reorders after every turn, and index keys would drop keyboard focus. */}
                       <Key each={group.sessions} by="id">
                         {(session) => (
                           <SessionRow
@@ -269,21 +234,19 @@ export default function Sidebar(props: SidebarProps) {
         </section>
       </div>
 
-      {/* Chân cột, **một hàng**: lối vào cấu hình cộng công tắc sáng/tối. Cả hai là thứ
-          người dùng chạm tới vài lần một tuần, còn danh sách phiên là thứ họ chạm tới vài
-          lần một giờ — và cái dùng nhiều hơn phải nằm gần chỗ mắt đã đứng sẵn. */}
+      {/* Foot of the column, one row: settings plus the light/dark toggle, both touched a few times a week. */}
       <footer class="flex shrink-0 items-center gap-2xs border-t border-line p-sm">
         <span class="min-w-0 flex-1">
           <NavRow
             icon="settings"
-            label="Cài đặt"
+            label={t(S.common.settings)}
             active={props.view === "settings"}
             onClick={() => props.onGo("settings")}
           />
         </span>
         <IconButton
           icon={THEME_ICON[theme()]}
-          label={`${THEME_LABEL[theme()]}. Bấm để đổi.`}
+          label={t(S.chat.sidebar.themeToggle, { name: t(THEME_LABEL[theme()]) })}
           size="sm"
           onClick={() => setTheme(NEXT_THEME[theme()])}
         />
@@ -292,19 +255,14 @@ export default function Sidebar(props: SidebarProps) {
   );
 }
 
-/**
- * Tiêu đề một nhóm trong cột.
- *
- * Là chữ, không phải nút: mọi thứ bấm được trong cột này đều dẫn đi đâu đó, và một tiêu đề
- * bấm vào không đi đâu dạy người dùng rằng cột này có những chỗ chết.
- */
+/** A group heading: text, not a button, since everything clickable in this column leads somewhere. */
 function GroupTitle(props: { children: JSX.Element }) {
   return (
     <h2 class="m-0 px-sm py-2xs text-2xs font-medium text-faint">{props.children}</h2>
   );
 }
 
-/** Một hàng điều hướng. Biểu tượng `aria-hidden`; ý nghĩa đi qua nhãn của chính cái nút. */
+/** One navigation row; the icon is `aria-hidden` and the meaning travels through the button's own label. */
 function NavRow(props: {
   icon: IconName;
   label: string;
@@ -327,8 +285,7 @@ function NavRow(props: {
         <Icon name={props.icon} size={16} />
       </span>
       <span class="min-w-0 flex-1 truncate">{props.label}</span>
-      {/* Con số phải tự đi tìm mắt người dùng: số tệp đã đổi và số server đang nối đều là
-          thứ chỉ tồn tại nếu có ai đó nhớ đi mở màn hình tương ứng ra xem. */}
+      {/* The counts must find the eye: otherwise they only exist if someone remembers to open that screen. */}
       <Show when={(props.badge ?? 0) > 0}>
         <span class="shrink-0 rounded-pill bg-accent px-2xs text-2xs leading-4 text-on-accent tabular-nums">
           {props.badge}
@@ -351,8 +308,7 @@ function SessionRow(props: {
   return (
     <li
       class="group relative"
-      // Chuột phải mở đúng cái menu của nút "…". Hai lối vào, một menu — không có hành
-      // động nào chỉ tồn tại ở một trong hai.
+      // Right-click opens the same menu as the trigger: two entrances, one menu, no action exclusive to either.
       onContextMenu={(event) => {
         event.preventDefault();
         props.onMenuChange(true);
@@ -388,13 +344,19 @@ function SessionRow(props: {
         classList={{ "opacity-0": !props.menuOpen, "opacity-100": props.menuOpen }}
       >
         <Menu
-          label={`Tuỳ chọn cho ${props.session.title}`}
+          label={t(S.chat.sidebar.rowMenu, { title: props.session.title })}
           open={props.menuOpen}
           onOpenChange={props.onMenuChange}
           onRequestClose={() => props.onMenuChange(false)}
           items={[
-            { id: "rename", label: "Đổi tên", icon: "document", onSelect: props.onRename },
-            { id: "delete", label: "Xoá phiên", icon: "trash", danger: true, onSelect: props.onDelete },
+            { id: "rename", label: t(S.common.rename), icon: "document", onSelect: props.onRename },
+            {
+              id: "delete",
+              label: t(S.chat.sidebar.deleteSession),
+              icon: "trash",
+              danger: true,
+              onSelect: props.onDelete,
+            },
           ]}
         />
       </div>
@@ -402,12 +364,7 @@ function SessionRow(props: {
   );
 }
 
-/**
- * Khung xương lúc nạp danh sách.
- *
- * Cùng chiều cao hàng với danh sách thật, nếu không thì lúc dữ liệu về mọi thứ nhảy một
- * nhịp — và cú nhảy đó đắt hơn hẳn khoảng lặng mà khung xương che đi.
- */
+/** Loading skeleton, at the real row height, or the layout jumps when the data arrives. */
 function SessionSkeleton(props: { rows?: number }) {
   return (
     <div class="flex flex-col gap-2xs px-sm" aria-hidden="true">

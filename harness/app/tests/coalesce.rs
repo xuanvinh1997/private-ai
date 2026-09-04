@@ -1,13 +1,6 @@
-//! Thứ tự sự kiện cuối lượt.
-//!
-//! Bài này khoá lại một lỗi đã hiện lên màn hình người dùng: một tin nhắn trợ lý cụt,
-//! mang con trỏ nhấp nháy không bao giờ tắt. Nguyên nhân là thứ tự — `Final` gửi thẳng
-//! vào kênh trong khi token cuối còn nằm trong bộ đệm 16 ms, nên giao diện đóng khối trả
-//! lời rồi mới nhận token, và token muộn đẻ ra một khối mới không ai đóng.
-//!
-//! Hai bất biến, và cả hai đều là bất biến **về thời gian**, thứ mà hệ kiểu không giữ hộ:
-//! sự kiện không phải token không bao giờ vượt lên trước token đứng trước nó, và lệnh chỉ
-//! trả về sau khi kênh đã nhận hết.
+//! End-of-turn event ordering, locking a bug users saw: a stub assistant message with a cursor that never
+//! stopped blinking, caused by `Final` overtaking buffered tokens. Two timing invariants the type system
+//! cannot hold: non-token events never pass tokens, and the command returns only after the channel drains.
 
 use std::sync::{Arc, Mutex};
 
@@ -15,7 +8,7 @@ use pai_app_lib::coalesce::Coalescer;
 use pai_app_lib::protocol::AgentEvent;
 use tauri::ipc::{Channel, InvokeResponseBody};
 
-/// Kênh thu lại mọi thứ đi qua, dưới dạng chuỗi JSON.
+/// A channel that records everything passing through, as JSON strings.
 fn thu() -> (Channel<AgentEvent>, Arc<Mutex<Vec<String>>>) {
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let sink = seen.clone();
@@ -65,7 +58,7 @@ async fn finish_tra_ve_sau_khi_kenh_da_nhan_het() {
     let (channel, seen) = thu();
     let bo_gop = Coalescer::spawn(channel);
 
-    // Không `flush` nào kịp chạy theo thời hạn 16 ms: `finish` phải tự xả nốt.
+    // No 16 ms deadline flush had time to run, so `finish` must drain the rest itself.
     bo_gop.send(AgentEvent::Token {
         text: "còn trong bộ đệm".into(),
     });

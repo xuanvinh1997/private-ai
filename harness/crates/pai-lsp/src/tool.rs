@@ -1,13 +1,6 @@
-//! `lsp` — một tool, bốn thao tác.
-//!
-//! Một tool chứ không phải bốn, vì bốn thao tác này chia chung **toàn bộ** tham số và
-//! toàn bộ chi phí giải thích: mô hình phải học đúng một lần rằng có một máy hiểu mã đang
-//! chạy và nó nhận một con trỏ. Bốn tool riêng là bốn mô tả gần giống nhau trong mỗi
-//! request, và bốn cơ hội để mô hình chọn nhầm cái na ná.
-//!
-//! Về hình dạng kết quả: mọi dòng bắt đầu bằng `đường:dòng:cột`, đúng cái mà `grep`,
-//! `symbol_search` và `outline` đã phát ra. Mô hình đã biết đọc hình dạng đó và biết bước
-//! kế tiếp là `read`; phát minh một hình dạng thứ hai chỉ để đẹp hơn là bắt nó học lại.
+//! `lsp` - one tool, four operations.
+//! One tool because the four share every argument and every explanation; four would be
+//! four near-identical descriptions to confuse. Output lines start with `path:line:col`.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -90,9 +83,7 @@ impl Tool for LspTool {
         )
     }
 
-    /// Chỉ đọc — không thao tác nào ở đây ghi gì. Không đáng tin — thứ trả về là mã nguồn,
-    /// tên biến và thông báo lỗi **do người khác viết**, và một repo bất kỳ chứa được một
-    /// dòng comment giả dạng chỉ dẫn. Cùng lý lẽ với `pai-index::tools`.
+    /// Read-only, and untrusted: what comes back is source, identifiers and compiler messages written by other people.
     fn meta(&self) -> ToolMeta {
         ToolMeta::read_only().untrusted()
     }
@@ -119,9 +110,7 @@ impl Tool for LspTool {
 
         match self.servers.ask(&query).await {
             Ok(answer) => Ok(render(op, &args.file_path, answer)),
-            // Mọi lỗi thành **văn bản đọc được**, không thành `Err`: một lỗi lọt lên đường
-            // ống chỉ kết thúc lượt trong im lặng, còn ở đây mỗi nhánh nói ra được việc
-            // tiếp theo nên làm — chờ, đổi tool, hay sửa tham số.
+            // Every error becomes readable text rather than an `Err`, so each branch can name the next step: wait, switch tool, or fix the arguments.
             Err(err @ (LspError::Invalid(_) | LspError::NoServer(_))) => {
                 Err(ToolError::Invalid(err.to_string()))
             }
@@ -130,11 +119,7 @@ impl Tool for LspTool {
     }
 }
 
-/// Lời nhắc rằng câu trả lời có thể còn thiếu.
-///
-/// Nó đi kèm **mọi** dạng kết quả khi server còn bận, kể cả kết quả không rỗng: một danh
-/// sách tham chiếu thu được giữa lúc đang nạp là một danh sách thiếu, và mô hình đọc nó
-/// như một danh sách đủ nếu không ai nói gì.
+/// Notice that the answer may be incomplete; it rides along with every result shape while the server is busy, because a partial reference list otherwise reads as complete.
 const STILL_INDEXING: &str = "Language server còn đang nạp và lập chỉ mục dự án, nên kết quả này có thể chưa đầy \
      đủ. Hỏi lại sau vài giây nếu nó trông thiếu.";
 
@@ -221,8 +206,7 @@ fn render(op: Operation, file_path: &str, answer: Answer) -> ToolOutcome {
                 })
                 .collect();
 
-            // Gom theo tệp, cùng hình dạng `meta.search` mà `grep`, `glob` và
-            // `symbol_search` phát ra — giao diện vẽ được bằng đúng cái thẻ đã có.
+            // Grouped by file, the same `meta.search` shape `grep`, `glob` and `symbol_search` emit, so the UI reuses its existing card.
             let mut groups: Vec<serde_json::Value> = Vec::new();
             for hit in &hits {
                 let entry = json!({ "line": hit.line, "text": hit.text });

@@ -1,8 +1,6 @@
-//! `code.trace` — các đường đi theo cạnh `calls`.
-//!
-//! Khác `code.graph` ở một chỗ và đó là chỗ quan trọng: nó trả về **đường đi**, không
-//! phải một tập hợp. "Ai gọi `resolve_read`" trả lời được bằng một tập; "giá trị này từ
-//! đâu tới đây" thì không — cần biết nó đi qua những hàm nào, theo thứ tự nào.
+//! `code.trace` — paths along `calls` edges.
+//! Unlike `code.graph` it returns paths, not a set: "who calls X" is a set question, but
+//! "how did this value get here" needs the functions it passed through, in order.
 
 use std::sync::Arc;
 
@@ -95,8 +93,7 @@ impl Tool for CodeTrace {
             Direction::Callees => "được gọi từ",
         };
         if paths.is_empty() {
-            // "Không tìm thấy đường đi nào" tuyệt đối không được đọc thành "không ai gọi
-            // hàm này": với một đồ thị suy đoán theo tên, hai câu đó khác hẳn nhau.
+            // "No path found" must never read as "nobody calls this": on a name-based graph those differ.
             return Ok(ToolOutcome::ok(format!(
                 "Không có đường {huong} nào từ `{}` trong đồ thị. Điều đó **không** có \
                  nghĩa là không tồn tại: {NAME_BASED_NOTICE}",

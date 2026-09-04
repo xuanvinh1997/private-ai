@@ -1,106 +1,79 @@
 import { Key } from "@solid-primitives/keyed";
 import { createSignal, Show } from "solid-js";
+import { S, t } from "../lib/i18n";
 import type { Project, ProjectKind } from "../lib/protocol";
 import Icon from "./Icon";
 import Menu, { type MenuItem } from "./Menu";
 import { InfoDot } from "./settings/FormKit";
 
-/** Bao nhiêu dự án hiện ra trước khi phải bấm "Xem thêm". */
+/** How many projects show before the "see more" row. */
 const HIEN_TRUOC = 5;
 
-/** Loại dự án bằng tiếng người — cho nhãn trợ năng, thứ mà biểu tượng không với tới. */
-const kindLabel = (kind: ProjectKind) => (kind === "docs" ? "thư viện tài liệu" : "dự án mã nguồn");
+/** Project kind in words, for the accessible label an icon cannot carry. */
+const kindLabel = (kind: ProjectKind) =>
+  t(kind === "docs" ? S.projects.kindDocsInline : S.projects.kindCodeInline);
 
-/**
- * Nhóm "Dự án" trong thanh bên.
- *
- * Trước đây đây là một cái nút ở **chân** cột mở ra một menu, và cái menu ấy là lối vào duy
- * nhất tới danh sách dự án. Một danh sách chỉ tồn tại sau một cú bấm là một danh sách không
- * ai nhớ mình có gì trong đó; ChatGPT để dự án thành một nhóm hạng nhất giữa cột, và cái
- * được không phải là chỗ ngồi đẹp hơn mà là **thấy được mà không phải hỏi**.
- *
- * Không hành động nào của cái menu cũ bị bỏ đi: mở dự án là cú bấm vào chính hàng đó, còn
- * đổi loại / đóng / bỏ khỏi danh sách chuyển vào menu ngữ cảnh của từng hàng — cùng chỗ,
- * cùng câu giải thích hậu quả, thêm được cả chuột phải. "Tất cả dự án…" ở lại làm hàng cuối
- * của nhóm.
- */
+/** The "Projects" group in the sidebar: a first-class list rather than a menu behind a button, so it is visible
+ * without asking. No action was dropped; per-row context menus carry kind, close and remove. */
 export default function ProjectSwitcher(props: {
   projects: Project[];
   current: Project | null;
-  /** Lõi đang tháo và cắm lại nhánh plugin. Trong lúc đó mọi thứ ở đây đều khoá. */
+  /** The core is swapping plugin layers; everything here is locked while it does. */
   switching: boolean;
-  /** Hàng nào đang mở menu ngữ cảnh, theo id dự án. */
+  /** Which row has its context menu open, by project id. */
   menuFor: string | null;
   onMenuChange: (id: string | null) => void;
   onPick: (id: string) => void;
-  /** Mở màn hình dự án — chỗ tạo mới, clone, và lọc theo loại. */
+  /** Open the projects screen, where create, clone and filtering live. */
   onSeeAll: () => void;
   onForget: (project: Project) => void;
-  /** Đóng dự án đang mở. Danh sách giữ nguyên — đây không phải `onForget`. */
+  /** Close the open project; the list is unchanged, this is not `onForget`. */
   onClose: () => void;
-  /** Đổi loại dự án đang mở. */
+  /** Change the open project's kind. */
   onSwapKind: (kind: ProjectKind) => void;
 }) {
   const [expanded, setExpanded] = createSignal(false);
 
-  // Mới nhất trước. Dự án đang mở vẫn nằm đúng chỗ của nó theo thời gian chứ không bị
-  // ghim lên đầu: nó đã được đánh dấu bằng màu và biểu tượng rồi, ghim thêm chỉ làm thứ
-  // tự đổi mỗi lần mở.
+  // Newest first; the open project keeps its chronological place, since colour and icon already mark it.
   const ordered = () => [...props.projects].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
   const visible = () => (expanded() ? ordered() : ordered().slice(0, HIEN_TRUOC));
   const hidden = () => ordered().length - visible().length;
 
-  /**
-   * Menu ngữ cảnh của một hàng.
-   *
-   * Hàng của dự án **đang mở** mang ba việc, và đó là ba việc dễ bấm nhầm nhau nhất màn
-   * hình này có — nên mỗi cái tự nói ra hậu quả của mình ngay dưới nhãn, và cái phá huỷ
-   * nhất nằm cuối cùng, mang màu cảnh báo.
-   */
+  /** A row's context menu; the open project's three actions are the easiest to confuse, so each states its consequence. */
   const itemsFor = (project: Project): MenuItem[] => {
     const items: MenuItem[] = [];
     if (project.isCurrent) {
-      // Loại được đặt một lần lúc ghi nhận và mở lại thì giữ nguyên. Không có hàng này thì
-      // một thư mục vào nhầm loại là ngõ cụt vĩnh viễn: một repo lỡ ghi nhận thành thư viện
-      // tài liệu sẽ không bao giờ có `read` hay `bash`, và người dùng chỉ thấy trợ lý nói
-      // nó không có tool nào.
+      // Kind is set once at registration, so without this row a mis-typed folder is a permanent dead end.
       items.push({
         id: "kind",
-        label:
-          project.kind === "code" ? "Chuyển thành thư viện tài liệu" : "Chuyển thành dự án mã nguồn",
+        label: t(project.kind === "code" ? S.projects.toDocs : S.projects.toCode),
         icon: project.kind === "code" ? "library" : "code",
-        hint:
-          project.kind === "code"
-            ? "Thôi sửa tệp và chạy lệnh, chỉ đọc tài liệu."
-            : "Trợ lý đọc, sửa tệp và chạy được lệnh.",
+        hint: t(project.kind === "code" ? S.projects.toDocsHint : S.projects.toCodeHint),
         onSelect: () => props.onSwapKind(project.kind === "code" ? "docs" : "code"),
       });
       items.push({
         id: "close",
-        label: "Đóng dự án, chỉ trò chuyện",
+        label: t(S.projects.closeProject),
         icon: "folder",
-        hint: "Vẫn ở trong danh sách; trợ lý thôi đọc tệp.",
+        hint: t(S.projects.closeProjectHint),
         onSelect: props.onClose,
       });
     } else {
       items.push({
         id: "open",
-        label: "Mở dự án này",
+        label: t(S.projects.openThis),
         icon: "folder-open",
         onSelect: () => props.onPick(project.id),
       });
     }
-    // Bỏ dự án đang mở là bỏ chỗ đứng của chính mình: hàng vẫn ở đó cho menu khỏi đổi hình
-    // giữa hai trạng thái, nhưng khoá lại và nói ra lý do.
+    // Removing the open project would remove the ground you stand on; keep the row but disable it with a reason.
     items.push({
       id: "forget",
-      label: "Bỏ khỏi danh sách",
+      label: t(S.projects.forgetConfirm),
       icon: "x",
       danger: !project.isCurrent,
       disabled: project.isCurrent,
-      hint: project.isCurrent
-        ? "Đang mở — đóng dự án trước đã."
-        : "Thư mục trên đĩa vẫn nguyên, không tệp nào mất.",
+      hint: t(project.isCurrent ? S.projects.forgetBlockedHint : S.projects.forgetSafeHint),
       onSelect: () => props.onForget(project),
     });
     return items;
@@ -110,12 +83,12 @@ export default function ProjectSwitcher(props: {
     <div class="flex flex-col gap-3xs">
       <Show
         when={ordered().length > 0}
-        fallback={<p class="m-0 px-sm py-xs text-2xs text-faint">Danh sách chưa có dự án nào.</p>}
+        fallback={
+          <p class="m-0 px-sm py-xs text-2xs text-faint">{t(S.projects.listEmpty)}</p>
+        }
       >
         <ul class="m-0 flex list-none flex-col gap-3xs p-0">
-          {/* Keyed theo `id`: mở một dự án khác làm cả danh sách xếp lại theo `lastOpenedAt`,
-              và keyed theo vị trí thì mọi hàng bị dựng lại giữa lúc tiêu điểm đang ở trên
-              một trong số chúng. */}
+          {/* Keyed by `id`: opening a project reorders the list, and keying by index would rebuild every row. */}
           <Key each={visible()} by="id">
             {(project) => (
               <li>
@@ -129,22 +102,19 @@ export default function ProjectSwitcher(props: {
                   <button
                     type="button"
                     disabled={props.switching}
-                    // Bấm một hàng dự án là mở **bảng chi tiết** của nó ở cột phải — kể cả
-                    // hàng đang mở, thứ trước đây bấm vào không có gì xảy ra. Màn hình của
-                    // dự án (Thay đổi, Thư viện tài liệu) từng thụt vào ngay dưới đây và
-                    // đọc ra như thể loại dự án là một chỗ để bấm; giờ chúng là một mục
-                    // trong bảng chi tiết, đứng cạnh đường dẫn và nguồn gốc.
+                    // Clicking a row opens its detail panel on the right, including the row that is already open.
                     onClick={() => props.onPick(project().id)}
                     aria-current={project().isCurrent ? "true" : undefined}
-                    // Đường dẫn không còn một dòng riêng trên mỗi hàng — cột 260px không đủ
-                    // cho hai dòng nhân số dự án. Nó vào `title` và vào nhãn trợ năng, nên
-                    // hai dự án trùng tên vẫn phân biệt được, chỉ là phải rê chuột vào.
+                    // The path no longer gets its own line; it moves into `title` and the accessible label.
                     title={project().path}
-                    aria-label={
-                      project().isCurrent
-                        ? `${project().name} — ${kindLabel(project().kind)}, dự án đang mở. ${project().path}`
-                        : `Mở ${kindLabel(project().kind)} ${project().name}. ${project().path}`
-                    }
+                    aria-label={t(
+                      project().isCurrent ? S.projects.rowCurrentA11y : S.projects.rowOpenA11y,
+                      {
+                        name: project().name,
+                        kind: kindLabel(project().kind),
+                        path: project().path,
+                      },
+                    )}
                     class="flex min-w-0 flex-1 items-center gap-sm rounded-panel py-2xs pr-(--sp-2xl) pl-sm text-left text-sm transition-colors duration-[var(--dur-fast)] disabled:cursor-progress enabled:hover:bg-[var(--overlay-hover)] aria-[current]:bg-accent-soft aria-[current]:font-medium"
                   >
                     <span
@@ -155,18 +125,8 @@ export default function ProjectSwitcher(props: {
                         "motion-safe:animate-pulse": props.switching && project().isCurrent,
                       }}
                     >
-                      {/* Biểu tượng nói **loại dự án**, không nói đóng/mở.
-                          Loại là thứ duy nhất của một dự án mà cột này chưa nói ra ở đâu
-                          cả, và nó lại là thứ quyết định trợ lý có sửa được tệp hay
-                          không. Trước đây người dùng chỉ suy ra được nó *gián tiếp*, qua
-                          việc mục con bên dưới tên là "Thay đổi" hay "Thư viện tài liệu"
-                          — tức là đọc một màn hình để đoán một thuộc tính. Đóng/mở thì đã
-                          có nền nhấn, chữ đậm và `aria-current` nói rồi, ba lần, nên ô
-                          biểu tượng đang rỗng nghĩa.
-
-                          Cùng cặp biểu tượng với màn hình Dự án: cùng một đối tượng thì
-                          hai chỗ phải vẽ giống nhau, nếu không người dùng phải học hai bộ
-                          ký hiệu cho một thứ. */}
+                      {/* The icon states the project *kind*, not open/closed, which three other cues already say.
+                          Same icon pair as the Projects screen, so one object is not drawn two ways. */}
                       <Icon name={project().kind === "docs" ? "library" : "code"} size={15} />
                     </span>
                     <span
@@ -188,7 +148,7 @@ export default function ProjectSwitcher(props: {
                     }}
                   >
                     <Menu
-                      label={`Tuỳ chọn cho dự án ${project().name}`}
+                      label={t(S.projects.rowMenu, { name: project().name })}
                       open={props.menuFor === project().id}
                       onOpenChange={(open) => props.onMenuChange(open ? project().id : null)}
                       onRequestClose={() => props.onMenuChange(null)}
@@ -202,8 +162,7 @@ export default function ProjectSwitcher(props: {
         </ul>
       </Show>
 
-      {/* Danh sách dài thì cắt bớt chứ không cuộn: một danh sách dự án dài đẩy "Gần đây"
-          xuống dưới nếp gấp, mà "Gần đây" mới là thứ được bấm mỗi ngày. */}
+      {/* A long list is truncated, not scrolled: it would otherwise push "Recent" below the fold. */}
       <Show when={hidden() > 0 || expanded()}>
         <button
           type="button"
@@ -216,12 +175,11 @@ export default function ProjectSwitcher(props: {
             size={12}
             class={`transition-transform duration-[var(--dur-fast)] ${expanded() ? "rotate-90" : ""}`}
           />
-          {expanded() ? "Thu gọn" : `Xem thêm ${hidden()} dự án`}
+          {expanded() ? t(S.projects.collapse) : t(S.projects.showMore, { n: hidden() })}
         </button>
       </Show>
 
-      {/* Một lối ra duy nhất, và nó dẫn tới màn hình dự án chứ không tới một hộp thoại thứ
-          hai: tạo mới, clone và lọc theo loại đều đã sống ở đó. */}
+      {/* One way out, to the projects screen rather than a second dialog: create, clone and filter live there. */}
       <button
         type="button"
         onClick={props.onSeeAll}
@@ -231,23 +189,20 @@ export default function ProjectSwitcher(props: {
         <span class="shrink-0">
           <Icon name="more" size={15} />
         </span>
-        Tất cả dự án…
+        {t(S.projects.seeAll)}
       </button>
 
-      {/* Không dự án là một **trạng thái hợp lệ**, không phải một lần nạp chưa xong — nên
-          nó phải tự nói ra, kể cả khi danh sách bên trên đã đủ ba dòng. Câu này gộp hai
-          điều người dùng cần biết ngay: trợ lý vẫn trả lời được, và hai màn hình vắng mặt
-          sẽ quay lại khi nào. */}
+      {/* "No project" is a valid state, not a pending load, so it says so even when the list above has rows. */}
       <Show when={props.current === null && !props.switching}>
         <p class="m-0 flex items-start gap-2xs rounded-panel bg-[var(--overlay-faint)] px-sm py-xs text-2xs leading-[1.5] text-muted">
           <span class="mt-3xs shrink-0 text-faint">
             <Icon name="chat" size={13} />
           </span>
           <span class="flex flex-wrap items-center gap-2xs">
-            Chưa mở dự án — trợ lý chỉ trò chuyện.
+            {t(S.projects.noProjectNote)}
             <InfoDot
-              label="Về trạng thái chưa có dự án"
-              text="Chưa mở dự án — trợ lý chỉ trò chuyện, không đọc tệp. Mở một dự án mã nguồn thì có thêm màn hình Thay đổi; mở một thư viện tài liệu thì có thêm màn hình Thư viện. Một dự án chỉ thuộc một loại, nên hai màn hình đó không bao giờ cùng xuất hiện."
+              label={t(S.projects.noProjectLabel)}
+              text={t(S.projects.noProjectMore)}
             />
           </span>
         </p>
@@ -255,7 +210,7 @@ export default function ProjectSwitcher(props: {
 
       <Show when={props.switching}>
         <p class="m-0 px-sm py-3xs text-2xs text-faint" role="status" aria-live="polite">
-          đang chuyển dự án…
+          {t(S.projects.switching)}
         </p>
       </Show>
     </div>

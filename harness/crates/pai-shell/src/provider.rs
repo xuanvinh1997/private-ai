@@ -1,14 +1,6 @@
-//! The command execution seam, and its local implementation.
-//!
-//! The one thing worth remembering in this file: **what we run is a process tree, not a
-//! process.** `sh -c "npm test"` spawns `npm`, which spawns `node`. Killing the shell
-//! leaves both of those behind, holding ports, holding file locks, still writing into the
-//! same directory — so after one cancelled turn, the next one runs on a contaminated
-//! machine.
-//!
-//! So the child is placed in its **own process group**, and every signal goes to the whole
-//! group. This is the easiest thing in the crate to get wrong, and also the kind of wrong
-//! that never announces itself: everything still looks like it works.
+//! The command execution seam and its local implementation. What runs is a process tree, not a
+//! process: killing only the shell leaves grandchildren holding ports and locks, so the child
+//! gets its own process group and every signal goes to the whole group.
 
 use std::process::Stdio;
 use std::sync::Arc;
@@ -27,8 +19,7 @@ pub struct Execution {
     pub output: String,
     pub exit_code: Option<i32>,
     pub signal: Option<String>,
-    /// Cut short by a timeout or a cancellation. Partial output is still useful, but the
-    /// fact that it is partial has to be said.
+    /// Cut short by a timeout or cancellation; partial output is useful only if labelled so.
     pub interrupted: Option<String>,
 }
 
@@ -59,22 +50,16 @@ impl ServiceKey for Shell {
 /// Signal the whole process group.
 #[cfg(unix)]
 fn signal_group(pid: u32, signal: i32) {
-    // A negative pid means "the whole group". This is the entire reason for setting the
-    // process group above.
+    // A negative pid means the whole group, which is why the process group is set above.
     unsafe { libc::kill(-(pid as i32), signal) };
 }
 
 #[cfg(not(unix))]
 fn signal_group(_pid: u32, _signal: i32) {
-    // Windows has no process group in this sense; the equivalent is a Job Object, and
-    // that belongs to `pai-sandbox`. Until then, only the direct child is killed.
+    // Windows needs a Job Object, which belongs to `pai-sandbox`; only the child is killed.
 }
 
-/// This machine's own disk.
-///
-/// It holds a `Context` so it can ask for the sandbox seam **at spawn time**, not at
-/// construction time: disposing the sandbox plugin must make every subsequent command run
-/// unconfined, rather than going through a leftover copy of the old provider.
+/// This machine's own shell; it holds a `Context` so the sandbox seam is read at spawn time.
 pub struct LocalShell {
     ctx: Context,
     policy: Policy,
@@ -85,12 +70,7 @@ impl LocalShell {
         LocalShell { ctx, policy }
     }
 
-    /// argv after wrapping, if anything wrapped it.
-    ///
-    /// With no provider, the original argv runs — that is the correct behaviour when
-    /// nobody has mounted a sandbox. But a provider that **is** present and **fails** to
-    /// wrap means nothing runs: one silent fallthrough is one user trusting a confinement
-    /// that does not exist.
+    /// argv after wrapping; no provider means run bare, but a provider that fails runs nothing.
     fn argv(&self, command: &str) -> Result<Vec<String>, ShellError> {
         let argv = vec!["/bin/sh".to_string(), "-c".to_string(), command.to_string()];
         match self.ctx.get::<Sandbox>() {
@@ -126,9 +106,7 @@ impl ShellExecutor for LocalShell {
             .map_err(|err| ShellError::Spawn(err.to_string()))?;
         let pid = child.id();
 
-        // stdout and stderr are interleaved in arrival order, not split into two blocks:
-        // an error line printed midway only means something once you know which lines it
-        // sits between.
+        // stdout and stderr interleave in arrival order: an error line only reads in context.
         let collected = Arc::new(Mutex::new(String::new()));
         let mut pumps = Vec::new();
         for stream in [
@@ -180,7 +158,7 @@ impl ShellExecutor for LocalShell {
         // Kill the whole group, not just the shell.
         if let Some(pid) = pid {
             signal_group(pid, libc_sigterm());
-            // Give the process tree a moment to clean up after itself before forcing.
+            // Give the process tree a moment to clean up before forcing.
             tokio::time::sleep(Duration::from_millis(200)).await;
             signal_group(pid, libc_sigkill());
         }
@@ -198,7 +176,7 @@ impl ShellExecutor for LocalShell {
     }
 }
 
-/// `None` means no deadline: wait forever, rather than waiting zero seconds.
+/// `None` means no deadline: wait forever, not zero seconds.
 async fn sleep_opt(duration: Option<Duration>) {
     match duration {
         Some(duration) => tokio::time::sleep(duration).await,

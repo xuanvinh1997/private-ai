@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri, listModels } from "./agent";
 import { isDemo } from "./demo";
+import { S, t, type Msg } from "./i18n";
 import {
   demoActiveModels,
   demoEmbeddingSetting,
@@ -26,22 +27,8 @@ import type {
   RerankSetting,
 } from "./protocol";
 
-/**
- * Mười một lệnh provider, chia hai nhóm theo cách xử lý lỗi — cùng ranh giới với
- * `projects.ts`: "người dùng có đang đứng chờ một thứ hiện lên không".
- *
- *   - `listProviders`, `providerPresets`, `loadModels`, `providerModels`,
- *     `embeddingSetting` chạy lúc mở màn hình. Chúng nuốt lỗi và trả mặc định: một hộp lỗi ở đó chặn mất lối vào trang
- *     cài đặt, mà trang cài đặt lại đúng là chỗ người dùng đi tới để *sửa* cái đang hỏng.
- *   - `saveProvider`, `removeProvider`, `setActiveProvider`, `setProviderModel`,
- *     `setEmbedding`, `probeProvider`, `probeEmbedding` **ném ra ngoài**. Cả bảy đều đi
- *     sau một cú bấm, và im lặng ở đó không phân biệt được với "đang chậm" — người dùng
- *     sẽ bấm lần hai.
- *
- * Chế độ `?demo=1` rẽ nhánh ở đây chứ không ở component: màn hình không cần biết dữ liệu
- * của nó đến từ lõi hay từ một mảng trong bộ nhớ, và mỗi chỗ rẽ nhánh trong component là
- * một nhánh chỉ chạy trong demo, tức là một nhánh không ai kiểm.
- */
+/** Provider commands, split like `projects.ts`: screen-load calls swallow errors and return defaults, click-driven
+ * ones throw. `?demo=1` branches here, not in components, so no component carries a demo-only path. */
 
 export async function listProviders(): Promise<Provider[]> {
   if (isDemo()) return demoProviders();
@@ -49,30 +36,24 @@ export async function listProviders(): Promise<Provider[]> {
   try {
     return await invoke<Provider[]>("list_providers");
   } catch (err) {
-    console.error("không đọc được danh sách provider", err);
+    console.error("failed to list providers", err);
     return [];
   }
 }
 
-/** Danh mục dựng sẵn. Rỗng chỉ có nghĩa "không gợi ý được gì", không phải hỏng. */
+/** Built-in presets. Empty only means "nothing to suggest", not a failure. */
 export async function providerPresets(): Promise<ProviderPreset[]> {
   if (isDemo()) return demoProviderPresets();
   if (!inTauri()) return [];
   try {
     return await invoke<ProviderPreset[]>("provider_presets");
   } catch (err) {
-    console.error("không đọc được danh mục provider", err);
+    console.error("failed to read provider presets", err);
     return [];
   }
 }
 
-/**
- * Lưu một provider. `input.id` rỗng (`null`) là thêm mới.
- *
- * `input.apiKey === null` nghĩa là **giữ nguyên khoá đã lưu**; chuỗi rỗng mới là xoá.
- * Quy ước đó do hợp đồng đặt ra, và biểu mẫu phải nói lại nó bằng tiếng người trên màn
- * hình — một người đổi tên provider rồi mất khoá sẽ không bao giờ đoán ra vì sao.
- */
+/** Save a provider; a `null` `input.id` adds one, and `apiKey === null` keeps the stored key while "" clears it. */
 export function saveProvider(input: ProviderInput): Promise<Provider> {
   if (isDemo()) return Promise.resolve(demoSaveProvider(input));
   return invoke<Provider>("save_provider", { input });
@@ -83,13 +64,7 @@ export function removeProvider(id: string): Promise<void> {
   return invoke("remove_provider", { id });
 }
 
-/**
- * Chọn provider sẽ chạy lượt **hội thoại** tiếp theo. Chỉ một cái giữ vai này.
- *
- * Không đụng tới vai nhúng: tài liệu vẫn đi tới provider đã chọn ở màn hình mô hình
- * nhúng. Đổi mô hình trò chuyện mà kéo theo cả chỗ tài liệu được gửi tới là một thay đổi
- * về quyền riêng tư xảy ra sau lưng người dùng.
- */
+/** Pick the provider for the next *chat* turn; the embedding role is untouched, since moving it is a privacy change. */
 export function setActiveProvider(id: string): Promise<void> {
   if (isDemo()) return Promise.resolve(demoSetActiveProvider(id));
   return invoke("set_active_provider", { id });
@@ -100,85 +75,33 @@ export function setProviderModel(id: string, model: string): Promise<void> {
   return invoke("set_provider_model", { id, model });
 }
 
-/**
- * Thử một cấu hình **chưa lưu**.
- *
- * Đây là lý do lệnh nhận cả `ProviderInput` chứ không nhận một `id`: giá trị đáng thử
- * nhất là giá trị người dùng vừa gõ vào và chưa dám lưu. Với provider đã có khoá thì để
- * `apiKey: null` và lõi tự lấy khoá cũ ra dùng.
- *
- * **Hai cờ, hai mức chắc chắn — đừng dùng lẫn.**
- *
- *   - `models[].tools` ở đây **không có thẩm quyền**: một lần thử cố ý không trả tiền để
- *     hỏi năng lực gọi tool của từng mô hình, nên lõi trả `false` cho gần hết. Giao diện
- *     phải đọc cờ đó từ `activeModels()`; hiện cảnh báo "không gọi được tool" từ kết quả
- *     thử là dán nhãn sai lên toàn bộ danh sách, và một cảnh báo luôn bật là một cảnh báo
- *     không ai đọc nữa.
- *   - `models[].embedding` thì **dùng được ngay**. Nó cũng chỉ là đoán theo tên ở Ollama
- *     và OpenAI-compatible (ở LM Studio thì có thẩm quyền), nhưng hậu quả của một lần
- *     đoán trượt khác hẳn: nó chỉ xếp một mô hình xuống dưới trong ô chọn mô hình nhúng,
- *     chứ không dán nhãn hỏng lên nó — và không có nó thì người dùng phải tự nhớ tên mô
- *     hình nhúng của máy chủ mình.
- */
+/** Probe an *unsaved* config, which is why it takes a `ProviderInput`. `models[].tools` here is NOT authoritative
+ * (read it from `activeModels()`); `models[].embedding` is usable, since a wrong guess only reorders a picker. */
 export function probeProvider(input: ProviderInput): Promise<ProviderProbe> {
   if (isDemo()) return Promise.resolve(demoProbeProvider(input));
   return invoke<ProviderProbe>("probe_provider", { input });
 }
 
-/**
- * Mô hình của provider **đang hoạt động** — nguồn có thẩm quyền cho cờ `tools`.
- *
- * Đi qua `list_models` chứ không qua `probe_provider` vì đúng một lý do: chỉ ở đây lõi
- * mới thật sự hỏi từng mô hình xem nó gọi được tool không. Bộ chọn mô hình treo cả một
- * cảnh báo lên cờ đó, nên nó phải lấy từ chỗ cờ đó đúng.
- *
- * Nuốt lỗi (`list_models` của `agent.ts` đã nuốt sẵn): nó chạy lúc mở màn hình, và danh
- * sách rỗng nghĩa là **máy chủ không trả lời được**, không phải "không có mô hình nào".
- */
+/** Models of the *active* provider, the authoritative source for the `tools` flag; empty means the server did not answer. */
 export async function activeModels(): Promise<ModelChoice[]> {
   if (isDemo()) return demoActiveModels();
   return await listModels();
 }
 
-/**
- * Kho mô hình của **một provider bất kỳ**, kèm cờ `embedding` của từng cái.
- *
- * Khác `activeModels()` ở đúng chỗ màn hình mô hình nhúng cần: `activeModels()` chỉ biết
- * provider đang giữ vai *hội thoại*, mà vai nhúng thường nằm trên một máy chủ khác —
- * nhúng tại chỗ, trò chuyện từ xa là cấu hình mà việc tách hai vai tồn tại để phục vụ.
- *
- * Nuốt lỗi và trả rỗng: nó chạy ngay khi người dùng vừa chọn provider, và rỗng ở đây có
- * nghĩa **không hỏi được máy chủ** — một trạng thái bình thường (máy chủ chưa bật, hoặc
- * provider từ xa không liệt kê). Nơi gọi phải giữ lối nhập tay cho đúng trường hợp đó.
- */
+/** Models of *any* provider with their `embedding` flag; empty means the server was unreachable, so keep manual entry. */
 export async function providerModels(providerId: string): Promise<ModelChoice[]> {
   if (isDemo()) return demoProviderModels(providerId);
   if (!inTauri()) return [];
   try {
     return await invoke<ModelChoice[]>("provider_models", { providerId });
   } catch (err) {
-    console.error("không đọc được kho mô hình của provider", err);
+    console.error("failed to read provider models", err);
     return [];
   }
 }
 
-/**
- * Cấu hình nhúng **đang có hiệu lực**.
- *
- * Đọc riêng chứ không suy ra từ `listProviders()`: chỉ lõi mới biết một cấu hình có tên
- * đầy đủ vẫn không dùng được (provider bị tắt, mô hình chưa chọn), và nó nói ra điều đó
- * trong `reason`. Suy lại ở phía này là dựng một bản luật thứ hai sẽ lệch sau lần sửa lõi
- * đầu tiên.
- *
- * Nuốt lỗi: chạy lúc mở màn hình, và "chưa cấu hình" là một trạng thái hợp lệ chứ không
- * phải một hỏng hóc — thư viện tài liệu khi đó vẫn tìm được bằng từ khoá.
- */
-/**
- * Mặc định hiện khi chưa gọi được lõi.
- *
- * Bật sẵn, vì đó là mặc định của service — và một màn hình nói "đang tắt" trong khi thực
- * tế đang bật là cách nhanh nhất khiến người dùng đi tắt một thứ vốn đã tắt.
- */
+/** The *effective* embedding config, read from the core rather than inferred, because only it knows `reason`. */
+/** Default shown when the core is unreachable; enabled, matching the service default, so the screen never lies. */
 const RERANK_MAC_DINH: RerankSetting = {
   enabled: true,
   backend: "onnx",
@@ -193,18 +116,12 @@ export async function rerankSetting(): Promise<RerankSetting> {
   try {
     return await invoke<RerankSetting>("rerank_setting");
   } catch (err) {
-    console.error("không đọc được cấu hình xếp hạng lại", err);
+    console.error("failed to read rerank setting", err);
     return RERANK_MAC_DINH;
   }
 }
 
-/**
- * Ghi lại cấu hình xếp hạng lại.
- *
- * **Không** nhúng lại gì cả, khác hẳn `setEmbedding`: bước này chấm lại thứ tự của những
- * đoạn đã tìm được, nó không đụng tới vector nào. Đổi xong là câu hỏi kế tiếp đã theo
- * cấu hình mới — tiến trình đọc tài liệu soi ngày sửa của tệp cấu hình và tự nạp lại.
- */
+/** Persist the rerank setting; unlike `setEmbedding` it re-embeds nothing, so the next question already uses it. */
 export function setRerank(next: Omit<RerankSetting, "reason">): Promise<RerankSetting> {
   return invoke<RerankSetting>("set_rerank", {
     enabled: next.enabled,
@@ -228,37 +145,24 @@ export async function embeddingSetting(): Promise<EmbeddingSetting> {
   try {
     return await invoke<EmbeddingSetting>("embedding_setting");
   } catch (err) {
-    console.error("không đọc được cấu hình nhúng", err);
+    console.error("failed to read embedding setting", err);
     return none;
   }
 }
 
-/**
- * Giao vai nhúng cho một provider và chốt mô hình nhúng của nó.
- *
- * Lệnh này **làm lõi bỏ toàn bộ vector cũ và nhúng lại cả thư viện** khi mô hình đổi:
- * vector của hai mô hình nằm ở hai không gian khác nhau, và so sánh chúng cho ra một con
- * số vô nghĩa trông y hệt một con số có nghĩa. Nơi gọi phải hỏi xác nhận trước.
- */
+/** Assign the embedding role; changing the model makes the core drop every vector and re-embed, so confirm first. */
 export function setEmbedding(providerId: string, model: string): Promise<void> {
   if (isDemo()) return Promise.resolve(demoSetEmbedding(providerId, model));
   return invoke("set_embedding", { providerId, model });
 }
 
-/**
- * Thử nhúng **thật một câu** và đo số chiều của vector trả về.
- *
- * Khác hẳn `probeProvider`, và khác ở đúng chỗ quan trọng: `/api/tags` của Ollama trả về
- * mọi mô hình và không có gì trong đó nói cái nào nhúng được, nên một danh sách "nối
- * được" không chứng minh gì cả. Chỉ khi một câu đi qua và một vector quay về thì mới biết
- * chắc — và số chiều là bằng chứng của việc đó.
- */
+/** Actually embed one sentence and measure the vector; a reachable model list proves nothing about embedding. */
 export function probeEmbedding(providerId: string, model: string): Promise<EmbeddingProbe> {
   if (isDemo()) return Promise.resolve(demoProbeEmbedding(providerId, model));
   return invoke<EmbeddingProbe>("probe_embedding", { providerId, model });
 }
 
-/** `ProviderInput` để thử/đọc mô hình của một provider đã lưu, giữ nguyên khoá của nó. */
+/** A `ProviderInput` for probing or listing a saved provider's models, keeping its stored key. */
 export function inputOf(provider: Provider): ProviderInput {
   return {
     id: provider.id,
@@ -272,23 +176,22 @@ export function inputOf(provider: Provider): ProviderInput {
   };
 }
 
-/**
- * Mô hình nhúng gợi ý theo loại provider.
- *
- * Là **giá trị điền sẵn sửa được**, không phải một lựa chọn đã chốt: người dùng có thể đã
- * kéo về `mxbai-embed-large` hay `bge-m3`, và một ô chỉ cho chọn trong hai cái tên dưới
- * đây là một ô nói rằng máy của họ chỉ có hai mô hình.
- */
+/** Suggested embedding model per provider kind: an editable prefill, not a closed choice. */
 export function suggestedEmbeddingModel(kind: Provider["kind"]): string {
   switch (kind) {
     case "ollama":
       return "nomic-embed-text";
-    // Kho của LM Studio không có `text-embedding-3-small` — đó là mô hình của OpenAI. Gợi
-    // ý một cái tên không tồn tại tệ hơn không gợi ý gì: người dùng dán nó vào rồi đọc
-    // một lỗi 404 chẳng nói được vì sao.
+    // LM Studio has no `text-embedding-3-small` (that is OpenAI's); suggesting a missing name only yields a 404.
     case "lmstudio":
       return "text-embedding-nomic-embed-text-v1.5";
     default:
       return "text-embedding-3-small";
   }
+}
+
+/** Translated preset hint, looked up by the stable `id` so the protocol need not change and unknown ids fall back. */
+export function presetHint(preset: ProviderPreset): string {
+  const table: Record<string, Msg> = S.providers.presetHint;
+  const msg = table[preset.id];
+  return msg === undefined ? preset.hint : t(msg);
 }

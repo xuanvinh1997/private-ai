@@ -1,26 +1,12 @@
-/**
- * Bản sao TypeScript của `AgentEvent` trong app/src/lib.rs.
- *
- * Hai đầu phải khớp bằng tay cho tới khi có bước sinh mã (ts-rs hoặc specta). Cho tới
- * lúc đó, sửa một bên mà quên bên kia sẽ hỏng lúc chạy chứ không lúc biên dịch — nên
- * mọi thay đổi ở đây phải kèm thay đổi tương ứng bên Rust trong cùng một commit.
- *
- * Phần dưới `Error` là những biến thể giao diện cần nhưng Rust CHƯA có. Chúng được
- * khai báo trước để dựng được giao diện và để khoá hình dạng payload; danh sách đầy đủ
- * nằm trong báo cáo bàn giao. Trên wire, tên trường giữ snake_case vì `rename_all` của
- * serde chỉ đổi tên *biến thể*, không đổi tên trường.
- */
+/** TypeScript mirror of `AgentEvent` in app/src/lib.rs; the two sides are matched by hand, so change both in
+ * one commit. Variants below `Error` are declared ahead of Rust; wire field names stay snake_case. */
 
-/** Một hunk diff. `old_text: null` nghĩa là tệp mới — không phải là "không đổi". */
+/** One diff hunk. `old_text: null` means a new file, not "unchanged". */
 export interface DiffHunk {
   path: string;
   old_text: string | null;
   new_text: string;
-  /**
-   * Số dòng đầu của phần cũ/mới trong tệp thật. Bên dsh không mang số này qua wire nên
-   * nó là tuỳ chọn: vắng thì khối diff đánh số từ 1 và đó là số *trong hunk*, không
-   * phải số trong tệp. Nếu Rust tính được thì gửi kèm, giao diện dùng ngay.
-   */
+  /** First line of the old/new side in the real file; absent, the block numbers from 1 within the hunk. */
   old_start?: number | null;
   new_start?: number | null;
 }
@@ -40,28 +26,19 @@ export interface SearchGroup {
   matches: SearchMatch[];
 }
 
-/**
- * `tool/result.data.meta` — thứ duy nhất được transport để giao diện vẽ thẻ giàu.
- *
- * dsh có `presentCall`/`presentResult` phía host nhưng bản web KHÔNG dùng; nó đọc thẳng
- * `meta`. Ta chép đúng chỗ đó: giao diện tự render từ sự kiện thô, không có API trình bày.
- */
-/** Vé lấy lại toàn văn khi output đã bị cắt cho vừa ngân sách token. */
+/** `tool/result.data.meta`, the only transported input for rich cards: the UI renders raw events, with no present API. */
+/** Ticket for retrieving the full text when output was cut to fit the token budget. */
 export interface SpillMeta {
   id: string;
   tool: string;
-  /** Kích thước toàn văn, tính bằng ký tự Unicode. */
+  /** Full-text size, in Unicode characters. */
   chars: number;
   lines: number;
 }
 
 export interface ToolMeta {
   diffs?: DiffHunk[];
-  /**
-   * Vé lấy lại toàn văn khi output đã bị cắt cho vừa ngân sách token.
-   *
-   * Mô hình lấy lại bằng tool `spill_read`; giao diện dùng nó để vẽ lối xem đầy đủ.
-   */
+  /** Ticket for the full text when output was truncated; the model reads it with `spill_read`. */
   spill?: SpillMeta;
   read?: {
     path: string;
@@ -69,10 +46,7 @@ export interface ToolMeta {
     lines: ReadLine[];
     total_lines: number;
     lang?: string | null;
-    /**
-     * Đã cắt bớt. Không có cờ này thì "đọc hết tệp" và "đọc phần đầu và phần cuối" trông
-     * giống hệt nhau, và người đọc kết luận "hết rồi" ở đúng chỗ lõi ngừng đọc.
-     */
+    /** Truncated; without this flag a partial read looks exactly like a complete one. */
     truncated?: boolean;
   };
   search?: {
@@ -88,7 +62,7 @@ export interface ToolMeta {
     output: string;
     exit_code: number | null;
     signal?: string | null;
-    /** Lệnh chạy nền: chưa có exit code không có nghĩa là treo. */
+    /** Background command: a missing exit code does not mean it hung. */
     background?: boolean;
     job_id?: string | null;
   };
@@ -102,17 +76,10 @@ export interface TodoItem {
   status: TodoStatus;
 }
 
-/** Quyết định duyệt. Chỉ hai giá trị: không có "nhớ lựa chọn" trong từ vựng. */
+/** Approval decision; only two values, with no "remember my choice" in the vocabulary. */
 export type ApprovalDecision = "allowed_once" | "rejected";
 
-/**
- * Quyền tool cấp cho **một lượt** — bản sao của `ToolScope` trong app/src/protocol.rs.
- *
- * Đi kèm từng tin nhắn chứ không phải một thiết lập lưu lại: người dùng hạ quyền cho đúng
- * một câu hỏi rồi nâng lại là chuyện thường, còn một thiết lập dính là thứ họ quên mất
- * mình đã đặt. Lõi đọc trường này và siết sổ đăng ký tool theo nó, ở **cả hai tầng** —
- * lúc liệt kê cho mô hình và lúc mô hình gọi thật.
- */
+/** Tool permission for *one turn*, mirroring `ToolScope` in app/src/protocol.rs; the core enforces it at both layers. */
 export type ToolScope = "read" | "write" | "shell";
 
 export type AgentEvent =
@@ -126,13 +93,10 @@ export type AgentEvent =
       name: string;
       is_error: boolean;
       preview: string;
-      /** CHƯA có bên Rust. Nguồn của mọi thẻ giàu (diff, terminal, read, search). */
+      /** NOT yet on the Rust side. The source of every rich card (diff, terminal, read, search). */
       meta?: ToolMeta | null;
     }
-  /**
-   * Token của bước vừa xong. `context_window` là `null` khi không hỏi được mô hình — và
-   * khi ấy giao diện chỉ hiện con số, không hiện tỉ lệ.
-   */
+  /** Tokens for the step just finished; `context_window` is `null` when unknown, so only the count is shown. */
   | {
       kind: "usage";
       input_tokens: number;
@@ -141,22 +105,11 @@ export type AgentEvent =
     }
   | { kind: "final"; message_id: string }
   | { kind: "error"; message: string }
-  /**
-   * CHƯA có bên Rust — diff *dự kiến*, phát ngay khi tool bắt đầu để người dùng thấy
-   * thay đổi trước khi nó xảy ra. Giao diện cũng tự suy được từ `args` (xem `diff.ts`),
-   * nên biến thể này chỉ là đường tắt cho tool mà args không đủ để dựng diff.
-   */
+  /** NOT yet on the Rust side: the *intended* diff, a shortcut for tools whose args cannot yield one (see `diff.ts`). */
   | { kind: "diff"; call_id: string; diffs: DiffHunk[] }
-  /**
-   * CHƯA có bên Rust — danh sách việc. dsh đi qua projection `todos`, KHÔNG derive từ
-   * event; ta giữ đúng tinh thần đó bằng một sự kiện mang *toàn bộ* danh sách mỗi lần,
-   * để giao diện không phải gấp trạng thái.
-   */
+  /** NOT yet on the Rust side: the todo list, sent whole each time so the UI never folds state. */
   | { kind: "todo"; items: TodoItem[] }
-  /**
-   * CHƯA có bên Rust — host hỏi ngược giao diện. Tương ứng waterfall `approval/request`
-   * của dsh. Không trả lời được = từ chối (xem `agent.ts`).
-   */
+  /** NOT yet on the Rust side: the host asks the UI. No answer means refusal (see `agent.ts`). */
   | {
       kind: "approval_request";
       request_id: string;
@@ -166,10 +119,10 @@ export type AgentEvent =
       reason: string | null;
       timeout_ms: number | null;
     }
-  /** CHƯA có bên Rust — host rút lại câu hỏi (lượt bị huỷ). Giao diện đóng hộp thoại. */
+  /** NOT yet on the Rust side: the host withdraws the question (turn cancelled); the UI closes the dialog. */
   | { kind: "approval_cancel"; request_id: string };
 
-/** Một tool call đang chạy hoặc đã xong, dựng từ cặp tool_start/tool_end. */
+/** A tool call, running or finished, built from the tool_start/tool_end pair. */
 export interface ToolCall {
   callId: string;
   name: string;
@@ -177,16 +130,11 @@ export interface ToolCall {
   state: "running" | "ok" | "error";
   preview?: string;
   meta?: ToolMeta;
-  /** Diff dự kiến lúc đang chạy. Bị `meta.diffs` thay thế khi tool xong. */
+  /** Intended diff while running; replaced by `meta.diffs` once the tool finishes. */
   intendedDiffs?: DiffHunk[];
 }
 
-/**
- * Một dòng trong bản ghi hội thoại.
- *
- * Đây là đơn vị dispatch của registry: `kind` là khoá tra renderer. Thêm một loại nội
- * dung mới = thêm một biến thể ở đây + một lần `registerNode`, không đụng `Transcript`.
- */
+/** One row of the transcript and the registry's dispatch unit: `kind` is the renderer key. */
 export type ConversationNode =
   | { id: string; kind: "user"; text: string; at?: number }
   | { id: string; kind: "assistant"; text: string; streaming: boolean; at?: number }
@@ -198,28 +146,16 @@ export type ConversationNode =
 
 export type NodeKind = ConversationNode["kind"];
 
-/** Một phiên trong thanh bên. `updatedAt` là epoch ms. */
+/** A session in the sidebar. `updatedAt` is epoch ms. */
 export interface SessionSummary {
   id: string;
   title: string;
-  /**
-   * Câu cuối cùng đã nói trong phiên. `null` khi phiên chưa nói gì — và lúc đó hàng phải
-   * là **một dòng**, không phải hai dòng với dòng dưới trống.
-   */
+  /** Last thing said in the session; `null` means the row must be one line, not two with an empty second. */
   preview: string | null;
   updatedAt: number;
 }
 
-/**
- * Một node trong bản ghi đã lưu, dựng lại từ sổ tay phiên bên Rust.
- *
- * Cùng từ vựng `kind` với `ConversationNode` để sổ đăng ký renderer dùng lại nguyên vẹn —
- * bản ghi nạp lại và lượt đang chạy vẽ bằng cùng một mã.
- *
- * `created_at` giữ snake_case vì `serde` chỉ đổi tên *biến thể*, không đổi tên trường.
- * Nó là **giờ trong sổ**, khác với giờ mà lượt đang chạy tự đóng dấu lúc nhận — hai
- * nguồn khác nhau cho hai tình huống khác nhau, và cái đó đúng.
- */
+/** A node from the stored session log; it shares `kind` with `ConversationNode` so one renderer set covers both. */
 export type HistoryNode =
   | { kind: "user"; id: string; text: string; created_at: number }
   | { kind: "assistant"; id: string; text: string; created_at: number }
@@ -235,36 +171,19 @@ export type HistoryNode =
       created_at: number;
     };
 
-/** Một mô hình máy chủ đang có. */
+/** A model the server offers. */
 export interface ModelChoice {
   id: string;
-  /**
-   * Gọi được tool không. Mô hình không gọi được tool thì coding agent im lặng vô dụng —
-   * nó vẫn trả lời, chỉ là không bao giờ đọc hay sửa được gì — nên giao diện phải nói ra
-   * trước khi người dùng chọn nhầm.
-   */
+  /** Whether it can call tools; without that a coding agent is silently useless, so the UI must say so up front. */
   tools: boolean;
-  /** Trò chuyện được. */
+  /** Can chat. */
   chat: boolean;
-  /**
-   * Nhúng được.
-   *
-   * Hai cờ không loại trừ nhau. Chỉ nhóm `embedding && !chat` — thứ **chỉ** nhúng được —
-   * bị giấu khỏi bộ chọn mô hình hội thoại. Lọc theo `chat` thì chặt hơn nhưng sai hướng:
-   * một máy chủ Ollama đời cũ không có trường `capabilities` buộc lõi đoán theo tên, và
-   * một lần đoán trượt khi ấy làm biến mất một mô hình đang dùng được.
-   */
+  /** Can embed; the flags are not exclusive, and only `embedding && !chat` is hidden from the chat model picker. */
   embedding: boolean;
   contextWindow: number | null;
 }
 
-/**
- * Một dự án trong danh sách gần đây.
- *
- * `isCurrent` do lõi chấm chứ không do giao diện suy ra: đổi dự án là tháo và cắm lại cả
- * một nhánh plugin, nên chỉ lõi mới biết nhánh nào đã cắm xong. Giao diện đoán trước sẽ
- * hiện tên dự án mới trong lúc mọi tool vẫn còn trỏ vào dự án cũ.
- */
+/** A project in the recent list; `isCurrent` is set by the core, since only it knows when the plugins finished swapping. */
 export interface Project {
   id: string;
   name: string;
@@ -272,28 +191,16 @@ export interface Project {
   lastOpenedAt: number;
   isCurrent: boolean;
   kind: ProjectKind;
-  /** URL đã clone về. `null` = thư mục vốn có sẵn trên máy. */
+  /** Clone source URL; `null` means a directory that was already on the machine. */
   origin: string | null;
 }
 
-/* ─────────────────────────────────────────────────────────────────────────────
- * Dự án hai loại, thư viện tài liệu, provider, và MCP.
- *
- * Bản gốc nằm ở `app/src/protocol.rs`; hai đầu khớp bằng tay, nên sửa ở đây phải sửa cả
- * bên kia trong cùng một commit.
- * ───────────────────────────────────────────────────────────────────────────── */
+/* --- Project kinds, document library, providers and MCP; mirrored by hand from `app/src/protocol.rs`. --- */
 
-/**
- * Mã nguồn, hay một chồng tài liệu.
- *
- * Không phải một nhãn để lọc: nó chọn tầng plugin nào được cắm. Dự án tài liệu không có
- * `bash` và không có `edit` — người ta không sửa mã trong một thư mục toàn PDF, và cấp
- * quyền chạy lệnh cho một chỗ toàn tệp người ngoài gửi tới là mở đúng cánh cửa không nên
- * mở.
- */
+/** Source code or a pile of documents; not a filter label but the choice of which plugin layer gets attached. */
 export type ProjectKind = "code" | "docs";
 
-/** Tiến trình `git clone`. `percent` vắng ở những pha git không đếm được. */
+/** `git clone` progress; `percent` is absent in phases git cannot count. */
 export interface CloneProgress {
   phase: string;
   percent: number | null;
@@ -305,27 +212,17 @@ export interface CloneProgress {
 
 export type DocumentFormat = "pdf" | "docx" | "markdown" | "text" | "html" | "csv" | "code";
 
-/**
- * Nguyên liệu để dựng gợi ý câu hỏi cho màn hình trống.
- *
- * Chỉ **sự thật về dự án đang mở** — tên ký hiệu, tên thư mục, tên tài liệu — không một
- * chữ nào của câu gợi ý. Câu chữ nằm ở `lib/prompts.ts`, cạnh những bộ tĩnh mà nó phải
- * hoà giọng cùng; để lõi trả về câu hoàn chỉnh là để hai chỗ cùng viết một giọng, rồi
- * một ngày chúng lệch nhau.
- *
- * Rỗng cả ba là trạng thái hợp lệ, không phải lỗi: chưa mở dự án, chỉ mục chưa quét lần
- * nào, hay thư viện chưa có tài liệu nào.
- */
+/** Raw facts about the open project for empty-screen suggestions; the wording itself lives in `lib/prompts.ts`. */
 export interface PromptSeeds {
-  /** Ký hiệu nhiều quan hệ nhất, nhiều trước. Chỉ tên, không kèm đường dẫn. */
+  /** Symbols with the most relations first; names only, no paths. */
   symbols: string[];
-  /** Thư mục nhiều ký hiệu nhất, nhiều trước. */
+  /** Directories with the most symbols first. */
   directories: string[];
-  /** Tên tài liệu trong thư viện. Chỉ dự án tài liệu mới có. */
+  /** Document titles in the library; docs projects only. */
   documents: string[];
 }
 
-/** Một tài liệu trong thư viện. */
+/** A document in the library. */
 export interface DocumentView {
   id: string;
   path: string;
@@ -333,10 +230,7 @@ export interface DocumentView {
   format: DocumentFormat;
   bytes: number;
   chunks: number;
-  /**
-   * Đã có vector chưa. `false` mà `error` là `null` nghĩa là **đang xếp hàng**, không
-   * phải hỏng — và giao diện phải nói đúng như vậy, vì tìm bằng từ khoá đã chạy được rồi.
-   */
+  /** Whether vectors exist; `false` with `error === null` means queued, not failed. */
   embedded: boolean;
   addedAt: number;
   error: string | null;
@@ -344,7 +238,7 @@ export interface DocumentView {
 
 export interface IngestProgress {
   path: string;
-  /** `reading` `stored` `failed` `skipped` `removed` `embedding` `finished`. */
+  /** One of `reading` `stored` `failed` `skipped` `removed` `embedding` `finished`. */
   stage: string;
   done: number;
   total: number;
@@ -352,7 +246,7 @@ export interface IngestProgress {
   error: string | null;
 }
 
-/** Sức khoẻ thư viện — đủ để nói **vì sao** câu trả lời kém, thay vì chỉ nói nó kém. */
+/** Library health, enough to say *why* answers are poor rather than just that they are. */
 export interface LibraryStats {
   documents: number;
   chunks: number;
@@ -360,20 +254,15 @@ export interface LibraryStats {
   embedder: string | null;
   semanticReady: boolean;
   reason: string | null;
-  /**
-   * Thư mục tài liệu của người dùng.
-   *
-   * Màn hình phải chỉ ra được nó: câu hỏi "vì sao không thấy tệp nào" bắt đầu bằng việc
-   * người dùng kiểm lại họ đã chỉ vào đâu.
-   */
+  /** The user's document directory; the screen must show it, since "no files" starts with checking the path. */
   root: string;
   filesSeen: number;
-  /** Bỏ qua vì chạm trần — kích thước tệp hoặc trần số tệp. */
+  /** Skipped for hitting a limit, either file size or the file-count cap. */
   filesSkipped: number;
   unreadable: number;
-  /** Còn trong thư mục nhưng người dùng đã bỏ khỏi thư viện. */
+  /** Still in the directory but removed from the library by the user. */
   excluded: number;
-  /** `null` là **chưa quét lần nào** — khác hẳn "quét rồi và không có gì". */
+  /** `null` means never scanned, which is not the same as scanned and empty. */
   scannedAt: number | null;
   scanning: { done: number; total: number } | null;
 }
@@ -390,12 +279,7 @@ export interface DocumentHit {
 
 export type ProviderKind = "ollama" | "lmstudio" | "openai";
 
-/**
- * Một provider đã cấu hình. **Không bao giờ mang khoá API.**
- *
- * `hasKey` thay cho chính cái khoá: giao diện chỉ cần biết ô nhập nên hiện "đã đặt" hay
- * hiện trống. Một khoá đi qua IPC là một khoá nằm sẵn trong mọi công cụ gỡ lỗi đang mở.
- */
+/** A configured provider, never carrying the API key: `hasKey` is all the UI needs, and a key on IPC is a leaked key. */
 export interface Provider {
   id: string;
   name: string;
@@ -404,42 +288,29 @@ export interface Provider {
   hasKey: boolean;
   enabled: boolean;
   onDevice: boolean;
-  /** Đang dùng để **trò chuyện**. */
+  /** Currently used for *chat*. */
   activeChat: boolean;
-  /**
-   * Đang dùng để **nhúng tài liệu**.
-   *
-   * Hai vai tách hẳn nhau, và không phải để cho có: mô hình nhúng và mô hình hội thoại là
-   * hai loại mô hình khác nhau trên hai endpoint khác nhau, và cách ghép hợp lý nhất
-   * trong thực tế lại là ghép chéo — nhúng bằng một mô hình nhỏ chạy tại chỗ, trò chuyện
-   * bằng một mô hình lớn từ xa. Buộc chúng dùng chung một provider là loại bỏ đúng cấu
-   * hình mà phần lớn người dùng muốn.
-   */
+  /** Currently used for *embedding*; the roles are separate because local embedding with remote chat is the common pairing. */
   activeEmbedding: boolean;
-  /** Mô hình hội thoại. */
+  /** Chat model. */
   model: string | null;
-  /** Mô hình nhúng. */
+  /** Embedding model. */
   embeddingModel: string | null;
 }
 
-/** Cấu hình nhúng đang có hiệu lực. */
-/**
- * Cấu hình bước xếp hạng lại.
- *
- * Không nằm trong danh sách provider vì reranker mặc định **không phải một máy chủ**: nó
- * là một tệp mô hình chạy trong tiến trình đọc tài liệu. Không có địa chỉ, không có khoá.
- */
+/** The effective embedding configuration. */
+/** Rerank settings, kept out of the provider list because the default reranker is a model file, not a server. */
 export interface RerankSetting {
   enabled: boolean;
-  /** `onnx` chạy tại chỗ; `http` gọi ra một endpoint `/v1/rerank` bên ngoài. */
+  /** `onnx` runs locally; `http` calls an external `/v1/rerank` endpoint. */
   backend: "onnx" | "http";
-  /** Tên repo Hugging Face với `onnx`, hoặc tên mô hình của máy chủ với `http`. */
+  /** A Hugging Face repo name for `onnx`, or the server's model name for `http`. */
   model: string;
-  /** Lấy về bao nhiêu đoạn để chấm lại. Đây là nút chỉnh độ trễ. */
+  /** How many chunks to fetch for rescoring; this is the latency dial. */
   candidates: number;
-  /** Giữ lại bao nhiêu sau khi chấm. */
+  /** How many to keep after scoring. */
   topN: number;
-  /** Câu nói ra cái giá đang trả — chậm bao nhiêu, hoặc mất gì khi tắt. */
+  /** A sentence naming the cost being paid: how much slower, or what is lost when off. */
   reason: string | null;
 }
 
@@ -447,22 +318,16 @@ export interface EmbeddingSetting {
   providerId: string | null;
   providerName: string | null;
   model: string | null;
-  /** Tài liệu không rời khỏi máy này khi nhúng. */
+  /** Documents never leave this machine during embedding. */
   onDevice: boolean;
   reason: string | null;
 }
 
-/**
- * Kết quả thử **nhúng thật một câu**.
- *
- * Không phải một phép liệt kê mô hình: `/api/tags` trả về mọi mô hình và không có gì
- * trong đó nói cái nào nhúng được. Cách duy nhất biết chắc là gửi một câu đi và xem có
- * vector trả về không.
- */
+/** Result of actually embedding one sentence; listing models proves nothing about which of them can embed. */
 export interface EmbeddingProbe {
   ok: boolean;
   message: string;
-  /** Số chiều đo được từ vector thật. */
+  /** Dimensions measured from the real vector. */
   dimensions: number | null;
 }
 
@@ -478,7 +343,7 @@ export interface ProviderPreset {
   hint: string;
 }
 
-/** Gửi lên khi lưu. `apiKey` là `null` nghĩa là **giữ nguyên khoá cũ**, không phải xoá. */
+/** Sent on save; `apiKey === null` keeps the stored key rather than clearing it. */
 export interface ProviderInput {
   id: string | null;
   name: string;
@@ -490,10 +355,10 @@ export interface ProviderInput {
   embeddingModel: string | null;
 }
 
-/** Một mục trong cây thư mục dự án. */
+/** One entry in the project directory tree. */
 export interface DirEntry {
   name: string;
-  /** Đường dẫn tuyệt đối. Gửi lại nguyên văn khi bung một thư mục con. */
+  /** Absolute path, sent back verbatim when expanding a subdirectory. */
   path: string;
   isDir: boolean;
 }
@@ -531,14 +396,9 @@ export interface McpCatalogEntry {
   args: string[];
   env: McpEnvVar[];
   homepage: string;
-  /** `node`, `python`, `docker` — cảnh báo trước, chứ không để người dùng nhìn `failed`. */
+  /** `node`, `python`, `docker`: warn up front instead of letting the user stare at `failed`. */
   requires: string[];
-  /**
-   * Endpoint của một server **chạy từ xa**. `null` là mục chạy tại chỗ.
-   *
-   * Có nó thì `requires` rỗng: không phải vì mục này quên khai, mà vì nó thật sự không cần
-   * gì trên máy — và đó là thứ đáng nói ra to nhất ở màn hình này.
-   */
+  /** Endpoint of a *remotely hosted* server; `null` means local. With it, `requires` is empty because nothing is needed. */
   url: string | null;
 }
 
@@ -591,7 +451,7 @@ export interface GraphEdge {
 export interface GraphView {
   nodes: GraphNode[];
   edges: GraphEdge[];
-  /** Đã cắt bớt để vẽ được: một đỉnh bốn trăm cạnh vẽ ra là một quả cầu đen. */
+  /** Truncated to stay drawable: a node with four hundred edges renders as a black ball. */
   truncated: boolean;
 }
 

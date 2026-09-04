@@ -1,25 +1,11 @@
 import { Show } from "solid-js";
 import { useDragDrop } from "../../hooks/useDragDrop";
+import { S, t } from "../../lib/i18n";
 import Icon from "../Icon";
 import { InfoDot } from "../settings/FormKit";
 import { Button } from "../projects/DialogShell";
 
-/**
- * Vùng thả tệp.
- *
- * Kéo thả đi qua `onDragDropEvent` của Tauri (bọc trong `useDragDrop`) chứ **không** qua
- * sự kiện drop của HTML5. Trình duyệt cố ý không cho biết vị trí thật của tệp — nó chỉ
- * đưa một `File` không có đường dẫn — mà lõi lại cần đúng đường dẫn tuyệt đối để đọc.
- * Một vùng thả dựng bằng HTML5 sẽ "nhận" được tệp rồi không nạp được tệp nào.
- *
- * Chiếm cả một khối khi thư viện còn rỗng, co lại thành một hàng nút khi đã có tài liệu:
- * lúc rỗng thì đây là việc duy nhất cần làm trên màn hình, còn sau đó cái người dùng tới
- * để xem là danh sách tài liệu, không phải cái khung mời họ nạp thêm.
- *
- * Không có trạng thái "đang rê tệp qua": `useDragDrop` chỉ phát ra lúc **thả**, và hook
- * đó thuộc về người khác. Bù lại bằng một câu hướng dẫn luôn hiện, thay vì một hiệu ứng
- * chỉ xuất hiện đúng lúc không ai nhìn.
- */
+/** Drop zone over Tauri's drag-drop, not HTML5, because the browser hides the real file path; it fills the screen while the library is empty and shrinks to a row afterwards. */
 export default function DropZone(props: {
   compact?: boolean;
   busy?: boolean;
@@ -40,15 +26,15 @@ export default function DropZone(props: {
           </span>
           <div class="flex flex-col items-center gap-2xs">
             <p class="m-0 flex items-center gap-2xs text-sm font-medium text-ink">
-              Thư viện còn trống
-              <InfoDot text="Nhận PDF, Word, Markdown, HTML, CSV và văn bản thuần — tệp gốc nằm nguyên chỗ cũ, thư viện chỉ đọc nội dung." />
+              {t(S.docs.drop.emptyTitle)}
+              <InfoDot text={t(S.docs.drop.emptyMore)} />
             </p>
             <p class="m-0 max-w-[46ch] text-xs text-muted">
-              Kéo tệp vào cửa sổ, hoặc chọn tệp từ máy.
+              {t(S.docs.drop.emptyHint)}
             </p>
           </div>
           <Button variant="primary" icon="plus" disabled={props.busy} onClick={props.onPick}>
-            Chọn tệp…
+            {t(S.docs.drop.pick)}
           </Button>
         </div>
       }
@@ -57,9 +43,9 @@ export default function DropZone(props: {
         <span class="text-faint">
           <Icon name="upload" size={15} />
         </span>
-        <span class="flex-1 text-xs text-muted">Kéo tệp thả vào cửa sổ để nạp thêm.</span>
+        <span class="flex-1 text-xs text-muted">{t(S.docs.drop.compactHint)}</span>
         <Button variant="outline" icon="plus" disabled={props.busy} onClick={props.onPick}>
-          Chọn tệp…
+          {t(S.docs.drop.pick)}
         </Button>
       </div>
     </Show>

@@ -1,24 +1,6 @@
-"""Cắt tài liệu thành đoạn, có nhớ mục và nhớ trang.
-
-Là một :class:`~langchain_text_splitters.TextSplitter` thật, nên nó ghép được vào mọi
-thứ khác của LangChain. Nhưng phần đáng nói không nằm ở giao diện mà ở ba luật:
-
-**1. Đoạn không bao giờ vắt qua một tiêu đề hay một ranh giới trang.** Cả hai là điểm
-xả. Lý do là trích dẫn: một đoạn nửa nằm ở trang 4 nửa ở trang 5 thì con số trang in ra
-cạnh nó sai một nửa số lần, và người dùng mở tệp ra không thấy câu mình vừa đọc.
-
-**2. Mỗi đoạn mang theo tiêu đề mục đang có hiệu lực.** "Phần Bảo mật nói gì" là câu hỏi
-mà chỉ nội dung đoạn không trả lời được. Tiêu đề đi vào cả chỉ mục từ khoá lẫn văn bản
-đem nhúng — xem :func:`embedding_text`.
-
-**3. Không mất chữ.** Các đoạn phủ kín mọi ký tự không phải khoảng trắng, và đoạn sau bắt
-đầu **trước** chỗ đoạn trước kết thúc. Phần chồng lấn tồn tại vì câu trả lời hay nhất
-thường nằm vắt qua ranh giới: một câu hỏi và một câu đáp ở hai đoạn khác nhau thì không
-đoạn nào trả lời được nó.
-
-Thứ tự ưu tiên khi chọn chỗ cắt: **tiêu đề → đoạn văn → câu → cắt cứng.** Cắt cứng chỉ
-xảy ra với một "câu" dài hơn cả một đoạn, tức là một bảng biểu hoặc một khối mã.
-"""
+"""Split documents into chunks that remember their section and page. Three rules: a chunk
+never crosses a heading or a page boundary, every chunk carries its section heading, and
+no text is lost. Split priority: heading -> paragraph -> sentence -> hard cut."""
 
 from __future__ import annotations
 
@@ -38,25 +20,24 @@ __all__ = [
     "embedding_text",
 ]
 
-#: Tiêu đề gán cho phần văn bản đứng trước tiêu đề đầu tiên của tài liệu.
+#: Section assigned to text preceding the document's first heading.
 DEFAULT_SECTION = "Nội dung"
 
 HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-#: Một tiêu đề dài bất thường làm hỏng cả hàng trong bảng tài liệu lẫn dòng trích dẫn.
+#: An unusually long heading breaks both the document table row and the citation line.
 MAX_SECTION_TITLE = 240
-#: Dấu kết câu **theo sau bởi khoảng trắng**. Điều kiện sau loại đúng hai thứ hay bị cắt
-#: nhầm: số thập phân (``3.14``) và tên miền (``example.com``).
+#: Sentence end *followed by whitespace*; the second condition spares decimals and domain names.
 SENTENCE_END = re.compile(r"(?<=[.!?…;])\s+")
 
 
 @dataclass(slots=True)
 class Chunk:
-    """Một đoạn, đủ để dựng một trích dẫn kiểm chứng được."""
+    """One chunk, enough to build a verifiable citation."""
 
     ordinal: int
     text: str
     section: str
-    #: ``0`` nghĩa là định dạng này không có khái niệm trang.
+    #: `0` means this format has no notion of pages.
     page: int = 0
 
     def to_document(self, **metadata: Any) -> Document:
@@ -72,42 +53,30 @@ class Chunk:
 
 
 def embedding_text_for(section: str, text: str) -> str:
-    """Văn bản thật sự đem đi nhúng.
-
-    Tiêu đề mục được ghép vào **trước** nội dung. Nghe như một chi tiết, nhưng nó là một
-    trong những chỗ tầng Rust làm sai: bên đó chỉ mục từ khoá cân tiêu đề gấp đôi trong
-    khi phần nhúng chỉ thấy thân đoạn, nên nửa ngữ nghĩa mất đúng cái ngữ cảnh mà nửa từ
-    khoá coi là quan trọng nhất.
-
-    Nhận hai chuỗi rời chứ không nhận một :class:`Chunk`, vì nó được gọi từ hai phía:
-    lúc nạp thì có :class:`Chunk`, lúc nhúng bù thì chỉ có hàng đọc lên từ SQLite.
-
-    Đổi hàm này là đổi ý nghĩa của mọi vector đã lưu. Có một khoá phiên bản canh chuyện
-    đó — xem ``EMBED_INPUT_VERSION`` trong :mod:`pai_rag_service.embed`.
-    """
+    """The text actually embedded, with the section heading prepended so the semantic half sees the context the keyword half weights most; changing this changes every stored vector."""
     if section and section != DEFAULT_SECTION:
         return f"{section}\n\n{text}"
     return text
 
 
 def embedding_text(chunk: Chunk) -> str:
-    """:func:`embedding_text_for` cho một :class:`Chunk`."""
+    """:func:`embedding_text_for` for a :class:`Chunk`."""
     return embedding_text_for(chunk.section, chunk.text)
 
 
 @dataclass(slots=True)
 class _Unit:
-    """Đơn vị nhỏ nhất thuật toán chịu tách rời nhau."""
+    """The smallest unit the algorithm will separate."""
 
     text: str
     section: str
     page: int
-    #: Đơn vị này có buộc mở một đoạn mới không (tiêu đề, hoặc sang trang).
+    #: Does this unit force a new chunk (a heading, or a page turn)?
     flush: bool
 
 
 class SectionAwareSplitter(TextSplitter):
-    """Cắt văn bản thành đoạn nhớ được mục và trang của mình."""
+    """Splits text into chunks that remember their section and page."""
 
     def __init__(
         self,
@@ -116,32 +85,29 @@ class SectionAwareSplitter(TextSplitter):
         chunk_overlap: int = 180,
         default_section: str = DEFAULT_SECTION,
     ) -> None:
-        # Chồng lấn bằng hoặc lớn hơn đoạn thì đoạn sau chứa trọn đoạn trước và việc cắt
-        # không tiến lên được. Siết ở đây thay vì tin người gọi.
+        # An overlap at or above the chunk size would make each chunk contain the previous one and stop progress.
         size = max(1, chunk_size)
         super().__init__(chunk_size=size, chunk_overlap=min(max(0, chunk_overlap), size - 1))
         self.default_section = default_section
 
-    # -- giao diện LangChain ----------------------------------------------------------
+    # -- LangChain interface -----------------------------------------------------------
 
     def split_text(self, text: str) -> list[str]:
         return [chunk.text for chunk in self.split(text)]
 
-    # -- phần thật --------------------------------------------------------------------
+    # -- the real work -----------------------------------------------------------------
 
     def split(self, text: str) -> list[Chunk]:
-        """Cắt, và trả về đoạn kèm mục và trang của nó."""
+        """Split, returning chunks with their section and page."""
         units = self._units(text)
         return self._pack(units)
 
     def _units(self, text: str) -> list[_Unit]:
-        """Bước một: văn bản → đơn vị, theo đúng thứ tự ưu tiên ở đầu tệp."""
+        """Step one: text -> units, in the priority order named at the top of the file."""
         section = self.default_section
         page = 0
         units: list[_Unit] = []
-        # Trang vừa đổi, nên đơn vị nội dung kế tiếp phải mở một đoạn mới. Cờ này chứ
-        # không phải tự đánh dấu lên marker: marker không phải nội dung và không được
-        # chiếm một đơn vị của riêng nó.
+        # The page just turned, so the next content unit must open a chunk; a flag, because a marker is not content and must not own a unit.
         page_turned = False
 
         for block in self._blocks(text):
@@ -154,8 +120,7 @@ class SectionAwareSplitter(TextSplitter):
             heading = HEADING.match(block.strip())
             if heading:
                 section = heading.group(2).strip()[:MAX_SECTION_TITLE] or self.default_section
-                # Dòng tiêu đề **là** nội dung: nó mang chữ, và một câu hỏi hay khớp
-                # đúng vào nó. Nó mở đoạn mới và thuộc về mục do chính nó đặt ra.
+                # A heading line *is* content: it carries text a query may match, and it opens the section it names.
                 units.append(_Unit(block.strip(), section, page, flush=True))
                 page_turned = False
                 continue
@@ -167,8 +132,7 @@ class SectionAwareSplitter(TextSplitter):
 
     @staticmethod
     def _blocks(text: str) -> list[str]:
-        """Khối: một dòng marker, một dòng tiêu đề, hoặc một chuỗi dòng liền nhau giữa
-        hai dòng trắng. Dòng trắng là dấu ngăn và không thuộc khối nào."""
+        """A block is a marker line, a heading line, or a run of adjacent lines between blank lines."""
         blocks: list[str] = []
         open_lines: list[str] = []
 
@@ -191,7 +155,7 @@ class SectionAwareSplitter(TextSplitter):
         return blocks
 
     def _fit(self, block: str) -> list[str]:
-        """Một khối dài hơn cả đoạn thì xuống mức câu, rồi tới cắt cứng."""
+        """A block longer than a chunk drops to sentences, then to a hard cut."""
         if len(block) <= self._chunk_size:
             return [block]
 
@@ -202,10 +166,7 @@ class SectionAwareSplitter(TextSplitter):
             if len(sentence) <= self._chunk_size:
                 out.append(sentence)
                 continue
-            # Một "câu" dài hơn cả một đoạn là một bảng biểu hoặc một khối mã không có
-            # dấu chấm nào. Đến đây không còn ranh giới ngữ nghĩa nào để tôn trọng —
-            # nhưng vẫn trượt về ranh giới từ, vì cắt giữa một từ làm hỏng cả việc nhúng
-            # lẫn việc đọc, còn mất vài chục ký tự thì không.
+            # A "sentence" longer than a chunk is a table or a code block; slide back to a word boundary anyway, since cutting mid-word hurts both embedding and reading.
             out.extend(self._hard_split(sentence))
         return out
 
@@ -222,19 +183,17 @@ class SectionAwareSplitter(TextSplitter):
             piece = text[start:end].strip()
             if piece:
                 out.append(piece)
-            # `end` bằng `start` chỉ xảy ra với một lát toàn khoảng trắng; đẩy lên một để
-            # vòng lặp luôn tiến. Một vòng lặp không tiến là một ứng dụng treo.
+            # `end == start` only happens on an all-whitespace slice; step forward so the loop always advances.
             start = end if end > start else start + limit
         return out
 
     def _pack(self, units: list[_Unit]) -> list[Chunk]:
-        """Bước hai: gộp đơn vị thành đoạn, rồi lùi lại lấy phần chồng lấn."""
+        """Step two: pack units into chunks, then look back for the overlap."""
         chunks: list[Chunk] = []
         open_units: list[_Unit] = []
         carry = ""
 
-        # Ngưỡng để một tiêu đề được quyền mở đoạn mới. Không có nó thì một tài liệu toàn
-        # tiêu đề ngắn sinh ra mỗi tiêu đề một đoạn; có nó thì các mục ngắn được gom lại.
+        # Threshold before a heading may open a new chunk; without it a document of short headings yields one chunk per heading.
         min_fill = self._chunk_size // 3
 
         def flush() -> None:
@@ -247,8 +206,7 @@ class SectionAwareSplitter(TextSplitter):
                 Chunk(
                     ordinal=len(chunks),
                     text=text,
-                    # Mục và trang lấy theo **đơn vị đầu tiên**, không theo phần thừa
-                    # hưởng: đoạn này thuộc về mục mà nội dung mới của nó nằm trong.
+                    # Section and page come from the *first* unit, not the carried-over overlap.
                     section=open_units[0].section,
                     page=open_units[0].page,
                 )
@@ -269,17 +227,10 @@ class SectionAwareSplitter(TextSplitter):
         return chunks
 
     def _overlap_tail(self, text: str) -> str:
-        """Đuôi của đoạn vừa đóng, để đoạn sau chồng lên nó.
-
-        Cắt theo **ký tự** rồi trượt tới đầu từ kế tiếp. Bản đầu tiên mang sang nguyên
-        những đơn vị cuối vừa vặn trong ngân sách chồng lấn, và nó im lặng không làm gì
-        cả: một đoạn văn thường dài hai ba trăm ký tự, ngân sách là 180, nên không đơn vị
-        nào vừa và mọi đoạn ra đời không có chồng lấn.
-        """
+        """Tail of the chunk just closed, for the next one to overlap; cut by character then slid to the next word, because unit-sized overlap silently produced none."""
         if self._chunk_overlap <= 0 or len(text) <= self._chunk_overlap:
             return ""
         tail = text[-self._chunk_overlap :]
         space = tail.find(" ")
-        # Một đuôi không có khoảng trắng nào là một từ dài hơn cả phần chồng lấn; giữ
-        # nguyên vẫn hơn là bỏ hẳn chồng lấn.
+        # A tail with no space is a word longer than the overlap; keeping it beats dropping the overlap entirely.
         return tail[space + 1 :].strip() if space != -1 else tail.strip()

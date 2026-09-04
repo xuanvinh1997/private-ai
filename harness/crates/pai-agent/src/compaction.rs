@@ -1,24 +1,6 @@
-//! Nén ngữ cảnh.
-//!
-//! Khi lịch sử sắp không vừa cửa sổ của mô hình, phần cũ được **che** bằng một bản tóm
-//! tắt. Ba quyết định đáng viết ra:
-//!
-//! **Che, không xoá.** Dải cũ vẫn nằm nguyên trong sổ và vẫn phát lại được; chỉ phép
-//! chiếu ngừng nhìn thấy nó. Một bản ghi mất đoạn thì không ai dựng lại được lượt đã
-//! chạy, kể cả chính ta lúc đi tìm nguyên nhân một câu trả lời sai.
-//!
-//! **Giữ lại phần đuôi.** Những lượt gần nhất là thứ mô hình đang thật sự làm việc trên
-//! đó. Nén cả đuôi thì tiết kiệm được token và mất luôn mạch việc.
-//!
-//! **Không cắt giữa một lời gọi tool và kết quả của nó.** Một `tool_use` không có
-//! `tool_result` đi kèm là lỗi giao thức ở cả hai nhà cung cấp — request bị từ chối thẳng,
-//! và triệu chứng ("400 từ máy chủ") không hề chỉ về đây.
-//!
-//! Bản tóm tắt hiện được dựng bằng cách rút gọn cơ học, **không** gọi mô hình. Gọi mô
-//! hình để tóm tắt là đúng hướng nhưng nó biến một chính sách tất định thành một lần gọi
-//! mạng có thể hỏng ngay giữa lúc ngữ cảnh đã đầy — tức là hỏng đúng lúc tệ nhất. Khi có
-//! bản tóm tắt bằng mô hình, nó sẽ là một provider phía sau seam này, và bản cơ học ở đây
-//! vẫn là chỗ lùi về.
+//! Context compaction: old history is masked behind a summary, never deleted.
+//! The tail is kept, and a cut never falls between a tool call and its result, which both
+//! providers reject. The summary is mechanical so the policy stays deterministic.
 
 use std::sync::Arc;
 
@@ -30,12 +12,11 @@ use pai_session::{ContentBlock, Message, Role};
 
 use crate::events::{PreStep, PreStepRequest, Replacement, StepDecision};
 
-/// Vượt tỉ lệ này của cửa sổ thì bắt đầu nén.
+/// Past this fraction of the window, compaction starts.
 const PRESSURE: f32 = 0.8;
-/// Giữ lại chừng này cuối lịch sử, tính theo tỉ lệ cửa sổ.
+/// Keep this much of the tail, as a fraction of the window.
 const TAIL: f32 = 0.16;
-/// Bốn ký tự một token. Thô, nhưng sai theo hướng an toàn với tiếng Việt, vốn tốn token
-/// hơn tiếng Anh — nên ta nén sớm hơn cần thiết chứ không muộn hơn.
+/// Four characters per token: crude, but it errs early for Vietnamese, which costs more tokens than English.
 const CHARS_PER_TOKEN: usize = 4;
 
 fn cost(message: &Message) -> usize {
@@ -53,7 +34,7 @@ fn cost(message: &Message) -> usize {
         / CHARS_PER_TOKEN
 }
 
-/// Một node có phải là lời gọi tool đang chờ kết quả không.
+/// Whether a node is a tool call still awaiting its result.
 fn opens_tool_call(message: &Message) -> bool {
     message.role == Role::Assistant
         && message
@@ -62,13 +43,11 @@ fn opens_tool_call(message: &Message) -> bool {
             .any(|b| matches!(b, ContentBlock::ToolCall { .. }))
 }
 
-/// Đẩy ranh giới cắt lùi lại cho tới khi nó không nằm giữa một cặp gọi/kết quả.
+/// Move the cut boundary back until it no longer falls between a call and its result.
 fn safe_boundary(history: &[Message], mut end: usize) -> usize {
     while end > 0 {
         let previous = &history[end - 1];
-        // Cắt ngay sau một lời gọi tool sẽ để lại lời gọi mà bỏ kết quả — và ngược lại,
-        // cắt ngay trước một kết quả sẽ để lại kết quả mồ côi. Cả hai đều bị máy chủ từ
-        // chối, nên lùi thêm một node cho tới khi ranh giới sạch.
+        // Either side of the pair left alone is an orphan the server rejects, so step back until the boundary is clean.
         let orphan_call = opens_tool_call(previous);
         let orphan_result = history.get(end).is_some_and(|next| next.role == Role::Tool);
         if !orphan_call && !orphan_result {
@@ -132,7 +111,7 @@ fn summarize(dropped: &[Message]) -> Message {
 }
 
 struct Compactor {
-    /// Cửa sổ ngữ cảnh, tính bằng token.
+    /// The context window, in tokens.
     window: usize,
 }
 
@@ -157,12 +136,11 @@ impl Middleware<PreStep> for Compactor {
             }
             let end = safe_boundary(&req.history, end);
             if end == 0 {
-                // Không cắt được chỗ nào an toàn. Chạy tiếp và để máy chủ nói không —
-                // một lỗi nói rõ vẫn tốt hơn một bản ghi bị cắt bậy.
+                // No safe cut exists; go on and let the server say no, which beats a badly cut record.
                 tracing::warn!(
                     used,
                     window = self.window,
-                    "không tìm được ranh giới nén an toàn"
+                    "no safe compaction boundary found"
                 );
                 return next.run(req).await;
             }
@@ -170,8 +148,7 @@ impl Middleware<PreStep> for Compactor {
             let summary = summarize(&req.history[..end]);
             let decision = next.run(req).await;
             match decision {
-                // Bám vào quyết định của tầng dưới thay vì tự dựng lại: một listener khác
-                // có thể đã sửa danh sách message, và dựng lại là xoá bản sửa của họ.
+                // Build on the inner decision rather than remaking it: another listener may have edited the messages.
                 StepDecision::Enter {
                     messages,
                     replace: None,
@@ -195,7 +172,7 @@ pub struct CompactionPlugin {
 }
 
 impl CompactionPlugin {
-    /// `window` là cửa sổ ngữ cảnh của mô hình, tính bằng token.
+    /// `window` is the model's context window, in tokens.
     pub fn new(window: usize) -> CompactionPlugin {
         CompactionPlugin {
             window: window.max(2048),
@@ -210,8 +187,7 @@ impl Plugin for CompactionPlugin {
     }
 
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
-        // Chạy **trước** mọi tầng khác: đo áp lực trên lịch sử chưa ai đụng vào, và một
-        // listener khác thêm ngữ cảnh sau đó thì phần thêm nằm ngoài dải bị che.
+        // Run before every other layer, so pressure is measured on untouched history and later additions stay unmasked.
         ctx.keep(ctx.on_waterfall_first(Arc::new(Compactor {
             window: self.window,
         })));

@@ -1,25 +1,11 @@
 import { createSignal } from "solid-js";
 import type { MermaidConfig } from "mermaid";
+import { S, t } from "./i18n";
+import type { Msg } from "./i18n";
 import { theme } from "./theme";
 
-/**
- * Tầng bọc quanh mermaid. Ba quyết định ở đây không phải chuyện thẩm mỹ.
- *
- * **Nạp trễ.** Gói mermaid nặng cỡ một megabyte sau khi nén. Phần lớn phiên làm việc
- * không có sơ đồ nào, và nạp sẵn nghĩa là mọi người dùng trả cái giá đó lúc khởi động
- * để đổi lấy một thứ họ không dùng. `import()` chỉ chạy ở lần vẽ đầu tiên.
- *
- * **`securityLevel: "strict"` và `htmlLabels: false`.** Nguồn sơ đồ do mô hình sinh ra,
- * mà mô hình vừa đọc tài liệu người dùng nạp lên — nên chuỗi này thực chất có thể do
- * một người ngoài viết. Nhãn dựng bằng HTML là một đường tiêm HTML thẳng vào cửa sổ ứng
- * dụng, và cửa sổ này có `invoke` của Tauri trong tầm với. Nhãn dựng bằng `<text>` của
- * SVG thì không có đường đó. Đây là hàng rào, không phải tuỳ chọn hiển thị.
- *
- * **Một hàng đợi.** `mermaid.render` giữ trạng thái toàn cục theo id và chèn một nút tạm
- * vào `document.body`; hai lần gọi chồng lên nhau thì cái sau ăn mất khung của cái
- * trước. Một bản ghi hội thoại có ba bốn sơ đồ là chuyện bình thường ở đây, nên nối tiếp
- * là bắt buộc chứ không phải phòng xa.
- */
+/** Mermaid wrapper: lazily imported (~1 MB), `securityLevel: "strict"` with `htmlLabels: false` because diagram
+ * source is model-written, and one render queue because `mermaid.render` keeps global state keyed by id. */
 
 export type DiagramRender = { ok: true; svg: string } | { ok: false; message: string };
 
@@ -27,7 +13,7 @@ type MermaidModule = typeof import("mermaid").default;
 
 let pending: Promise<MermaidModule> | null = null;
 
-/** Chỉ nạp một lần cho cả phiên; lỗi mạng thì cho phép thử lại ở lần vẽ sau. */
+/** Loaded once per session; a failure allows a retry at the next render. */
 function load(): Promise<MermaidModule> {
   if (pending === null) {
     pending = import("mermaid")
@@ -55,17 +41,10 @@ const [systemDark, setSystemDark] = createSignal(prefersDark());
 try {
   window.matchMedia(DARK_QUERY).addEventListener("change", (event) => setSystemDark(event.matches));
 } catch {
-  /* môi trường không có matchMedia thì coi như sáng — chỉ ảnh hưởng màu, không ảnh hưởng chạy */
+  /* no matchMedia here: assume light, which affects colours only */
 }
 
-/**
- * Đang ở chế độ tối hay không.
- *
- * `theme()` một mình không đủ: lựa chọn "system" không stamp gì lên `<html>` (xem
- * theme.ts), nên phải hỏi thêm media query. Đây là một signal, và chỗ vẽ sơ đồ đọc nó
- * để vẽ lại — mermaid nướng màu thẳng vào SVG nên đổi theme mà không vẽ lại thì sơ đồ
- * giữ nguyên bảng màu cũ giữa một trang đã đổi màu.
- */
+/** Whether we are in dark mode; `theme()` alone is not enough because "system" stamps nothing on `<html>`. */
 export function isDark(): boolean {
   const choice = theme();
   return choice === "dark" || (choice === "system" && systemDark());
@@ -73,9 +52,7 @@ export function isDark(): boolean {
 
 function palette(): Record<string, string> {
   const style = getComputedStyle(document.documentElement);
-  // Chỉ đọc token có giá trị nguyên thuỷ. Token dựng bằng `color-mix` (--overlay-*,
-  // --glass) không được thay thế ở computed value, nên đọc ra là chuỗi hàm mermaid
-  // không hiểu.
+  // Only read tokens with primitive values; `color-mix` tokens stay function strings that mermaid cannot parse.
   const read = (name: string, fallback: string): string => {
     const value = style.getPropertyValue(name).trim();
     return value === "" ? fallback : value;
@@ -100,21 +77,14 @@ function palette(): Record<string, string> {
   };
 }
 
-/**
- * Cấu hình dựng lại trước **mỗi** lần vẽ.
- *
- * Bảng màu lấy từ token của repo chứ không dùng bộ mặc định của mermaid: một sơ đồ màu
- * tím nhạt nằm giữa một giao diện xanh rêu trông như ảnh dán từ trang khác vào, và người
- * đọc mất một nhịp để hiểu nó thuộc về đây.
- */
+/** Config rebuilt before *every* render, coloured from repo tokens so a diagram does not look pasted in. */
 function config(): MermaidConfig {
   const c = palette();
   return {
     startOnLoad: false,
     securityLevel: "strict",
     htmlLabels: false,
-    // Mermaid vẽ sẵn một khung đỏ vào DOM khi cú pháp hỏng. Ta tự lo phần đó để còn kèm
-    // được mã nguồn bên cạnh thông điệp — nên tắt.
+    // Mermaid injects its own red error box; we render failures ourselves so the source can sit beside the message.
     suppressErrorRendering: true,
     theme: "base",
     fontFamily: c.font,
@@ -162,26 +132,20 @@ let seq = 0;
 function reason(err: unknown): string {
   if (err instanceof Error && err.message !== "") return err.message;
   if (typeof err === "string" && err !== "") return err;
-  // `DetailedError` của mermaid không phải Error thật; nó mang `str` là dòng hỏng.
+  // Mermaid's `DetailedError` is not a real Error; its `str` holds the offending line.
   if (err !== null && typeof err === "object" && "str" in err) return String(err.str);
-  return "Mermaid không đọc được sơ đồ này.";
+  return t(S.libs.diagram.parseFailed);
 }
 
-/**
- * Vẽ một sơ đồ. Không bao giờ ném — cú pháp hỏng là **kết quả**, không phải sự cố.
- *
- * Lý do: mô hình sinh sai cú pháp mermaid thường xuyên, và ở chỗ gọi thì "vẽ hỏng" cần
- * hiện ra cho người dùng đọc chứ không cần một `try` nữa. Gọi `parse` trước `render` vì
- * `render` thất bại nửa chừng vẫn để lại nút tạm trong `body`.
- */
+/** Render a diagram; never throws, since bad syntax is a result. `parse` runs first because a failed `render` litters `body`. */
 export function renderDiagram(source: string): Promise<DiagramRender> {
   const job = async (): Promise<DiagramRender> => {
     let mermaid: MermaidModule;
     try {
       mermaid = await load();
     } catch (err) {
-      console.error("không nạp được mermaid", err);
-      return { ok: false, message: "Không nạp được bộ vẽ sơ đồ." };
+      console.error("failed to load mermaid", err);
+      return { ok: false, message: t(S.libs.diagram.loadFailed) };
     }
 
     const id = `pai-mermaid-${(seq += 1)}`;
@@ -193,8 +157,7 @@ export function renderDiagram(source: string): Promise<DiagramRender> {
     } catch (err) {
       return { ok: false, message: reason(err) };
     } finally {
-      // Nút tạm mermaid chèn vào `body`. Nó tự dọn khi vẽ xong, nhưng không dọn khi vẽ
-      // hỏng giữa chừng — và mỗi cái để lại là một khối chiếm chỗ vô hình trong trang.
+      // Mermaid's scratch node in `body` is cleaned up on success but not on a mid-render failure.
       document.getElementById(id)?.remove();
       document.getElementById(`d${id}`)?.remove();
     }
@@ -208,39 +171,34 @@ export function renderDiagram(source: string): Promise<DiagramRender> {
   return next;
 }
 
-const KIND_LABEL: Record<string, string> = {
-  flowchart: "lưu đồ",
-  graph: "lưu đồ",
-  sequencediagram: "sơ đồ tuần tự",
-  classdiagram: "sơ đồ lớp",
-  statediagram: "sơ đồ trạng thái",
-  erdiagram: "sơ đồ thực thể",
-  journey: "hành trình người dùng",
-  gantt: "biểu đồ gantt",
-  pie: "biểu đồ tròn",
-  mindmap: "sơ đồ tư duy",
-  timeline: "dòng thời gian",
-  gitgraph: "đồ thị git",
-  quadrantchart: "biểu đồ bốn góc",
-  requirementdiagram: "sơ đồ yêu cầu",
-  block: "sơ đồ khối",
-  sankey: "sơ đồ dòng chảy",
-  xychart: "biểu đồ toạ độ",
-  architecture: "sơ đồ kiến trúc",
-  packet: "sơ đồ gói tin",
-  c4context: "sơ đồ C4",
+/** Keys are mermaid syntax keywords and are never translated; the values are user-facing labels. */
+const KIND_LABEL: Record<string, Msg> = {
+  flowchart: S.libs.diagram.flowchart,
+  graph: S.libs.diagram.flowchart,
+  sequencediagram: S.libs.diagram.sequence,
+  classdiagram: S.libs.diagram.class,
+  statediagram: S.libs.diagram.state,
+  erdiagram: S.libs.diagram.entity,
+  journey: S.libs.diagram.journey,
+  gantt: S.libs.diagram.gantt,
+  pie: S.libs.diagram.pie,
+  mindmap: S.libs.diagram.mindmap,
+  timeline: S.libs.diagram.timeline,
+  gitgraph: S.libs.diagram.gitgraph,
+  quadrantchart: S.libs.diagram.quadrant,
+  requirementdiagram: S.libs.diagram.requirement,
+  block: S.libs.diagram.block,
+  sankey: S.libs.diagram.sankey,
+  xychart: S.libs.diagram.xy,
+  architecture: S.libs.diagram.architecture,
+  packet: S.libs.diagram.packet,
+  c4context: S.libs.diagram.c4,
 };
 
-/**
- * Loại sơ đồ, đọc từ dòng khai báo đầu tiên.
- *
- * Dùng cho `aria-label`: SVG mermaid sinh ra gần như không đọc được bằng trình đọc màn
- * hình, nên ít nhất phải nói được đây là *loại* hình gì trước khi người dùng chuyển sang
- * xem mã nguồn.
- */
+/** Diagram kind from the first declaration line, used for `aria-label`: mermaid SVG is otherwise unreadable aloud. */
 export function diagramKind(source: string): string {
   let body = source.trimStart();
-  // Khối frontmatter `--- ... ---` đứng trước dòng khai báo; bỏ qua nó.
+  // A `--- ... ---` frontmatter block precedes the declaration line; skip it.
   if (body.startsWith("---")) {
     const end = body.indexOf("\n---", 3);
     if (end !== -1) body = body.slice(end + 4);
@@ -250,7 +208,7 @@ export function diagramKind(source: string): string {
     if (line === "" || line.startsWith("%%")) continue;
     const token = /^([A-Za-z0-9]+)/.exec(line)?.[1];
     if (token === undefined) break;
-    return KIND_LABEL[token.toLowerCase()] ?? "sơ đồ";
+    return t(KIND_LABEL[token.toLowerCase()] ?? S.libs.diagram.generic);
   }
-  return "sơ đồ";
+  return t(S.libs.diagram.generic);
 }

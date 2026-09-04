@@ -1,6 +1,5 @@
-//! Một tool ở server khác, mặc lấy hình dạng của một [`Tool`] ở đây.
-//!
-//! Chỗ này là nơi ranh giới tin cậy được viết ra thành mã. Xem [`RemoteTool::meta`].
+//! A tool on another server, wearing the shape of a local [`Tool`].
+//! This is where the trust boundary is written down as code. See [`RemoteTool::meta`].
 
 use std::sync::Arc;
 
@@ -13,13 +12,7 @@ use serde_json::{Value, json};
 
 use crate::dial::Reach;
 
-/// Chỗ đặt kết nối hiện hành của một server.
-///
-/// Tool cầm một `Arc<Link>` chứ không cầm một [`Peer`]: sau một lần nối lại, peer cũ là
-/// một cái ống đã đóng. Cầm thẳng peer thì mọi tool đã đăng ký đều phải được dựng lại sau
-/// mỗi lần rớt mạng, và trong khoảng giữa chúng trỏ vào một kết nối chết mà vẫn nhận lời
-/// gọi. Một ô có thể thay ruột giữ cho danh sách tool đứng yên và câu trả lời luôn đúng
-/// với hiện tại.
+/// Holds a server's current connection; tools keep an `Arc<Link>`, not a [`Peer`], so a reconnect leaves the tool list intact.
 #[derive(Default)]
 pub struct Link {
     peer: RwLock<Option<Peer<RoleClient>>>,
@@ -47,12 +40,11 @@ impl Link {
     }
 }
 
-/// Một tool do người khác viết, gọi qua MCP.
+/// A tool someone else wrote, called over MCP.
 pub struct RemoteTool {
-    /// Đã mang tiền tố `ext.<server>.` — xem [`crate::naming`].
+    /// Already prefixed `ext.<server>.` — see [`crate::naming`].
     name: ToolName,
-    /// Tên trần, đúng như server công bố. Đây là cái được gửi đi, và nó **không** được
-    /// suy ra lại từ `name` ở chỗ gọi: suy ra lại là làm phép cắt tiền tố ở hai nơi.
+    /// The bare name as published, kept rather than re-derived from `name`, so stripping happens in one place.
     remote: String,
     server: String,
     description: String,
@@ -86,11 +78,7 @@ impl RemoteTool {
         &self.name
     }
 
-    /// Gấp một `CallToolResult` thành thứ đường ống hiểu được.
-    ///
-    /// Khối không phải văn bản không bị vứt trong im lặng mà được thay bằng một dòng nói
-    /// rõ có gì ở đó. Vứt đi thì mô hình đọc một kết quả cụt và tưởng tool trả về ít hơn
-    /// thực tế; nhét base64 của một tấm ảnh vào ngữ cảnh thì tệ hơn nữa.
+    /// Fold a `CallToolResult` into what the pipeline understands; non-text blocks become a line saying what was there.
     fn render(result: CallToolResult) -> ToolOutcome {
         let mut parts: Vec<String> = Vec::new();
         for block in &result.content {
@@ -131,21 +119,8 @@ impl Tool for RemoteTool {
         )
     }
 
-    /// Giả định xấu nhất, và đây là chỗ duy nhất trong crate ta được phép nói về nó.
-    ///
-    /// - **`mutating: true`.** Một server MCP *có* khai `readOnlyHint`, và chính spec ghi
-    ///   rằng annotation chỉ là **gợi ý**, client không được ra quyết định dựa vào nó khi
-    ///   server không đáng tin. Ta không biết tool này làm gì; tin lời tự khai nghĩa là để
-    ///   người viết server tự quyết định mình có nằm trong tập chỉ-đọc hay không. Coi mọi
-    ///   tool ngoài là có thay đổi trạng thái thì nó rơi ra khỏi tập chỉ-đọc — chiều sai
-    ///   an toàn, và cũng đúng chiều mà [`ToolMeta::default`] đã chọn.
-    /// - **`returns_untrusted_content: true`.** Văn bản trả về do người ngoài soạn. Sổ
-    ///   đăng ký sẽ tự chèn khung cảnh báo vào mô tả tool, tức là mô hình đọc lời cảnh báo
-    ///   đúng vào lúc nó quyết định làm gì với đoạn văn bản đó.
-    /// - **`concurrency_safe: false`.** Không có gì bảo đảm server bên kia chịu được hai
-    ///   lời gọi chồng nhau, và một server hỏng vì ta gọi song song thì lỗi hiện ra ở phía
-    ///   người dùng chứ không phải phía người viết nó.
-    /// - **`leaves_device`** theo [`Reach`]: đây là thứ duy nhất ta thật sự *biết*.
+    /// Worst-case assumptions: `readOnlyHint` is only a hint, the text is written by strangers, and concurrency is unproven.
+    /// Only `leaves_device`, taken from [`Reach`], is something we actually know.
     fn meta(&self) -> ToolMeta {
         ToolMeta {
             mutating: true,
@@ -169,8 +144,7 @@ impl Tool for RemoteTool {
             params = params.with_arguments(call.arguments.clone());
         }
 
-        // Hết giờ ở tầng đường ống huỷ token này. Không theo dõi nó thì lời gọi vẫn chạy
-        // tiếp ở server bên kia sau khi kết quả đã bị vứt.
+        // A pipeline timeout cancels this token; unwatched, the remote call keeps running after the result is dropped.
         let cancelled = call.cancel_token();
         let response = tokio::select! {
             () = cancelled.cancelled() => {
@@ -185,10 +159,7 @@ impl Tool for RemoteTool {
             Ok(CallToolResponse::Complete(result)) => Ok(Self::render(result)
                 .with_meta("mcp_server", json!(self.server))
                 .with_meta("mcp_tool", json!(self.remote))),
-            // Hai nhánh dưới là những vòng thương lượng nhiều bước của spec mới. Ta chưa
-            // nối chúng vào đường ống phê duyệt, và một cái gật đầu tự động cho một yêu
-            // cầu do server bên thứ ba soạn thì đúng là thứ không nên có. Nói thật với mô
-            // hình là lựa chọn duy nhất còn lại.
+            // The multi-step negotiation rounds are not wired to approval, and auto-accepting a third party's request is worse.
             Ok(CallToolResponse::InputRequired(_)) => Err(ToolError::Failed(format!(
                 "Server `{}` xin thêm đầu vào giữa chừng; harness chưa hỗ trợ vòng đó.",
                 self.server
@@ -201,9 +172,7 @@ impl Tool for RemoteTool {
                 "Server `{}` báo lỗi: {err}",
                 self.server
             ))),
-            // `CallToolResponse` là non_exhaustive: một bản `rmcp` sau này thêm nhánh mới
-            // thì mã này vẫn dịch được, và câu trả lời an toàn cho một nhánh chưa biết là
-            // nói rằng ta chưa biết — không phải đoán xem nó có nghĩa gì.
+            // `CallToolResponse` is non_exhaustive; for an unknown variant, saying so beats guessing what it means.
             Ok(_) => Err(ToolError::Failed(format!(
                 "Server `{}` trả về một loại kết quả harness chưa biết đọc.",
                 self.server

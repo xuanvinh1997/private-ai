@@ -1,8 +1,6 @@
-//! Tiết lộ dần, và việc chọn skill.
-//!
-//! Bài quan trọng nhất ở đây là bài về ba tầng. Nếu toàn văn hướng dẫn lọt vào prompt khi
-//! chưa được chọn thì cơ chế mất hết ý nghĩa: một trăm skill sẽ tốn một trăm tài liệu chứ
-//! không phải một trăm dòng, và đó đúng là thứ nó sinh ra để tránh.
+//! Progressive disclosure, and skill selection.
+//! The three-tier test matters most: if full instructions reach the prompt before selection,
+//! a hundred skills cost a hundred documents instead of a hundred lines.
 
 use std::sync::Arc;
 
@@ -41,12 +39,11 @@ fn ba_tang_tiet_lo_dan() {
     std::fs::write(root.path().join("tra-cuu-hop-dong/mau.md"), "mẫu").expect("ghi tệp phụ");
     let registry = registry(&root);
 
-    // Tầng một: luôn có tên và mô tả, không có thân.
+    // Tier one: always name and description, never the body.
     let catalog = registry.catalog().expect("có danh mục");
     assert!(catalog.contains("tra-cuu-hop-dong"));
     assert!(catalog.contains("Tìm điều khoản"));
-    // Kiểm bằng một câu chỉ có trong thân: tiêu đề của chính danh mục cũng chứa chữ
-    // "Quy trình", nên so khớp cụm đó là kiểm nhầm cái tiêu đề.
+    // Assert on a sentence only the body has: the catalogue heading shares its wording.
     assert!(
         !catalog.contains("đúng cụm từ người dùng nêu"),
         "thân hướng dẫn lọt vào tầng một:\n{catalog}"
@@ -56,7 +53,7 @@ fn ba_tang_tiet_lo_dan() {
         "tên tệp phụ chỉ xuất hiện ở tầng hai"
     );
 
-    // Chưa chọn thì tầng hai trống.
+    // Before selection, tier two is empty.
     assert!(registry.activated().is_none());
 }
 
@@ -87,7 +84,7 @@ fn go_dau_roi_moi_so_khop() {
     );
     let registry = registry(&root);
 
-    // Gõ không dấu vẫn phải trúng — nếu không thì cơ chế chọn gần như không bao giờ chạy.
+    // Typing without diacritics still has to match, or selection almost never fires.
     assert_eq!(registry.select("tom tat tai lieu giup toi").len(), 1);
     assert_eq!(registry.select("tóm tắt tài liệu giúp tôi").len(), 1);
     assert!(registry.select("hôm nay trời đẹp").is_empty());
@@ -157,10 +154,7 @@ async fn plugin_dong_gop_dung_hai_khoi_va_go_ra_thi_sach() {
 
 /* ── Chọn skill: hai cái van, và cả hai đều tồn tại để prompt không phình ra ──── */
 
-/// Trùng **một** từ thông dụng không kéo được cả sổ skill vào lượt.
-///
-/// Không có sàn tương đối thì một câu hỏi dài kéo theo mọi skill có chung một từ với nó,
-/// và tiết lộ dần mất sạch ý nghĩa đúng vào lúc nó cần nhất — lúc người dùng gõ nhiều.
+/// One common word must not drag the whole register into a turn; without the relative floor, long questions match everything.
 #[test]
 fn san_tuong_doi_gat_bo_cai_chi_trung_mot_tu() {
     let root = TempDir::new().expect("thư mục tạm");
@@ -170,7 +164,7 @@ fn san_tuong_doi_gat_bo_cai_chi_trung_mot_tu() {
         "name: doi-chieu-hop-dong\ntitle: Đối chiếu hợp đồng\ndescription: So hai bản hợp đồng.\nkeywords: [hợp đồng, đối chiếu]",
         "## Quy trình\n1. So từng điều.",
     );
-    // Chỉ dính đúng một từ khoá — đủ qua ngưỡng tuyệt đối, nhưng quá xa cái đứng đầu.
+    // Only one keyword hits: past the absolute threshold, but far below the leader.
     write_skill(
         &root,
         "phu",
@@ -187,11 +181,7 @@ fn san_tuong_doi_gat_bo_cai_chi_trung_mot_tu() {
     );
 }
 
-/// Một từ trong phần mô tả không phải một lời gọi.
-///
-/// Từ trong mô tả đáng nửa điểm chứ không phải hai điểm, vì mô tả là một câu văn xuôi:
-/// cho nó cùng trọng số với từ khoá thì mọi skill có chữ "tài liệu" trong mô tả đều được
-/// chọn mỗi khi người dùng nhắc tới tài liệu.
+/// A word in the description is not an invocation: prose words score half a point, not two.
 #[test]
 fn mot_tu_trong_mo_ta_chua_du_de_chon() {
     let root = TempDir::new().expect("thư mục tạm");
@@ -203,20 +193,16 @@ fn mot_tu_trong_mo_ta_chua_du_de_chon() {
     );
     let registry = registry(&root);
 
-    // "thanh" là một từ dài trong mô tả, và chỉ thế thôi.
+    // "thanh" is a long word in the description, and nothing more.
     assert!(
         registry.select("giúp tôi làm thành phẩm").is_empty(),
         "một từ trong mô tả mà đủ điểm thì mọi câu hỏi dài đều kéo theo skill này"
     );
-    // Còn một từ khoá thì đủ.
+    // One keyword, on the other hand, is enough.
     assert_eq!(registry.select("vẽ biểu đồ").len(), 1);
 }
 
-/// Gói quét sau **thay thế** gói trùng tên, không đứng cạnh nó.
-///
-/// Đây là cách một gói của người dùng đè lên gói dựng sẵn. Hai gói cùng tên cùng tồn tại
-/// thì `select` trả về một cái tên trỏ tới hai thân khác nhau, và cái nào vào prompt là
-/// chuyện của thứ tự trong một `Vec`.
+/// A later package replaces one of the same name rather than joining it, which is how user packages override built-ins.
 #[test]
 fn goi_quet_sau_thay_the_goi_trung_ten() {
     let (dung_san, cua_toi) = (
@@ -246,7 +232,7 @@ fn goi_quet_sau_thay_the_goi_trung_ten() {
     assert!(!catalog.contains("Bản dựng sẵn."));
 }
 
-/// Tên đi vào prompt và vào tên thư mục, nên nó hẹp — và gói sai tên bị bỏ, không được sửa hộ.
+/// The name goes into the prompt and a directory name, so it is narrow, and a bad one is skipped, not repaired.
 #[test]
 fn ten_khong_hop_le_thi_goi_bi_bo_qua() {
     let root = TempDir::new().expect("thư mục tạm");
@@ -277,7 +263,7 @@ fn ten_khong_hop_le_thi_goi_bi_bo_qua() {
 
 /* ── Tầng hai và tầng ba, đi qua đúng con đường thật ──────────────────────────── */
 
-/// Cắm plugin lên một `Context` sống lâu hơn lời gọi này.
+/// Mount the plugin on a `Context` that outlives this call.
 async fn cam_skills(root: &TempDir) -> (Context, Arc<pai_agent::SystemPrompt>) {
     let ctx = Context::root();
     let prompt = SystemPrompt::new();
@@ -307,11 +293,7 @@ async fn chay_pre_step(ctx: &Context, messages: Vec<Message>) {
     .await;
 }
 
-/// Toàn văn hướng dẫn chỉ vào prompt **sau khi** được chọn, và tệp đi kèm chỉ vào bằng tên.
-///
-/// Bài `ba_tang_tiet_lo_dan` khoá chiều "chưa chọn thì chưa có"; bài này khoá chiều còn
-/// lại. Thiếu nó thì một lỗi làm tầng hai không bao giờ vào prompt sẽ đi qua cả bộ kiểm
-/// mà không ai thấy — mọi bài còn lại đều xanh khi khối ấy trống rỗng.
+/// Full instructions enter the prompt only after selection, and sibling files only by name; this locks the other direction.
 #[tokio::test]
 async fn chon_roi_thi_toan_van_va_ten_tep_moi_vao_prompt() {
     let root = TempDir::new().expect("thư mục tạm");
@@ -351,10 +333,7 @@ async fn chon_roi_thi_toan_van_va_ten_tep_moi_vao_prompt() {
     );
 }
 
-/// Bước sau trong cùng một lượt không mang message mới, và quy trình phải ở nguyên đó.
-///
-/// Xoá lựa chọn khi không có văn bản mới nghĩa là hướng dẫn biến mất giữa chừng, đúng lúc
-/// mô hình đang đi theo nó — nó gọi tool ở bước một rồi mất luật ở bước hai.
+/// Later steps carry no new message, and the procedure must stay: clearing it loses the rules mid-turn.
 #[tokio::test]
 async fn buoc_khong_co_van_ban_moi_thi_giu_nguyen_quy_trinh() {
     let root = TempDir::new().expect("thư mục tạm");
@@ -369,7 +348,7 @@ async fn buoc_khong_co_van_ban_moi_thi_giu_nguyen_quy_trinh() {
     chay_pre_step(&ctx, vec![Message::user("vẽ sơ đồ cho tôi")]).await;
     assert!(prompt.assemble().contains("cú pháp mermaid"));
 
-    // Bước hai: không có message text nào mới.
+    // Step two: no new text message.
     chay_pre_step(&ctx, Vec::new()).await;
     assert!(
         prompt.assemble().contains("cú pháp mermaid"),

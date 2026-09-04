@@ -1,31 +1,6 @@
-"""Tệp → chữ. Một bất biến, và nó là lý do cả gói này tồn tại.
-
-> **Một tệp hỏng chỉ được làm hỏng chính nó.**
-
-Người dùng thả hai mươi tệp vào một lúc; tệp thứ bảy là một PDF cụt lúc tải về. Nếu tệp
-đó giết cả mẻ thì mười ba tệp còn lại không bao giờ được nạp, và người dùng không có cách
-nào biết tệp nào là thủ phạm. Vì thế mọi đường ở đây trả về :class:`Extracted` hoặc ném
-:class:`~pai_rag_service.errors.ExtractError` **có kèm đường dẫn** — không có đường nào
-ném ra một lỗi không nói được nó nói về tệp nào.
-
-# Cascade của PDF, và vì sao nó cần thiết
-
-PDF là định dạng duy nhất mà "đọc được" không phải một câu trả lời có hoặc không. Một tệp
-xuất từ Word có lớp chữ hoàn hảo; một tệp quét từ máy photocopy có lớp chữ **rỗng** nhưng
-vẫn là một PDF hợp lệ mở được bình thường. Đọc lớp chữ rồi dừng lại ở đó nghĩa là tệp
-quét vào thư viện với 0 đoạn, và ở tầng Rust nó nằm lại vĩnh viễn trong bảng ``failures``
-vì ``mtime`` không đổi nên không lần quét nào chạm lại vào nó.
-
-Nên: đọc lớp chữ trước — nó nhanh và chính xác tuyệt đối khi có. Đếm ký tự trên mỗi
-trang. Dưới ngưỡng thì trang đó đi qua VLM. Ngưỡng chứ không phải "rỗng hay không", vì
-một tệp quét vẫn thường có vài chục ký tự rác từ header hoặc số trang.
-
-# Định dạng suy từ phần mở rộng
-
-Đoán theo magic bytes nghe chắc chắn hơn nhưng sai ở đúng chỗ quan trọng: một tệp ``.md``
-viết bằng chữ Việt trông y hệt một tệp ``.txt``, và người dùng đã nói ra ý định của họ
-ngay trong cái tên.
-"""
+"""File -> text, under one invariant: a broken file may only break itself, so every path
+returns :class:`Extracted` or raises with the path attached. PDFs cascade from text layer
+to per-page VLM OCR below a character threshold; format comes from the extension."""
 
 from __future__ import annotations
 
@@ -50,25 +25,19 @@ __all__ = [
 
 log = logging.getLogger(__name__)
 
-#: Bộ rút chữ đang chạy là bản mấy.
-#:
-#: Chỉ mục là tăng dần: tệp có ``mtime`` và kích thước không đổi thì **không** đi qua bộ
-#: rút chữ lần nữa. Bất biến đó tiết kiệm cả một buổi chờ, và nó cũng có nghĩa là một tệp
-#: từng đọc ra rác sẽ ở lại dạng rác vĩnh viễn. Tăng số này mỗi khi bộ rút chữ **đọc ra
-#: kết quả khác** trên cùng một tệp; lần mở kho sau đó sẽ vô hiệu hoá dấu vân tay cũ.
+#: Extractor version. Indexing is incremental, so bump this whenever the extractor produces different output for the same file; the next open invalidates old fingerprints.
 EXTRACT_VERSION = 1
 
-#: 64 MiB. Không phải một con số thiêng liêng — nó là chỗ mà cả markitdown lẫn phần dựng
-#: ảnh trang còn nằm gọn trong RAM. Cả hai **đọc cả tệp vào bộ nhớ**.
+#: 64 MiB - where markitdown and the page renderer still fit in RAM; both read the whole file into memory.
 MAX_FILE_BYTES = 64 * 1024 * 1024
 
-#: Bao nhiêu byte đầu được soi để kết luận "đây là tệp nhị phân".
+#: How many leading bytes are inspected to call a file binary.
 BINARY_PROBE = 4096
 
 TEXT_EXTENSIONS = frozenset(
     {".txt", ".text", ".log", ".rst", ".adoc", ".org", ".md", ".markdown", ".mdx"}
 )
-#: Định dạng markitdown đọc tốt hơn bất cứ thứ gì tự viết được.
+#: Formats markitdown reads better than anything we could write.
 OFFICE_EXTENSIONS = frozenset({".docx", ".xlsx", ".xlsm", ".pptx", ".doc", ".xls", ".ppt"})
 DATA_EXTENSIONS = frozenset({".csv", ".tsv", ".json", ".xml", ".yaml", ".yml"})
 WEB_EXTENSIONS = frozenset({".html", ".htm", ".xhtml"})
@@ -76,8 +45,7 @@ IMAGE_EXTENSIONS = frozenset(
     {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
 )
 PDF_EXTENSIONS = frozenset({".pdf"})
-#: Mã nguồn nằm trong thư viện tài liệu là chuyện có thật — một thư mục tài liệu kỹ thuật
-#: hay có tệp ví dụ kèm theo. Đọc như văn bản thuần.
+#: Source files really do turn up in a document library; read them as plain text.
 CODE_EXTENSIONS = frozenset(
     {
         ".py", ".rs", ".ts", ".tsx", ".js", ".jsx", ".go", ".java", ".kt", ".c", ".h",
@@ -98,7 +66,7 @@ SUPPORTED_EXTENSIONS = (
 
 
 def format_for(path: Path) -> str:
-    """Nhãn định dạng, hoặc ``""`` khi tệp nằm ngoài tập đọc được."""
+    """Format label, or `""` when the file is outside the readable set."""
     suffix = path.suffix.lower()
     if suffix in PDF_EXTENSIONS:
         return "pdf"
@@ -121,18 +89,16 @@ def format_for(path: Path) -> str:
 
 @dataclass(slots=True)
 class Extracted:
-    """Chữ của một tệp, cùng những gì cần nói ra về cách nó được đọc."""
+    """A file's text, plus what has to be said about how it was read."""
 
     text: str
     format: str
     title: str
-    #: Số trang, khi khái niệm ấy có nghĩa với định dạng này.
+    #: Page count, when that means anything for this format.
     pages: int = 0
-    #: Trang nào đã phải đi qua VLM. Giao diện dùng nó để nói "12/40 trang đọc bằng OCR",
-    #: và đó là thứ giải thích vì sao một tệp nạp lâu hơn hẳn những tệp khác.
+    #: Which pages went through the VLM; the UI says "12/40 pages via OCR", which explains a slow ingest.
     ocr_pages: list[int] = field(default_factory=list)
-    #: Trang bị bỏ qua vì chạm trần ``OcrConfig.max_pages``. Nói ra chứ không nuốt: một
-    #: thư viện thiếu chữ mà không giải thích là đúng lỗi mà cả gói này sinh ra để sửa.
+    #: Pages skipped at the `OcrConfig.max_pages` cap; stated rather than swallowed, since a silently short library is the bug this package exists to fix.
     skipped_pages: int = 0
 
     @property
@@ -145,34 +111,30 @@ def _looks_binary(data: bytes) -> bool:
 
 
 def _as_text(path: Path, data: bytes) -> str:
-    """Byte → chuỗi, thử UTF-8 trước rồi tới bảng mã Windows tiếng Việt.
-
-    ``cp1258`` có mặt vì tài liệu tiếng Việt cũ thật sự dùng nó, và một tệp đọc sai bảng
-    mã không hỏng — nó vào thư viện đầy ký tự vô nghĩa và không bao giờ khớp câu hỏi nào.
-    """
+    """Bytes -> string, UTF-8 first then the Vietnamese Windows code pages; a mis-decoded file does not fail, it just never matches a query."""
     for codec in ("utf-8", "utf-8-sig", "cp1258", "cp1252"):
         try:
             return data.decode(codec)
         except UnicodeDecodeError:
             continue
-    # Đến đây thì không còn bảng mã nào để thử; thay ký tự hỏng còn hơn bỏ cả tệp.
+    # No codec left to try; replacing bad characters beats dropping the file.
     return data.decode("utf-8", errors="replace")
 
 
 def _markitdown_text(path: Path) -> str:
-    """Chạy markitdown trên một tệp. Đồng bộ và tốn CPU — người gọi đẩy sang thread."""
+    """Run markitdown on a file. Synchronous and CPU-bound - the caller moves it to a thread."""
     from markitdown import MarkItDown
 
     converter = MarkItDown(enable_plugins=False)
     try:
         result = converter.convert(str(path))
-    except Exception as err:  # markitdown ném đủ loại lỗi của thư viện bên dưới
+    except Exception as err:  # markitdown raises whatever the underlying libraries raise
         raise ExtractError(str(path), f"markitdown không đọc được: {err}") from err
     return (result.text_content or "").strip()
 
 
 def _pdf_text_layer(path: Path, data: bytes) -> list[str]:
-    """Lớp chữ của PDF, theo trang. Rỗng ở một trang nghĩa là trang ấy không có chữ."""
+    """The PDF text layer, per page. An empty page means that page has no text."""
     from io import BytesIO
 
     from pypdf import PdfReader
@@ -199,7 +161,7 @@ async def _extract_pdf(
     dense = sum(len(page) for page in native)
     average = dense / total
     if average >= ocr.min_chars_per_page:
-        # Lớp chữ đủ dày. Đây là đường nhanh và chính xác nhất; đừng đụng tới VLM.
+        # The text layer is dense enough. The fastest and most accurate path; leave the VLM alone.
         return Extracted(
             text=split_pages(native),
             format="pdf",
@@ -221,8 +183,7 @@ async def _extract_pdf(
         )
 
     read, skipped = await read_pdf_pages(data, path=str(path), provider=vision, ocr=ocr)
-    # Giữ lớp chữ gốc ở những trang vốn đã dày: OCR một trang chữ in rõ ràng chỉ làm nó
-    # tệ đi, và mô hình vision hay bỏ sót bảng biểu mà lớp chữ giữ đúng.
+    # Keep the original text layer on pages that were already dense: OCR on clean print only makes it worse, and vision models often drop tables.
     merged: list[str] = []
     ocr_pages: list[int] = []
     for index in range(total):
@@ -276,12 +237,7 @@ async def extract(
     vision: ProviderConfig,
     ocr: OcrConfig,
 ) -> Extracted:
-    """Đọc một tệp thành chữ.
-
-    Ném :class:`UnsupportedFile` cho định dạng nằm ngoài tập đọc được — khác
-    :class:`ExtractError` vì nó **không** đáng thử lại — và :class:`ExtractError` cho mọi
-    thứ khác.
-    """
+    """Read a file into text; raises :class:`UnsupportedFile` for formats outside the readable set (not worth retrying) and :class:`ExtractError` for everything else."""
     if not path.is_file():
         raise ExtractError(str(path), "không phải một tệp")
 
@@ -311,7 +267,7 @@ async def extract(
             raise ExtractError(str(path), "markitdown đọc ra một tài liệu rỗng")
         return Extracted(text=text, format=kind, title=path.stem)
 
-    # Còn lại là văn bản thuần: markdown, mã nguồn, txt.
+    # Everything else is plain text: markdown, source, txt.
     if _looks_binary(data):
         raise UnsupportedFile(str(path), "trông như tệp nhị phân dù mang đuôi văn bản")
     text = _as_text(path, data).strip()

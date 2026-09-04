@@ -1,8 +1,6 @@
-//! Kho cấu hình và danh mục dựng sẵn.
-//!
-//! Những bài ở đây khoá hai thứ mà người dùng không bao giờ thấy cho tới lúc chúng hỏng:
-//! tệp cấu hình phải sống sót qua một lần ghi bị cắt, và một mục danh mục phải dựng ra
-//! được một cấu hình chạy được. Cả hai đều hỏng một cách im lặng nếu không có bài kiểm.
+//! The config store and the built-in catalogue.
+//! Two things nobody sees until they break: the file must survive a half-written save, and
+//! every catalogue entry must produce a config that actually runs.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -14,14 +12,13 @@ fn store(dir: &std::path::Path) -> McpStore {
     McpStore::open(dir.join("mcp.json"))
 }
 
-/// Cấu hình dán từ tài liệu bên thứ ba và cấu hình dạng gốc đều đọc được, và ghi ra rồi
-/// đọc lại thì không mất gì.
+/// Both the pasted and the native shapes parse, and a write-then-read round trip loses nothing.
 #[test]
 fn doc_duoc_ca_hai_hinh_dang_va_ghi_lai_tron_ven() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
     let path = dir.path().join("mcp.json");
 
-    // Hình dạng của Claude Desktop / codex, cộng một khối dạng gốc trong cùng một tệp.
+    // The Claude Desktop / codex shape, plus a native block in the same file.
     fs::write(
         &path,
         r#"{
@@ -66,14 +63,14 @@ fn doc_duoc_ca_hai_hinh_dang_va_ghi_lai_tron_ven() {
         "hình dạng gốc giữ nguyên tham số"
     );
 
-    // Ghi ra là dạng `mcpServers`, và đọc lại thì y hệt.
+    // Written as `mcpServers`, and read back identical.
     store.save(configs[0].clone()).expect("lưu lại được");
     let text = fs::read_to_string(&path).expect("đọc tệp đã ghi");
     assert!(text.contains("\"mcpServers\""));
     assert!(!text.contains("\"servers\""));
     assert_eq!(store.list().expect("đọc lại"), configs);
 
-    // Và mọi thao tác quản lý đều đi qua cùng một vòng đó.
+    // And every management action goes through that same round trip.
     store.set_enabled("docs", false).expect("tắt được");
     assert!(!store.list().expect("đọc lại")[0].enabled);
     assert!(store.remove("xa").expect("xoá được"));
@@ -81,7 +78,7 @@ fn doc_duoc_ca_hai_hinh_dang_va_ghi_lai_tron_ven() {
     assert_eq!(store.list().expect("đọc lại").len(), 3);
 }
 
-/// Sau khi lưu, thư mục chỉ còn đúng tệp kho: không có tệp tạm nào bị bỏ lại.
+/// After a save the directory holds only the store file; no temp file is left behind.
 #[test]
 fn ghi_nguyen_tu_khong_bo_lai_tep_tam() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
@@ -102,7 +99,7 @@ fn ghi_nguyen_tu_khong_bo_lai_tep_tam() {
     );
 }
 
-/// Tệp chứa token, nên chỉ chủ nhân của nó đọc được.
+/// The file holds tokens, so only its owner may read it.
 #[cfg(unix)]
 #[test]
 fn tep_kho_chi_chu_no_doc_duoc() {
@@ -122,7 +119,7 @@ fn tep_kho_chi_chu_no_doc_duoc() {
     assert_eq!(mode, 0o600, "kho MCP phải là 0600, đang là {mode:o}");
 }
 
-/// Cấu hình hỏng bị chặn ở cửa vào, không phải lúc nối.
+/// Bad config is stopped at the door, not at dial time.
 #[test]
 fn save_tu_choi_ten_khong_hop_le() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
@@ -147,7 +144,7 @@ fn save_tu_choi_ten_khong_hop_le() {
     );
 }
 
-/// Thiếu một biến bắt buộc thì lỗi phải gọi đúng tên nó ra.
+/// A missing required variable must be named in the error.
 #[test]
 fn instantiate_noi_ro_bien_nao_con_thieu() {
     let entry = catalog::find("github").expect("danh mục có github");
@@ -160,11 +157,10 @@ fn instantiate_noi_ro_bien_nao_con_thieu() {
         "lỗi phải nêu tên biến còn trống: {err}"
     );
 
-    // Điền vào thì qua, và giá trị đi đúng chỗ.
+    // Filled in it passes, and the value lands in the right place.
     let values = BTreeMap::from([("Authorization".to_string(), "ghp_gia".to_string())]);
     let config = catalog::instantiate(entry, &values).expect("điền đủ thì dựng được");
-    // GitHub là mục **chạy từ xa**: token đi vào header của lời gọi, không vào môi trường
-    // của một tiến trình con — ở đây không có tiến trình con nào.
+    // GitHub is a remote entry: the token becomes a request header, since there is no child process here.
     let McpTransport::Http { url, headers } = &config.transport else {
         panic!("mục github phải ra một server http");
     };
@@ -172,10 +168,7 @@ fn instantiate_noi_ro_bien_nao_con_thieu() {
     assert_eq!(headers.get("Authorization").map(String::as_str), Some("ghp_gia"));
 }
 
-/// Mục chạy từ xa không được đòi hỏi gì trên máy này.
-///
-/// Đây chính là lý do người ta chọn nó thay cho bản chạy tại chỗ của cùng một dịch vụ, nên
-/// một mục từ xa lỡ khai `requires` là một mục đang bắt người dùng cài thứ nó không dùng.
+/// A remote entry must require nothing locally: that is the whole reason to pick it over the local build.
 #[test]
 fn muc_tu_xa_khong_can_gi_tren_may() {
     for entry in CATALOG.iter().filter(|entry| entry.url.is_some()) {
@@ -192,10 +185,7 @@ fn muc_tu_xa_khong_can_gi_tren_may() {
     }
 }
 
-/// Mọi mục trong danh mục đều dựng ra được một cấu hình hợp lệ.
-///
-/// Bài này canh chính cái bảng: thêm một mục có `id` sai luật đặt tên, hay một `${...}`
-/// không có biến tương ứng, sẽ hỏng ở đây chứ không hỏng trên máy người dùng.
+/// Every catalogue entry yields a valid config, so a bad `id` or an unmatched `${...}` fails here, not on a user's machine.
 #[test]
 fn moi_muc_danh_muc_dung_duoc() {
     for entry in CATALOG {
@@ -245,10 +235,7 @@ fn moi_muc_danh_muc_dung_duoc() {
     }
 }
 
-/// Biến không bắt buộc mà bỏ trống thì đối số mang nó biến mất cả cụm.
-///
-/// Nếu chỉ bỏ phần giá trị thì cái cờ trơ lại trên dòng lệnh, và server từ chối khởi động
-/// vì một tham số thiếu — một kiểu hỏng mà người dùng không có manh mối nào để lần ra.
+/// An empty optional variable removes its whole argument; a bare leftover flag would make the server refuse to start.
 #[test]
 fn bien_khong_bat_buoc_bo_trong_thi_bo_ca_doi_so() {
     let entry = catalog::find("git").expect("danh mục có git");
@@ -271,11 +258,7 @@ fn bien_khong_bat_buoc_bo_trong_thi_bo_ca_doi_so() {
     );
 }
 
-/// Cú bấm trong ứng dụng thắng hàng cấu hình, không phải ngược lại.
-///
-/// Hàng `mcp` trong tệp vá là thứ bản cài đặt mồi sẵn; kho là thứ người dùng vừa bấm ba
-/// giây trước. Cho hàng cấu hình thắng nghĩa là cú bấm "tắt" im lặng không có tác dụng —
-/// loại lỗi người dùng không báo cáo được, vì họ tưởng mình bấm hụt.
+/// A click in the app beats a config row: otherwise a "disable" click silently does nothing.
 #[test]
 fn kho_cua_nguoi_dung_thang_hang_cau_hinh() {
     let mut tat = ServerConfig::stdio("github", "docker");
@@ -297,7 +280,7 @@ fn kho_cua_nguoi_dung_thang_hang_cau_hinh() {
     );
 }
 
-/// Một mục dán thiếu chỗ đi tới chỉ mất **một mục**, không kéo theo cả tệp.
+/// A pasted entry with nowhere to go costs one entry, not the whole file.
 #[test]
 fn mot_muc_khong_noi_duoc_di_toi_dau_bi_bo_rieng_no() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
@@ -317,8 +300,7 @@ fn mot_muc_khong_noi_duoc_di_toi_dau_bi_bo_rieng_no() {
     assert_eq!(ten, ["lanh"]);
 }
 
-/// Có cả `url` lẫn `command` thì `url` thắng: một mục dán chồng lên nhau vẫn phải đi tới
-/// một chỗ xác định, và địa chỉ mạng cụ thể hơn một cái lệnh còn sót lại.
+/// With both `url` and `command`, `url` wins: an address is more specific than a leftover command.
 #[test]
 fn co_ca_url_lan_command_thi_url_thang() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
@@ -337,7 +319,7 @@ fn co_ca_url_lan_command_thi_url_thang() {
     assert_eq!(url, "https://vi.du/mcp");
 }
 
-/// `enabled` tường minh thắng `disabled`, và thiếu cả hai thì mặc định là bật.
+/// An explicit `enabled` beats `disabled`, and neither means on.
 #[test]
 fn hai_cach_noi_nguoc_nhau_ve_bat_tat_deu_doc_duoc() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
@@ -360,11 +342,7 @@ fn hai_cach_noi_nguoc_nhau_ve_bat_tat_deu_doc_duoc() {
     assert_eq!(bat, [false, true, true]);
 }
 
-/// Tệp hỏng thì nói ra, và **không** bị ghi đè mất.
-///
-/// Trả về danh sách rỗng ở đây là kiểu hỏng tệ nhất: giao diện vẽ ra "chưa có server nào",
-/// người dùng bấm thêm một cái, và lần lưu đó dựng lại tệp từ con số không — mọi server
-/// cùng token của họ biến mất vì một dấu phẩy thừa.
+/// A malformed file is reported, never overwritten: returning an empty list would let the next save erase everything.
 #[test]
 fn json_hong_thi_bao_loi_chu_khong_am_tham_lam_moi_tep() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
@@ -385,7 +363,7 @@ fn json_hong_thi_bao_loi_chu_khong_am_tham_lam_moi_tep() {
     );
 }
 
-/// Bật/tắt một cái tên không có trong kho là lỗi, không phải một thao tác im lặng trôi qua.
+/// Toggling a name that is not in the store is an error, not a silent no-op.
 #[test]
 fn set_enabled_ten_khong_co_thi_noi_ra() {
     let dir = tempfile::tempdir().expect("thư mục tạm");
@@ -401,10 +379,7 @@ fn set_enabled_ten_khong_co_thi_noi_ra() {
     );
 }
 
-/// Nhiều luồng cùng lưu thì không ai bị nuốt mất.
-///
-/// Mỗi lần lưu là một chu trình đọc → sửa → ghi. Không có khoá thì cái ghi sau dựng lại
-/// từ ảnh chụp cũ và xoá mất cái ghi trước: người dùng bấm thêm bốn server rồi thấy còn một.
+/// Concurrent saves lose nothing; each save is read-modify-write, and without a lock the later one swallows the earlier.
 #[test]
 fn nhieu_luong_cung_luu_thi_khong_nuot_mat_ai() {
     let dir = tempfile::tempdir().expect("thư mục tạm");

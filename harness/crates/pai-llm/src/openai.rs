@@ -1,13 +1,6 @@
-//! Adapter OpenAI-compatible: `/v1/chat/completions` dạng SSE.
-//!
-//! "OpenAI-compatible" ở đây nghĩa là llama.cpp, vLLM, LM Studio, và cả OpenAI thật.
-//! Chúng đồng ý với nhau về hình dạng JSON nhưng lệch nhau ở mọi thứ quanh nó, nên adapter
-//! này chọn **mẫu số chung nhỏ nhất**: không `stream_options`, không `strict`, không
-//! `parallel_tool_calls`. Mỗi trường thừa là một máy chủ trả 400.
-//!
-//! Chỗ khó duy nhất là tool call. OpenAI gửi tên ở delta đầu rồi nhỏ giọt `arguments`
-//! dưới dạng **chuỗi JSON bị cắt vụn** qua hàng chục event, và điểm cắt rơi vào giữa một
-//! escape `\"` là chuyện thường. Xem `assembler.rs`.
+//! OpenAI-compatible adapter: `/v1/chat/completions` over SSE.
+//! Targets llama.cpp, vLLM, LM Studio and real OpenAI, so it sends the smallest common
+//! denominator - every extra field is some server returning 400. Tool args arrive fragmented.
 
 use async_trait::async_trait;
 use futures::FutureExt;
@@ -24,11 +17,7 @@ use crate::stream::{BlockKind, FinishReason, StreamChunk, TokenUsage};
 use crate::wire::pump::{FrameDecoder, pump};
 use crate::wire::{SseDecoder, SseEvent};
 
-/// Chuẩn hoá base URL, chấp nhận cả gốc API lẫn host trần.
-///
-/// Port `openai_base_url` (`router.py:44-52`). Người dùng gõ `http://localhost:8080` cho
-/// llama.cpp và `https://api.openai.com/v1` cho OpenAI, và cả hai đều đúng theo cách hiểu
-/// của họ. Đuôi khớp `v<số>` thì giữ nguyên, không thì thêm `/v1`.
+/// Normalize the base URL, accepting an API root or a bare host: a `v<n>` suffix is kept, otherwise `/v1` is appended.
 pub fn openai_base_url(base_url: &str) -> Result<String, LlmError> {
     let value = base_url.trim().trim_end_matches('/');
     if value.is_empty() {
@@ -47,7 +36,7 @@ pub fn openai_base_url(base_url: &str) -> Result<String, LlmError> {
     })
 }
 
-/// Nói chuyện với một máy chủ nói giao thức OpenAI.
+/// Talks to a server speaking the OpenAI protocol.
 pub struct OpenAiAdapter {
     id: String,
     api_root: String,
@@ -56,7 +45,7 @@ pub struct OpenAiAdapter {
 }
 
 impl OpenAiAdapter {
-    /// `base_url` chấp nhận cả `http://host:port` lẫn `http://host:port/v1`.
+    /// `base_url` accepts both `http://host:port` and `http://host:port/v1`.
     pub fn new(
         id: impl Into<String>,
         base_url: &str,
@@ -77,16 +66,13 @@ impl OpenAiAdapter {
 
     fn authorized(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         if self.api_key.is_empty() {
-            // Bản Python phải gửi khoá giả `"not-needed"` vì openai-python từ chối dựng
-            // client với khoá rỗng. Ở đây không có ràng buộc ấy, nên **bỏ hẳn header** —
-            // đúng hơn về mặt giao thức, và không có chuỗi giả nào lọt vào log.
+            // Drop the header entirely rather than sending a placeholder key: protocol-correct, and no fake string reaches the logs.
             return builder;
         }
         builder.bearer_auth(&self.api_key)
     }
 
-    /// `/v1/models`. Không thuộc seam `ModelAdmin`: máy chủ từ xa giữ mô hình ở nơi khác,
-    /// nên đây là một danh sách để đọc, không phải một vòng đời để điều khiển.
+    /// `/v1/models`. Not part of the `ModelAdmin` seam: a remote server keeps models elsewhere, so this is a list to read, not a lifecycle to drive.
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, LlmError> {
         let response = self
             .authorized(self.http.get(format!("{}/models", self.api_root)))
@@ -115,7 +101,7 @@ impl OpenAiAdapter {
                     .and_then(Value::as_str)
                     .unwrap_or_default();
                 Some(ModelInfo {
-                    // `/v1/models` chỉ trả id và `owned_by`, nên **chỉ còn nhánh đoán**.
+                    // `/v1/models` returns only id and `owned_by`, so guessing is the only branch left.
                     capabilities: Capabilities::infer(&format!("{name} {owner}")),
                     name,
                     state: ModelState::Installed,
@@ -149,8 +135,7 @@ impl LlmAdapter for OpenAiAdapter {
     }
 
     async fn capabilities(&self, model: &str) -> Result<Capabilities, LlmError> {
-        // Không có `/api/show` ở phía bên này: giao thức OpenAI không có chỗ nào khai
-        // năng lực. Đoán theo tên là nguồn duy nhất, và `source` nói rõ điều đó.
+        // There is no `/api/show` on this side; the OpenAI protocol declares no capabilities, so guessing is the only source and `source` says so.
         Ok(Capabilities::infer(model))
     }
 
@@ -164,7 +149,7 @@ impl LlmAdapter for OpenAiAdapter {
     }
 }
 
-/// Dựng thân request `/v1/chat/completions`.
+/// Build the `/v1/chat/completions` request body.
 pub(crate) fn encode_chat(req: &ChatRequest) -> Value {
     let mut body = Map::new();
     body.insert("model".into(), json!(req.model));
@@ -199,8 +184,7 @@ pub(crate) fn encode_chat(req: &ChatRequest) -> Value {
     if !req.stop.is_empty() {
         body.insert("stop".into(), json!(req.stop));
     }
-    // `keep_alive` cố tình không gửi: nó là khái niệm của Ollama. Bỏ qua thay vì báo lỗi,
-    // vì người gọi dựng một `ChatRequest` chung cho mọi provider.
+    // `keep_alive` is deliberately not sent - it is an Ollama concept - and ignoring beats erroring, since callers build one `ChatRequest` for every provider.
     Value::Object(body)
 }
 
@@ -212,8 +196,7 @@ fn encode_message(message: &Message) -> Value {
                 .iter()
                 .any(|b| matches!(b, ContentBlock::Image { .. }));
             if !has_image {
-                // Dạng chuỗi thuần, không phải mảng: llama.cpp và vài bản vLLM cũ chỉ
-                // nhận dạng này. Chỉ nâng lên mảng khi thật sự có ảnh.
+                // Plain string, not an array: llama.cpp and some older vLLM builds accept only this. Upgrade to an array only for real images.
                 return json!({ "role": "user", "content": joined_text(content) });
             }
             let parts: Vec<Value> = content
@@ -243,8 +226,7 @@ fn encode_message(message: &Message) -> Value {
                     } => Some(json!({
                         "id": id,
                         "type": "function",
-                        // Ở chiều này `arguments` **là chuỗi** theo đúng giao thức, nên
-                        // không parse gì cả: giữ nguyên cái model đã phát ra.
+                        // In this direction `arguments` *is* a string per the protocol, so keep exactly what the model emitted.
                         "function": { "name": name, "arguments": arguments },
                     })),
                     _ => None,
@@ -253,8 +235,7 @@ fn encode_message(message: &Message) -> Value {
             if calls.is_empty() {
                 object.insert("content".into(), json!(text));
             } else {
-                // `content` phải có mặt và phải là `null` khi rỗng: một chuỗi rỗng làm vài
-                // máy chủ coi đây là lượt trả lời chứ không phải lượt gọi tool.
+                // `content` must be present and `null` when empty: an empty string makes some servers read this as an answer turn rather than a tool call.
                 object.insert(
                     "content".into(),
                     if text.is_empty() {
@@ -281,14 +262,13 @@ fn joined_text(blocks: &[ContentBlock]) -> String {
     blocks.iter().filter_map(ContentBlock::as_text).collect()
 }
 
-/// Bộ giải mã SSE của `/v1/chat/completions`.
+/// SSE decoder for `/v1/chat/completions`.
 #[derive(Debug, Default)]
 pub struct ChatDecoder {
     sse: SseDecoder,
     text_index: Option<u32>,
     reasoning_index: Option<u32>,
-    /// Ánh xạ `tool_calls[].index` của OpenAI sang `index` khối của ta. Hai dãy số khác
-    /// nhau: OpenAI đánh số tool call từ 0 độc lập với khối văn bản.
+    /// Maps OpenAI's `tool_calls[].index` to our block `index`; the two sequences are independent.
     tool_blocks: BTreeMap<u64, u32>,
     next_index: u32,
     usage: Option<TokenUsage>,
@@ -313,7 +293,7 @@ impl ChatDecoder {
             return Ok(());
         }
         let Ok(value) = serde_json::from_str::<Value>(event.data.trim()) else {
-            tracing::warn!(data = %event.data, "event SSE không đọc được, bỏ qua");
+            tracing::warn!(data = %event.data, "unreadable SSE event, skipping");
             return Ok(());
         };
         if let Some(message) = value
@@ -358,8 +338,7 @@ impl ChatDecoder {
     }
 
     fn delta(&mut self, delta: &Value, out: &mut Vec<StreamChunk>) {
-        // DeepSeek và vài bản vLLM đặt suy luận ở `reasoning_content`; một số bản mới hơn
-        // dùng `reasoning`. Nhận cả hai, vì đây thuần là chuyện đặt tên.
+        // DeepSeek and some vLLM builds put reasoning in `reasoning_content`, newer ones in `reasoning`; accept both.
         if let Some(text) = delta
             .get("reasoning_content")
             .or_else(|| delta.get("reasoning"))
@@ -407,8 +386,7 @@ impl ChatDecoder {
             return;
         };
         for (position, call) in calls.iter().enumerate() {
-            // `index` là trường bắt buộc theo đặc tả, nhưng vài máy chủ quên gửi khi chỉ
-            // có một tool call; khi ấy dùng vị trí trong mảng.
+            // `index` is required by the spec, but some servers omit it for a single tool call; fall back to the array position.
             let slot = call
                 .get("index")
                 .and_then(Value::as_u64)
@@ -435,7 +413,7 @@ impl ChatDecoder {
                     .and_then(|f| f.get("name"))
                     .and_then(Value::as_str)
                     .map(str::to_string),
-                // Mảnh chuỗi JSON, có thể rỗng, có thể cắt giữa một escape. Chuyển thẳng.
+                // A JSON string fragment: may be empty, may split an escape. Pass it through.
                 arguments: function
                     .and_then(|f| f.get("arguments"))
                     .and_then(Value::as_str)
@@ -445,7 +423,7 @@ impl ChatDecoder {
         }
     }
 
-    /// Đóng mọi khối còn mở rồi phát `Usage` và `Finish`, theo đúng thứ tự bất biến.
+    /// Close every open block, then emit `Usage` and `Finish` in that invariant order.
     fn terminate(&mut self, out: &mut Vec<StreamChunk>) {
         if self.finished {
             return;
@@ -485,11 +463,9 @@ impl FrameDecoder for ChatDecoder {
             && !self.finished
             && let Err(err) = self.event(&event, out)
         {
-            tracing::warn!(%err, "event SSE chót hỏng");
+            tracing::warn!(%err, "final SSE event is broken");
         }
-        // Không có `[DONE]` nhưng đã thấy `finish_reason`: máy chủ đóng kết nối sớm mà
-        // vẫn nói đủ. Đóng luồng tử tế. Chưa thấy gì thì **không** đóng — để `pump` báo
-        // lỗi, vì đó là một câu trả lời bị cắt cụt, không phải một câu trả lời xong.
+        // No `[DONE]` but a `finish_reason` was seen: the server closed early yet said enough, so close cleanly; with nothing seen, let `pump` report a truncated answer.
         if !self.finished && self.reason.is_some() {
             self.terminate(out);
         }

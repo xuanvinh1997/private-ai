@@ -1,58 +1,39 @@
-//! Từ vựng hội thoại: thứ đi *vào* một request và thứ được ráp lại *từ* một luồng.
-//!
-//! Bản Python không có từ vựng riêng — nó mượn thẳng `BaseChatModel` của LangChain, nên
-//! hình dạng message và wire format tool-calling nằm hết trong thư viện. Ở đây phải tự
-//! khai, và một khi đã tự khai thì chọn được hình dạng đúng: **provider-neutral**, mỗi
-//! adapter tự dịch sang giao thức của mình. Đó là luật phụ thuộc của harness — plugin mở
-//! rộng phụ thuộc vào định nghĩa seam, không bao giờ vào một provider cụ thể.
+//! Conversation vocabulary: what goes *into* a request and what is assembled *from* a stream.
+//! Deliberately provider-neutral, each adapter translating into its own protocol, because
+//! extension plugins may depend on seam definitions but never on a concrete provider.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::error::LlmError;
 
-/// Định danh một lời gọi tool. OpenAI phát ra chuỗi riêng của nó; Ollama không phát gì
-/// nên adapter tự sinh. Kiểu là `String` để cả hai đều nhét vừa mà không phải mã hoá lại.
+/// Identifies a tool call. OpenAI emits its own string; Ollama emits none, so the adapter makes one.
 pub type ToolCallId = String;
 
-/// Một mảnh nội dung trong một message.
-///
-/// `ToolUse.arguments` **là chuỗi JSON thô, không phải `Value`**. Đây là quyết định
-/// trung tâm: tham số tool đến từng mảnh qua nhiều chunk, nên trước lúc luồng đóng thì
-/// nó *chưa* phải JSON hợp lệ. Nếu kiểu ở đây là `Value` thì bộ ráp buộc phải parse lại
-/// sau mỗi mảnh — vừa phí vừa sai. Giữ nguyên chuỗi model phát ra, ai cần thì parse một
-/// lần, và cái model nói ra vẫn ghi lại được nguyên văn khi nó phát JSON hỏng.
+/// One piece of content in a message; `ToolUse.arguments` stays a raw JSON string, not a `Value`, because it arrives in fragments and is not valid JSON until the stream closes.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     Text {
         text: String,
     },
-    /// Suy luận hiện ra (Ollama gọi là `thinking`, một số máy chủ OpenAI-compatible gọi
-    /// là `reasoning_content`). Tách khỏi `Text` vì giao diện hiện nó khác, và vì nó
-    /// **không** được gửi ngược lại cho vòng sau.
+    /// Surfaced reasoning (`thinking` on Ollama, `reasoning_content` elsewhere); separate from `Text` because the UI shows it differently and it is not sent back next round.
     Reasoning {
         text: String,
     },
     ToolUse {
         id: ToolCallId,
         name: String,
-        /// Chuỗi JSON thô. Xem ghi chú của enum.
+        /// Raw JSON string. See the enum note.
         arguments: String,
     },
-    /// Kết quả một tool, ở dạng mang đi được.
-    ///
-    /// Trên dây thì kết quả tool là *một message có vai riêng* (`Message::Tool`), nhưng
-    /// trong sổ tay phiên thì để lời gọi và kết quả cạnh nhau tiện hơn nhiều. Hai hình
-    /// dạng, một sự thật: [`Message::from_tool_result`] đổi chiều này sang chiều kia.
+    /// A tool result in carryable form; on the wire it is its own role, but the session log keeps call and result side by side.
     ToolResult {
         tool_call_id: ToolCallId,
         content: String,
         is_error: bool,
     },
-    /// Ảnh đã mã hoá base64. Giữ base64 chứ không giữ đường dẫn, vì hai adapter cần hai
-    /// khuôn khác nhau (Ollama: mảng `images`; OpenAI: `data:` URL) và cả hai đều dựng
-    /// được từ base64 mà không phải đụng đĩa lần nữa.
+    /// Base64-encoded image; kept as base64 rather than a path because the two adapters need different shapes and both build from base64 without touching disk again.
     Image {
         mime: String,
         data: String,
@@ -87,7 +68,7 @@ impl ContentBlock {
         }
     }
 
-    /// Phần văn bản của khối, nếu có. `Reasoning` **không** tính: nó không phải câu trả lời.
+    /// The block's text, if any. `Reasoning` does not count: it is not the answer.
     pub fn as_text(&self) -> Option<&str> {
         match self {
             Self::Text { text } => Some(text),
@@ -96,19 +77,17 @@ impl ContentBlock {
     }
 }
 
-/// Một lời gọi tool đã ráp xong, tách khỏi `ContentBlock` để người gọi khỏi phải `match`.
+/// A finished tool call, lifted out of `ContentBlock` so callers need no `match`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToolCall {
     pub id: ToolCallId,
     pub name: String,
-    /// Chuỗi JSON thô đúng như model phát ra.
+    /// Raw JSON string exactly as the model emitted it.
     pub arguments: String,
 }
 
 impl ToolCall {
-    /// Parse tham số. Đây là **chỗ duy nhất** được phép parse, và nó trả `Result` vì một
-    /// model nhỏ hoàn toàn có thể phát ra JSON hỏng — đó là chuyện thường ngày, không
-    /// phải bug của ta, và vòng lặp agent phải nói lại lỗi cho model bằng văn bản.
+    /// Parse the arguments - the only place allowed to; it returns `Result` because a small model emitting broken JSON is routine and the agent loop must report it back in text.
     pub fn parse_arguments(&self) -> Result<Value, LlmError> {
         let raw = self.arguments.trim();
         if raw.is_empty() {
@@ -123,10 +102,7 @@ impl ToolCall {
     }
 }
 
-/// Một lượt trong hội thoại.
-///
-/// `System` giữ `String` chứ không `Vec<ContentBlock>`: chưa provider nào nhận ảnh trong
-/// vai system, nên cho phép cấu trúc ấy chỉ là mời gọi một nhánh không bao giờ chạy.
+/// One turn in the conversation; `System` holds a `String`, since no provider accepts images in the system role.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "snake_case")]
 pub enum Message {
@@ -141,7 +117,7 @@ pub enum Message {
     },
     Tool {
         tool_call_id: ToolCallId,
-        /// Tên tool. Ollama cần nó trên dây (`tool_name`); OpenAI thì không.
+        /// Tool name. Ollama needs it on the wire (`tool_name`); OpenAI does not.
         name: String,
         content: String,
         is_error: bool,
@@ -180,8 +156,7 @@ impl Message {
         }
     }
 
-    /// Đổi khối `ToolResult` trong sổ tay thành message vai `tool` trên dây.
-    /// `name` phải lấy từ lời gọi tương ứng — khối kết quả không mang nó.
+    /// Turn a logged `ToolResult` block into a wire `tool` role message; `name` must come from the matching call, which the result block does not carry.
     pub fn from_tool_result(block: &ContentBlock, name: impl Into<String>) -> Option<Self> {
         match block {
             ContentBlock::ToolResult {
@@ -198,7 +173,7 @@ impl Message {
         }
     }
 
-    /// Toàn bộ văn bản trả lời của message, nối liền. Bỏ qua reasoning và tool call.
+    /// All answer text in the message, concatenated. Skips reasoning and tool calls.
     pub fn text(&self) -> String {
         match self {
             Self::System { content } => content.clone(),
@@ -209,7 +184,7 @@ impl Message {
         }
     }
 
-    /// Mọi lời gọi tool trong message, theo thứ tự.
+    /// Every tool call in the message, in order.
     pub fn tool_calls(&self) -> Vec<ToolCall> {
         let Self::Assistant { content } = self else {
             return Vec::new();
@@ -232,11 +207,7 @@ impl Message {
     }
 }
 
-/// Mô tả một tool cho mô hình.
-///
-/// `parameters` là một JSON Schema thô. Không có kiểu chặt hơn ở đây là cố ý: schema đến
-/// từ MCP dưới dạng JSON, và dựng lại nó thành kiểu Rust chỉ để rồi tuần tự hoá ngược ra
-/// JSON là mất mát ròng — mọi từ khoá lạ mà một máy chủ MCP dùng sẽ bị bào mất.
+/// Describes a tool to the model; `parameters` stays a raw JSON Schema, because MCP delivers JSON and round-tripping it through Rust types would shave off unknown keywords.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ToolSchema {
     pub name: String,
@@ -254,10 +225,7 @@ impl ToolSchema {
     }
 }
 
-/// Một request tới mô hình.
-///
-/// Cố tình *không* mang `provider`: adapter đã biết mình nói chuyện với ai. Cũng không
-/// mang token huỷ — huỷ trong Rust là **thả cái stream đi**, và cái đó không cần trường.
+/// A request to the model; deliberately carries no `provider` (the adapter knows) and no cancel token (cancelling means dropping the stream).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatRequest {
     pub model: String,
@@ -266,9 +234,7 @@ pub struct ChatRequest {
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     pub stop: Vec<String>,
-    /// Ollama-only: `"5m"` để giữ mô hình trong VRAM, `"0"` để nhả ngay. `None` = theo
-    /// mặc định của máy chủ. Adapter OpenAI bỏ qua trường này thay vì báo lỗi: nó là
-    /// gợi ý về vòng đời, không phải một yêu cầu về nội dung.
+    /// Ollama-only keep-alive hint (`"5m"` to hold VRAM, `"0"` to release); the OpenAI adapter ignores it rather than erroring.
     pub keep_alive: Option<String>,
 }
 

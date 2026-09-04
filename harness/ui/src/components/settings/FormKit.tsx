@@ -1,33 +1,18 @@
 import { createSignal, createUniqueId, For, Show, type JSX } from "solid-js";
 import { useFocusTrap } from "../../hooks/useFocusTrap";
 import Icon, { type IconName } from "./../Icon";
+import { S, t } from "../../lib/i18n";
 
-/**
- * Ngôn ngữ chung của **mọi** trang cài đặt: hàng, nhóm hàng, công tắc, ô chọn, hộp thoại.
- *
- * Gom lại một chỗ vì mọi trang cài đặt đều là *cùng một thứ*: một danh sách cấu hình, một
- * hộp thoại sửa, một dãy ô nhập có nhãn. Chép ra nhiều bản thì các bản lệch nhau ở đúng
- * những chi tiết không nhìn thấy — nhãn gắn với ô nhập, vòng tiêu điểm, chiều cao control
- * — và lệch ở đó thì chỉ người dùng bàn phím phát hiện ra.
- *
- * Tệp nằm trong `settings/` chứ không trong `providers/` vì đó là sự thật: hai trang
- * provider chỉ là hai trong bảy trang dùng nó. Hai kiểu hàng trong cùng một màn hình cài
- * đặt đọc ra là hai màn hình bị dán vào nhau, nên đây là bộ **duy nhất** được dùng.
- *
- * Mọi prop **chứa JSX** ở đây khai là hàm (`footer`, `aside`). Solid biên dịch prop
- * thành getter, và một prop JSX được đọc hai lần sẽ dựng ra hai bản DOM chồng lên nhau —
- * bản thừa nằm trên và nuốt cú bấm. `children` là ngoại lệ duy nhất: trình biên dịch đã
- * bọc nó lười sẵn.
- */
+/** The shared vocabulary of every settings page: rows, groups, toggles, selects and dialogs, kept in one place so the invisible details stay identical. Every JSX-bearing prop here is a function, because a JSX prop read twice builds two overlapping copies; `children` is the compiler's exception. */
 
-/** Khung hộp thoại: scrim, bẫy tiêu điểm, Esc đóng, Enter gửi. */
+/** Dialog frame: scrim, focus trap, Esc to close, Enter to submit. */
 export function DialogShell(props: {
   title: string;
   desc?: string;
-  /** Đoạn dài đằng sau `desc`, cất trong `InfoDot` cạnh tiêu đề hộp thoại. */
+  /** The long text after `desc`, kept in an `InfoDot` beside the dialog title. */
   more?: string;
   icon: IconName;
-  /** Biểu mẫu MCP có hai cột ô nhập, không vừa bề rộng mặc định. */
+  /** The MCP form has two columns of inputs and does not fit the default width. */
   wide?: boolean;
   labelledBy?: string;
   onSubmit?: () => void;
@@ -61,7 +46,7 @@ export function DialogShell(props: {
             <Icon name={props.icon} size={16} />
           </span>
           <div class="flex min-w-0 flex-1 flex-col gap-3xs">
-            <h2 id={titleId} class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
+            <h2 id={titleId} class="m-0 flex items-center gap-2xs text-md font-medium text-ink">
               {props.title}
               <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
             </h2>
@@ -71,8 +56,7 @@ export function DialogShell(props: {
           </div>
         </div>
 
-        {/* `<form>` chứ không phải một đống `<div>`: Enter trong bất kỳ ô nào cũng gửi,
-            và đó là thứ người dùng bàn phím làm theo phản xạ. */}
+        {/* A real `<form>`, so Enter in any field submits, which is the keyboard reflex. */}
         <form
           class="flex flex-col gap-(--dialog-gap)"
           onSubmit={(event) => {
@@ -89,15 +73,15 @@ export function DialogShell(props: {
 }
 
 const INPUT_CLASS =
-  "h-(--control-h) w-full rounded-btn border border-line bg-bg px-sm text-xs text-text outline-none transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent disabled:cursor-not-allowed disabled:opacity-50";
+  "h-(--control-h) w-full rounded-btn border border-line-strong bg-bg px-sm text-xs text-text transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent disabled:cursor-not-allowed disabled:opacity-50";
 
-/** Một ô nhập có nhãn. Nhãn là `<label>` thật, không phải một `<span>` đặt bên trên. */
+/** A labelled input; the label is a real `<label>`, not a `<span>` placed above it. */
 export function TextField(props: {
   label: string;
   value: string;
   onInput: (value: string) => void;
   hint?: string;
-  /** Câu dài đứng sau `hint`, cất trong `InfoDot` cạnh nhãn thay vì trải dưới ô. */
+  /** The long sentence after `hint`, in an `InfoDot` beside the label rather than under the field. */
   more?: string;
   placeholder?: string;
   type?: "text" | "password";
@@ -105,12 +89,7 @@ export function TextField(props: {
   disabled?: boolean;
   invalid?: boolean;
   autocomplete?: string;
-  /**
-   * Giấu nhãn **khỏi mắt**, không khỏi trình đọc màn hình.
-   *
-   * Dùng khi ô nằm trong một `<Row>` đã mang nhãn ở cột trái: vẽ nhãn lần thứ hai thì
-   * hàng cao gấp đôi, còn bỏ hẳn `<label>` thì ô mất tên với người dùng bàn phím.
-   */
+  /** Hide the label visually, not from screen readers, for fields inside an already-labelled `<Row>`. */
   hideLabel?: boolean;
   ref?: (el: HTMLInputElement) => void;
 }) {
@@ -128,7 +107,7 @@ export function TextField(props: {
       >
         <span class="flex items-center gap-2xs text-2xs text-faint">
           <label for={id}>{props.label}</label>
-          <InfoDot text={props.more ?? ""} label={`Về ${props.label}`} />
+          <InfoDot text={props.more ?? ""} label={t(S.settings.form.about, { label: props.label })} />
         </span>
       </Show>
       <input
@@ -158,7 +137,7 @@ export function TextField(props: {
   );
 }
 
-/** Ô nhiều dòng — chỉ dùng cho ô dán JSON, nên không có biến thể nào khác. */
+/** A multi-line field, used only for pasting JSON, so it has no variants. */
 export function TextArea(props: {
   label: string;
   value: string;
@@ -181,20 +160,14 @@ export function TextArea(props: {
         spellcheck={false}
         aria-invalid={props.invalid}
         onInput={(event) => props.onInput(event.currentTarget.value)}
-        class="w-full resize-y rounded-btn border border-line bg-bg px-sm py-2xs font-mono text-2xs text-text outline-none transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
+        class="w-full resize-y rounded-btn border border-line-strong bg-bg px-sm py-xs font-mono text-2xs text-text transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
         classList={{ "border-danger": props.invalid === true }}
       />
     </div>
   );
 }
 
-/**
- * Công tắc bật/tắt.
- *
- * `role="switch"` chứ không phải một checkbox trang điểm: trình đọc màn hình đọc "bật"
- * hoặc "tắt", còn checkbox thì đọc "đã chọn" — và "đã chọn" không nói được gì về một
- * server đang chạy hay đang nằm im.
- */
+/** An on/off switch with `role="switch"`, so screen readers say on or off rather than checked. */
 export function Toggle(props: {
   label: string;
   checked: boolean;
@@ -211,32 +184,36 @@ export function Toggle(props: {
       aria-busy={props.busy}
       disabled={props.disabled || props.busy}
       onClick={() => props.onChange(!props.checked)}
-      class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-pill border transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-50"
-      classList={{
-        "border-accent bg-accent": props.checked,
-        "border-line-strong bg-surface-soft": !props.checked,
-      }}
+      class="inline-flex h-(--control-h) w-10 shrink-0 items-center justify-center rounded-pill disabled:cursor-not-allowed disabled:opacity-50"
     >
       <span
         aria-hidden="true"
-        class="size-3.5 rounded-pill transition-transform duration-[var(--dur-fast)] motion-reduce:transition-none"
+        class="relative inline-flex h-5 w-9 items-center rounded-pill border transition-colors duration-[var(--dur-fast)]"
         classList={{
-          "translate-x-[18px] bg-on-accent": props.checked,
-          "translate-x-[3px] bg-line-strong": !props.checked,
+          "border-accent bg-accent": props.checked,
+          "border-line-strong bg-surface-soft": !props.checked,
         }}
-      />
+      >
+        <span
+          class="size-3.5 rounded-pill transition-transform duration-[var(--dur-fast)] motion-reduce:transition-none"
+          classList={{
+            "translate-x-[18px] bg-on-accent": props.checked,
+            "translate-x-[3px] bg-line-strong": !props.checked,
+          }}
+        />
+      </span>
     </button>
   );
 }
 
-/** Dãy nút loại trừ nhau, cùng hình dạng với `radiogroup` của trang Cài đặt. */
+/** A row of mutually exclusive pills, shaped like the settings pages' `radiogroup`. */
 export function PillChoice<T extends string>(props: {
   label: string;
   value: T;
   options: { id: T; label: string; icon?: IconName }[];
   onPick: (value: T) => void;
   hint?: string;
-  /** Câu dài đứng sau `hint`, cất trong `InfoDot` cạnh nhãn của nhóm. */
+  /** The long sentence after `hint`, in an `InfoDot` beside the group's label. */
   more?: string;
 }) {
   return (
@@ -244,18 +221,42 @@ export function PillChoice<T extends string>(props: {
       <span class="flex items-center gap-2xs text-2xs text-faint">
         {props.label}
         <Show when={props.more}>
-          {(more) => <InfoDot text={more()} label={`Về ${props.label}`} />}
+          {(more) => <InfoDot text={more()} label={t(S.settings.form.about, { label: props.label })} />}
         </Show>
       </span>
-      <div role="radiogroup" aria-label={props.label} class="flex flex-wrap gap-2xs">
+      <div
+        role="radiogroup"
+        aria-label={props.label}
+        class="flex flex-wrap gap-2xs"
+        onKeyDown={(event) => {
+          const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+          if (!keys.includes(event.key)) return;
+          event.preventDefault();
+          const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')];
+          if (buttons.length === 0) return;
+          const current = Math.max(0, buttons.indexOf(document.activeElement as HTMLButtonElement));
+          const next =
+            event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? buttons.length - 1
+                : (current + (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) +
+                    buttons.length) %
+                  buttons.length;
+          buttons[next]?.focus();
+          const option = props.options[next];
+          if (option !== undefined) props.onPick(option.id);
+        }}
+      >
         <For each={props.options}>
           {(option) => (
             <button
               type="button"
               role="radio"
               aria-checked={props.value === option.id}
+              tabIndex={props.value === option.id ? 0 : -1}
               onClick={() => props.onPick(option.id)}
-              class="flex items-center gap-2xs rounded-pill border px-md py-2xs text-xs transition-colors duration-[var(--dur-fast)]"
+              class="flex h-(--control-h) items-center gap-2xs rounded-pill border px-md text-xs font-medium transition-colors duration-[var(--dur-fast)]"
               classList={{
                 "border-line text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
                   props.value !== option.id,
@@ -275,48 +276,32 @@ export function PillChoice<T extends string>(props: {
   );
 }
 
-/**
- * Danh sách cài đặt **gọn** — hình dạng của hộp thoại Cài đặt trong ChatGPT.
- *
- * Ở đó mỗi mục là một hàng chứ không phải một thẻ: nhãn bên trái, điều khiển bên phải,
- * một dòng mô tả nhỏ dưới nhãn khi cần, và các hàng chỉ ngăn nhau bằng một nét chỉ. Ta
- * theo hình dạng đó vì cùng một lý do họ chọn nó: trang cài đặt là một danh sách *dài*
- * gồm nhiều thứ không liên quan nhau, và đóng khung mỗi thứ vào một thẻ riêng làm mắt
- * phải nhảy qua bốn cạnh viền trước mỗi lần đọc một nhãn.
- *
- * Không tự dựng khung cuộn ở đây: khung cuộn là của trang cha. Một vùng cuộn lồng trong
- * một vùng cuộn là hai thanh cuộn, và người dùng luôn lăn nhầm cái ngoài.
- */
+/** A compact settings list: rows separated by a rule rather than cards, and no scroll container of its own, since nested scrolling means two scrollbars. */
 export function RowGroup(props: { children: JSX.Element }) {
   return (
-    <div class="flex flex-col divide-y divide-line overflow-hidden rounded-card border border-line bg-surface">
+    <div class="flex flex-col divide-y divide-line rounded-card border border-line bg-surface shadow-[var(--edge-top)]">
       {props.children}
     </div>
   );
 }
 
-/**
- * Một hàng cài đặt.
- *
- * `control` và `below` khai là **hàm** vì chúng chứa JSX: Solid biên dịch prop thành
- * getter, và một prop JSX bị đọc hai lần dựng ra hai bản DOM chồng lên nhau.
- */
+/** One settings row; `control` and `below` are functions because a JSX prop read twice duplicates the DOM. */
 export function Row(props: {
   label: string;
   desc?: string;
-  /** Tên server MCP là một định danh — nó xuất hiện nguyên văn trong tiền tố tên tool. */
+  /** An MCP server name is an identifier: it appears verbatim in the tool name prefix. */
   labelMono?: boolean;
-  /** Biểu tượng đứng đầu hàng. Nó thay phần nghĩa mà `desc` một dòng không chứa nổi. */
+  /** The row's leading icon, carrying meaning a one-line `desc` cannot hold. */
   icon?: IconName;
-  /** Đoạn giải thích dài, cất trong `InfoDot` cạnh nhãn. */
+  /** The long explanation, kept in an `InfoDot` beside the label. */
   more?: string;
-  /** Chấm trạng thái hoặc biểu tượng đứng trước nhãn. */
+  /** A state dot or icon in front of the label. */
   lead?: () => JSX.Element;
-  /** Điều khiển ở cột phải — công tắc, nút, ô chọn. */
+  /** The right-column control: a toggle, a button, a select. */
   control?: () => JSX.Element;
-  /** Phần bung ra dưới hàng: cảnh báo, danh sách, chi tiết của chính hàng đó. */
+  /** What expands under the row: a warning, a list, this row's own detail. */
   below?: () => JSX.Element;
-  /** Hàng mờ đi khi mục của nó đang tắt, nhưng vẫn phải đọc được để bật lại. */
+  /** Dim the row when its item is off, while keeping it readable enough to turn back on. */
   dim?: boolean;
 }) {
   return (
@@ -339,7 +324,7 @@ export function Row(props: {
             classList={{ "font-mono": props.labelMono === true }}
           >
             {props.label}
-            <Show when={props.more}>{(more) => <InfoDot text={more()} label={`Về ${props.label}`} />}</Show>
+            <Show when={props.more}>{(more) => <InfoDot text={more()} label={t(S.settings.form.about, { label: props.label })} />}</Show>
           </span>
           <Show when={props.desc}>
             {(desc) => <p class="m-0 text-2xs text-muted">{desc()}</p>}
@@ -354,13 +339,7 @@ export function Row(props: {
   );
 }
 
-/**
- * Ô chọn một-trong-nhiều, cột phải của một hàng.
- *
- * `<select>` thật của trình duyệt chứ không phải một menu tự vẽ: danh sách mô hình dài
- * tuỳ máy chủ, và một danh sách tự vẽ vừa phải tự lo cuộn, tự lo bàn phím, vừa phải tự
- * lo cả việc đóng khi cuộn trang — ba thứ trình duyệt đã làm đúng sẵn.
- */
+/** A one-of-many picker for a row's right column, using the browser's `<select>` rather than a hand-drawn menu. */
 export function Select(props: {
   label: string;
   value: string;
@@ -368,13 +347,7 @@ export function Select(props: {
   onPick: (value: string) => void;
   disabled?: boolean;
   mono?: boolean;
-  /**
-   * Chiếm trọn bề ngang thay vì dừng ở 280px.
-   *
-   * Bề rộng mặc định hợp với một `<Row>` của trang cài đặt, nơi ô điều khiển đứng ở cột
-   * phải cạnh một cột nhãn. Trong một hộp thoại thì nó lại là ô duy nhất trên dòng, và
-   * một ô hẹp hơn ô ngay trên nó đọc như một ô bị vỡ.
-   */
+  /** Take the full width instead of stopping at 280px, for dialogs where it is the only field. */
   full?: boolean;
 }) {
   const WIDTH = props.full === true ? "w-full" : "max-w-[280px]";
@@ -384,12 +357,10 @@ export function Select(props: {
       value={props.value}
       disabled={props.disabled}
       onChange={(event) => props.onPick(event.currentTarget.value)}
-      class={`h-(--control-h) ${WIDTH} min-w-0 truncate rounded-btn border border-line bg-bg px-sm text-xs text-text outline-none transition-colors duration-[var(--dur-fast)] focus:border-accent disabled:cursor-not-allowed disabled:opacity-50`}
+      class={`h-(--control-h) ${WIDTH} min-w-0 truncate rounded-btn border border-line-strong bg-bg px-sm text-xs text-text transition-colors duration-[var(--dur-fast)] focus:border-accent disabled:cursor-not-allowed disabled:opacity-50`}
       classList={{ "font-mono": props.mono === true }}
     >
-      {/* `selected` đặt trên từng `<option>` chứ không chỉ dựa vào `value` của `<select>`:
-          danh sách được dựng lại mỗi khi máy chủ trả về mô hình khác, và một `<select>`
-          được gán `value` trước lúc có `<option>` tương ứng sẽ tự rơi về mục đầu tiên. */}
+      {/* `selected` per `<option>`, since a `<select>` given a `value` before its options falls back to the first. */}
       <For each={props.options}>
         {(option) => (
           <option value={option.id} selected={option.id === props.value}>
@@ -403,12 +374,12 @@ export function Select(props: {
 
 export type BannerTone = "info" | "warn" | "danger" | "accent";
 
-/** Một câu cần đọc trước khi bấm. Không phải toast: nó ở lại, vì điều kiện ở lại. */
+/** A sentence to read before clicking; not a toast, it stays as long as the condition does. */
 export function Banner(props: {
   tone: BannerTone;
   icon: IconName;
   title?: string;
-  /** Đoạn dài đằng sau lời cảnh báo, cất trong `InfoDot` cạnh tiêu đề. */
+  /** The long text behind the warning, kept in an `InfoDot` beside the title. */
   more?: string;
   children: JSX.Element;
   role?: "status" | "alert";
@@ -438,8 +409,7 @@ export function Banner(props: {
         </Show>
         <div class="flex min-w-0 items-start gap-2xs">
           <span class="min-w-0">{props.children}</span>
-          {/* Không tiêu đề thì chấm hỏi đi cùng thân: gắn nó vào `title` và chỉ vậy thôi
-              thì một banner không tiêu đề nuốt mất `more` mà không báo gì. */}
+          {/* With no title the dot rides the body, or a titleless banner would swallow `more`. */}
           <Show when={props.more !== undefined && props.title === undefined}>
             <InfoDot text={props.more ?? ""} />
           </Show>
@@ -449,14 +419,7 @@ export function Banner(props: {
   );
 }
 
-/**
- * Liên kết ra ngoài.
- *
- * `@tauri-apps/plugin-opener` **chưa được cài** trong `ui/package.json`, và thêm một phụ
- * thuộc npm nằm ngoài phạm vi đợt việc này (nó còn kéo theo cả `Cargo.toml` lẫn danh sách
- * quyền của Tauri). Cho tới lúc đó thì `target="_blank"` là lối duy nhất còn mở; `rel`
- * chặn trang đích với tay ngược vào `window.opener`.
- */
+/** An external link; `plugin-opener` is not installed, so `target="_blank"` is the only route, with `rel` blocking `window.opener`. */
 export function ExternalLink(props: { href: string; children: JSX.Element }) {
   return (
     <a
@@ -473,15 +436,7 @@ export function ExternalLink(props: { href: string; children: JSX.Element }) {
 }
 
 
-/**
- * Dấu chấm hỏi cạnh một nhãn: câu giải thích dài nằm trong đây, không nằm trên trang.
- *
- * Mọi nhãn và mô tả trên màn hình bị giới hạn một câu ngắn, vì một trang cài đặt được
- * *quét* chứ không được đọc. Nhưng lý do đằng sau một công tắc vẫn phải còn ở đâu đó —
- * mất nó thì người dùng bật/tắt theo phỏng đoán. Chỗ đó là đây: chữ đầy đủ hiện khi rê
- * chuột hoặc khi tiêu điểm bàn phím rơi vào, và luôn nối với nhãn qua `aria-describedby`
- * nên trình đọc màn hình đọc được kể cả khi không có con trỏ nào.
- */
+/** The dot beside a label holding the long explanation, opened by hover or focus and tied to the label by `aria-describedby`, since settings pages are scanned rather than read. */
 export function InfoDot(props: { text: string; label?: string }) {
   const [open, setOpen] = createSignal(false);
   const id = createUniqueId();
@@ -489,7 +444,7 @@ export function InfoDot(props: { text: string; label?: string }) {
     <span class="relative inline-flex shrink-0 items-center">
       <button
         type="button"
-        aria-label={props.label ?? "Giải thích"}
+        aria-label={props.label ?? t(S.settings.form.infoDot)}
         aria-describedby={id}
         aria-expanded={open()}
         onMouseEnter={() => setOpen(true)}
@@ -497,7 +452,7 @@ export function InfoDot(props: { text: string; label?: string }) {
         onFocus={() => setOpen(true)}
         onBlur={() => setOpen(false)}
         onClick={() => setOpen((was) => !was)}
-        class="grid size-4 place-items-center rounded-pill text-faint transition-colors duration-[var(--dur-fast)] hover:text-ink"
+        class="grid size-(--icon-control-h) place-items-center rounded-pill text-faint transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
       >
         <Icon name="info" size={13} />
       </button>
@@ -514,13 +469,13 @@ export function InfoDot(props: { text: string; label?: string }) {
   );
 }
 
-/** Tiêu đề một khu vực trong trang, cùng nhịp với `SettingsView`. */
+/** A section heading inside a page, in the same rhythm as `SettingsView`. */
 export function SectionHead(props: {
   title: string;
   desc: string;
-  /** Biểu tượng của khu vực. Nó gánh phần nghĩa mà câu mô tả một dòng phải bỏ lại. */
+  /** The section's icon, carrying meaning the one-line description has to leave out. */
   icon?: IconName;
-  /** Đoạn dài đằng sau tiêu đề, cất trong `InfoDot` thay vì trải ra trang. */
+  /** The long text behind the title, kept in an `InfoDot` rather than spread on the page. */
   more?: string;
   actions?: () => JSX.Element;
 }) {
@@ -535,7 +490,7 @@ export function SectionHead(props: {
           )}
         </Show>
         <div class="flex min-w-0 flex-col gap-3xs">
-          <h2 class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
+          <h2 class="m-0 flex items-center gap-2xs text-md font-medium text-ink">
             {props.title}
             <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
           </h2>
@@ -547,7 +502,7 @@ export function SectionHead(props: {
   );
 }
 
-/** Nút chính/phụ của hộp thoại — cùng chiều cao, cùng bo góc, khác trọng lượng. */
+/** Dialog primary and secondary buttons: same height and radius, different weight. */
 export function Button(props: {
   label: string;
   variant?: "primary" | "ghost" | "outline";
@@ -564,12 +519,11 @@ export function Button(props: {
       disabled={props.disabled || props.busy}
       aria-busy={props.busy}
       onClick={() => props.onClick?.()}
-      class="inline-flex h-(--control-h) items-center gap-2xs rounded-btn px-md text-xs font-medium transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-40"
+      class="pai-btn text-xs"
       classList={{
-        "bg-accent text-on-accent enabled:hover:bg-accent-hover": variant() === "primary",
-        "border border-line-strong text-text enabled:hover:bg-surface-hover": variant() === "outline",
-        "text-muted enabled:hover:bg-[var(--overlay-hover)] enabled:hover:text-ink":
-          variant() === "ghost",
+        "pai-btn-primary": variant() === "primary",
+        "pai-btn-secondary": variant() === "outline",
+        "pai-btn-ghost": variant() === "ghost",
       }}
     >
       <Show when={props.icon}>{(icon) => <Icon name={icon()} size={13} />}</Show>

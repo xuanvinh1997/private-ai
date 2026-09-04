@@ -3,26 +3,15 @@ import { useFocusTrap } from "../../hooks/useFocusTrap";
 import Icon, { type IconName } from "../Icon";
 import { InfoDot } from "../settings/FormKit";
 
-/**
- * Vỏ chung cho các hộp thoại của màn hình dự án và màn hình thư viện.
- *
- * Gom lại không phải vì cái khung — cái khung là mười dòng. Gom lại vì ba thứ dễ quên
- * nhất của một hộp thoại đều vô hình: bẫy tiêu điểm, Esc đóng, và trả tiêu điểm về đúng
- * chỗ cũ khi đóng. Bốn hộp thoại tự viết bốn lần là bốn cơ hội quên một trong ba thứ đó,
- * và cả ba đều không lộ ra khi thử bằng chuột.
- *
- * `footer` khai là **hàm** chứ không nhận JSX trực tiếp: Solid biên dịch prop chứa JSX
- * thành getter, nên một prop JSX bị đọc hai lần sẽ dựng hai bản nút — bản thừa nằm đè
- * lên bản kia và nuốt mất cú bấm.
- */
+/** Shared dialog shell for the project and library screens; it exists for the invisible parts, focus trap, Esc to close and focus restore, and `footer` is a function because a JSX prop read twice builds two sets of buttons. */
 export default function DialogShell(props: {
   icon: IconName;
   title: string;
   desc?: string;
-  /** Đoạn dài đằng sau tiêu đề — cất trong `InfoDot`, không trải ra hộp thoại. */
+  /** The long text behind the title, kept in an `InfoDot` rather than spread over the dialog. */
   more?: string;
   tone?: "accent" | "danger";
-  /** Có việc đang chạy trong hộp thoại; trình đọc màn hình cần biết để không đọc vội. */
+  /** Work is running in the dialog; screen readers need to know before they read it out. */
   busy?: boolean;
   width?: "md" | "lg";
   onClose: () => void;
@@ -67,7 +56,7 @@ export default function DialogShell(props: {
             <Icon name={props.icon} size={16} />
           </span>
           <div class="flex min-w-0 flex-col gap-3xs">
-            <h2 id={titleId} class="m-0 flex items-center gap-2xs text-md font-semibold text-ink">
+            <h2 id={titleId} class="m-0 flex items-center gap-2xs text-md font-medium text-ink">
               {props.title}
               <Show when={props.more}>{(more) => <InfoDot text={more()} />}</Show>
             </h2>
@@ -89,12 +78,7 @@ export default function DialogShell(props: {
   );
 }
 
-/**
- * Ba kiểu nút dùng lại trong hộp thoại và trên màn hình dự án.
- *
- * Không phải một hệ thống nút — chỉ là ba chỗ mà lặp lại chuỗi class dài này sẽ khiến
- * hai nút cùng vai trò trông khác nhau sau vài lần sửa.
- */
+/** The button variants reused across dialogs and the project screen, so equal roles stay equal. */
 export function Button(props: {
   children: JSX.Element;
   onClick?: () => void;
@@ -113,15 +97,13 @@ export function Button(props: {
       disabled={props.disabled}
       aria-label={props.label}
       title={props.title}
-      class="flex h-(--control-h) shrink-0 items-center gap-2xs rounded-btn px-md text-xs transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-40"
+      class="pai-btn shrink-0 text-xs"
       classList={{
-        "bg-accent font-medium text-on-accent enabled:hover:bg-accent-hover":
-          variant() === "primary",
-        "text-muted enabled:hover:bg-[var(--overlay-hover)] enabled:hover:text-ink":
-          variant() === "ghost",
-        "border border-line text-text enabled:hover:border-accent enabled:hover:bg-accent-soft enabled:hover:text-accent-ink":
+        "pai-btn-primary": variant() === "primary",
+        "pai-btn-ghost": variant() === "ghost",
+        "pai-btn-secondary enabled:hover:border-accent enabled:hover:bg-accent-soft enabled:hover:text-accent-ink":
           variant() === "outline",
-        "bg-danger font-medium text-on-accent enabled:hover:opacity-90": variant() === "danger",
+        "pai-btn-danger": variant() === "danger",
       }}
     >
       <Show when={props.icon}>{(name) => <Icon name={name()} size={14} />}</Show>

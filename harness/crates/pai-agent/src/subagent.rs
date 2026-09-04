@@ -1,20 +1,6 @@
-//! Giao việc cho một agent con.
-//!
-//! Một subagent là một lượt trọn vẹn chạy trong **phiên riêng** và **phạm vi riêng**. Hai
-//! chữ "riêng" đó là toàn bộ lý do nó tồn tại:
-//!
-//! **Phiên riêng** nghĩa là mọi thứ nó đọc — hai mươi tệp, năm lần `grep`, một cây thư
-//! mục — nằm trong sổ của nó, không nằm trong ngữ cảnh của agent cha. Cha chỉ nhận lại
-//! bản báo cáo. Đó là cách một việc tốn năm mươi nghìn token trả về một đoạn văn năm dòng.
-//!
-//! **Phạm vi riêng** nghĩa là bộ tool của con hẹp lại được mà không đụng tới cha. Cụ thể
-//! và bắt buộc: con **không được** giao việc tiếp khi đã tới đáy. Không có trần đó thì
-//! một mô hình đang bí sẽ giao việc cho chính hình ảnh của nó, mãi mãi, và thứ chặn lại
-//! là hết tiền chứ không phải một dòng mã.
-//!
-//! Con thừa hưởng prompt hệ thống và bộ tool của cha, chứ không phải một bản rút gọn nào
-//! khác. Cho con một thế giới khác là tạo ra một lớp hành vi thứ hai phải nuôi song song,
-//! và người đọc báo cáo sẽ không biết con đã nhìn thấy gì.
+//! Delegating work to a subagent: a whole turn in its own session and its own scope.
+//! The child's reading stays in its journal and the parent gets only the report; the child's
+//! tool set narrows without touching the parent, and depth is capped so recursion ends.
 
 use std::sync::Arc;
 
@@ -32,10 +18,7 @@ use serde::Deserialize;
 use crate::driver::{Driver, Silent};
 use crate::prompt::Prompt;
 
-/// Sâu bao nhiêu thì thôi.
-///
-/// Hai tầng là đủ cho việc thật (cha giao, con làm) và đủ ngắn để một vòng lặp vô tình
-/// dừng lại trước khi ai kịp nhận ra. Nới nó ra là quyết định phải có lý do.
+/// How deep before stopping; two levels suffice for real work and stop an accidental loop early.
 pub const MAX_DEPTH: u32 = 2;
 
 #[derive(Debug, Clone)]
@@ -56,7 +39,7 @@ impl ServiceKey for Subagents {
     const NAME: &'static str = "subagents";
 }
 
-/// Chạy agent con ngay trong tiến trình này.
+/// Run subagents inside this process.
 pub struct LocalSubagents {
     ctx: Context,
     llm: Arc<dyn LlmAdapter>,
@@ -93,14 +76,12 @@ impl SubagentProvider for LocalSubagents {
             ));
         }
 
-        // Phạm vi riêng. Mọi hạn chế đặt ở đây chỉ chạm tới con, không chạm tới cha.
+        // Its own scope: restrictions set here reach the child only, never the parent.
         let child = self.ctx.scoped("subagent");
         let registry = self.ctx.require::<Tools>().map_err(|err| err.to_string())?;
         let scope = child.scope_key().ok_or("phạm vi con không dựng được")?;
 
-        // Ở tầng cuối, `task` bị rút khỏi bộ tool của con — chứ không phải để nó gọi rồi
-        // nhận một lời từ chối. Một tool nhìn thấy được mà lần nào cũng hỏng là một tool
-        // dạy mô hình bỏ qua danh sách.
+        // At the last level `task` is removed rather than left to refuse: a visible tool that always fails teaches neglect.
         let restriction = ToolRestriction {
             allow: None,
             deny: if depth + 1 >= MAX_DEPTH {
@@ -147,9 +128,7 @@ impl SubagentProvider for LocalSubagents {
             .await
             .map_err(|err| err.to_string())?;
 
-        // Báo cáo là **lời cuối cùng của con**, không phải cả bản ghi. Cả bản ghi vẫn nằm
-        // trong sổ của con, đọc lại được — nhưng đưa nó lên cho cha là xoá sạch cái lợi
-        // duy nhất của việc giao việc.
+        // The report is the child's last word, not its whole record, which would erase the only benefit of delegating.
         let history = session.derive_messages();
         let text = history
             .iter()
@@ -209,9 +188,7 @@ impl Tool for Task {
     }
 
     fn meta(&self) -> ToolMeta {
-        // Con làm được gì thì đây làm được nấy, kể cả sửa tệp — nên nó không phải chỉ-đọc.
-        // Nội dung trả về là lời một mô hình viết sau khi đọc tệp của người dùng, nên nó
-        // cũng không đáng tin hơn chính những tệp đó.
+        // This does whatever the child does, edits included, and returns model text about user files: not read-only, not trusted.
         ToolMeta::mutating().untrusted().concurrency_safe(false)
     }
 
@@ -232,11 +209,7 @@ impl Tool for Task {
     }
 }
 
-/// Cắm việc giao việc vào cây.
-///
-/// Nó cần cả mô hình lẫn sổ phiên, tức là hai thứ mà phần lớn plugin không cần. Đó là
-/// điều đúng chứ không phải một chỗ rò rỉ: một agent con **là** một lượt trọn vẹn, nên
-/// nó cần đúng những gì một lượt cần.
+/// Mount delegation into the tree; it needs the model and the session store because a subagent is a whole turn.
 pub struct SubagentPlugin {
     llm: Arc<dyn LlmAdapter>,
     sessions: SessionService,
@@ -277,7 +250,7 @@ impl pai_core::Plugin for SubagentPlugin {
         ctx.keep(ctx.provide::<Subagents>(provider.clone())?);
 
         let registry = ctx.require::<Tools>()?;
-        // Agent gốc ở độ sâu 0. Con của nó tự đếm tiếp khi `delegate` dựng phạm vi mới.
+        // The root agent is depth 0; children count up as `delegate` builds each new scope.
         ctx.keep(registry.register(Arc::new(Task::new(provider, 0))));
         Ok(())
     }

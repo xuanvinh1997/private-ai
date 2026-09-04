@@ -1,9 +1,5 @@
-//! The filesystem seam.
-//!
-//! Tools do not call `std::fs`; they go through here. The reason is not abstraction for its
-//! own sake: when this provider points at a sandbox or a remote machine, all five tools move
-//! with it and none of them needs editing. That is the one thing that makes "swapping a
-//! provider changes the product" true rather than a slogan.
+//! The filesystem seam: tools go through here instead of calling `std::fs`, so pointing the
+//! provider at a sandbox or a remote machine moves every tool with it, unedited.
 
 use std::path::{Path, PathBuf};
 
@@ -56,8 +52,7 @@ impl FsProvider for LocalFs {
         if looks_binary(&bytes) {
             return Err(FsError::Binary(path.to_path_buf()));
         }
-        // By here we know there is no NUL byte; the rest can still be broken UTF-8, and
-        // replacement characters are then correct: the file *is* text, with a few odd bytes.
+        // No NUL byte by here, so broken UTF-8 is genuinely text and lossy decoding is right.
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 

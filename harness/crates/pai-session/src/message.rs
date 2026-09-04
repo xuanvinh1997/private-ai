@@ -1,12 +1,6 @@
-//! Từ vựng message tối thiểu.
-//!
-//! Về lâu dài `pai-llm` sở hữu từ vựng này. Sổ vẫn phải khai báo nó ở đây vì phép chiếu
-//! cần đọc được đúng **một** điều: message có rỗng nội dung không. Đó là khác biệt giữa
-//! một bước bị cụt vì hết token — chỉ còn `usage` để ghi lại — và một message thật.
-//!
-//! Ngoài chỗ đó, sổ không diễn giải nội dung. Đóng khung (`<context>…`) là việc của bên
-//! sản xuất, không phải của phép chiếu: nếu phép chiếu thêm chữ, bản ghi sẽ không còn
-//! dựng lại đúng thứ mô hình đã thấy.
+//! Minimal message vocabulary, owned long-term by `pai-llm` but declared here because the projection
+//! must read exactly one thing: whether a message has empty content. Beyond that the log never
+//! interprets content -- framing belongs to the producer, or replay stops matching what the model saw.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,8 +21,7 @@ pub enum ContentBlock {
     ToolCall {
         id: String,
         name: String,
-        /// Chuỗi JSON **chưa parse**. Mô hình sinh ra chuỗi này; parse rồi in lại sẽ đổi
-        /// byte, mà byte chính là thứ phải phát lại được.
+        /// Unparsed JSON string: the model produced these exact bytes, and the bytes are what must replay.
         arguments: String,
     },
     ToolResult {
@@ -43,8 +36,7 @@ pub enum ContentBlock {
 pub struct Message {
     pub role: Role,
     pub content: Vec<ContentBlock>,
-    /// Ai đẻ ra message này, khi nó không đến từ người dùng: `subagent-report`,
-    /// `compaction-checkpoint`… Mô hình không thấy trường này; giao diện thì cần.
+    /// Who produced this message when it is not the user (`subagent-report`, `compaction-checkpoint`); UI-only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
 }

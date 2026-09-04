@@ -1,9 +1,6 @@
-//! Lỗi của chỉ mục.
-//!
-//! Cố tình ít nhánh: chỉ mục là một **bộ nhớ đệm dựng lại được từ mã nguồn**, nên gần như
-//! mọi sự cố ở đây có một cách xử lý đúng duy nhất — nói ra, rồi dựng lại. Chỉ những thứ
-//! không tự sửa được mới lên tới đây; lỗi của **một tệp** thì không, nó được ghi log và
-//! lần quét đi tiếp.
+//! Index errors.
+//! Deliberately few variants: the index is a cache rebuildable from source, so nearly
+//! everything here means report and rebuild. A single file's failure is logged, not raised.
 
 #[derive(Debug, thiserror::Error)]
 pub enum IndexError {

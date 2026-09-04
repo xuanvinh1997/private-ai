@@ -3,10 +3,11 @@ import { render } from "solid-js/web";
 import "./styles/app.css";
 import App from "./App";
 import { initTheme } from "./lib/theme";
+import { initLocale } from "./lib/i18n";
 
-// Đóng dấu theme trước lần vẽ đầu tiên. Làm sau khi render là một nháy màu sai —
-// ngắn, nhưng ai cũng thấy.
+// Stamp the theme before the first paint; doing it after render flashes the wrong colours.
 initTheme();
+initLocale();
 
 const root = document.getElementById("root");
 if (!root) throw new Error("thiếu #root trong index.html");

@@ -1,18 +1,6 @@
-//! Cắm terminal vào cây.
-//!
-//! Plugin làm ba việc, và việc thứ ba là việc quan trọng: cung cấp provider, đăng ký sáu
-//! tool, và đẩy `terminal_open` qua đường hỏi người dùng.
-//!
-//! Việc hỏi là một **middleware** chứ không phải một canh gác, cùng lý do như
-//! `pai-shell::plugin`: canh gác cố ý đơn điệu — chúng chỉ từ chối hoặc bỏ qua, không mở
-//! được đường hỏi. Nếu canh gác trả `Ask` được thì thứ tự đăng ký sẽ biến một lệnh từ chối
-//! thành một câu hỏi, mà một câu hỏi thì trả lời "có" được.
-//!
-//! Và gỡ plugin **đóng sạch mọi phiên**, kể cả tiến trình cháu. Một shell sống lâu hơn thứ
-//! sinh ra nó là một shell không ai còn nhớ để dọn, còn nó thì vẫn giữ cổng và vẫn ghi vào
-//! thư mục làm việc. Việc dọn dùng `defer_async` chứ không `defer`, vì lời hứa của
-//! `terminal_close` là **chờ** cho cây tiến trình biến mất, và một disposer đồng bộ không
-//! chờ được gì cả.
+//! Wires the terminal into the tree: provide the host, register six tools, route `terminal_open`
+//! through user approval as middleware (guards can only deny, never ask), and close every session
+//! on teardown via `defer_async`, since closing must wait for the process tree to die.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -30,11 +18,7 @@ use crate::tools::{
     TerminalClose, TerminalList, TerminalOpen, TerminalRead, TerminalSend, TerminalSignal,
 };
 
-/// Đẩy mọi lời gọi `terminal_open` qua người dùng.
-///
-/// Chỉ `terminal_open`, không phải cả sáu tool. Cái được duyệt là **quyền có một shell**;
-/// một khi phiên đã mở với sự đồng ý của người dùng thì hỏi lại ở từng lần gõ phím là dạy
-/// họ bấm cho qua — và một người bấm cho qua thì không đọc, kể cả lần hỏi đáng đọc.
+/// Route every `terminal_open` past the user. Only that tool: approval buys the shell, and re-asking per keystroke teaches click-through.
 struct AskBeforeOpen {
     ctx: Context,
 }
@@ -49,9 +33,7 @@ impl Middleware<PreExecute> for AskBeforeOpen {
             if req.name.as_str() != TerminalOpen::NAME {
                 return next.run(req).await;
             }
-            // Uỷ quyền trước rồi mới hỏi: một tầng dưới đã từ chối thì không còn gì để
-            // hỏi, và hỏi một câu mà câu trả lời không đổi được gì là làm người dùng quen
-            // với việc bấm cho qua.
+            // Delegate first, then ask: if a lower layer already denied, there is nothing left to ask about.
             match next.run(req).await {
                 PreDecision::Allow => PreDecision::Ask {
                     reason: self.risk(),
@@ -64,9 +46,7 @@ impl Middleware<PreExecute> for AskBeforeOpen {
 }
 
 impl AskBeforeOpen {
-    /// Câu hỏi phải nói đúng mức rủi ro thật trên **máy đang chạy**, không phải mức rủi ro
-    /// mà chính sách khai. Cùng chữ, cùng nguồn với `pai-shell`, cộng một câu về chuyện
-    /// phiên sống lâu — vì đó là điều khác biệt duy nhất mà người đọc cần biết.
+    /// The prompt must state the real risk on this machine, not what the policy claims; same wording as `pai-shell` plus session persistence.
     fn risk(&self) -> String {
         let confinement = match self
             .ctx
@@ -109,12 +89,7 @@ impl TerminalPlugin {
     }
 }
 
-/// Đăng ký sáu tool cho một chủ.
-///
-/// Tách khỏi [`Plugin::apply`] và để `pub`, vì đây là cách một agent con có bộ tool riêng
-/// nhìn vào cùng một bể phiên mà **không** thấy phiên của agent khác: cùng `host`, khác
-/// `owner`. Tự tay ráp lại ở chỗ gọi thì sớm muộn có chỗ ráp thiếu một tool, và cái thiếu
-/// đó là một khả năng biến mất trong im lặng.
+/// Register the six tools for one owner. Public so a sub-agent can share the same host under a different `owner`.
 pub fn register_tools(
     ctx: &Context,
     host: Arc<dyn TerminalHost>,
@@ -138,8 +113,7 @@ impl Plugin for TerminalPlugin {
     }
 
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
-        // `workspace-write` là mặc định, cùng lý do như `pai-shell`: một coding agent phải
-        // sửa được repo, và mọi thứ ngoài repo thì không.
+        // `workspace-write` by default, as in `pai-shell`: a coding agent must edit the repo and nothing outside it.
         let policy = Policy::workspace_write(self.cwd.clone());
         let terminals = Arc::new(
             LocalTerminals::new(ctx.clone(), policy, self.cwd.clone())

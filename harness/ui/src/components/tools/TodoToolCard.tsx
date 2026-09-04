@@ -1,9 +1,10 @@
 import { Show } from "solid-js";
+import { S, tn } from "../../lib/i18n";
 import type { TodoItem, ToolCall } from "../../lib/protocol";
 import TodoCard from "../TodoCard";
 import { ToolShell } from "./ToolCard";
 
-/** Đọc danh sách việc từ đối số thô. Sai hình dạng thì trả rỗng, không ném. */
+/** Read the todo list out of raw arguments; a bad shape returns empty rather than throwing. */
 function todosFromArgs(args: unknown): TodoItem[] {
   if (args === null || typeof args !== "object") return [];
   const raw = (args as Record<string, unknown>).todos;
@@ -27,16 +28,14 @@ function todosFromArgs(args: unknown): TodoItem[] {
   });
 }
 
-/**
- * `todo_write` vẽ luôn danh sách kết quả thay vì JSON đối số.
- *
- * Node `todo` riêng vẫn tồn tại và mang trạng thái mới nhất; thẻ này chỉ nói "lượt này
- * đã đụng vào danh sách", nên nó hiện *ảnh chụp lúc gọi*, không đồng bộ ngược.
- */
+/** `todo_write` draws the list itself, as the snapshot at call time; the `todo` node holds the latest state. */
 export default function TodoToolCard(props: { call: ToolCall }) {
   const items = () => todosFromArgs(props.call.args);
   return (
-    <ToolShell call={props.call} summary={`${items().length} việc`}>
+    <ToolShell
+      call={props.call}
+      summary={tn(items().length, S.tools.todo.oneTask, S.tools.todo.manyTasks)}
+    >
       <Show when={items().length > 0}>
         <TodoCard items={items()} />
       </Show>

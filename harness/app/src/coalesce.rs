@@ -1,9 +1,6 @@
-//! Gộp token trước khi gửi qua IPC.
-//!
-//! Một lần vượt biên IPC của Tauri đắt hơn hẳn một signal của Qt. Mô hình chạy nhanh
-//! phát ra hàng nghìn token mỗi phút, và gửi từng cái một sẽ nghẽn ở webview chứ không
-//! ở mô hình. Gộp theo cửa sổ ~16 ms cho ra đúng một lần vẽ mỗi khung hình — mắt không
-//! phân biệt được, còn máy thì rảnh hẳn.
+//! Coalescing tokens before they cross IPC. A Tauri IPC hop is far pricier than a Qt signal, and a fast
+//! model emits thousands of tokens a minute, so per-token sends bottleneck in the webview.
+//! A ~16 ms window yields one repaint per frame, which the eye cannot tell apart.
 
 use std::time::Duration;
 
@@ -12,13 +9,11 @@ use tokio::sync::mpsc;
 
 use crate::protocol::AgentEvent;
 
-/// Một khung hình ở 60 Hz.
+/// One frame at 60 Hz.
 const WINDOW: Duration = Duration::from_millis(16);
 
-/// Đầu vào của bộ gộp.
-///
-/// Chỉ `Token` được gộp. Mọi sự kiện khác đi thẳng, và **xả hết token đang chờ trước
-/// khi đi** — nếu không, một thẻ tool sẽ nhảy lên trước đoạn văn sinh ra nó.
+/// The coalescer's input. Only `Token` is merged; every other event flushes the pending tokens first, or a
+/// tool card would jump ahead of the prose that produced it.
 pub struct Coalescer {
     tx: mpsc::UnboundedSender<AgentEvent>,
     task: tokio::task::JoinHandle<()>,
@@ -67,20 +62,15 @@ impl Coalescer {
         Coalescer { tx, task }
     }
 
-    /// Gửi. Kênh đứt thì bỏ qua: lượt sẽ kết thúc theo đường huỷ, không phải ở đây.
+    /// Send; a broken channel is ignored, since the turn ends via cancellation, not here.
     pub fn send(&self, event: AgentEvent) {
         let _ = self.tx.send(event);
     }
 
-    /// Xả hết rồi mới trả về.
-    ///
-    /// Đây là thứ giữ cho một bất biến đơn giản đúng: **lệnh trả về nghĩa là mọi sự kiện
-    /// của lượt đã đi qua kênh**. Không có nó, giao diện nhận `Ok` từ `invoke` rồi đóng
-    /// khối trả lời, và những token còn nằm trong bộ đệm 16 ms tới sau — không còn khối
-    /// nào đang mở để nhận, nên chúng đẻ ra một tin nhắn cụt mang con trỏ nhấp nháy
-    /// vĩnh viễn. Đó là lỗi đã thấy trên màn hình, không phải một lo xa.
+    /// Flush everything before returning, so that a command returning means every event of the turn has left
+    /// the channel; otherwise late buffered tokens arrive after the UI closed the block and spawn a stub message.
     pub async fn finish(self) {
-        // Thả `tx` để vòng lặp thấy kênh đóng, xả nốt bộ đệm rồi thoát.
+        // Drop `tx` so the loop sees the channel close, flushes the buffer and exits.
         drop(self.tx);
         let _ = self.task.await;
     }

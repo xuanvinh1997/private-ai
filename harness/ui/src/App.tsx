@@ -24,7 +24,14 @@ import {
   runDemoTurn,
 } from "./lib/demo";
 import { listMcpServers } from "./lib/mcp";
-import { changesPanelOpen, defaultToolScope, setChangesPanelOpen, setDisplayMode, setSidebarOpen, sidebarOpen } from "./lib/prefs";
+import {
+  defaultToolScope,
+  setDisplayMode,
+  setSidebarOpen,
+  setWorkspacePanelOpen,
+  sidebarOpen,
+  workspacePanelOpen,
+} from "./lib/prefs";
 import {
   closeProject,
   folderName,
@@ -45,10 +52,11 @@ import type {
   SessionSummary,
   ToolScope,
 } from "./lib/protocol";
+import { S, t, type Msg } from "./lib/i18n";
 import { setTheme } from "./lib/theme";
 import { TranscriptActionsProvider } from "./lib/transcriptActions";
 import ApprovalDialog from "./components/ApprovalDialog";
-import ChangesPanel, { ChangesBoard } from "./components/ChangesPanel";
+import { ChangesBoard } from "./components/ChangesPanel";
 import Composer from "./components/Composer";
 import { EmptyLead, PromptChips } from "./components/EmptyState";
 import { usableForChat } from "./components/ModelPicker";
@@ -57,7 +65,6 @@ import PromptDialog from "./components/PromptDialog";
 import Sidebar, { tabsFor, type TabId } from "./components/Sidebar";
 import ConfirmDialog from "./components/projects/ConfirmDialog";
 import ProjectsView from "./components/projects/ProjectsView";
-import ProjectPanel from "./components/projects/ProjectPanel";
 import DocsView from "./components/docs/DocsView";
 import SessionPalette from "./components/SessionPalette";
 import Toasts from "./components/Toasts";
@@ -65,78 +72,44 @@ import SettingsView, { type SettingsPage } from "./components/SettingsView";
 import Transcript from "./components/Transcript";
 import Thinking from "./components/Thinking";
 import WorkspaceHeader from "./components/WorkspaceHeader";
+import WorkspacePanel, { type WorkspacePanelTab } from "./components/WorkspacePanel";
 
-// Nạp sổ đăng ký renderer. Import vì hiệu ứng phụ là cố ý: đây là chỗ *duy nhất* biết
-// danh sách renderer, nên thêm một loại node mới không kéo theo sửa đổi ở nơi nào khác.
+// Load the renderer registries; the side-effect import is deliberate, so this is the only place that lists them.
 import "./components/nodes";
 
-/** Mô hình dùng khi chưa hỏi được máy chủ. Chỉ để ô chọn không trống. */
-const MODEL_CHUA_BIET = "(chưa hỏi được máy chủ)";
+/** Model shown before the server answers, so the picker is never empty; a code, not a phrase, since the text
+ * comes from `S.app.modelUnknown` at draw time. It never leaves the UI. */
+const MODEL_CHUA_BIET = "pai:model-chua-biet";
 
-/**
- * `currentId` khi giao diện chưa cầm một phiên thật nào.
- *
- * Đây **không** phải một phiên: `send_message` mở phiên theo đúng id này, nên gửi tin
- * nhắn trong lúc nó còn đứng đây thì lõi trả về "không tìm thấy phiên `phien-nhap`" —
- * và người dùng gặp câu đó ở lần mở ứng dụng đầu tiên, đúng lúc chưa có gì để đổ lỗi.
- * Nó chỉ tồn tại trong khoảng giữa lúc dựng signal và lúc `openBlankSession` chạy xong.
- */
+/** `currentId` before the UI holds a real session; not a session, so sending while it stands yields a
+ * "session not found" error. It only exists between signal creation and `openBlankSession`. */
 const PHIEN_CHUA_MO = "phien-nhap";
 
-/**
- * Hộp thoại đang mở của vỏ ứng dụng — **một** ô cho cả ba việc, không phải ba cờ rời.
- *
- * Ba cờ độc lập cho phép hai hộp thoại cùng nằm trên màn hình, và lúc đó cái mở sau giam
- * tiêu điểm còn cái mở trước vẫn nhận được cú bấm chuột. Kiểu này thì trạng thái ấy không
- * phát biểu ra được, nên nó không cần ai canh.
- *
- * Ba việc này ở chung một chỗ vì cả ba đều sửa trạng thái do chính tệp này giữ: danh sách
- * dự án và danh sách phiên. Màn hình dự án có hộp xác nhận riêng cho hàng của nó — cái ở
- * đây phục vụ menu trong thanh bên, nơi không có màn hình nào đứng ra hỏi.
- */
+/** The shell's open dialog: one slot for all three, not three flags, so two dialogs cannot be on screen at once.
+ * All three edit state this file owns - the project list and the session list. */
 type AppDialog =
   | { kind: "forget-project"; project: Project }
   | { kind: "rename-session"; id: string; title: string }
   | { kind: "delete-session"; id: string; title: string };
 
-/**
- * Vỏ ứng dụng: một thanh bên trái, một cột hội thoại căn giữa, và một bảng thay đổi
- * mở/đóng được ở bên phải.
- *
- * Hình dạng lấy từ ChatGPT và Codex, không từ LobeChat: **một** cột điều hướng thay vì
- * rail cộng panel, bộ chọn mô hình nằm trong ô soạn tin thay vì trên thanh tiêu đề, và
- * không có màn hình nào đọc mã nguồn — người dùng đã có editor của họ rồi. Thứ duy nhất
- * ứng dụng này thêm vào so với hình mẫu là quản lý nhà cung cấp mô hình.
- *
- * Trạng thái hội thoại nằm trong một store riêng cho từng phiên và được nhớ lại khi quay
- * về — chuyển phiên rồi mất chỗ đang đọc là cách nhanh nhất làm người ta ngại chuyển phiên.
- */
+/** App shell: a left sidebar, a centred conversation column, and a multi-view inspector on the right, shaped
+ * after ChatGPT and Codex. Conversation state is per session and restored on return, since losing your place
+ * is the fastest way to make session switching feel expensive. */
 export default function App() {
   const conversation = createConversation();
   const [sessions, setSessions] = createSignal<SessionSummary[]>([]);
   const [currentId, setCurrentId] = createSignal(PHIEN_CHUA_MO);
   const [draft, setDraft] = createSignal("");
-  /**
-   * Tin nhắn gõ **trong lúc lượt trước còn chạy**, chờ tới lượt nó.
-   *
-   * Trước đây ô soạn tin bị khoá suốt lượt, nên nghĩ ra câu hỏi tiếp theo giữa chừng là
-   * phải giữ nó trong đầu cho tới khi trợ lý nói xong. Một agent chạy vài chục giây mỗi
-   * lượt thì đó là vài chục giây người dùng không làm được gì.
-   *
-   * Đúng **một** ô chờ, không phải một hàng đợi: gửi liên tiếp ba câu vào một lượt đang
-   * chạy là ba câu hỏi trên một ngữ cảnh mà người gõ chưa đọc, và câu thứ ba gần như luôn
-   * là câu họ sẽ viết khác đi nếu đọc câu trả lời trước. Gõ tiếp thì thay ô chờ.
-   */
+  /** A message typed *while the previous turn was running*, waiting its turn. Exactly one slot, not a queue:
+   * three questions against context the author has not read is three questions they would have written differently. */
   const [queued, setQueued] = createSignal("");
   const [paletteOpen, setPaletteOpen] = createSignal(false);
-  // Hộp thoại đang mở — xem `AppDialog` về lý do chỉ có một ô.
+  // The open dialog; see `AppDialog` for why there is only one slot.
   const [dialog, setDialog] = createSignal<AppDialog | null>(null);
-  // Việc sau nút xác nhận đang chạy. Chỉ xoá phiên dùng tới: nó là việc duy nhất phải chờ
-  // lõi trả lời xong mới được đổi màn hình, nên cũng là việc duy nhất mà đóng hộp thoại
-  // giữa chừng sẽ để lại một danh sách nói sai.
+  // Work behind a confirm button; only session deletion uses it, being the one job where closing early would leave
+  // the list lying.
   const [dialogBusy, setDialogBusy] = createSignal(false);
-  // Ba lối đọc hẹp lại từ `dialog()`. Viết ra thành hàm chứ không so `kind` ngay trong
-  // JSX: `<Show>` chỉ thu hẹp được kiểu qua đúng cái giá trị nó nhận vào.
+  // Three narrowing reads of `dialog()`, written as functions because `<Show>` only narrows through its own value.
   const forgetting = () => {
     const open = dialog();
     return open?.kind === "forget-project" ? open.project : null;
@@ -149,55 +122,41 @@ export default function App() {
     const open = dialog();
     return open?.kind === "delete-session" ? open : null;
   };
-  // Esc và cú bấm ra ngoài đều đi qua đây, nên chốt bận nằm ở đây một lần: đóng hộp thoại
-  // trong lúc lõi đang xoá là để người dùng nhìn một danh sách chưa biết chuyện gì xảy ra.
+  // Esc and outside clicks both come through here, so the busy guard lives here once.
   const closeDialog = () => {
     if (!dialogBusy()) setDialog(null);
   };
   const [tab, setTab] = createSignal<TabId>("chat");
-  // Trang cài đặt do đây giữ, không do `SettingsView` giữ: thanh bên có một hàng đi thẳng
-  // tới trang MCP, và một trạng thái nằm trong màn hình con sẽ bỏ qua cú bấm ấy mỗi khi
-  // màn hình cài đặt đã mở sẵn.
+  // The settings page lives here, not in `SettingsView`: the sidebar links straight to the MCP page, and local
+  // state there would swallow that click whenever settings was already open.
   const [settingsPage, setSettingsPage] = createSignal<SettingsPage>("chung");
 
-  // Đổi dự án có thể làm chính màn hình đang mở biến mất khỏi thanh bên — mở một thư viện
-  // tài liệu trong lúc đang đứng ở màn hình Thay đổi chẳng hạn. Không sửa thì thanh bên
-  // không còn hàng nào sáng và khung nội dung trống trơn, trông y hệt một lỗi vẽ.
+  // Switching projects can make the open screen disappear from the sidebar, leaving no row lit and an empty frame.
   createEffect(() => {
     if (!tabsFor(project()?.kind).includes(tab())) setTab("chat");
   });
   const [loading, setLoading] = createSignal(true);
   const [models, setModels] = createSignal<ModelChoice[]>([]);
   const [model, setModel] = createSignal(MODEL_CHUA_BIET);
-  // Phiên đang được nạp lại từ sổ. Giữ id chứ không giữ boolean: chuyển phiên nhanh hai
-  // lần thì kết quả về sau của phiên cũ không được ghi đè lên phiên mới.
+  // The session being reloaded from the log; an id rather than a boolean, so a fast double switch cannot overwrite.
   const [loadingSession, setLoadingSession] = createSignal<string | null>(null);
   const [loadError, setLoadError] = createSignal<string | null>(null);
-  // Phạm vi tool của **lượt kế**: nó đi kèm mỗi lần gửi và không được ghi lại ở đâu.
-  //
-  // Điểm xuất phát thì đến từ trang Quyền (`defaultToolScope`), và đó là chỗ *duy nhất*
-  // ghi được. Ranh giới ấy quan trọng: đổi mức trong ô soạn tin là một quyết định cho
-  // lượt sắp gửi và nó chết theo cửa sổ, còn đổi mức ở trang Quyền là một quyết định về
-  // mọi lượt sau này. Gộp hai thứ lại — cho ô soạn tin ghi ngược vào thiết lập — thì một
-  // lần bật shell cho đúng một câu hỏi sẽ lặng lẽ ở lại đó mãi.
+  // Tool scope for the *next* turn: it ships with each send and is never stored. The starting point comes from the
+  // Permissions page (`defaultToolScope`), the only place that writes it - so a one-off shell grant in the composer
+  // dies with the window instead of quietly persisting.
   const [scope, setScope] = createSignal<ToolScope>(defaultToolScope());
 
   const [projects, setProjects] = createSignal<Project[]>([]);
-  // Đổi dự án là lõi tháo và cắm lại cả một nhánh plugin. Trong lúc đó mọi thứ trên màn
-  // hình còn nói về dự án cũ, nên cờ này khoá thao tác thay vì chỉ hiện một cái chấm quay.
+  // Switching projects makes the core swap a whole plugin layer; this flag locks interaction while it does.
   const [switching, setSwitching] = createSignal(false);
-  // Hàng dự án nào đang mở menu ngữ cảnh. Giữ id chứ không giữ boolean: mỗi dự án có menu
-  // riêng, và một cờ chung sẽ mở cả mấy cái cùng lúc.
+  // Which project row has its context menu open; an id, since one shared flag would open all of them.
   const [projectMenu, setProjectMenu] = createSignal<string | null>(null);
 
-  // Server MCP là "plugin" của ứng dụng này: mỗi cái cắm thêm một rổ tool vào lượt kế. Số
-  // **đang nối** đứng trên hàng điều hướng và trong dải ngữ cảnh, nên nó phải là số thật
-  // chứ không phải số server đã khai báo — một server `failed` không cho thêm tool nào.
+  // MCP servers are this app's plugins, so the badge must count *connected* ones: a `failed` server adds no tools.
   const [mcpServers, setMcpServers] = createSignal<McpServer[]>([]);
   const mcpConnected = () => mcpServers().filter((server) => server.state === "connected").length;
-  // Hỏi lại mỗi lần quay về hội thoại, không chỉ một lần lúc mở app: trang cài đặt ngay
-  // cạnh đây bật/tắt và cắm lại server được, và một con số đứng im sau đó là một lời nói
-  // sai về chỗ trợ lý sắp lấy tool ra dùng.
+  // Re-asked on every return to the conversation, not once at startup: the settings page next door can toggle
+  // servers, and a frozen number would misstate where the assistant's tools come from.
   createEffect(() => {
     if (tab() === "chat") void refreshMcp();
   });
@@ -207,27 +166,12 @@ export default function App() {
 
   const project = () => projects().find((entry) => entry.isCurrent) ?? null;
   const projectKey = () => project()?.id ?? "khong-co-du-an";
-  /**
-   * Có dự án đang mở hay không — và đây là một trạng thái hợp lệ, không phải một lần nạp
-   * chưa xong.
-   *
-   * Lõi không tự nhận thư mục hiện hành làm dự án nữa, nên mở ứng dụng lần đầu là rơi
-   * thẳng vào đây. Không có dự án thì **không plugin nào của tầng dự án được cắm**: còn
-   * đúng `todo_write` cộng tool từ server MCP, và hội thoại chạy bình thường. Mọi màn
-   * hình hứa hẹn đọc/sửa/chạy lệnh phải đọc cờ này chứ không tự đoán từ `kind`.
-   */
+  /** Whether a project is open - a valid state, not a pending load. Without one, no project-layer plugin is
+   * attached, so every screen promising read/edit/shell must read this flag rather than infer from `kind`. */
   const hasProject = () => project() !== null;
 
-  /**
-   * Bấm một tệp trong cây thư mục: tên nó rơi vào ô soạn tin dưới dạng `@đường/dẫn`.
-   *
-   * Đường dẫn **tương đối** với thư mục dự án, vì đó là dạng mà bộ hoàn thành `@` và các
-   * tool của trợ lý đều nói. Dán đường dẫn tuyệt đối vào thì câu tin nhắn dài gấp ba và
-   * còn lộ cả tên người dùng trên máy.
-   *
-   * Nối thêm chứ không ghi đè: người ta thường gõ câu hỏi trước rồi mới đi tìm tệp, và
-   * xoá mất câu vừa gõ để nhét một đường dẫn vào là kiểu mất chữ không ai tha thứ.
-   */
+  /** Clicking a file in the tree drops `@relative/path` into the composer; relative because that is what the `@`
+   * completion and the tools speak, and appended rather than overwriting, since the question is usually typed first. */
   function mentionFile(root: string, path: string) {
     const bare = path.startsWith(root) ? path.slice(root.length) : path;
     const rel = bare.replace(/^[\\/]+/, "").replace(/\\/g, "/");
@@ -237,34 +181,33 @@ export default function App() {
     });
   }
 
-  /**
-   * Bảng chi tiết dự án ở cột phải.
-   *
-   * Không lưu vào `prefs` như bảng thay đổi: đây là một lần **tra cứu** — mở ra xem dự án
-   * này là cái gì rồi đóng lại — chứ không phải một cách bố trí chỗ làm việc mà người dùng
-   * muốn giữ qua các lần mở ứng dụng.
-   */
-  const [projectPanelOpen, setProjectPanelOpen] = createSignal(false);
+  // The inspector has one shell; switching between diff and files changes a tab, not the column.
+  const [workspacePanelTab, setWorkspacePanelTab] =
+    createSignal<WorkspacePanelTab>("changes");
+  // Below this width, opening the inspector borrows the left sidebar's space; presentation only, never written back.
+  const [narrowWorkspace, setNarrowWorkspace] = createSignal(false);
+  let workspaceMain: HTMLElement | undefined;
 
-  // Bản ghi của phiên không mở. Giữ trong bộ nhớ thôi: nguồn sự thật là sổ tay phiên
-  // bên Rust, đây chỉ là bộ đệm để chuyển qua lại không phải nạp lại.
+  // Transcripts of closed sessions, in memory only: the Rust session log is the source of truth.
   const parked = new Map<string, ConversationNode[]>();
 
   const files = createMemo(() => changedFiles(conversation.nodes()));
+  const workspacePanelVisible = () => workspacePanelOpen() && hasProject();
+  const sidebarVisible = () =>
+    sidebarOpen() && !(narrowWorkspace() && workspacePanelVisible());
+  const closeWorkspacePanel = () => {
+    setWorkspacePanelOpen(false);
+    queueMicrotask(() => workspaceMain?.focus());
+  };
 
-  /**
-   * Dòng phụ của một hàng phiên: câu cuối cùng đã nói trong phiên đó.
-   *
-   * Ưu tiên bản ghi **đang mở** hơn bản từ lõi: lượt vừa chạy xong chưa kịp vào danh sách,
-   * và một dòng phụ nói về câu áp chót thì trông như giao diện bị treo. Lõi trả lời cho
-   * mọi phiên còn lại, kể cả phiên chưa mở lần nào — đó là thứ bộ nhớ không làm được.
-   */
+  /** A session row's secondary line: the last thing said. The *open* transcript wins over the core's copy, since
+   * a just-finished turn is not in the list yet and a stale preview looks like a hung UI. */
   function preview(session: SessionSummary): string | undefined {
     const nodes = session.id === currentId() ? conversation.nodes() : parked.get(session.id);
     if (!nodes) return session.preview ?? undefined;
     for (let at = nodes.length - 1; at >= 0; at -= 1) {
       const node = nodes[at]!;
-      if (node.kind === "user") return `Bạn: ${node.text}`;
+      if (node.kind === "user") return t(S.app.previewYou, { text: node.text });
       if (node.kind === "assistant" && node.text !== "") return node.text;
     }
     return session.preview ?? undefined;
@@ -275,18 +218,16 @@ export default function App() {
       const knobs = demoKnobs();
       if (knobs.theme) setTheme(knobs.theme);
       if (knobs.mode) setDisplayMode(knobs.mode);
-      if (knobs.changes !== undefined) setChangesPanelOpen(knobs.changes);
+      if (knobs.changes !== undefined) setWorkspacePanelOpen(knobs.changes);
+      if (knobs.panel) setWorkspacePanelTab(knobs.panel);
       if (knobs.sidebar !== undefined) setSidebarOpen(knobs.sidebar);
-      // `?demo=1&project=0` dựng ra trạng thái không-dự-án. Nó nằm trong núm vặn chứ
-      // không nằm sau một cú bấm vì đây là trạng thái *đầu tiên* người dùng gặp, và một
-      // trạng thái chỉ tới được bằng thao tác là một trạng thái không ai nhớ đi chụp.
+      // `?demo=1&project=0` builds the no-project state; it is a knob because that is the *first* state users meet.
       setProjects(demoProjects(knobs.project ?? "p-harness"));
-      // Núm vặn cho việc chụp ảnh: cả ba trạng thái dưới đây chỉ tồn tại trong một nhịp
-      // bấm chuột, và không có chúng thì cách duy nhất chụp được là sửa mã.
+      // Screenshot knobs: all three states below last only a click, so without them the only capture is a code edit.
       if (knobs.tab !== undefined && isTab(knobs.tab)) setTab(knobs.tab);
       if (knobs.menu === "project") setProjectMenu(knobs.project ?? "p-harness");
       if (knobs.switching) setSwitching(true);
-      if (knobs.state === "skeleton") return; // khung xương đứng yên để nhìn cho kỹ
+      if (knobs.state === "skeleton") return; // the skeleton stays put so it can be inspected
       const seed = demoSessions(projectKey());
       for (const [id, nodes] of Object.entries(demoParked())) parked.set(id, nodes);
       setSessions(seed);
@@ -301,42 +242,24 @@ export default function App() {
     const [list, available] = await Promise.all([listSessions(), listModels()]);
     if (list.length > 0) {
       setSessions(list);
-      // **Không** đặt `currentId` trước rồi mới gọi: `switchTo` chốt ở đúng phép so đó và
-      // sẽ quay ra ngay, nên bản ghi của phiên gần nhất không bao giờ được nạp — ứng dụng
-      // mở lên với tên phiên đúng và một khung hội thoại trống. `switchTo` tự đặt
-      // `currentId` ngay dòng đầu, đồng bộ, nên bỏ dòng kia đi không ai mất gì.
+      // Do *not* set `currentId` first: `switchTo` short-circuits on that comparison and would never load the
+      // transcript. It sets `currentId` synchronously on its first line anyway.
       await switchTo(list[0]!.id);
     } else {
-      // Lần mở đầu tiên: chưa có phiên nào trong sổ. Dựng một phiên ngay thay vì để
-      // `currentId` đứng ở chỗ giữ chỗ — câu hỏi đầu tiên của người dùng phải tới được
-      // mô hình, không phải tới một câu lỗi về một id họ chưa từng thấy.
+      // First run, no sessions in the log: build one now, so the first question reaches the model rather than an error.
       await openBlankSession();
     }
     setModels(available);
-    // Chỉ chọn trong nhóm trò chuyện được: mặc định rơi vào một mô hình **chỉ** nhúng được
-    // là mở ứng dụng lên với một hội thoại chết, và cái tên đó còn không có trong bộ chọn
-    // để người dùng thấy mà đổi đi.
+    // Only pick among chat-capable models: defaulting to an embedding-only one opens the app with a dead conversation.
     const chat = available.filter(usableForChat);
-    // Trong nhóm đó thì ưu tiên mô hình gọi được tool: chọn mặc định một mô hình không gọi
-    // được tool là để người dùng gặp một trợ lý không bao giờ đọc được tệp nào mà không
-    // hiểu vì sao.
+    // Within those, prefer a tool-capable model, or the user meets an assistant that never reads a file.
     setModel(chat.find((choice) => choice.tools)?.id ?? chat[0]?.id ?? MODEL_CHUA_BIET);
     setLoading(false);
   });
 
-  /**
-   * Hỏi lại lõi xem provider đang hoạt động có những mô hình nào.
-   *
-   * Bản trước chỉ hỏi **một lần lúc mở ứng dụng**, và đó là chỗ luồng "cắm một máy chủ mới
-   * vào" gãy hẳn: người dùng vào Cài đặt, thêm LM Studio, chọn mô hình, quay ra ô soạn tin
-   * — và bộ chọn mô hình ở đó vẫn là danh sách của trước khi họ vào, thường là rỗng kèm
-   * câu "Không hỏi được máy chủ mô hình". Không có gì trên màn hình gợi ý rằng chỉ cần
-   * khởi động lại ứng dụng là xong, nên nó đọc ra là "cấu hình vừa nhập không ăn".
-   *
-   * Giữ nguyên mô hình đang chọn nếu nó vẫn còn trong danh sách mới: đổi một provider
-   * *khác* không được kéo theo mô hình của lượt sắp gửi. Chỉ khi cái đang chọn đã biến mất
-   * thì mới chọn lại, và chọn theo đúng thứ tự ưu tiên của lúc khởi động.
-   */
+  /** Re-ask the core which models the active provider has. Asking only at startup broke the "plug in a new server"
+   * flow: the picker still showed the pre-settings list, usually empty. The current model is kept when it survives
+   * the new list, so changing a *different* provider does not move the next turn's model. */
   const refreshModels = async () => {
     if (isDemo() || !inTauri()) return;
     const available = await listModels();
@@ -346,16 +269,8 @@ export default function App() {
     setModel(chat.find((choice) => choice.tools)?.id ?? chat[0]?.id ?? MODEL_CHUA_BIET);
   };
 
-  /**
-   * Rời màn hình cài đặt là mốc hỏi lại.
-   *
-   * Mốc này thay cho việc bắt `SettingsView` báo ngược lên mỗi khi có gì đó đổi: nhà cung
-   * cấp, mô hình, công tắc bật/tắt và cả nút xoá đều đổi được danh sách ấy, và năm đường
-   * gọi ngược là năm chỗ để quên một đường. Một lần hỏi lúc đóng cửa thì đúng cho cả năm.
-   *
-   * Cờ nằm ngoài effect chứ không phải một signal: nó chỉ để nhớ lượt chạy trước, và một
-   * signal ở đây sẽ tự làm effect chạy lại chính nó.
-   */
+  /** Leaving settings is the moment to re-ask; one hook at the door covers provider, model, toggle and delete alike.
+   * The flag is a plain variable, not a signal, since a signal here would make the effect re-run itself. */
   let leftSettings = false;
   createEffect(() => {
     const at = tab();
@@ -363,28 +278,27 @@ export default function App() {
     leftSettings = at === "settings";
   });
 
-  /**
-   * Câu cảnh báo dưới ô chọn mô hình, hoặc `undefined` khi không có gì phải nói.
-   *
-   * Hai tình huống im lặng hỏng theo hai kiểu khác nhau, nên chúng có hai câu khác nhau:
-   * máy chủ không trả lời được thì chưa chắc đã có gì sai, còn chọn nhầm một mô hình
-   * không gọi được tool thì trợ lý sẽ trả lời trôi chảy mà không bao giờ đọc được tệp nào.
-   */
+  /** Warning under the model picker, or `undefined` when there is nothing to say; the two silent failures differ,
+   * so they get two messages. */
   const modelWarning = () => {
-    // Không chốt riêng cho demo: trang demo tồn tại đúng để nhìn thấy những trạng thái
-    // này mà không cần dựng máy chủ, nên tắt nó ở đó là bỏ mất một nửa công dụng.
-    if (models().length === 0) return inTauri() ? "Không hỏi được máy chủ mô hình." : undefined;
-    // Máy chủ trả lời tử tế mà không có gì trò chuyện được là một tình huống thứ ba, khác
-    // hẳn hai cái kia: không có gì hỏng, chỉ là chưa nạp mô hình nào đúng việc. Im lặng ở
-    // đây để lại một cái pill ghi "(chưa hỏi được máy chủ)" — một câu sai.
-    if (!models().some(usableForChat)) return "Máy chủ chỉ có mô hình nhúng.";
+    // Not special-cased for the demo: the demo exists precisely to see these states without standing up a server.
+    if (models().length === 0) return inTauri() ? t(S.app.modelNoServer) : undefined;
+    // A healthy server with nothing chat-capable is a third case; silence here would leave a pill that lies.
+    if (!models().some(usableForChat)) return t(S.app.modelEmbedOnly);
     const picked = models().find((choice) => choice.id === model());
-    if (picked && !picked.tools) return "Mô hình này không gọi được công cụ.";
+    if (picked && !picked.tools) return t(S.app.modelNoTools);
     return undefined;
   };
 
-  // ⌘/Ctrl+K mở tìm phiên. Bắt ở `window` chứ không ở một ô nhập nào: phím tắt toàn cục
-  // phải chạy được kể cả khi tiêu điểm đang ở trong ô soạn tin.
+  onMount(() => {
+    const query = window.matchMedia("(max-width: 959px)");
+    const sync = () => setNarrowWorkspace(query.matches);
+    sync();
+    query.addEventListener("change", sync);
+    onCleanup(() => query.removeEventListener("change", sync));
+  });
+
+  // Ctrl/Cmd+K opens session search, bound on `window` so it works with focus inside the composer.
   onMount(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!event.metaKey && !event.ctrlKey) return;
@@ -397,22 +311,15 @@ export default function App() {
   });
 
   async function switchTo(id: string) {
-    // Bấm một hàng phiên là nói "cho tôi xem phiên này", nên nó phải **đưa cả màn hình
-    // về hội thoại** — trước cả cái chốt bên dưới, và kể cả khi đó đúng là phiên đang mở.
-    //
-    // Không có dòng này thì đứng ở Thư viện tài liệu, Thay đổi hay Dự án mà bấm một phiên
-    // là một cú bấm không có gì xảy ra: `currentId` đổi trong im lặng dưới một màn hình
-    // khác. Và vì thanh bên không có hàng "Hội thoại" nào — nó *là* danh sách phiên —
-    // đường duy nhất còn lại về hội thoại là "Phiên mới", tức là người dùng phải tạo rác
-    // để đi lại được trong ứng dụng của chính mình.
+    // Clicking a session row means "show me this session", so it must return the whole screen to the conversation -
+    // before the guard below, and even for the session already open. Without it, clicking a session from another
+    // screen does nothing visible, and the only route back would be creating a new session.
     setTab("chat");
     if (id === currentId()) return;
     parked.set(currentId(), conversation.nodes().slice());
     setCurrentId(id);
     setLoadError(null);
-    // Số token thuộc về phiên vừa rời đi. Giữ lại là để chip ngữ cảnh báo 90% trên một
-    // phiên trống — một con số sai ở đúng chỗ người dùng dựa vào nó để quyết định có nên
-    // bắt đầu phiên mới hay không.
+    // The token counts belong to the session just left; keeping them would show 90% context on an empty session.
     conversation.clearUsage();
 
     const cached = parked.get(id);
@@ -426,8 +333,7 @@ export default function App() {
     setLoadingSession(id);
     try {
       const nodes = nodesFromHistory(await loadSession(id));
-      // Người dùng có thể đã chuyển đi trong lúc chờ. Ghi đè lúc đó là hiện bản ghi của
-      // phiên họ vừa rời khỏi, dưới cái tên của phiên họ đang mở.
+      // The user may have switched while we waited; writing now would show one session's transcript under another's name.
       if (currentId() !== id) return;
       parked.set(id, nodes);
       conversation.reset(nodes);
@@ -438,13 +344,8 @@ export default function App() {
     }
   }
 
-  /**
-   * Dọn màn hình sau khi lõi đã chuyển xong dự án.
-   *
-   * Chạy **sau** khi lõi trả lời chứ không trước: bản ghi và bộ đệm phiên đều thuộc về dự
-   * án cũ, và xoá chúng sớm để rồi việc chuyển thất bại là bỏ đi trạng thái của một dự án
-   * vẫn đang mở.
-   */
+  /** Clear the screen after the core has finished switching projects; run *after* the answer, since the transcript
+   * and session cache belong to the old project and a failed switch must not discard them. */
   async function adoptProject() {
     parked.clear();
     setLoadError(null);
@@ -457,14 +358,11 @@ export default function App() {
       return;
     }
 
-    // Danh sách phiên **của dự án đang mở**: lõi đã đổi nhánh nên `list_sessions` giờ
-    // trả về tập khác. Giao diện không tự lọc — nó không có trường nào để lọc theo, và
-    // một bộ lọc đoán ở đây sẽ lệch với cái lõi thật sự đang mang.
+    // Sessions *of the open project*: the core swapped layers, so `list_sessions` now returns a different set.
     const list = await listSessions();
     setSessions(list);
     const first = list[0];
-    // Dự án chưa có phiên nào thì mở sẵn một phiên trong nó, cùng lý do như lúc khởi
-    // động: người vừa chuyển dự án xong thường gõ ngay câu đầu tiên.
+    // A project with no sessions gets a blank one, as at startup: people type immediately after switching.
     if (!first) {
       await openBlankSession();
       return;
@@ -475,7 +373,7 @@ export default function App() {
     conversation.reset(nodes);
   }
 
-  /** Chuyển sang một dự án đã có trong danh sách. */
+  /** Switch to a project already in the list. */
   async function switchProject(id: string) {
     const target = projects().find((entry) => entry.id === id);
     if (!target || target.isCurrent || switching()) return;
@@ -496,28 +394,17 @@ export default function App() {
       }
       await adoptProject();
     } catch (err) {
-      setLoadError(`Không chuyển được sang "${target.name}": ${err}`);
+      setLoadError(t(S.app.error.switchProject, { name: target.name, err: String(err) }));
     } finally {
       setSwitching(false);
     }
   }
 
-  /**
-   * Đóng dự án đang mở và ở lại trong ứng dụng, chỉ trò chuyện.
-   *
-   * Đi qua đúng đường của `switchProject` — cùng cờ `switching`, cùng `adoptProject` phía
-   * sau — vì với màn hình thì đây là một lần đổi dự án nữa, chỉ khác ở chỗ đích đến là
-   * "không dự án nào". Lõi cũng tháo nhánh plugin y như vậy.
-   *
-   * Không hỏi lại trước khi đóng: danh sách không mất dòng nào và mở lại chỉ là hai cú
-   * bấm. Một hộp xác nhận cho một việc hoàn tác được chỉ dạy người dùng bấm bừa vào nút
-   * đồng ý, và làm hỏng đúng những hộp xác nhận đáng đọc — chỗ xoá phiên chẳng hạn.
-   */
-  /// Đổi loại dự án đang mở.
-  ///
-  /// Đi qua đúng đường của `switchProject` — cùng cờ `switching`, cùng `adoptProject` phía
-  /// sau — vì lõi tháo và cắm lại cả tầng plugin y như khi đổi dự án. Khác đường thì cờ
-  /// bận sẽ không bật, và người dùng bấm tiếp trong lúc tool đang bị gỡ ra.
+  /** Close the open project and stay in the app, chat only. It takes `switchProject`'s exact path, since to the
+   * screen this is one more project switch whose destination happens to be "no project". No confirmation: the
+   * list loses no row and reopening is two clicks. */
+  /// Change the open project's kind, along `switchProject`'s exact path, because the core swaps the whole plugin
+  /// layer either way and a different path would leave the busy flag off.
   async function swapProjectKind(kind: ProjectKind) {
     const open = project();
     if (open === null || switching()) return;
@@ -527,7 +414,7 @@ export default function App() {
       setProjects(await setProjectKind(open.id, kind));
       await adoptProject();
     } catch (err) {
-      setLoadError(`Không đổi được loại dự án: ${err}`);
+      setLoadError(t(S.app.error.swapKind, { err: String(err) }));
     } finally {
       setSwitching(false);
     }
@@ -541,28 +428,19 @@ export default function App() {
         await new Promise<void>((resolve) => setTimeout(resolve, 900));
         setProjects((all) => all.map((entry) => ({ ...entry, isCurrent: false })));
       } else {
-        // Lõi trả lại cả danh sách sau khi đóng — không dòng nào bị bỏ đi, chỉ không dòng
-        // nào còn `isCurrent`.
+        // The core returns the whole list after closing: no row is dropped, only `isCurrent` is cleared.
         setProjects(await closeProject());
       }
       await adoptProject();
     } catch (err) {
-      setLoadError(`Không đóng được dự án: ${err}`);
+      setLoadError(t(S.app.error.closeProject, { err: String(err) }));
     } finally {
       setSwitching(false);
     }
   }
 
-  /**
-   * Mở một thư mục được thả vào cửa sổ làm dự án.
-   *
-   * Lối vào duy nhất còn lại của `open_project`: mọi lối *có chủ đích* đều đi qua màn hình
-   * dự án, nơi có cả loại dự án, clone và hộp thoại chọn thư mục của hệ điều hành. Cú kéo
-   * thả sống sót vì nó rẻ hơn mọi lối kia khi cửa sổ Finder đang mở sẵn.
-   *
-   * Không đoán trước xem đường dẫn là thư mục hay tệp: chỉ lõi mới nhìn được đĩa, và một
-   * luật đoán ở đây sẽ từ chối nhầm những thư mục có dấu chấm trong tên.
-   */
+  /** Open a dropped directory as a project - the last remaining entrance to `open_project`, since every deliberate
+   * route goes through the projects screen. Never guess whether a path is a directory; only the core sees the disk. */
   async function openFolder(path: string) {
     if (switching()) return;
     setSwitching(true);
@@ -588,49 +466,29 @@ export default function App() {
       }
       await adoptProject();
     } catch (err) {
-      setLoadError(`Không mở được thư mục "${path}": ${err}`);
+      setLoadError(t(S.app.error.openFolder, { path, err: String(err) }));
     } finally {
       setSwitching(false);
     }
   }
 
-  /**
-   * Bỏ một dự án **khỏi danh sách**. Không tệp nào trên đĩa bị đụng tới.
-   *
-   * Bỏ khỏi màn hình trước rồi mới báo cho lõi — ngược với xoá phiên, và ngược có lý do:
-   * thao tác này không mất gì cả, nên hỏng thì hàng cũ quay lại là đủ. Bắt người dùng
-   * chờ một vòng IPC để bỏ một dòng khỏi danh sách gần đây là trả giá sai chỗ.
-   *
-   * Câu hỏi lại **không** nằm ở đây: màn hình dự án đã có hộp xác nhận riêng ngay cạnh
-   * hàng bị bỏ, còn menu trong thanh bên thì mở hộp thoại ở cuối tệp này. Hỏi thêm một
-   * lần nữa ở giữa đường là dạy người dùng bấm cho xong hộp thoại thứ hai — và họ sẽ bấm
-   * cho xong cả những hộp đáng đọc.
-   */
+  /** Remove a project *from the list*; nothing on disk is touched. The screen updates before the core is told,
+   * unlike session deletion, because nothing is lost if it fails. The confirmation lives at the call sites. */
   function forgetProject(target: Project) {
     setProjects((all) => all.filter((entry) => entry.id !== target.id));
     if (isDemo()) return;
     void removeProject(target.id).catch(async (err: unknown) => {
-      setLoadError(`Không bỏ được "${target.name}" khỏi danh sách: ${err}`);
+      setLoadError(t(S.app.error.forgetProject, { name: target.name, err: String(err) }));
       setProjects(await listProjects());
     });
   }
 
-  /**
-   * Dựng một phiên trống trong workspace đang mở rồi nhận nó làm phiên hiện tại.
-   *
-   * Mọi đường dẫn tới "không còn phiên nào" đều đi qua đây — mở ứng dụng lần đầu, chuyển
-   * sang một dự án chưa có phiên, xoá nốt phiên cuối — vì cả ba trước đây rơi về
-   * [`PHIEN_CHUA_MO`], và ô soạn tin vẫn gửi được trong lúc đó. Một phiên thật ngay từ
-   * đầu rẻ hơn nhiều so với việc bắt ô soạn tin biết về một trạng thái "chưa gửi được".
-   *
-   * `cwd` của phiên do lõi gắn từ dự án đang mở (`Harness::workspace`); chưa mở dự án nào
-   * thì phiên là phiên trò chuyện thuần tuý, và đó vẫn là một phiên hợp lệ.
-   */
+  /** Build a blank session in the open workspace and adopt it. Every route to "no sessions left" comes through here,
+   * since a real session is cheaper than teaching the composer about a "cannot send yet" state. The core attaches
+   * `cwd` from the open project; with none, it is a plain chat session, which is still valid. */
   async function openBlankSession(): Promise<void> {
-    // Tên tạm, không đánh số: số thứ tự ở đây tính theo *độ dài danh sách hiện tại*, nên
-    // xoá một phiên rồi tạo phiên mới là có hai "Phiên 3". Tên thật đến từ câu hỏi đầu
-    // tiên — xem `nameFromFirstMessage`.
-    const title = "Phiên mới";
+    // A temporary name, unnumbered: numbering by current list length produces two "Session 3" after a deletion.
+    const title = t(S.app.sessionNew);
     const created = (await createSession(title)) ?? {
       id: `local-${Date.now()}`,
       title,
@@ -648,46 +506,35 @@ export default function App() {
     setTab("chat");
   }
 
-  /**
-   * Mở hộp đổi tên với tên đang có sẵn trong ô: sửa một chữ là việc thường gặp hơn đặt
-   * lại tên từ đầu, và một ô trống bắt gõ lại cả câu chỉ để thêm một cái dấu.
-   */
+  /** Open the rename dialog prefilled: editing one character is more common than retyping the whole name. */
   function askRename(id: string) {
     const current = sessions().find((session) => session.id === id);
     setDialog({ kind: "rename-session", id, title: current?.title ?? "" });
   }
 
-  /** Đổi tên: sửa trên màn hình trước, rồi báo cho lõi. Ghi hỏng thì chỉ mất cái tên. */
+  /** Rename: update the screen first, then tell the core. A failed write costs only the name. */
   function rename(id: string, next: string) {
     setSessions((all) => all.map((s) => (s.id === id ? { ...s, title: next } : s)));
     void renameSession(id, next);
   }
 
-  /**
-   * Mở hộp xác nhận xoá. Tên phiên chốt lại ngay lúc hỏi và đi theo hộp thoại: câu hỏi
-   * phải nói về *phiên nào*, còn "phiên này" thì trong một danh sách dài không đủ để
-   * người đọc biết mình sắp mất cái gì.
-   */
+  /** Open the delete confirmation; the session name is captured at ask time, since "this session" is not enough
+   * to know what is about to be lost. */
   function askRemove(id: string) {
     const current = sessions().find((session) => session.id === id);
     setDialog({ kind: "delete-session", id, title: current?.title ?? id });
   }
 
-  /**
-   * Xoá: hỏi lõi **trước**, rồi mới bỏ khỏi màn hình.
-   *
-   * Ngược với đổi tên, và cố ý. Xoá không hoàn lại được, nên bỏ khỏi danh sách trước rồi
-   * mới biết là lõi từ chối sẽ để người dùng tin một chuyện không xảy ra.
-   */
+  /** Delete: ask the core *first*, then drop it from the screen. The opposite of rename, deliberately, because
+   * deletion cannot be undone and a refusal must not leave the user believing otherwise. */
   async function remove(id: string) {
-    // Hộp thoại ở lại và khoá luôn nút của chính nó trong lúc chờ: bấm "Xoá" hai lần vào
-    // một vòng IPC chậm là gửi đi hai lệnh xoá, và lệnh thứ hai báo lỗi cho một phiên vừa
-    // biến mất — một câu lỗi nói về đúng việc người dùng vừa làm thành công.
+    // The dialog stays and disables its own button while waiting: two clicks would send two deletes, and the second
+    // would report an error about the session the first just removed.
     setDialogBusy(true);
     try {
       await deleteSession(id);
     } catch (err) {
-      setLoadError(`Không xoá được phiên: ${err}`);
+      setLoadError(t(S.app.error.deleteSession, { err: String(err) }));
       return;
     } finally {
       setDialogBusy(false);
@@ -698,8 +545,7 @@ export default function App() {
     setSessions(rest);
     if (currentId() === id) {
       const next = rest[0];
-      // Xoá nốt phiên cuối cùng để lại một màn hình trống *gõ được*, nên nó phải để lại
-      // một phiên thật đứng sau ô soạn tin.
+      // Deleting the last session must leave a screen you can still type into, so it leaves a real session behind.
       if (!next) {
         await openBlankSession();
         return;
@@ -709,10 +555,8 @@ export default function App() {
     }
   }
 
-  /**
-   * Chờ câu hỏi duyệt được trả lời. Chỉ dùng cho lượt giả trong trang demo — lượt thật
-   * chặn ở phía Rust, nơi cái hạn giờ đáng tin duy nhất tồn tại.
-   */
+  /** Wait for an approval answer; demo turns only, since a real turn blocks in Rust, where the only trustworthy
+   * timeout lives. */
   function waitForApproval(): Promise<void> {
     return new Promise((resolve) => {
       const timer = setInterval(() => {
@@ -730,24 +574,16 @@ export default function App() {
     if (pending) void answerApproval(pending.requestId, decision);
   }
 
-  /**
-   * Đặt tên phiên theo câu hỏi đầu tiên, đúng như ChatGPT.
-   *
-   * Điều kiện là **bản ghi chưa có tin nhắn nào của người dùng**, không phải "tên đang khớp
-   * một mẫu nào đó": so tên với `/^Phiên/` sẽ đổi tên cả một phiên mà người dùng cố ý đặt
-   * tên là "Phiên thử nghiệm". Còn "chưa ai hỏi gì" thì đúng một lần xảy ra trong đời một
-   * phiên, và đó là lần duy nhất được phép ghi đè.
-   *
-   * Gọi **trước** `addUser` vì sau đó bản ghi đã có tin nhắn ấy rồi.
-   */
+  /** Name a session after its first question, as ChatGPT does. The condition is "the transcript holds no user
+   * message", not a name pattern, which would rename a session someone deliberately called "Session tests".
+   * Called *before* `addUser`, since afterwards the transcript already holds that message. */
   function nameFromFirstMessage(text: string) {
     if (conversation.nodes().some((node) => node.kind === "user")) return;
     const title = titleFromMessage(text);
     if (title === "") return;
     const id = currentId();
     if (!sessions().some((session) => session.id === id)) return;
-    // Đổi trên màn hình trước rồi báo cho lõi, đúng như `rename`: ghi hỏng thì chỉ mất
-    // cái tên, và một hộp thoại lỗi ngay lúc gửi câu hỏi đầu tiên là cắt ngang sai chỗ.
+    // Screen first, then the core, as in `rename`: a failed write costs only the name.
     setSessions((all) => all.map((s) => (s.id === id ? { ...s, title } : s)));
     void renameSession(id, title);
   }
@@ -755,8 +591,7 @@ export default function App() {
   async function send(text: string) {
     const trimmed = text.trim();
     if (trimmed === "") return;
-    // Lượt trước chưa xong: giữ lại, đừng nuốt. Trả về ở đây mà không giữ gì là đúng cái
-    // cách cũ làm mất một câu vừa gõ xong.
+    // The previous turn is still running: keep this message, do not swallow it.
     if (conversation.busy()) {
       setQueued(trimmed);
       setDraft("");
@@ -769,23 +604,18 @@ export default function App() {
     conversation.setBusy(true);
     setTab("chat");
 
-    // Chốt phiên **trước** khi gửi, và dùng nó cho cả `finally`: `currentId()` có thể đã
-    // đổi khi lượt kết thúc.
+    // Capture the session *before* sending and reuse it in `finally`: `currentId()` may have changed by the end.
     const cuaLuot = currentId();
 
     try {
-      // Sự kiện của lượt này chỉ được ghi vào **phiên đã gửi nó**. Người dùng đổi phiên
-      // giữa lượt là chuyện thường, và không có chốt này thì token cùng thẻ tool của lượt
-      // cũ rơi thẳng vào bản ghi của phiên vừa mở — một bản ghi bịa, và nó được lưu lại.
-      //
-      // Lượt cũ vẫn chạy tiếp tới cùng ở phía lõi và vẫn vào sổ; quay lại phiên đó sẽ thấy
-      // đủ. Bỏ sự kiện ở đây chỉ là bỏ phần vẽ trực tiếp, không bỏ câu trả lời.
+      // A turn's events are only written to the session that sent it; without this guard, tokens and tool cards from
+      // an old turn would land in a newly opened transcript and be saved there. The old turn still finishes in the
+      // core and reaches the log, so only the live rendering is dropped.
       const applyIfCurrent = (event: AgentEvent) => {
         if (currentId() !== cuaLuot) return;
         conversation.applyEvent(event);
       };
-      // Chốt phạm vi cùng lúc với phiên: người dùng đổi mức trong lúc lượt đang chạy
-      // thì lượt này vẫn chạy đúng mức nó đã được gửi đi, và mức mới thuộc về lượt sau.
+      // Capture the scope alongside the session: a mid-turn change belongs to the next turn, not this one.
       const quyen = scope();
       if (isDemo() || !inTauri()) {
         await runDemoTurn(trimmed, quyen, applyIfCurrent, waitForApproval);
@@ -795,12 +625,10 @@ export default function App() {
     } catch (err) {
       conversation.applyEvent({ kind: "error", message: String(err) });
     } finally {
-      // Bất kể lượt kết thúc thế nào, câu hỏi duyệt còn treo phải đóng lại — và đóng
-      // như một lần từ chối, vì không còn ai bên kia để nhận câu trả lời nữa.
+      // However the turn ends, a pending approval must close - as a rejection, since nobody is left to answer.
       if (conversation.approval()) decideApproval("rejected");
       conversation.finishTurn();
-      // Bản chụp đã park của phiên vừa gửi cũng phải hết "đang chảy", nếu không quay lại
-      // nó sẽ thấy một con trỏ nhấp nháy vĩnh viễn trên một lượt đã xong từ lâu.
+      // The parked snapshot must also stop streaming, or returning to it shows a cursor blinking forever.
       const chup = parked.get(cuaLuot);
       if (chup) {
         parked.set(
@@ -811,10 +639,8 @@ export default function App() {
         );
       }
 
-      // Câu đang chờ thuộc về **phiên đã nhận nó**. Người dùng đổi phiên giữa lượt thì gửi
-      // nó vào phiên mới là gửi một câu hỏi vào một ngữ cảnh nó không nói về — nên nó rơi
-      // về ô soạn tin, còn nguyên chữ, để họ quyết định. Chỉ rơi khi bản nháp đang trống:
-      // ghi đè lên thứ họ vừa gõ là đổi một phiền toái lấy một mất mát.
+      // A queued message belongs to the session that received it; on a mid-turn switch it falls back into the
+      // composer, text intact, and only when the draft is empty, so nothing typed is overwritten.
       const cho = queued();
       if (cho !== "") {
         setQueued("");
@@ -824,13 +650,8 @@ export default function App() {
     }
   }
 
-  /**
-   * Chạy một lệnh `/` từ ô soạn tin.
-   *
-   * Mỗi nhánh ở đây phải trỏ vào một hành động **đã tồn tại**, không được là một đường đi
-   * thứ hai tự viết lấy: hai đường tới cùng một việc là hai chỗ để chúng lệch nhau, và
-   * người dùng gặp cái lệch ấy dưới dạng "bấm menu thì được, gõ lệnh thì không".
-   */
+  /** Run a `/` command from the composer. Every branch must point at an action that already exists: a second route
+   * to the same job is a second place for the two to diverge. */
   function runCommand(name: string) {
     switch (name) {
       case "moi":
@@ -843,7 +664,8 @@ export default function App() {
         setTab("projects");
         break;
       case "thaydoi":
-        setChangesPanelOpen(true);
+        setWorkspacePanelTab("changes");
+        setWorkspacePanelOpen(true);
         break;
       case "taplieu":
         setTab("library");
@@ -871,19 +693,16 @@ export default function App() {
     }
   }
 
-  /** Cuộn tới node mà một tệp trong bảng thay đổi trỏ về. */
+  /** Scroll to the node a file in the changes panel points at. */
   function reveal(nodeId: string) {
     setTab("chat");
     queueMicrotask(() => {
       const el = document.getElementById(`node-${nodeId}`);
       if (!el) return;
       el.scrollIntoView({ behavior: "smooth", block: "center" });
-      // Nháy viền một nhịp: sau một cú cuộn mượt, người dùng cần biết *cái nào* vừa được
-      // đưa tới, chứ không chỉ biết là màn hình đã dịch chuyển.
-      //
-      // `outline-style` **không** animate được, nên phải đặt sẵn một đường viền trong suốt
-      // trước khi chạy: không đặt thì cả hiệu ứng này chạy trên `outline-style: none` và
-      // không nháy gì cả — hỏng trong im lặng, đúng kiểu không ai phát hiện ra.
+      // Flash the outline once: after a smooth scroll, the user needs to know *which* item was brought into view.
+      // `outline-style` cannot animate, so a transparent outline must be in place first, or the effect runs on
+      // `outline-style: none` and silently does nothing.
       el.style.outline = "2px solid transparent";
       el.style.outlineOffset = "2px";
       const clear = () => {
@@ -899,49 +718,39 @@ export default function App() {
     });
   }
 
-  /** Bản ghi chưa có gì — trạng thái quyết định ô soạn tin ngồi giữa hay ngồi đáy. */
+  /** Nothing in the transcript yet - the state that decides whether the composer sits centred or at the bottom. */
   const chatEmpty = () => conversation.nodes().length === 0;
-  /**
-   * Có hiện mấy câu gợi ý không.
-   *
-   * Chỉ khi bản ghi trống **và** không có gì khác đang chiếm chỗ đó: một danh sách câu hỏi
-   * mẫu nằm dưới dòng "Đang nạp bản ghi…" mời người dùng bắt đầu một việc mà nửa giây nữa
-   * sẽ bị một bản ghi cũ đè lên.
-   */
+  /** Whether to show the prompt chips: only with an empty transcript and nothing else occupying that space, or
+   * they invite starting work that a loading transcript is about to cover. */
   const showPrompts = () => chatEmpty() && loadingSession() === null && loadError() === null;
 
   const title = () =>
     tab() === "chat"
-      ? (sessions().find((session) => session.id === currentId())?.title ?? "Phiên làm việc")
-      : TAB_TITLE[tab()];
+      ? (sessions().find((session) => session.id === currentId())?.title ?? t(S.app.sessionTitle))
+      : t(TAB_TITLE[tab()]);
 
   return (
     <TranscriptActionsProvider
       value={{
         resend: conversation.busy() ? null : (text) => void send(text),
         remove: conversation.removeNode,
-        // Không còn màn hình nào đọc tệp, nên đường dẫn trong bản ghi hiện dưới dạng chữ
-        // chứ không dưới dạng nút. Một đường dẫn trông như nút bấm mà bấm không ra gì tệ
-        // hơn hẳn một đường dẫn trông như chữ.
+        // No screen reads files any more, so paths render as text, not buttons: a button that does nothing is worse.
         openFile: null,
       }}
     >
-      <div class="flex h-full bg-bg">
-        {/* Khu làm việc gói trong một lớp riêng chỉ vì một lý do: khi cài đặt mở, cả lớp
-            này phải thành `inert`. Màn hình cài đặt phủ kín cửa sổ nên mắt không thấy gì
-            bên dưới, nhưng Tab thì vẫn đi xuống được — và một người dùng bàn phím sẽ đi
-            lạc vào một ô soạn tin họ không nhìn thấy. `inert` gỡ cả nhánh khỏi vòng Tab
-            lẫn khỏi cây trợ năng, đúng thứ `aria-hidden` một mình không làm được. */}
+      <div class="flex h-full min-h-0 overflow-hidden bg-bg">
+        {/* The workspace is wrapped in its own layer for one reason: when settings opens, the layer becomes `inert`.
+            Settings covers the window visually, but Tab would still walk into a composer nobody can see. `inert`
+            removes the branch from both the tab order and the accessibility tree, which `aria-hidden` cannot. */}
         <div
-          class="flex min-w-0 flex-1"
+          class="flex min-h-0 min-w-0 flex-1 overflow-hidden"
           ref={(el) => {
-            // Đặt bằng `toggleAttribute` chứ không bằng một prop JSX: `inert` chưa có
-            // trong kiểu JSX của Solid, và một `as any` để lách kiểu ở đây sẽ tắt luôn
-            // việc kiểm kiểu cho mọi prop khác của thẻ này.
+            // Set via `toggleAttribute`, not a JSX prop: `inert` is missing from Solid's JSX types, and an `as any`
+            // here would disable type checking for every other prop on this element.
             createEffect(() => el.toggleAttribute("inert", tab() === "settings"));
           }}
         >
-        <Show when={sidebarOpen()}>
+        <Show when={sidebarVisible()}>
           <Sidebar
             sessions={sessions()}
             currentId={currentId()}
@@ -958,20 +767,17 @@ export default function App() {
                 menuFor={projectMenu()}
                 onMenuChange={setProjectMenu}
                 onPick={(id) => {
-                  // Bấm một hàng dự án luôn **mở bảng chi tiết** của nó. Hàng chưa mở thì
-                  // đổi dự án trước; hàng đang mở thì chỉ mở bảng — trước đây nó là một cú
-                  // bấm không có gì xảy ra. Phân nhánh ở đây chứ không trong
-                  // `switchProject`: cái tên ấy hứa một việc, và giấu thêm một nhánh giao
-                  // diện sau cả vòng tháo-cắm plugin thì cái tên không còn đúng.
-                  setProjectPanelOpen(true);
+                  // Clicking a project row always opens its detail panel; an unopened row switches project first.
+                  // The branch lives here rather than in `switchProject`, whose name promises exactly one thing.
+                  setWorkspacePanelTab("files");
+                  setWorkspacePanelOpen(true);
                   if (projects().find((entry) => entry.id === id)?.isCurrent !== true) {
                     void switchProject(id);
                   }
                 }}
                 onSeeAll={() => setTab("projects")}
-                // Menu trong thanh bên không có màn hình nào đứng ra hỏi hộ, nên nó mở
-                // hộp xác nhận của vỏ ứng dụng. Màn hình dự án bên dưới thì gọi thẳng
-                // `forgetProject` vì nó đã hỏi xong ngay tại hàng.
+                // The sidebar menu has no screen to ask on its behalf, so it opens the shell's confirmation;
+                // the projects screen calls `forgetProject` directly, having already asked at the row.
                 onForget={(target) => setDialog({ kind: "forget-project", project: target })}
                 onClose={() => void closeCurrentProject()}
                 onSwapKind={(kind) => void swapProjectKind(kind)}
@@ -993,37 +799,46 @@ export default function App() {
           />
         </Show>
 
-        <main class="flex min-w-0 flex-1 flex-col">
+        <main
+          ref={workspaceMain}
+          tabIndex={-1}
+          class="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+        >
           <WorkspaceHeader
             title={title()}
             scope={project()?.name}
             busy={conversation.busy() || switching()}
-            busyLabel={switching() ? "đang chuyển dự án…" : undefined}
-            sidebarOpen={sidebarOpen()}
-            onOpenSidebar={() => setSidebarOpen(true)}
-            changesPanelOpen={tab() === "chat" ? changesPanelOpen() : undefined}
+            busyLabel={switching() ? t(S.app.switchingProject) : undefined}
+            sidebarOpen={sidebarVisible()}
+            onOpenSidebar={() => {
+              setSidebarOpen(true);
+              if (narrowWorkspace()) setWorkspacePanelOpen(false);
+            }}
+            changesPanelOpen={workspacePanelVisible() && workspacePanelTab() === "changes"}
             changeCount={files().length}
-            // Không dự án thì không tool nào chạm được tới đĩa, nên bảng thay đổi vĩnh
-            // viễn trống. Một công tắc mở ra một bảng rỗng là một lời hứa suông.
+            // Without a project no tool touches the disk, so the changes panel is permanently empty.
             onToggleChangesPanel={
               tab() === "chat" && hasProject()
-                ? () => setChangesPanelOpen(!changesPanelOpen())
+                ? () => {
+                    if (workspacePanelVisible() && workspacePanelTab() === "changes") {
+                      setWorkspacePanelOpen(false);
+                      return;
+                    }
+                    setWorkspacePanelTab("changes");
+                    setWorkspacePanelOpen(true);
+                  }
                 : undefined
             }
           />
 
-          <div class="flex min-h-0 flex-1">
+          <div class="relative flex min-h-0 flex-1">
             <div class="flex min-w-0 flex-1 flex-col">
               <Switch>
                 <Match when={tab() === "chat"}>
-                  {/* Bản ghi trống thì cả khối "câu hỏi + ô soạn tin" trôi vào **giữa màn
-                      hình theo chiều dọc**, đúng như ChatGPT: một trạng thái rỗng dán ở đầu
-                      trang với ô nhập ở tận đáy bắt mắt đi hết chiều cao cửa sổ để nối hai
-                      thứ vốn thuộc về nhau. Có hội thoại rồi thì ô soạn tin về đáy như thường.
-
-                      Ô soạn tin là **một** thể hiện duy nhất qua cả hai bố cục — chỉ lớp CSS
-                      của khung ngoài đổi. Dựng lại nó ngay lúc câu hỏi đầu tiên được gửi sẽ
-                      cướp tiêu điểm bàn phím đúng vào nhịp người dùng định gõ tiếp. */}
+                  {/* With an empty transcript the question and composer float to the vertical centre, as in ChatGPT;
+                      once there is a conversation the composer returns to the bottom. It is one instance across both
+                      layouts - only the wrapper's classes change - because rebuilding it on the first send would
+                      steal keyboard focus exactly as the user goes to type again. */}
                   <div
                     class="flex min-h-0 flex-1 flex-col"
                     classList={{ "justify-center": chatEmpty() }}
@@ -1046,7 +861,7 @@ export default function App() {
                                 role="status"
                                 aria-live="polite"
                               >
-                                Đang nạp bản ghi…
+                                {t(S.app.loadingTranscript)}
                               </p>
                             </Match>
                             <Match when={loadError()}>
@@ -1082,7 +897,7 @@ export default function App() {
                       onStop={() => void cancelTurn(currentId())}
                       onCommand={runCommand}
                       usage={conversation.usage()}
-                      model={model()}
+                      model={model() === MODEL_CHUA_BIET ? t(S.app.modelUnknown) : model()}
                       models={models()}
                       onPickModel={setModel}
                       onManageProviders={() => {
@@ -1099,9 +914,7 @@ export default function App() {
                       moreBelow={showPrompts()}
                     />
 
-                    {/* Gợi ý nằm **dưới** ô soạn tin: câu hỏi lớn phải chạm thẳng vào chỗ
-                        trả lời nó, còn mấy câu bấm được là lối tắt, và một lối tắt chen vào
-                        giữa hai thứ ấy đẩy chúng ra xa nhau. */}
+                    {/* The chips sit *below* the composer: the big question must touch the place that answers it. */}
                     <Show when={showPrompts()}>
                       <div class="shrink-0 px-(--page-pad-x) pb-(--page-pad-y)">
                         <PromptChips
@@ -1135,54 +948,44 @@ export default function App() {
                 </Match>
 
                 <Match when={tab() === "library"}>
-                  {/* `resetKey` là đường dẫn dự án: đổi dự án là nạp lại thư viện từ đầu.
-                      Dùng id thì một dự án bị bỏ rồi thêm lại sẽ mang id mới cho cùng một
-                      thư viện, và màn hình nạp lại một thứ không đổi. */}
+                  {/* `resetKey` is the project path: using the id would reload an unchanged library whenever a
+                      project was removed and re-added. */}
                   <DocsView resetKey={project()?.path ?? ""} name={project()?.name} />
                 </Match>
 
               </Switch>
             </div>
 
-            {/* Cột phải giữ **một** bảng tại một thời điểm: chi tiết dự án thắng, vì nó
-                vừa được mở bằng một cú bấm cố ý, còn bảng thay đổi thì bật sẵn từ lần
-                trước. Hai bảng cùng lúc trong một cột 300px là hai bảng không đọc được
-                bảng nào. */}
-            <Show when={projectPanelOpen() && project()} keyed>
+            <Show when={workspacePanelVisible() ? project() : null} keyed>
               {(open) => (
-                <ProjectPanel
+                <WorkspacePanel
+                  tab={workspacePanelTab()}
+                  files={files()}
                   project={open}
-                  onClose={() => setProjectPanelOpen(false)}
+                  onTab={setWorkspacePanelTab}
+                  onReveal={(nodeId) => {
+                    reveal(nodeId);
+                    if (narrowWorkspace()) closeWorkspacePanel();
+                  }}
+                  onClose={closeWorkspacePanel}
                   onOpenFolder={() => void openFolder(open.path)}
                   onPickFile={(path) => mentionFile(open.path, path)}
-                  onOpenScreen={() => setTab(open.kind === "docs" ? "library" : "diff")}
+                  onOpenScreen={() => {
+                    setTab(open.kind === "docs" ? "library" : "diff");
+                    closeWorkspacePanel();
+                  }}
+                  focusOnMount={narrowWorkspace()}
                 />
               )}
-            </Show>
-
-            <Show
-              when={
-                !projectPanelOpen() && tab() === "chat" && changesPanelOpen() && hasProject()
-              }
-            >
-              <ChangesPanel
-                files={files()}
-                onReveal={reveal}
-                onClose={() => setChangesPanelOpen(false)}
-              />
             </Show>
           </div>
         </main>
         </div>
 
-        {/* Cài đặt là một chế độ **chiếm trọn cửa sổ**, nên nó nằm ngoài `<main>` chứ
-            không nằm trong `<Switch>` của khu làm việc: thanh bên và ô soạn tin không có
-            việc gì ở đó, và để chúng lấp ló bên cạnh là mời người dùng bấm nhầm vào một
-            phiên trong lúc đang sửa một khoá API. Cây bên dưới vẫn được giữ nguyên chứ
-            không tháo đi — quay về hội thoại thì bản ghi vẫn ở đúng chỗ đang đọc.
-
-            `z-30`, thấp hơn hộp thoại (`z-50`): hộp thoại duyệt và bảng chọn phiên vẫn
-            phải nổi lên trên cài đặt. */}
+        {/* Settings is a full-window mode, so it sits outside `<main>` rather than inside the workspace `<Switch>`:
+            the sidebar and composer have no business there, and leaving them visible invites a misclick while an
+            API key is being edited. The tree below stays mounted, so returning keeps your place. `z-30`, below
+            dialogs at `z-50`, since approval and session search must still float above settings. */}
         <Show when={tab() === "settings"}>
           <SettingsView
             page={settingsPage()}
@@ -1195,26 +998,21 @@ export default function App() {
           {(request) => <ApprovalDialog request={request()} onDecide={decideApproval} />}
         </Show>
 
-        {/* Ba hộp thoại của vỏ ứng dụng. Đứng cuối cây và cạnh nhau chứ không nằm rải
-            trong từng màn hình: chúng sửa danh sách dự án và danh sách phiên — hai thứ do
-            chính tệp này giữ — và một hộp thoại dựng bên trong hàng nó hỏi về sẽ bị gỡ
-            khỏi cây ngay khi hàng ấy biến mất, đúng vào nhịp nó cần trả tiêu điểm về.
-
-            `dialog()` chỉ mang được một giá trị, nên ba khối `<Show>` này loại trừ lẫn
-            nhau theo kiểu chứ không theo quy ước. */}
+        {/* The shell's three dialogs, last in the tree and side by side rather than inside the screens: they edit
+            the project and session lists this file owns, and a dialog built inside the row it asks about would be
+            unmounted just as it needs to restore focus. `dialog()` holds one value, so the three are exclusive. */}
         <Show when={forgetting()}>
           {(target) => (
             <ConfirmDialog
               icon="trash"
-              title={`Bỏ "${target().name}" khỏi danh sách?`}
-              body="Thư mục trên đĩa vẫn nguyên, không tệp nào mất."
-              more="Chỉ danh sách dự án gần đây bị đổi. Thư mục và toàn bộ tệp bên trong vẫn nguyên trên đĩa — mở lại thư mục này bất cứ lúc nào là dự án trở lại."
+              title={t(S.app.forget.title, { name: target().name })}
+              body={t(S.app.forget.body)}
+              more={t(S.app.forget.more)}
               detail={target().path}
-              confirmLabel="Bỏ khỏi danh sách"
+              confirmLabel={t(S.app.forget.confirm)}
               onClose={closeDialog}
               onConfirm={() => {
-                // Đọc giá trị **trước** khi đóng: đóng rồi thì `<Show>` tháo cả nhánh
-                // này, và `target()` không còn gì để trả về.
+                // Read the value *before* closing: closing unmounts this branch and `target()` has nothing left.
                 const picked = target();
                 setDialog(null);
                 forgetProject(picked);
@@ -1227,11 +1025,11 @@ export default function App() {
           {(open) => (
             <PromptDialog
               icon="pencil"
-              title="Đổi tên phiên"
-              label="Tên phiên"
+              title={t(S.app.rename.title)}
+              label={t(S.app.rename.label)}
               value={open().title}
-              placeholder="Phiên mới"
-              confirmLabel="Đổi tên"
+              placeholder={t(S.app.sessionNew)}
+              confirmLabel={t(S.common.rename)}
               onClose={closeDialog}
               onConfirm={(next) => {
                 const id = open().id;
@@ -1246,10 +1044,10 @@ export default function App() {
           {(open) => (
             <ConfirmDialog
               icon="trash"
-              title={`Xoá phiên "${open().title}"?`}
-              body="Xoá hẳn bản ghi phiên này, không lấy lại được."
-              more="Bản ghi của phiên này bị xoá khỏi sổ và không lấy lại được. Các phiên khác cùng mọi tệp trong dự án đều không bị đụng tới."
-              confirmLabel="Xoá phiên"
+              title={t(S.app.remove.title, { title: open().title })}
+              body={t(S.app.remove.body)}
+              more={t(S.app.remove.more)}
+              confirmLabel={t(S.app.remove.confirm)}
               busy={dialogBusy()}
               onClose={closeDialog}
               onConfirm={() => void remove(open().id)}
@@ -1257,9 +1055,8 @@ export default function App() {
           )}
         </Show>
 
-        {/* Cuối cây và ngoài mọi `<Show>` của màn hình: một thông báo phải sống sót qua
-            việc đổi tab hoặc đóng hộp thoại đã sinh ra nó. Nó tự quản lấy nội dung của
-            mình qua kho ở `lib/toast.ts`, nên chỗ này không cầm prop nào cả. */}
+        {/* Last in the tree and outside every screen `<Show>`: a toast must survive the tab change or dialog close
+            that produced it. It sources its own content from `lib/toast.ts`, so no props are passed here. */}
         <Toasts />
 
         <Show when={paletteOpen()}>
@@ -1267,9 +1064,7 @@ export default function App() {
             sessions={sessions()}
             currentId={currentId()}
             onPick={(id) => {
-              // `switchTo` tự về hội thoại. Bảng chọn này từng là chỗ **duy nhất** làm
-              // đúng việc ấy, và nó làm đúng bằng cách tự nhớ — nên mọi lối vào khác thì
-              // quên.
+              // `switchTo` returns to the conversation itself. This palette used to be the only caller that did so.
               void switchTo(id);
               setPaletteOpen(false);
             }}
@@ -1281,13 +1076,13 @@ export default function App() {
   );
 }
 
-const TAB_TITLE: Record<TabId, string> = {
-  chat: "Hội thoại",
-  diff: "Thay đổi trong phiên",
-  library: "Thư viện tài liệu",
-  projects: "Dự án",
-  settings: "Cài đặt",
+const TAB_TITLE: Record<TabId, Msg> = {
+  chat: S.app.tab.chat,
+  diff: S.app.tab.diff,
+  library: S.app.tab.library,
+  projects: S.common.project,
+  settings: S.common.settings,
 };
 
-/** Núm `?tab=` của trang demo đến từ URL, nên nó là một chuỗi bất kỳ cho tới khi kiểm. */
+/** The demo's `?tab=` knob comes from the URL, so it is an arbitrary string until validated. */
 const isTab = (raw: string): raw is TabId => Object.hasOwn(TAB_TITLE, raw);

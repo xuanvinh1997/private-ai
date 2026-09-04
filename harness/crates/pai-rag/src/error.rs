@@ -1,31 +1,18 @@
-//! Lỗi của thư viện tài liệu.
-//!
-//! Mỗi nhánh ở đây tồn tại vì **người dùng phải đọc được nó và biết làm gì tiếp**. Một
-//! `RagError::Other(String)` duy nhất thì rẻ để viết và vô dụng để đọc: người vừa kéo hai
-//! mươi tệp vào cần phân biệt "tệp này quá to" với "bộ nhúng đang tắt" — cái đầu họ sửa
-//! bằng cách bỏ tệp ra, cái sau bằng cách bật Ollama lên.
-//!
-//! # Chỗ này ngắn đi vì lý do gì
-//!
-//! Bản trước có thêm `TooLarge`, `Binary`, `Empty`, `Unsupported` — những lỗi của việc
-//! **đọc một tệp**, khi việc ấy còn nằm trong Rust. Giờ nó nằm ở `services/rag/`, và
-//! phía đó đã dựng sẵn câu tiếng Việt nói rõ tệp nào hỏng vì sao. Dựng lại một cây lỗi
-//! song song ở đây chỉ để phân loại một chuỗi đã hoàn chỉnh là thêm một chỗ để hai bên
-//! nói khác nhau về cùng một sự việc.
+//! Document library errors.
+//! Each variant exists because the user must be able to read it and know what to do next;
+//! per-file read errors now come from `services/rag/` as ready-made messages.
 
-/// Lỗi ở tầng thư viện tài liệu.
+/// Errors at the document library layer.
 #[derive(Debug, thiserror::Error)]
 pub enum RagError {
-    /// Service `pai-rag-service` không chạy, không trả lời, hoặc trả về thứ không đọc
-    /// được. Thông điệp đi kèm luôn nói ra việc phải làm — cài `uv`, dựng Docker, hoặc
-    /// xem stderr.
+    /// Service is down, silent, or returned something unreadable; the message says what to do.
     #[error("{0}")]
     Service(String),
 
     #[error("không có tài liệu nào mang mã `{0}`")]
     NotFound(String),
 
-    /// Một khả năng có thật nhưng đang tắt: chưa chọn model nhúng, chưa mở dự án nào.
+    /// A real capability that is currently off: no embedding model chosen, no project open.
     #[error("{0}")]
     Unavailable(String),
 }

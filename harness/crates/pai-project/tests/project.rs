@@ -16,9 +16,7 @@ fn two_ways_into_one_directory_are_one_project() {
     let store = store();
 
     let direct = store.touch(&root).expect("opens");
-    // Same directory, reached another way. Without canonicalisation this becomes a second
-    // row, and the user has two entries pointing at one place, each remembering half the
-    // history.
+    // The same directory reached another way; without canonicalisation this becomes a second row.
     let round_about = store.touch(&root.join("child").join("..")).expect("opens");
 
     assert_eq!(direct.id, round_about.id);
@@ -66,10 +64,7 @@ fn a_path_that_is_not_a_directory_is_refused() {
     assert!(store().touch(&dir.path().join("does-not-exist")).is_err());
 }
 
-/// The database a user is already running lacks the two new columns. It has to survive.
-///
-/// The project list is something people typed in one line at a time; there is no source to
-/// rebuild it from, and opening the application to an empty list destroys their work.
+/// An existing database lacks the two new columns and must survive: nothing can rebuild the project list.
 #[test]
 fn an_old_schema_gains_columns_in_place_and_loses_no_rows() {
     let conn = Connection::open_in_memory().expect("opens a connection");
@@ -100,10 +95,7 @@ fn an_old_schema_gains_columns_in_place_and_loses_no_rows() {
     assert_eq!(rows[0].id, "hai", "the most recent still has to come first");
 }
 
-/// Reopening a document project must **not** turn it into a source project.
-///
-/// A carelessly written `ON CONFLICT DO UPDATE` does exactly that, silently, and it only
-/// surfaces when command-running tools appear in a folder full of files strangers sent in.
+/// Reopening a document project must not turn it into a source project, as a careless `ON CONFLICT DO UPDATE` would.
 #[test]
 fn touch_preserves_the_kind_of_an_existing_row() {
     let dir = TempDir::new().expect("temp dir");
@@ -157,10 +149,7 @@ fn create_and_list_return_the_right_kind_and_origin() {
     assert_eq!(rows.len(), 2);
 }
 
-/// Manually re-adding a cloned directory must not erase where it came from.
-///
-/// The manual path holds only a directory path; it **does not know** the URL. Writing
-/// `origin = excluded.origin` here uses what it does not know to overwrite what is known.
+/// Re-adding a cloned directory by hand must not erase its origin: the manual path does not know the URL.
 #[test]
 fn re_adding_by_hand_does_not_erase_the_origin() {
     let dir = TempDir::new().expect("temp dir");
@@ -176,11 +165,7 @@ fn re_adding_by_hand_does_not_erase_the_origin() {
     assert_eq!(again.origin.as_deref(), Some("https://vi.du/x.git"));
 }
 
-/// The opposite of `touch`: in `create` the user just stated the kind, so the new one wins.
-///
-/// The two paths have to be opposite at exactly this point. Making `create` preserve the
-/// old kind means the user picks "documents" in the dialog and gets a source project back,
-/// with no notice.
+/// Unlike `touch`, `create` takes a kind the user just stated, so the new one has to win.
 #[test]
 fn create_states_the_kind_explicitly_so_the_new_one_wins() {
     let dir = TempDir::new().expect("temp dir");
@@ -196,12 +181,7 @@ fn create_states_the_kind_explicitly_so_the_new_one_wins() {
     assert_eq!(second.kind, ProjectKind::Code);
 }
 
-/// `set_kind` is the only way out of a project recorded as the wrong kind.
-///
-/// The kind is set once at record time and `touch` deliberately preserves it, so without
-/// this there is no other way out. That is a real dead end: a source repo accidentally
-/// recorded as a document library would never have `read`, `grep` or `bash` again — and all
-/// the user would see is the assistant saying it has no tools.
+/// `set_kind` is the only way out of a wrongly recorded kind, since `touch` preserves it.
 #[test]
 fn set_kind_is_the_way_out_of_the_dead_end() {
     let dir = TempDir::new().expect("temp dir");
@@ -223,11 +203,7 @@ fn set_kind_is_the_way_out_of_the_dead_end() {
     );
 }
 
-/// An id that does not exist is reported by every path, and reported **by name**.
-///
-/// A raw sqlite error ("query returned no rows") reaching the UI gives the user a sentence
-/// with nothing to do with what they just did. Naming the id is the only thing separating
-/// "this project is gone" from "the store is broken".
+/// Every path reports a missing id by name; a raw "query returned no rows" says nothing useful.
 #[test]
 fn a_nonexistent_id_is_named_in_every_error() {
     let store = store();
@@ -246,11 +222,7 @@ fn a_nonexistent_id_is_named_in_every_error() {
     }
 }
 
-/// An unknown kind in the database reads back as `code` rather than losing the whole row.
-///
-/// Happens when the user runs a newer build — which wrote a third kind — and then reopens
-/// an older one. Losing a label is one click to fix; rejecting the row loses a project from
-/// the list, and this list cannot be rebuilt from anywhere.
+/// An unknown kind reads back as `code`: a wrong label is one click to fix, a dropped row loses a project.
 #[test]
 fn an_unknown_kind_in_the_database_reads_back_as_source() {
     let conn = Connection::open_in_memory().expect("opens a connection");

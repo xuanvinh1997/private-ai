@@ -2,28 +2,17 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import { useFocusTrap } from "../hooks/useFocusTrap";
 import type { PendingApproval } from "../lib/conversation";
 import { intendedDiffs } from "../lib/diff";
+import { S, t } from "../lib/i18n";
 import type { ApprovalDecision } from "../lib/protocol";
 import DiffBlock from "./DiffBlock";
 import Icon from "./Icon";
 import { prettyArgs, toolLabel } from "./tools/ToolCard";
 
-/**
- * Hết giờ mặc định khi lõi không nói. Có một hạn là bắt buộc: một hộp thoại đứng mãi
- * chặn cả lượt, và người dùng có thể đã bỏ đi từ lâu.
- */
+/** Default timeout when the core names none; a dialog that waits forever blocks the whole turn. */
 const DEFAULT_TIMEOUT_MS = 120_000;
 
-/**
- * Hộp thoại duyệt một tool call.
- *
- * Luật duy nhất không được phép mềm đi: **fail-closed**. Đóng hộp thoại, bấm Esc, hết
- * giờ, hay component bị gỡ giữa chừng — tất cả đều là *từ chối*. Không có nhánh nào
- * dẫn tới "cho phép" mà không phải là một cú bấm cố ý vào đúng cái nút đó.
- *
- * Và **không có "nhớ lựa chọn"**. Một lần cho phép là một lần cho phép: quyết định
- * dính lại là cách một câu trả lời đúng cho lệnh này trở thành câu trả lời sai cho lệnh
- * sau, mà không ai được hỏi lại.
- */
+/** Tool-call approval dialog, strictly fail-closed: close, Esc, timeout and unmount all mean *reject*, and only a
+ * deliberate click allows. There is no "remember my choice": one allow is one allow. */
 export default function ApprovalDialog(props: {
   request: PendingApproval;
   onDecide: (decision: ApprovalDecision) => void;
@@ -47,9 +36,7 @@ export default function ApprovalDialog(props: {
   );
 
   onMount(() => {
-    // Focus trap tự đưa tiêu điểm vào phần tử focus được đầu tiên, mà phần tử đó là nút
-    // "Chép" trong khối diff. Kéo về nút Từ chối: lựa chọn an toàn phải là lựa chọn
-    // người dùng chạm vào khi họ chỉ đập Enter cho xong.
+    // The focus trap lands on the diff's copy button; pull focus to Reject, so the safe option is the default.
     rejectButton?.focus();
 
     const started = Date.now();
@@ -61,8 +48,7 @@ export default function ApprovalDialog(props: {
     onCleanup(() => clearInterval(tick));
   });
 
-  // Gỡ khỏi cây mà chưa trả lời = từ chối. Đây là mắt lưới cuối: chuyển phiên, lỗi
-  // render, hot reload — không đường nào để câu hỏi trôi qua thành "cho phép".
+  // Unmounting without an answer means reject; this is the last net, covering session switches and hot reload.
   onCleanup(() => decide("rejected"));
 
   const seconds = () => Math.max(0, Math.ceil(left() / 1000));
@@ -72,7 +58,7 @@ export default function ApprovalDialog(props: {
     <div
       class="fixed inset-0 z-50 flex items-center justify-center p-lg"
       style={{ background: "var(--scrim)" }}
-      // Bấm ra ngoài cũng là từ chối, không phải "bỏ qua câu hỏi".
+      // A click outside is also a rejection, not a way to skip the question.
       onClick={(event) => {
         if (event.target === event.currentTarget) decide("rejected");
       }}
@@ -85,21 +71,20 @@ export default function ApprovalDialog(props: {
         aria-describedby="approval-body"
         class="flex max-h-full w-full max-w-[560px] flex-col gap-(--dialog-gap) overflow-auto rounded-card border border-line bg-surface px-(--dialog-pad-x) py-(--dialog-pad-y) shadow-pop"
       >
-        {/* Biểu tượng khiên đứng trước câu hỏi: cùng hình dạng đầu hộp thoại với mọi hộp
-            thoại khác của ứng dụng, và nó nói ngay rằng đây là một câu hỏi về quyền chứ
-            không phải một thông báo. */}
+        {/* The shield leads the question: the app's standard dialog header, and it reads as a permission prompt. */}
         <div class="flex items-start gap-sm">
           <span class="mt-3xs grid size-8 shrink-0 place-items-center rounded-panel bg-accent-soft text-accent-ink">
             <Icon name="shield" size={16} />
           </span>
-          <h2 id="approval-title" class="m-0 flex-1 text-lg font-semibold text-ink">
-            Cho phép chạy {toolLabel(props.request.name)}?
+          <h2 id="approval-title" class="m-0 flex-1 text-lg font-medium text-ink">
+            {t(S.chat.approval.title, { tool: toolLabel(props.request.name) })}
           </h2>
         </div>
 
         <div id="approval-body" class="flex flex-col gap-sm">
+          {/* The tool name sits *inside* the sentence; split around an element, the halves cannot reorder per language. */}
           <p class="m-0 text-sm text-muted">
-            Trợ lý muốn gọi <code class="font-mono text-accent-ink">{props.request.name}</code>.
+            {t(S.chat.approval.body, { name: props.request.name })}
             <Show when={props.request.reason}>
               {(reason) => <span class="block text-text">{reason()}</span>}
             </Show>
@@ -114,27 +99,26 @@ export default function ApprovalDialog(props: {
           </pre>
 
           <p class="m-0 text-2xs text-faint" role="timer" aria-live="off">
-            Không trả lời trong {seconds()} giây thì tự từ chối.
+            {t(S.chat.approval.timeout, { n: seconds() })}
           </p>
         </div>
 
         <div class="flex justify-end gap-sm">
-          {/* Từ chối đứng trước và là nút được focus đầu tiên: lựa chọn an toàn phải là
-              lựa chọn dễ nhất, kể cả khi người dùng chỉ đập Enter cho xong. */}
+          {/* Reject comes first and takes focus: the safe option must also be the easiest one. */}
           <button
             ref={rejectButton}
             type="button"
             onClick={() => decide("rejected")}
-            class="h-(--cta-h) rounded-btn border border-line-strong px-lg text-sm font-medium text-text transition-colors hover:bg-surface-hover"
+            class="pai-btn pai-btn-cta pai-btn-secondary"
           >
-            Từ chối
+            {t(S.chat.approval.reject)}
           </button>
           <button
             type="button"
             onClick={() => decide("allowed_once")}
-            class="h-(--cta-h) rounded-btn bg-accent px-lg text-sm font-medium text-on-accent transition-colors hover:bg-accent-hover"
+            class="pai-btn pai-btn-cta pai-btn-primary"
           >
-            Cho phép một lần
+            {t(S.chat.approval.allowOnce)}
           </button>
         </div>
       </div>

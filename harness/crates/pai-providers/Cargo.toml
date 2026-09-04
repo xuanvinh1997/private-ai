@@ -9,8 +9,7 @@ description = "Kho provider mô hình, danh mục dựng sẵn, và đường đ
 [dependencies]
 pai-core = { workspace = true }
 pai-llm = { workspace = true }
-# `Driver` là đầu kia của cú đổi provider: kho không có nghĩa gì nếu không có ai để đẩy
-# adapter mới vào.
+# `Driver` is the other end of a provider swap: the store means nothing without somewhere to push the new adapter.
 pai-agent = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -25,11 +24,9 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
-# Bài kiểm chứng migrate phải dựng được một tệp theo **lược đồ cũ**, nên nó cần nói SQL
-# trực tiếp — bài kiểm chứng là một crate riêng và không thấy `[dependencies]` ở trên.
+# The migration test must build a file on the old schema, so it needs raw SQL of its own.
 rusqlite = { workspace = true }
-# `net` + `io-util`: bài kiểm chứng kho mô hình dựng một máy chủ HTTP giả bằng
-# `TcpListener` thuần, để nó chạy được cả khi rút dây mạng.
+# `net` + `io-util`: the model-listing test serves fake HTTP from a plain `TcpListener`, so it runs offline.
 tokio = { workspace = true, features = [
   "rt-multi-thread",
   "macros",
@@ -38,8 +35,7 @@ tokio = { workspace = true, features = [
   "net",
   "io-util",
 ] }
-# Bài kiểm chứng "đổi mô hình giữa lượt" phải chạy một lượt thật, nên nó cần đủ giàn của
-# một lượt: sổ phiên, đường ống tool, và một adapter giả biết dừng lại giữa chừng.
+# The mid-turn swap test runs a real turn, so it needs the whole scaffold: session log, tool pipeline, fake adapter.
 pai-core = { workspace = true }
 pai-session = { workspace = true }
 pai-tools = { workspace = true }

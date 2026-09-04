@@ -1,15 +1,7 @@
 import { For } from "solid-js";
 
-/**
- * Bộ biểu tượng vẽ tay, không phải một thư viện.
- *
- * Một gói icon kéo theo vài trăm KB và một lớp component nữa, đổi lại thứ ta cần là hai
- * mươi hình vẽ. Chúng nằm chung một lưới 24×24, cùng độ dày nét và cùng kiểu bo đầu nét
- * — đó mới là thứ làm bộ biểu tượng trông thuộc về nhau, chứ không phải nguồn gốc của nó.
- *
- * Mọi icon là `aria-hidden`: ý nghĩa đi qua `aria-label` của nút bọc ngoài. Một biểu
- * tượng tự xưng tên sẽ bị trình đọc màn hình đọc hai lần.
- */
+/** Hand-drawn icons rather than a library: one 24x24 grid, one stroke width, one cap style. Every icon is
+ * `aria-hidden`, since the meaning belongs to the wrapping button's `aria-label`. */
 
 const PATHS = {
   chat: ["M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"],
@@ -50,7 +42,7 @@ const PATHS = {
   bubble: ["M8 3h8a5 5 0 0 1 5 5v3a5 5 0 0 1-5 5h-4l-5 4v-4a5 5 0 0 1-3-4.58V8a5 5 0 0 1 4-4.9z"],
   document: ["M6 3h9l5 5v13a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z", "M14 3v6h6", "M9 13h6", "M9 17h6"],
   sparkle: ["M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z", "M19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"],
-  // Tam giác cảnh báo. Dùng cho điều kiện đang tồn tại, không cho lỗi vừa xảy ra.
+  // Warning triangle: for conditions that persist, never for an error that just happened.
   warn: ["M12 4 2.5 20h19L12 4Z", "M12 10v4", "M12 17.5v.5"],
   folder: ["M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"],
   "folder-open": [
@@ -58,15 +50,14 @@ const PATHS = {
     "M2.6 19.3 5 10.5h17.2l-2.4 8.8a1 1 0 0 1-1 .7H3.6a1 1 0 0 1-1-.7z",
   ],
   code: ["m9 7-5 5 5 5", "m15 7 5 5-5 5"],
-  // Bàn tay: hình của "xin phép trước khi chạm vào". Dùng cho bộ chọn phạm vi tool, chỗ
-  // duy nhất trong ô soạn tin quyết định trợ lý được đụng tới cái gì trên máy này.
+  // Hand: "ask before touching". Used by the tool scope picker, the one control that decides what may be touched.
   hand: [
     "M18 11V6a2 2 0 0 0-4 0",
     "M14 10V4a2 2 0 0 0-4 0v2",
     "M10 10.5V6a2 2 0 0 0-4 0v8",
     "m7 15-1.8-1.8a2 2 0 0 0-2.8 2.8l3.6 3.6A8 8 0 0 0 11.7 22H14a8 8 0 0 0 8-8V7a2 2 0 0 0-4 0v5",
   ],
-  // ── Thêm cho dự án tài liệu, provider, MCP và đồ thị mã nguồn ──
+  // --- Added for document projects, providers, MCP and the code graph ---
   library: [
     "M4 4h4v16H4z",
     "M10 4h4v16h-4z",
@@ -98,10 +89,12 @@ const PATHS = {
   eye: ["M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"],
   palette: ["M12 3a9 9 0 0 0 0 18 2 2 0 0 0 1.6-3.2 2 2 0 0 1 1.6-3.2H18a3 3 0 0 0 3-3c0-4.8-4-8.6-9-8.6z", "M7.5 11h.01", "M10 7.5h.01", "M14.5 7.5h.01"],
   bolt: ["M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12z"],
+  // Two chevrons apart or together: the expand/collapse pair used everywhere, so both actions share one shape.
+  unfold: ["m7 9 5-5 5 5", "m7 15 5 5 5-5"],
+  fold: ["m7 4 5 5 5-5", "m7 20 5-5 5 5"],
 };
 
-// Không khai `Record<string, string[]>`: khai vậy thì `IconName` chỉ là `string`, và một
-// tên gõ sai đi qua trình biên dịch rồi render ra ô trống trên màn hình người dùng.
+// Not typed as `Record<string, string[]>`: that would make `IconName` just `string`, so a typo would render blank.
 export type IconName = keyof typeof PATHS;
 
 export default function Icon(props: { name: IconName; size?: number; class?: string }) {

@@ -6,55 +6,35 @@ build-backend = "hatchling.build"
 name = "pai-rag-service"
 version = "0.1.0"
 description = "Tầng RAG của Private AI: nạp đa định dạng, OCR bằng VLM, truy hồi nhiều chiến lược, nói MCP"
-# Ghim 3.12: onnxruntime và markitdown chưa có wheel cho 3.13+, và PyInstaller cần đúng
-# một phiên bản để dựng bản đóng gói. Không phải một trần tuỳ tiện.
+# Pinned to 3.12: onnxruntime and markitdown have no 3.13+ wheels, and PyInstaller needs one exact version.
 requires-python = ">=3.12,<3.13"
 
 dependencies = [
-    # Nói MCP. Đây là toàn bộ giao diện ra ngoài của tiến trình này.
+    # Speaks MCP. This is the entire external interface of the process.
     "mcp>=1.2",
-    # LangChain: chỉ phần lõi và phần cắt đoạn. Không kéo cả `langchain` vào — bản đóng
-    # gói phải nhỏ, và thứ cần ở đây là `Document`, `Embeddings` và `TextSplitter`.
+    # LangChain core and splitters only: the bundle must stay small, and we need `Document`, `Embeddings` and `TextSplitter`.
     "langchain-core>=0.3",
     "langchain-text-splitters>=0.3",
-    # Rút chữ đa định dạng. `[all]` mang theo docx, xlsx, pptx, pdf, outlook, audio.
+    # Multi-format text extraction. `[all]` brings docx, xlsx, pptx, pdf, outlook, audio.
     "markitdown[all]>=0.1.2",
     "pypdf>=5.1",
-    # Dựng ảnh trang PDF để đưa cho VLM đọc, khi lớp chữ không đáng tin.
+    # Renders PDF page images for the VLM to read when the text layer is untrustworthy.
     "pypdfium2>=4.30",
     "httpx>=0.27",
     "numpy>=2.1",
-    # Reranker chạy ONNX, không torch. `tokenizers` là bản Rust, đi kèm rất nhẹ.
+    # Reranker on ONNX, not torch. `tokenizers` is the Rust build and is very light.
     "onnxruntime>=1.20",
     "tokenizers>=0.21",
     "huggingface-hub>=0.26",
-    # Vector store. Qdrant chạy ngoài tiến trình — xem `deploy/`.
+    # Vector store. Qdrant runs out of process - see `deploy/`.
     "qdrant-client>=1.12",
-    # Graph.
-    "neo4j>=5.26",
+    # Graph. SurrealDB runs embedded in this process (`surrealkv://`): no server, no JVM, so a bundle only has to copy files.
+    "surrealdb>=2.0",
     "pydantic>=2.9",
 ]
 
 [project.optional-dependencies]
-# Reranker trên GPU. Đo trên RTX PRO 6000, 30 đoạn mỗi câu hỏi:
-#
-#   CPU  11,06 s        <- không dùng được cho tìm kiếm tương tác
-#   GPU   1,03 s        <- nhanh gấp ~10,7 lần
-#
-# ĐỜI CUDA. `onnxruntime-gpu` ghim cứng một đời CUDA, và sai đời thì nó **lùi về CPU
-# trong im lặng** (xem `OnnxReranker._canh_bao_neu_tut_ve_cpu`).
-#
-# Ghim 1.22 = CUDA 12, **không** phải bản mới nhất, và đây là một lựa chọn có đo:
-# onnxruntime-gpu 1.29 đòi CUDA 13, nhưng cho CUDA 13 thì PyPI mới chỉ có wheel thật của
-# `nvidia-cudnn-cu13` — `nvidia-cublas-cu13` và phần còn lại vẫn là gói rỗng 0.0.1. Không
-# có `cublasLt64_13.dll` thì provider CUDA không nạp được, và cách duy nhất lấp chỗ ấy là
-# cài cả CUDA Toolkit lên máy. Bộ `-cu12` thì đầy đủ trên PyPI, và driver mới vẫn chạy
-# CUDA 12 (driver tương thích ngược).
-#
-# Thư viện CUDA của gói pip không nằm trên PATH hệ thống, nên phải gọi
-# `onnxruntime.preload_dlls()` trước khi dựng phiên — đã làm trong `OnnxReranker._ensure`.
-#
-# Cần: driver >= 525 (bản đo: 597.06). Không có đường nào lấy driver qua pip.
+# GPU reranker (~10x faster). Pinned to 1.22 = CUDA 12: a mismatched generation silently falls back to CPU, and PyPI's CUDA 13 packages are still stubs.
 gpu = [
     "onnxruntime-gpu==1.22.0",
     "nvidia-cublas-cu12",

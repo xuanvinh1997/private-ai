@@ -1,5 +1,6 @@
 import { Key } from "@solid-primitives/keyed";
 import { createSignal, Show } from "solid-js";
+import { S, t } from "../../lib/i18n";
 import { parseMcpJson } from "../../lib/mcp";
 import type { McpServer, McpServerInput } from "../../lib/protocol";
 import Icon from "./../Icon";
@@ -14,7 +15,7 @@ import {
   TextField,
 } from "../settings/FormKit";
 
-/** Một dòng danh sách có ô nhập. `id` chỉ tồn tại để `<Key>` giữ được tiêu điểm bàn phím. */
+/** One editable list row; `id` exists only so `<Key>` can keep keyboard focus. */
 interface Row {
   id: string;
   key: string;
@@ -36,21 +37,11 @@ const tableFrom = (rows: Row[]): Record<string, string> => {
   return out;
 };
 
-/**
- * Thêm hoặc sửa một server MCP bằng tay.
- *
- * Hai transport là hai bộ ô khác hẳn nhau — `stdio` chạy một tiến trình con, `http` gọi
- * một địa chỉ — nên chúng không dùng chung ô nào ngoài cái tên. Hiện cả hai bộ cùng lúc
- * sẽ bắt người dùng tự đoán nửa nào áp dụng cho mình.
- *
- * Lối **dán JSON** đứng trên cùng chứ không nằm dưới đáy như một tính năng nâng cao: mọi
- * tài liệu MCP ngoài kia đều đưa ra đúng một khối `{"mcpServers": {…}}`, và bắt người
- * dùng gõ lại từng ô của một khối họ đang bôi đen sẵn là bắt họ làm việc của máy.
- */
+/** Add or edit an MCP server by hand: the two transports share no field but the name, and the paste-JSON path sits on top because every MCP doc hands out one `mcpServers` block. */
 export default function McpForm(props: {
-  /** `null` là thêm mới. Có giá trị thì tên bị khoá — tên là khoá định danh của server. */
+  /** `null` adds a server; otherwise the name is locked, since the name is the identity. */
   server: McpServer | null;
-  /** Điền sẵn khi đi từ một chỗ khác (ví dụ sửa lại một mục vừa cắm hỏng). */
+  /** Prefilled when arriving from elsewhere, such as fixing an install that just failed. */
   draft?: McpServerInput | null;
   busy: boolean;
   error: string | null;
@@ -109,8 +100,12 @@ export default function McpForm(props: {
       setHeaders(rowsFrom(input.headers));
       setJsonNote(
         parsed.rest.length === 0
-          ? `Đã điền từ mục "${parsed.name}" — xem lại rồi bấm Lưu.`
-          : `Đã điền "${parsed.name}", bỏ qua ${parsed.rest.length} mục còn lại (${parsed.rest.join(", ")}).`,
+          ? t(S.mcp.form.jsonFilled, { name: parsed.name })
+          : t(S.mcp.form.jsonFilledRest, {
+              name: parsed.name,
+              n: parsed.rest.length,
+              list: parsed.rest.join(", "),
+            }),
       );
     } catch (err) {
       setJsonError(err instanceof Error ? err.message : String(err));
@@ -120,8 +115,12 @@ export default function McpForm(props: {
   return (
     <DialogShell
       icon={props.server === null ? "plus" : "pencil"}
-      title={props.server === null ? "Thêm server MCP" : `Sửa ${props.server.name}`}
-      desc="Tool hiện dưới tên ext.<tên>.<tool>."
+      title={
+        props.server === null
+          ? t(S.mcp.form.addTitle)
+          : t(S.mcp.form.editTitle, { name: props.server.name })
+      }
+      desc={t(S.mcp.form.desc)}
       wide
       onClose={props.onClose}
       onSubmit={() => {
@@ -129,9 +128,9 @@ export default function McpForm(props: {
       }}
       footer={() => (
         <>
-          <Button label="Huỷ" variant="ghost" onClick={props.onClose} />
+          <Button label={t(S.common.cancel)} variant="ghost" onClick={props.onClose} />
           <Button
-            label={props.server === null ? "Cắm server" : "Lưu"}
+            label={props.server === null ? t(S.mcp.form.submit) : t(S.common.save)}
             type="submit"
             busy={props.busy}
             disabled={!complete()}
@@ -143,12 +142,12 @@ export default function McpForm(props: {
         <summary class="cursor-pointer list-none text-2xs text-muted">
           <span class="inline-flex items-center gap-2xs">
             <Icon name="copy" size={12} />
-            Dán JSON từ tài liệu của server
+            {t(S.mcp.form.pasteSummary)}
           </span>
         </summary>
         <div class="mt-2xs flex flex-col gap-2xs">
           <TextArea
-            label="Khối mcpServers"
+            label={t(S.mcp.form.jsonLabel)}
             value={json()}
             onInput={setJson}
             invalid={jsonError() !== null}
@@ -156,12 +155,17 @@ export default function McpForm(props: {
             rows={6}
           />
           <div class="flex items-center gap-sm">
-            <Button label="Điền vào các ô" variant="outline" icon="arrow-down" onClick={applyJson} />
+            <Button
+              label={t(S.mcp.form.jsonFill)}
+              variant="outline"
+              icon="arrow-down"
+              onClick={applyJson}
+            />
           </div>
           <div role="status" aria-live="polite">
             <Show when={jsonError()}>
               {(message) => (
-                <Banner tone="danger" icon="warn" title="JSON không dùng được">
+                <Banner tone="danger" icon="warn" title={t(S.mcp.form.jsonBadTitle)}>
                   {message()}
                 </Banner>
               )}
@@ -178,60 +182,59 @@ export default function McpForm(props: {
       </details>
 
       <TextField
-        label="Tên"
+        label={t(S.mcp.form.name)}
         value={name()}
         onInput={setName}
         mono
         placeholder="github"
         disabled={props.server !== null}
-        hint={
-          props.server === null
-            ? "Tiền tố của mọi tool; chữ thường, không dấu cách."
-            : "Tên là khoá định danh nên không sửa được."
-        }
-        more={
-          props.server === null
-            ? undefined
-            : "Tên là khoá định danh của server nên không sửa được — xoá rồi thêm lại nếu cần đổi."
-        }
+        hint={props.server === null ? t(S.mcp.form.nameHint) : t(S.mcp.form.nameLocked)}
+        more={props.server === null ? undefined : t(S.mcp.form.nameLockedMore)}
       />
 
       <PillChoice<"stdio" | "http">
-        label="Cách kết nối"
+        label={t(S.mcp.form.transport)}
         value={transport()}
         onPick={setTransport}
         options={[
-          { id: "stdio", label: "Tiến trình con (stdio)", icon: "terminal" },
+          { id: "stdio", label: t(S.mcp.form.stdio), icon: "terminal" },
           { id: "http", label: "HTTP", icon: "cloud" },
         ]}
-        hint="stdio chạy lệnh tại máy; HTTP gọi một địa chỉ."
+        hint={t(S.mcp.form.transportHint)}
       />
 
       <Show when={transport() === "stdio"}>
-        <TextField label="Lệnh" value={command()} onInput={setCommand} mono placeholder="npx" />
+        <TextField
+          label={t(S.mcp.form.command)}
+          value={command()}
+          onInput={setCommand}
+          mono
+          placeholder="npx"
+        />
 
         <RowList
-          label="Tham số"
-          hint="Mỗi dòng một tham số, đúng thứ tự."
-          more="Đừng gộp cả dòng lệnh vào một ô — dấu cách trong một tham số là dấu cách thật."
+          label={t(S.mcp.form.args)}
+          hint={t(S.mcp.form.argsHint)}
+          more={t(S.mcp.form.argsMore)}
           rows={args()}
           onRows={setArgs}
-          addLabel="Thêm tham số"
+          addLabel={t(S.mcp.form.argsAdd)}
           pair={false}
         />
 
         <RowList
-          label="Biến môi trường"
-          hint="Khoá và giá trị — chỗ đặt token của server."
+          label={t(S.mcp.form.env)}
+          hint={t(S.mcp.form.envHint)}
           rows={env()}
           onRows={setEnv}
-          addLabel="Thêm biến"
+          addLabel={t(S.mcp.form.envAdd)}
           pair
           secretValues
         />
 
         <TextField
-          label="Thư mục làm việc (tuỳ chọn)"
+          label={t(S.mcp.form.cwd)}
+          hint={t(S.common.optional)}
           value={cwd()}
           onInput={setCwd}
           mono
@@ -248,11 +251,11 @@ export default function McpForm(props: {
           placeholder="https://mcp.vi-du.com/v1/sse"
         />
         <RowList
-          label="Header"
-          hint="Ví dụ Authorization: Bearer …"
+          label={t(S.mcp.form.headers)}
+          hint={t(S.mcp.form.headersHint)}
           rows={headers()}
           onRows={setHeaders}
-          addLabel="Thêm header"
+          addLabel={t(S.mcp.form.headersAdd)}
           pair
           secretValues
         />
@@ -265,13 +268,13 @@ export default function McpForm(props: {
           onChange={(event) => setEnabled(event.currentTarget.checked)}
           class="size-4 accent-[var(--accent)]"
         />
-        Bật ngay sau khi lưu
-        <span class="text-2xs text-faint">Tắt thì tool không đến tay mô hình.</span>
+        {t(S.mcp.form.enable)}
+        <span class="text-2xs text-faint">{t(S.mcp.form.enableHint)}</span>
       </label>
 
       <Show when={props.error}>
         {(message) => (
-          <Banner tone="danger" icon="warn" role="alert" title="Không lưu được">
+          <Banner tone="danger" icon="warn" role="alert" title={t(S.mcp.errors.saveTitle)}>
             {message()}
           </Banner>
         )}
@@ -280,24 +283,18 @@ export default function McpForm(props: {
   );
 }
 
-/**
- * Danh sách dòng nhập thêm/bớt được.
- *
- * `<Key>` chứ không `<For>`: xoá dòng thứ hai trong bốn dòng làm cả mảng dịch chỗ, và
- * `<For>` khớp theo vị trí sẽ dựng lại DOM từ dòng đó trở đi — tiêu điểm bàn phím rơi
- * về `body` ngay giữa lúc người dùng đang gõ. `id` của mỗi dòng tồn tại đúng vì việc này.
- */
+/** A grow/shrink list of input rows; `<Key>` by row id, since deleting a row would otherwise drop focus. */
 function RowList(props: {
   label: string;
   hint: string;
-  /** Đoạn giải thích dài, cất trong `InfoDot` cạnh câu gợi ý. */
+  /** The long explanation, tucked into an `InfoDot` beside the hint. */
   more?: string;
   rows: Row[];
   onRows: (rows: Row[]) => void;
   addLabel: string;
-  /** `true` là cặp khoá/giá trị, `false` là một ô giá trị đơn (tham số dòng lệnh). */
+  /** `true` for key/value pairs, `false` for a single value field such as a CLI argument. */
   pair: boolean;
-  /** Che giá trị khi gõ: token dán vào một ô hiện chữ là token nằm trên ảnh chụp màn hình. */
+  /** Mask values while typing: a token in a visible field is a token in the next screenshot. */
   secretValues?: boolean;
 }) {
   const patch = (id: string, next: Partial<Row>) =>
@@ -319,10 +316,10 @@ function RowList(props: {
                     spellcheck={false}
                     autocapitalize="off"
                     autocomplete="off"
-                    aria-label={`${props.label} — khoá`}
-                    placeholder="KHOA"
+                    aria-label={t(S.mcp.form.rowKey, { field: props.label })}
+                    placeholder={t(S.mcp.form.rowKeyPlaceholder)}
                     onInput={(event) => patch(entry().id, { key: event.currentTarget.value })}
-                    class="h-(--control-h) w-40 shrink-0 rounded-btn border border-line bg-bg px-sm font-mono text-2xs text-text outline-none transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
+                    class="h-(--control-h) w-40 shrink-0 rounded-btn border border-line-strong bg-bg px-sm font-mono text-2xs text-text transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
                   />
                 </Show>
                 <input
@@ -331,13 +328,13 @@ function RowList(props: {
                   spellcheck={false}
                   autocapitalize="off"
                   autocomplete="off"
-                  aria-label={`${props.label} — giá trị`}
+                  aria-label={t(S.mcp.form.rowValue, { field: props.label })}
                   onInput={(event) => patch(entry().id, { value: event.currentTarget.value })}
-                  class="h-(--control-h) min-w-0 flex-1 rounded-btn border border-line bg-bg px-sm font-mono text-2xs text-text outline-none transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
+                  class="h-(--control-h) min-w-0 flex-1 rounded-btn border border-line-strong bg-bg px-sm font-mono text-2xs text-text transition-colors duration-[var(--dur-fast)] placeholder:text-faint focus:border-accent"
                 />
                 <IconButton
                   icon="x"
-                  label={`Bỏ dòng này khỏi ${props.label}`}
+                  label={t(S.mcp.form.rowRemove, { field: props.label })}
                   size="sm"
                   onClick={() => props.onRows(props.rows.filter((other) => other.id !== entry().id))}
                 />
@@ -357,7 +354,9 @@ function RowList(props: {
         <span class="inline-flex min-w-0 flex-1 items-center gap-2xs text-2xs text-faint">
           {props.hint}
           <Show when={props.more}>
-            {(more) => <InfoDot text={more()} label={`Về ${props.label}`} />}
+            {(more) => (
+              <InfoDot text={more()} label={t(S.mcp.form.rowAbout, { field: props.label })} />
+            )}
           </Show>
         </span>
       </div>

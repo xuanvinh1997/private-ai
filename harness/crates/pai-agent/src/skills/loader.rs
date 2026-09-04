@@ -1,4 +1,4 @@
-//! Đọc một `SKILL.md`.
+//! Read one `SKILL.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -33,11 +33,11 @@ pub struct Skill {
     pub keywords: Vec<String>,
     pub body: String,
     pub dir: PathBuf,
-    /// Tên các tệp khác trong thư mục. Chỉ **tên** — tầng ba của tiết lộ dần.
+    /// Names of the other files in the directory; names only, the third disclosure tier.
     pub resources: Vec<String>,
 }
 
-/// Chữ thường, số, `.`, `-`, `_`. Tên đi vào prompt và vào tên thư mục, nên nó phải hẹp.
+/// Lowercase, digits, `.`, `-`, `_`: the name goes into the prompt and into a directory name, so it stays narrow.
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -64,8 +64,7 @@ pub fn load_skill(dir: &Path) -> Result<Skill, SkillError> {
     if !valid_name(&front.name) {
         return Err(SkillError::Missing(path.clone(), "name hợp lệ"));
     }
-    // Thiếu mô tả thì gói bị bỏ qua chứ không làm hỏng ứng dụng: mô tả là thứ duy nhất
-    // mô hình đọc ở tầng một, nên một skill không có nó thì không bao giờ được chọn.
+    // A missing description skips the skill rather than breaking the app: tier one is all the model reads.
     let description = front
         .description
         .map(|d| d.trim().to_string())

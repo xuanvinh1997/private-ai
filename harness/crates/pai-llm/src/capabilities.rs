@@ -1,27 +1,17 @@
-//! Mô hình này làm được gì.
-//!
-//! Hai nguồn sự thật, **theo đúng thứ tự này** (port từ `llm/capabilities.py`):
-//!
-//! 1. `/api/show` của Ollama báo năng lực có thẩm quyền — nó đọc từ chính tệp GGUF.
-//! 2. Đoán theo tên, chỉ khi hỏi không được: một máy chủ OpenAI-compatible chỉ liệt kê
-//!    id và `owned_by`, còn một bản Ollama cũ thì không có trường `capabilities`.
-//!
-//! Thứ tự này quan trọng. Đoán theo tên là suy luận trên chuỗi ký tự do người khác đặt:
-//! nó đúng cho `llava`, sai cho một bản fine-tune tên là `cong-ty-cua-toi:latest`. Chỉ
-//! được dùng khi không còn cách nào khác.
+//! What a model can do, from two sources in this order: Ollama's `/api/show`, which is
+//! authoritative because it reads the GGUF, and only then a guess from the name.
+//! Name guessing is inference over a string someone else chose; it is the last resort.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// Tập năng lực mà Ollama báo. Cái nào không nằm trong đây thì bỏ, vì nó là từ vựng của
-/// một phiên bản Ollama mới hơn cái ta biết.
+/// The capability set Ollama reports; anything outside it is dropped as newer Ollama vocabulary.
 pub const OLLAMA_CAPABILITIES: [&str; 5] = ["chat", "embedding", "vision", "tools", "thinking"];
 
-/// Ollama gọi sinh văn bản thuần là "completion"; phần còn lại của ứng dụng gọi là chat.
+/// Ollama calls plain text generation "completion"; the rest of the app calls it chat.
 const OLLAMA_ALIASES: [(&str, &str); 1] = [("completion", "chat")];
 
-/// Chuỗi con báo hiệu một mô hình nhìn được ảnh. Chép nguyên từ `capabilities.py:27-38` —
-/// danh sách này là kinh nghiệm tích luỹ, không phải suy luận, nên đừng "dọn dẹp" nó.
+/// Substrings that mark a vision model; copied verbatim from `capabilities.py` - accumulated experience, not reasoning, so do not "tidy" it.
 const VISION_TOKENS: [&str; 11] = [
     "-vl",
     ":vl",
@@ -36,36 +26,34 @@ const VISION_TOKENS: [&str; 11] = [
     "vision",
 ];
 
-/// Năng lực đến từ đâu. Giao diện cần biết: "mô hình này không gọi được tool" là một câu
-/// khác hẳn khi nó là sự thật đọc từ tệp và khi nó chỉ là phỏng đoán từ cái tên.
+/// Where the capability came from; "this model cannot call tools" reads very differently as a fact read from a file than as a guess from a name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CapabilitySource {
-    /// Máy chủ tự khai.
+    /// Declared by the server.
     Reported,
-    /// Đoán từ tên mô hình.
+    /// Guessed from the model name.
     Inferred,
 }
 
-/// Năng lực của một mô hình.
+/// What a model can do.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Capabilities {
     pub chat: bool,
     pub embedding: bool,
-    /// Nhìn được ảnh.
+    /// Can see images.
     pub vision: bool,
-    /// Gọi được tool. Vòng lặp agent đọc trường này để biết có nên trao schema tool không.
+    /// Can call tools. The agent loop reads this to decide whether to hand over tool schemas.
     pub tools: bool,
-    /// Có kênh suy luận riêng.
+    /// Has a separate reasoning channel.
     pub thinking: bool,
-    /// Cửa sổ ngữ cảnh, tính bằng token. `None` khi không hỏi được — và `None` **không**
-    /// có nghĩa là vô hạn; nó có nghĩa là chưa biết, nên người gọi phải tự chọn mặc định.
+    /// Context window in tokens; `None` means unknown, not unlimited, so the caller picks a default.
     pub context_window: Option<u64>,
     pub source: CapabilitySource,
 }
 
 impl Capabilities {
-    /// Bộ khung rỗng.
+    /// An empty skeleton.
     fn empty(source: CapabilitySource) -> Self {
         Self {
             chat: false,
@@ -78,9 +66,7 @@ impl Capabilities {
         }
     }
 
-    /// Đoán từ một chuỗi mô tả (tên mô hình, cộng bất cứ metadata nào máy chủ tự nguyện
-    /// đưa thêm). Port `infer_capabilities` — giữ nguyên cả thứ tự nhánh: "embed" thắng
-    /// trước, vì `nomic-embed-vision` là mô hình nhúng chứ không phải mô hình thị giác.
+    /// Guess from a descriptor string; ports `infer_capabilities`, branch order included - "embed" wins first, because `nomic-embed-vision` is an embedding model.
     pub fn infer(descriptor: &str) -> Self {
         let value = descriptor.to_lowercase();
         let mut caps = Self::empty(CapabilitySource::Inferred);
@@ -93,10 +79,7 @@ impl Capabilities {
         caps
     }
 
-    /// Đọc mảng `capabilities` của `/api/show`.
-    ///
-    /// Trả `None` khi không lọc ra được năng lực nào — đó là tín hiệu để người gọi rơi
-    /// xuống nhánh đoán, đúng như `admin.py:167-169` làm với `if capabilities:`.
+    /// Read the `capabilities` array from `/api/show`; `None` when nothing survives the filter, which tells the caller to fall through to guessing.
     pub fn from_reported(reported: &[String], context_window: Option<u64>) -> Option<Self> {
         let mut caps = Self::empty(CapabilitySource::Reported);
         let mut any = false;
@@ -127,13 +110,12 @@ impl Capabilities {
         Some(caps)
     }
 
-    /// Chỉ nhúng, không chat. Bản Python phân loại `model_type` bằng đúng phép so sánh
-    /// `capabilities == ["embedding"]`.
+    /// Embedding only, no chat. The Python side classified `model_type` with exactly this comparison.
     pub fn is_embedding_only(&self) -> bool {
         self.embedding && !self.chat
     }
 
-    /// Danh sách tên, để hiện ra giao diện và ghi vào cơ sở dữ liệu.
+    /// The name list, for the UI and the database.
     pub fn names(&self) -> Vec<&'static str> {
         let mut names = Vec::new();
         if self.chat {
@@ -155,9 +137,7 @@ impl Capabilities {
     }
 }
 
-/// Lọc mảng `capabilities` thô thành danh sách tên đã chuẩn hoá, giữ thứ tự và loại trùng.
-/// Port thẳng `normalize_ollama_capabilities`; hữu ích khi chỉ cần danh sách chứ không
-/// cần cả cấu trúc.
+/// Filter a raw `capabilities` array into normalized names, order kept and duplicates dropped.
 pub fn normalize_ollama_capabilities(value: &Value) -> Vec<String> {
     let Some(items) = value.as_array() else {
         return Vec::new();
@@ -178,11 +158,7 @@ pub fn normalize_ollama_capabilities(value: &Value) -> Vec<String> {
     out
 }
 
-/// Tìm cửa sổ ngữ cảnh trong `model_info` của `/api/show`.
-///
-/// Khoá có tiền tố là tên kiến trúc — `llama.context_length`, `qwen3.context_length`,
-/// `gemma3.context_length` — nên không tra thẳng được. Khớp theo đuôi là cách duy nhất
-/// không phải giữ một bảng kiến trúc rồi phải cập nhật mỗi lần có mô hình mới.
+/// Find the context window in `/api/show`'s `model_info`; keys are architecture-prefixed, so suffix matching avoids maintaining an architecture table.
 pub fn context_length_from_model_info(info: &Map<String, Value>) -> Option<u64> {
     info.iter()
         .find(|(key, _)| key.ends_with(".context_length") || *key == "context_length")

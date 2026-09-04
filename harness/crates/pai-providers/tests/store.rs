@@ -1,8 +1,5 @@
-//! Bất biến của kho provider.
-//!
-//! Ba trong bốn bài dưới đây khoá một lỗi *đã* xảy ra ở những bản trước của cùng một
-//! chức năng: khoá API bốc hơi khi người dùng chỉ sửa cái tên, khoá lọt vào log, và một
-//! con trỏ "đang hoạt động" trỏ vào hàng vừa bị xoá. Không bài nào chạm mạng.
+//! Provider-store invariants. Three of the four tests lock bugs that actually happened before: keys
+//! vanishing on a rename, keys leaking into logs, and an active pointer aimed at a deleted row.
 
 use pai_llm::ProviderKind;
 use pai_providers::{ProviderInput, ProviderStore, Role, SqliteProviderStore, StoredProvider};
@@ -26,8 +23,7 @@ fn khoa_vang_mat_la_giu_nguyen_chu_khong_phai_xoa() {
     let store = store();
     let saved = them(&store, "OpenAI", Some("bi-mat"));
 
-    // `None`: giao diện gửi lên một biểu mẫu không có ô khoá, vì nó chưa bao giờ nhận
-    // được khoá để mà gửi lại.
+    // `None`: the UI submits a form with no key field, because it never received the key to resend.
     let doi_ten = store
         .save(
             ProviderInput::create(
@@ -41,7 +37,7 @@ fn khoa_vang_mat_la_giu_nguyen_chu_khong_phai_xoa() {
     assert_eq!(doi_ten.config.api_key, "bi-mat");
     assert_eq!(doi_ten.config.name, "OpenAI nhà");
 
-    // `Some("k")`: đổi thật.
+    // `Some("k")`: a real change.
     let doi_khoa = store
         .save(
             ProviderInput::create(
@@ -55,7 +51,7 @@ fn khoa_vang_mat_la_giu_nguyen_chu_khong_phai_xoa() {
         .expect("đổi khoá");
     assert_eq!(doi_khoa.config.api_key, "k");
 
-    // `Some("")`: đường duy nhất để xoá khoá.
+    // `Some("")`: the only way to clear the key.
     let xoa_khoa = store
         .save(
             ProviderInput::create(
@@ -83,7 +79,7 @@ fn khoa_khong_bao_gio_lot_vao_debug() {
     );
     assert!(in_ra.contains("<đã đặt>"), "phải nói là có khoá: {in_ra}");
 
-    // Cả khi nó đi kèm cả danh sách — `{:?}` trên một `Vec` gọi `Debug` của từng phần tử.
+    // Including inside a whole list, since `{:?}` on a `Vec` calls each element's `Debug`.
     let danh_sach = format!("{:?}", store.list().expect("liệt kê"));
     assert!(!danh_sach.contains("sk-khong-duoc-in-ra"));
 }
@@ -115,8 +111,7 @@ fn xoa_cai_dang_hoat_dong_thi_cai_khac_len_thay() {
             .all(|row| row.id() != mot.id())
     );
 
-    // Xoá nốt cái cuối: không còn ai hoạt động, và đó là một câu trả lời hợp lệ chứ không
-    // phải một id chết.
+    // Deleting the last one leaves nobody active, which is a valid answer rather than a dead id.
     store.remove(hai.id()).expect("xoá nốt");
     assert!(store.active(Role::Chat).expect("đọc").is_none());
 }

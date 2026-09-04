@@ -1,9 +1,6 @@
-//! Trạng thái lõi mà màn hình cài đặt cần đọc: vòng giam, và hook đang cài.
-//!
-//! Cả hai đều **chỉ đọc**. Vòng giam không đổi được từ giao diện vì nó không phải một
-//! tuỳ chọn — nó là năng lực của nền tảng, và một công tắc ở đó sẽ hứa một thứ hệ điều
-//! hành không cho. Hook thì đổi được, nhưng bằng tệp cấu hình, và cho tới khi có lệnh ghi
-//! thì màn hình đọc ra sự thật còn hơn dựng một biểu mẫu không lưu được.
+//! Core state the settings screen reads: the sandbox and the installed hooks, both read-only. The sandbox is
+//! a platform capability, not an option, and a toggle would promise what the OS will not give; hooks change
+//! through the config file, so showing the truth beats a form that cannot save.
 
 use pai_sandbox::Sandbox;
 use tauri::State;
@@ -24,9 +21,8 @@ pub async fn sandbox_status(state: State<'_, AppState>) -> Result<SandboxStatus,
         "khác"
     };
 
-    // Không có provider nghĩa là **không có vòng giam nào**, và đó là câu phải nói ra chứ
-    // không phải một lỗi: `pai-sandbox` lùi về `Unconfined` một cách hợp lệ trên nền tảng
-    // nó không giam được, và người dùng cần biết mình đang ở trạng thái ấy.
+    // No provider means no sandbox at all, which must be stated rather than treated as an error: `pai-sandbox`
+    // legitimately falls back to `Unconfined` on platforms it cannot confine.
     let Some(sandbox) = harness.ctx.get::<Sandbox>() else {
         return Ok(SandboxStatus {
             mode: "none".into(),
@@ -53,11 +49,8 @@ pub async fn sandbox_status(state: State<'_, AppState>) -> Result<SandboxStatus,
     })
 }
 
-/// Hook đang cài, đọc từ **cây cấu hình đã áp lớp**.
-///
-/// Đọc từ đó chứ không từ `pai-hooks` vì bản thân plugin không giữ lại cấu hình sau khi
-/// cắm — và cây đã áp lớp còn biết thêm một thứ mà plugin không biết: **lớp nào đã khai
-/// hàng này**. Người dùng sửa `patch.yaml` rồi không thấy hook chạy sẽ hỏi đúng câu đó.
+/// Installed hooks, read from the layered configuration tree rather than `pai-hooks`, which discards config
+/// after loading -- and the tree also knows which layer declared each row.
 #[tauri::command]
 pub async fn list_hooks(state: State<'_, AppState>) -> Result<Vec<HookRow>, String> {
     #[derive(Default, serde::Deserialize)]
@@ -71,8 +64,7 @@ pub async fn list_hooks(state: State<'_, AppState>) -> Result<Vec<HookRow>, Stri
         return Ok(Vec::new());
     };
     let parsed: Row = serde_json::from_value(row.config.clone()).map_err(|err| err.to_string())?;
-    // Lớp cuối cùng chạm vào hàng này là lớp có tiếng nói cuối cùng, nên nó là nguồn gốc
-    // đáng ghi. Vắng thì hàng đến từ bản dựng sẵn.
+    // The last layer to touch a row has the final word, so it is the origin worth recording; absent means built-in.
     let origin = harness
         .plugins
         .provenance
@@ -93,11 +85,8 @@ pub async fn list_hooks(state: State<'_, AppState>) -> Result<Vec<HookRow>, Stri
         .collect())
 }
 
-/// Đường dẫn tệp vá thật, tôn trọng `PAI_DATA_DIR`.
-///
-/// Màn hình Hook chỉ cho sửa bằng tay, nên nó phải chỉ đúng tệp — một đường dẫn viết cứng
-/// `~/.private-ai/patch.yaml` sẽ sai với mọi người đã đặt biến môi trường ấy, và họ sẽ sửa
-/// một tệp không ai đọc.
+/// The real patch file path, honouring `PAI_DATA_DIR`: the hooks screen only allows manual editing, so a
+/// hard-coded path would send anyone with that variable set to edit a file nobody reads.
 #[tauri::command]
 pub async fn hook_config_path(state: State<'_, AppState>) -> Result<String, String> {
     let harness = state.harness().await?;

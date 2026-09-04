@@ -1,11 +1,6 @@
-//! Mở một ống tới một language server, và cách tìm xem nó có trên máy hay không.
-//!
-//! Tách khỏi [`crate::client`] vì đúng lý do mà `pai-mcp` tách [`Dialer`] khỏi hub: phần
-//! nói giao thức giống hệt nhau cho mọi cách mở ống, và bài kiểm chứng cần một cách mở
-//! ống **không** đẻ tiến trình con — nếu không thì mọi bài kiểm về bắt tay, về server chết
-//! giữa chừng và về hết giờ đều phải có `rust-analyzer` cài sẵn trên máy chạy CI.
-//!
-//! [`Dialer`]: pai_mcp
+//! Opens a pipe to a language server, and finds out whether one exists on this machine.
+//! Split from [`crate::client`] for the reason `pai-mcp` splits its dialer: the tests need
+//! a way to open a pipe that spawns no child process.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -14,13 +9,11 @@ use async_trait::async_trait;
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::process::Child;
 
-/// Một ống hai chiều tới một server đang chạy.
+/// A two-way pipe to a running server.
 pub struct Channel {
     pub reader: Box<dyn AsyncRead + Send + Unpin>,
     pub writer: Box<dyn AsyncWrite + Send + Unpin>,
-    /// Chỉ có với server là tiến trình con. Giữ lại để giết nó nếu `exit` không đủ —
-    /// một server phớt lờ `exit` mà ta chỉ đóng ống thì nó thành tiến trình mồ côi chạy
-    /// tới hết phiên làm việc của người dùng.
+    /// Only present for child-process servers; kept so we can kill one that ignores `exit` instead of leaving it orphaned.
     pub(crate) child: Option<Child>,
 }
 
@@ -37,15 +30,15 @@ impl Channel {
     }
 }
 
-/// Cách mở một ống. Một lần gọi = một server mới.
+/// How to open a pipe. One call = one new server.
 #[async_trait]
 pub trait Launch: Send + Sync + 'static {
     async fn launch(&self) -> anyhow::Result<Channel>;
-    /// Tên để nói trong thông báo lỗi — cái người dùng nhận ra, không phải cái ta gõ.
+    /// The name to use in error messages - what the user recognizes, not what we typed.
     fn label(&self) -> String;
 }
 
-/// Một tiến trình con nói LSP trên stdin/stdout.
+/// A child process speaking LSP over stdin/stdout.
 pub struct ChildLaunch {
     label: String,
     command: PathBuf,
@@ -78,9 +71,7 @@ impl Launch for ChildLaunch {
             .current_dir(&self.cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            // stderr đi thẳng ra stderr của ta, giống `pai-mcp`: một server không khởi
-            // động được gần như luôn nói lý do ở đó, và nuốt nó là biến một lỗi cấu hình
-            // thành một bí ẩn.
+            // stderr is inherited, as in `pai-mcp`: a server that fails to start almost always says why there.
             .stderr(Stdio::inherit())
             .kill_on_drop(true);
 
@@ -106,17 +97,12 @@ impl Launch for ChildLaunch {
     }
 }
 
-/// Lệnh này có thật trên máy không, và ở đâu.
-///
-/// Dò ở đây, một lần, lúc cắm plugin — **không** dò lại mỗi lần gọi. Một tool có trong
-/// danh sách mà lần nào gọi cũng lỗi là một tool dạy mô hình bỏ qua danh sách, và cái giá
-/// của việc dò lại là một lượt quét `PATH` cho mỗi câu hỏi để trả lời một điều gần như
-/// không bao giờ đổi giữa hai câu hỏi.
+/// Does this command exist on the machine, and where? Probed once at plugin time, never per call, because a tool that always fails teaches the model to ignore the tool list.
 pub fn locate(command: &str) -> Option<PathBuf> {
     if command.is_empty() {
         return None;
     }
-    // Có dấu ngăn thư mục nghĩa là người dùng đã chỉ đích danh; `PATH` không liên quan.
+    // A directory separator means the user named it outright; `PATH` is irrelevant.
     if command.contains(std::path::MAIN_SEPARATOR) || command.contains('/') {
         let path = PathBuf::from(command);
         return runnable(&path).then_some(path);
@@ -134,8 +120,7 @@ fn runnable(path: &Path) -> bool {
     if !metadata.is_file() {
         return false;
     }
-    // Trên Unix, một tệp không có bit `x` nằm trong `PATH` là chuyện thường (tệp dữ liệu,
-    // tệp README); coi nó là lệnh thì ta đăng ký một tool rồi hỏng ngay lần gọi đầu.
+    // On Unix a non-executable file on `PATH` is common (data, README); treating it as a command would register a tool that fails on first use.
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

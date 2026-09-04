@@ -1,27 +1,6 @@
-//! [`DocLibrary`] nói chuyện với `pai-rag-service` qua MCP.
-//!
-//! # Đọc JSON phòng thủ, không `unwrap`
-//!
-//! Mọi trường ở đây đến từ một tiến trình khác, có thể là bản cũ hơn hoặc mới hơn. Một
-//! `unwrap` trên một trường vắng mặt sẽ làm sập cả cửa sổ vì service vừa được nâng cấp.
-//! Nên mỗi phép đọc có mặc định, và mặc định luôn nghiêng về phía **nói ít hơn sự thật**:
-//! thiếu `page` thành `0` (không hiện số trang) chứ không thành một số bịa.
-//!
-//! Ngoại lệ đúng một chỗ: thiếu `documentId` thì bỏ nguyên đoạn đó. Một trích dẫn không
-//! chỉ ra được tài liệu nào là một trích dẫn không kiểm chứng được, và hiện nó ra còn tệ
-//! hơn không hiện.
-//!
-//! # Ba dòng tiến trình
-//!
-//! `sync`, `ingest` và `reprocess` trả về [`BoxStream`], nhưng bên dưới là **một** lời gọi
-//! MCP — giao thức là hỏi-đáp, không có luồng. Dòng vì thế phát một mốc "đang chạy" ngay
-//! lập tức để giao diện dựng được thanh tiến trình, rồi phát phần còn lại khi kết quả về.
-//!
-//! Giữ chữ ký `BoxStream` chứ không đổi thành `async fn` trả về một kết quả: phía `app/`
-//! đẩy từng mốc lên một `Channel` của Tauri, và đổi hình dạng ở đây là sửa cả `docs.rs`
-//! lẫn `DocsView.tsx` để đổi lấy đúng một thứ — sự trung thực rằng bên dưới không có
-//! luồng. Cái giá đó không đáng, và ngày service phát progress notification thật thì
-//! chữ ký này đã sẵn sàng.
+//! [`DocLibrary`] talking to `pai-rag-service` over MCP.
+//! JSON from another process is read defensively: every field has a default that
+//! understates rather than invents, and the three ingest streams wrap a single MCP call.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,8 +17,7 @@ use crate::sidecar::Sidecar;
 
 pub struct RagClient {
     sidecar: Arc<Sidecar>,
-    /// Thư mục dự án. Giữ ở đây để [`Stats::root`] và các mốc tiến trình nói được nó
-    /// ngay cả khi service chưa trả lời lần nào.
+    /// Project folder, kept here so [`Stats::root`] and progress ticks have it before the service ever answers.
     root: PathBuf,
 }
 
@@ -52,7 +30,7 @@ impl RagClient {
         self.sidecar.shutdown().await;
     }
 
-    /// Một lượt nạp, gói thành dòng mốc tiến trình.
+    /// One ingest run, wrapped as a stream of progress ticks.
     fn ingest_stream<'a>(
         &'a self,
         tool: &'a str,
@@ -148,7 +126,7 @@ impl DocLibrary for RagClient {
     }
 }
 
-/* ── đọc JSON ────────────────────────────────────────────────────────────────────── */
+/* ── read JSON ───────────────────────────────────────────────────────────────────── */
 
 fn array<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value
@@ -209,16 +187,13 @@ fn read_document(value: &Value) -> Option<Document> {
     Some(Document {
         id: id.to_string(),
         path: PathBuf::from(&path),
-        // Service không giữ khái niệm "tệp đến từ đâu": thư mục dự án **là** thư viện,
-        // nên nguồn gốc và chỗ đứng là một.
+        // The service has no notion of "where a file came from": the project folder *is* the library.
         origin: path,
         title: text(value, "title"),
         format: Format::parse(&text(value, "format")),
         bytes: number(value, "bytes"),
         chunks,
-        // Service chỉ báo đã nhúng ở mức cả thư viện, không theo từng tài liệu. Một tài
-        // liệu có đoạn và không có lỗi thì coi như đã xong; `stats()` mới là chỗ nói ra
-        // phần còn đang xếp hàng, và nó nói bằng con số chứ không bằng một cờ mỗi hàng.
+        // The service reports embedding library-wide, not per document; `stats()` is where the backlog is named.
         embedded: chunks > 0 && error.is_none(),
         added_at: value.get("addedAt").and_then(Value::as_i64).unwrap_or(0),
         error,
@@ -244,9 +219,7 @@ fn read_stats(value: &Value, root: &PathBuf, sidecar_error: Option<String>) -> S
         .filter(|found| !found.is_empty())
         .map(str::to_string);
 
-    // Sẵn sàng nghĩa là **mọi** đoạn đều có vector. Một thư viện nhúng được nửa chừng
-    // vẫn trả về kết quả, nhưng nửa còn lại thì vô hình với phép tìm ngữ nghĩa — và đó
-    // đúng là điều người dùng cần biết trước khi kết luận "tài liệu không nhắc tới".
+    // Ready means *every* chunk has a vector; a half-embedded library still answers, but the other half is invisible to semantic search.
     let semantic_ready = reachable && chunks > 0 && vectors >= chunks;
     Stats {
         documents: number(value, "documents") as u32,
@@ -269,10 +242,7 @@ fn read_stats(value: &Value, root: &PathBuf, sidecar_error: Option<String>) -> S
     }
 }
 
-/// Vì sao phần tìm theo ý nghĩa chưa dùng được, bằng tiếng Việt và nói ra việc phải làm.
-///
-/// Thứ tự xét đi từ nguyên nhân gốc ra ngoài: service không chạy thì mọi câu khác đều vô
-/// nghĩa, và nói "chưa nhúng xong" cho một service đã chết là chỉ sai chỗ để sửa.
+/// Why semantic search is unusable, in Vietnamese and naming the fix; ordered root cause outwards, since a dead service makes every other explanation wrong.
 fn reason_for(
     ready: bool,
     reachable: bool,
@@ -305,7 +275,7 @@ fn reason_for(
     ))
 }
 
-/// Báo cáo một lượt nạp → dãy mốc tiến trình cho giao diện.
+/// One ingest report -> the sequence of progress ticks for the UI.
 fn events_from_report(root: &str, outcome: Result<Value, RagError>) -> Vec<IngestEvent> {
     let make = |stage: IngestStage, path: String, error: Option<String>, done: u32, total: u32| {
         IngestEvent {
@@ -321,8 +291,7 @@ fn events_from_report(root: &str, outcome: Result<Value, RagError>) -> Vec<Inges
 
     let report = match outcome {
         Ok(value) => value,
-        // Cả lượt hỏng: một mốc `Failed` mang lý do, rồi `Finished` để giao diện đóng
-        // thanh tiến trình lại. Thiếu mốc cuối thì nó quay mãi.
+        // Whole run failed: one `Failed` tick carrying the reason, then `Finished` so the progress bar stops spinning.
         Err(err) => {
             return vec![
                 make(IngestStage::Failed, root.to_string(), Some(err.to_string()), 0, 0),
@@ -349,8 +318,7 @@ fn events_from_report(root: &str, outcome: Result<Value, RagError>) -> Vec<Inges
         .and_then(Value::as_str)
         .filter(|found| !found.is_empty())
     {
-        // `Embedding` chứ không `Failed`: mọi tệp đã vào thư viện, chỉ có máy chủ nhúng
-        // là chưa trả lời. Đếm nó vào danh sách *tệp* hỏng là nói sai với người dùng.
+        // `Embedding`, not `Failed`: every file made it into the library, only the embedding server is behind.
         events.push(make(
             IngestStage::Embedding,
             root.to_string(),
@@ -367,9 +335,7 @@ fn events_from_report(root: &str, outcome: Result<Value, RagError>) -> Vec<Inges
 mod tests {
     use super::*;
 
-    /// Đọc JSON ở đây là đọc dữ liệu của **một tiến trình khác**, có thể cũ hơn hoặc mới
-    /// hơn. Bài này khoá luật: thiếu trường thì lùi về một giá trị nói *ít hơn* sự thật,
-    /// không panic và không bịa ra một con số.
+    /// Missing fields must fall back to a value that understates the truth, never panic or invent a number.
     #[test]
     fn truong_thieu_khong_lam_sap_va_khong_bia() {
         let hit = read_hit(&json!({ "documentId": "abc" })).expect("có documentId là đủ");
@@ -385,10 +351,7 @@ mod tests {
         );
     }
 
-    /// Ngoại lệ duy nhất của luật trên: không có mã tài liệu thì bỏ hẳn đoạn.
-    ///
-    /// Một trích dẫn không chỉ ra được tài liệu nào là một trích dẫn không kiểm chứng
-    /// được, và hiện nó ra còn tệ hơn không hiện.
+    /// The one exception: a chunk with no document id is dropped, because an uncitable quote is worse than none.
     #[test]
     fn doan_khong_co_ma_tai_lieu_bi_bo() {
         assert!(read_hit(&json!({ "title": "x", "text": "y" })).is_none());
@@ -446,11 +409,7 @@ mod tests {
         assert_eq!(hong.error.as_deref(), Some("PDF cụt"));
     }
 
-    /// `semantic_ready` chỉ đúng khi **mọi** đoạn đều có vector.
-    ///
-    /// Nhúng nửa chừng vẫn trả về kết quả, nhưng nửa còn lại vô hình với phép tìm ngữ
-    /// nghĩa — và đó đúng là điều người dùng cần biết trước khi kết luận rằng tài liệu
-    /// không nhắc tới chuyện họ hỏi.
+    /// `semantic_ready` holds only when *every* chunk has a vector; half-embedded results hide the other half.
     #[test]
     fn nhung_nua_chung_khong_phai_la_san_sang() {
         let root = PathBuf::from("D:/tl");
@@ -472,8 +431,7 @@ mod tests {
         assert!(full.reason.is_none(), "sẵn sàng thì không có gì để giải thích");
     }
 
-    /// Thứ tự giải thích đi từ nguyên nhân gốc ra ngoài: service chết thì mọi câu khác
-    /// đều vô nghĩa, và nói "chưa nhúng xong" cho một service đã chết là chỉ sai chỗ sửa.
+    /// Explanations go root cause outwards: a dead service makes "still embedding" point at the wrong fix.
     #[test]
     fn ly_do_chi_dung_nguyen_nhan_goc() {
         let root = PathBuf::from("D:/tl");
@@ -500,8 +458,7 @@ mod tests {
         assert!(trong.reason.unwrap().contains("Thả tệp"));
     }
 
-    /// Dòng tiến trình **luôn** kết thúc bằng `Finished`. Thiếu nó thì thanh tiến trình
-    /// của giao diện quay mãi mãi.
+    /// A progress stream always ends with `Finished`; without it the UI progress bar spins forever.
     #[test]
     fn dong_tien_trinh_luon_dong_lai() {
         let hong = events_from_report("D:/tl", Err(RagError::Service("chết".into())));
@@ -520,10 +477,7 @@ mod tests {
         assert_eq!(xong[0].total, 5);
     }
 
-    /// Máy chủ nhúng chưa trả lời là `Embedding`, **không** phải `Failed`.
-    ///
-    /// "1 tệp không nạp được" là một câu sai khi mọi tệp đều đã vào thư viện và chỉ có
-    /// bước nhúng còn nợ. Giao diện đếm `Failed` vào danh sách tệp hỏng.
+    /// A lagging embedding server is `Embedding`, not `Failed` - the UI counts `Failed` as broken files.
     #[test]
     fn nhung_hong_khong_bi_dem_la_tep_hong() {
         let events = events_from_report(

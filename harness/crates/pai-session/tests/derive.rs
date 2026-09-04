@@ -1,4 +1,4 @@
-//! Phép chiếu sổ → lịch sử mô hình, và những bất biến mà DDL không diễn đạt được.
+//! The log-to-model-history projection, and the invariants the DDL cannot express.
 
 use pai_session::{
     AssistantMessage, ContentBlock, Message, Role, SessionError, SessionEvent,
@@ -22,7 +22,7 @@ fn assistant(text: &str) -> SessionEvent {
     })
 }
 
-/// Bước bị cụt vì hết token: message tồn tại chỉ để giữ `usage`, nội dung rỗng.
+/// A step truncated by the token limit: the message exists only to carry `usage`, with empty content.
 fn assistant_rong() -> SessionEvent {
     SessionEvent::AssistantMessage(AssistantMessage {
         turn: 0,
@@ -118,7 +118,7 @@ fn replace_mot_dai_giua_khong_xoa_gi_ca() {
         .expect("replace");
 
     assert_eq!(texts(&log.derive_messages()), ["a", "<tóm tắt b c>", "d"]);
-    // Bản ghi vẫn nguyên: dải bị che chỉ biến mất khỏi phép chiếu.
+    // The record is intact: the shadowed range disappears only from the projection.
     assert_eq!(log.len(), 5);
     assert_eq!(
         texts(&[log
@@ -136,7 +136,7 @@ fn replace_mot_dai_giua_khong_xoa_gi_ca() {
             .expect("c")]),
         ["c"]
     );
-    // Dấu vết: mọi node bị che đều được kê tên.
+    // The trace: every shadowed node is cited.
     assert_eq!(
         log.get(seq).expect("replace").source_event_seqs.as_deref(),
         Some(&[1, 2][..])
@@ -155,7 +155,7 @@ fn replace_long_nhau_che_ca_ban_tom_tat_truoc() {
         .append_replacing(user("<tóm tắt 1>"), 1, 3, T)
         .expect("replace 1");
 
-    // Node hiện tại: [0, first, 3]. Che hai node đầu, tức nuốt cả bản tóm tắt trước.
+    // Nodes are now [0, first, 3]; shadowing the first two swallows the earlier summary as well.
     let second = log
         .append_replacing(user("<tóm tắt 2>"), 0, 2, T)
         .expect("replace 2");

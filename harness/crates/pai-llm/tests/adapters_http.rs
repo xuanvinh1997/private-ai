@@ -1,10 +1,6 @@
-//! Ba adapter, chạy qua HTTP thật — nhưng với **một máy chủ dựng ngay trong bài test**.
-//!
-//! Không `wiremock`, không mạng: một `TcpListener` của tokio và vài chục dòng nói HTTP/1.1
-//! là đủ, và nó cho ta thứ mà thư viện giả lập nào cũng giấu — quyền quyết định **byte
-//! nào đi cùng gói nào**. Mọi phản hồi streaming ở đây được gửi theo `Transfer-Encoding:
-//! chunked` với khung cố tình cắt lệch, nên đường ống thật phải chịu đúng cái cắt vụn mà
-//! bài test đơn vị mô tả.
+//! Three adapters over real HTTP, against a server built inside the test.
+//! No `wiremock` and no network: a tokio `TcpListener` speaking HTTP/1.1 gives us the one
+//! thing mock libraries hide - which bytes travel in which packet.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -23,13 +19,13 @@ use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-// --- máy chủ giả ---------------------------------------------------------------------
+// --- fake server ---------------------------------------------------------------------
 
 #[derive(Clone)]
 struct Route {
     status: u16,
     body: String,
-    /// Gửi theo khung `chunked`, mỗi khung `slice` byte. `None` = một cục, Content-Length.
+    /// Sent as `chunked` frames of `slice` bytes. `None` = one blob with Content-Length.
     slice: Option<usize>,
 }
 
@@ -42,7 +38,7 @@ impl Route {
         }
     }
 
-    /// Phản hồi streaming, cắt thành từng khung `slice` byte — kể cả giữa ký tự UTF-8.
+    /// Streaming response, framed into `slice`-byte chunks - splitting UTF-8 characters included.
     fn streamed(body: impl Into<String>, slice: usize) -> Self {
         Self {
             status: 200,
@@ -60,12 +56,12 @@ impl Route {
     }
 }
 
-/// Dựng một máy chủ HTTP tối giản, trả về base URL của nó.
+/// Start a minimal HTTP server and return its base URL.
 async fn serve(routes: Vec<(&str, Route)>) -> String {
     serve_recording(routes).await.0
 }
 
-/// Như [`serve`], nhưng giữ lại mọi request đã tới.
+/// Like [`serve`], but keeps every request that arrived.
 async fn serve_recording(routes: Vec<(&str, Route)>) -> (String, Arc<Mutex<Vec<(String, String)>>>) {
     let table: HashMap<String, Route> = routes
         .into_iter()
@@ -89,8 +85,7 @@ async fn serve_recording(routes: Vec<(&str, Route)>) -> (String, Arc<Mutex<Vec<(
                 let Some((path, body)) = read_request(&mut socket).await else {
                     return;
                 };
-                // Ghi lại **trước** khi trả lời: một bài kiểm chứng về thân request phải
-                // đọc được nó kể cả khi tuyến đường không tồn tại và máy chủ trả 404.
+                // Record *before* replying: a body assertion must work even when the route is missing and the server answers 404.
                 sink.lock().expect("khoá sổ").push((path.clone(), body));
                 let route = table
                     .get(&path)
@@ -103,9 +98,7 @@ async fn serve_recording(routes: Vec<(&str, Route)>) -> (String, Arc<Mutex<Vec<(
     (format!("http://{addr}"), log)
 }
 
-/// Đọc trọn request, trả về đường dẫn **và thân**. Thân phải được đọc hết dù bài kiểm
-/// chứng có cần tới nó hay không: bỏ dở thì client thấy một cú reset chứ không thấy phản
-/// hồi.
+/// Read the whole request and return path and body; the body must be drained either way, or the client sees a reset instead of a response.
 async fn read_request(socket: &mut tokio::net::TcpStream) -> Option<(String, String)> {
     let mut buffer = Vec::new();
     let mut scratch = [0u8; 1024];
@@ -207,7 +200,7 @@ async fn ollama_chat_streaming_qua_http_that() {
         "{\"message\":{\"role\":\"assistant\",\"content\":\"\"},\"done\":true,\"done_reason\":\"stop\",",
         "\"prompt_eval_count\":40,\"eval_count\":7}\n"
     );
-    // Khung 6 byte: mọi dòng NDJSON đều bị cắt, và ký tự tiếng Việt cũng vậy.
+    // 6-byte frames: every NDJSON line is split, and so are multi-byte characters.
     let base = serve(vec![("/api/chat", Route::streamed(body, 6))]).await;
     let adapter = OllamaAdapter::new("local", &base, client());
 
@@ -242,7 +235,7 @@ async fn ollama_loi_http_thanh_ma_loi() {
     assert_eq!(failure.status, Some(404));
 }
 
-/// Kết nối đóng giữa câu: luồng phải kết thúc bằng `Err`, không phải im lặng.
+/// Connection closed mid-sentence: the stream must end with `Err`, not in silence.
 #[tokio::test]
 async fn ollama_dut_giua_chung_thanh_err() {
     let base = serve(vec![(
@@ -260,8 +253,7 @@ async fn ollama_dut_giua_chung_thanh_err() {
     );
 }
 
-/// `/api/show` là nguồn có thẩm quyền: nó nói mô hình gọi được tool, dù cái tên không hé
-/// lộ gì cả.
+/// `/api/show` is authoritative: it reports tool support even when the name hints at nothing.
 #[tokio::test]
 async fn ollama_nang_luc_lay_tu_api_show() {
     let base = serve(vec![
@@ -307,14 +299,14 @@ async fn ollama_nang_luc_lay_tu_api_show() {
     let model = &models[0];
     assert_eq!(model.state, ModelState::Loaded);
     assert_eq!(model.vram_bytes, 5_000_000_000);
-    // `completion` được đổi tên thành `chat`; từ vựng lạ bị bỏ.
+    // `completion` is renamed to `chat`; unknown vocabulary is dropped.
     assert_eq!(model.capabilities.names(), vec!["chat", "vision", "tools"]);
     assert_eq!(model.capabilities.context_window, Some(131_072));
     assert_eq!(
         model.capabilities.source,
         pai_llm::CapabilitySource::Reported
     );
-    // Đo được VRAM thì lấy số đo, không nhân hệ số lên kích thước tệp.
+    // With measured VRAM, use the measurement rather than scaling the file size.
     assert_eq!(model.required_bytes(1.1), 5_000_000_000);
 
     let capabilities = adapter
@@ -324,7 +316,7 @@ async fn ollama_nang_luc_lay_tu_api_show() {
     assert!(capabilities.tools);
 }
 
-/// `/api/show` không trả lời (bản Ollama cũ): rơi xuống đoán theo tên — và **chỉ** khi ấy.
+/// `/api/show` does not answer (older Ollama): fall back to name inference - and only then.
 #[tokio::test]
 async fn ollama_api_show_im_lang_thi_doan_theo_ten() {
     let base = serve(vec![
@@ -352,9 +344,9 @@ async fn ollama_api_show_im_lang_thi_doan_theo_ten() {
         pai_llm::CapabilitySource::Inferred
     );
     assert_eq!(models[0].state, ModelState::Unloaded);
-    // Không đo được VRAM: kích thước tệp cộng biên 10%.
+    // No VRAM measurement: file size plus a 10% margin.
     assert_eq!(models[0].required_bytes(1.1), 5_170_000_000);
-    // "embed" thắng trước mọi dấu hiệu khác.
+    // "embed" wins over every other signal.
     assert_eq!(models[1].capabilities.names(), vec!["embedding"]);
     assert!(models[1].capabilities.is_embedding_only());
 }
@@ -378,7 +370,7 @@ async fn ollama_pull_phat_tien_trinh_ndjson() {
     assert_eq!(events.len(), 3);
     assert_eq!(events[0].status, "pulling manifest");
     assert!((events[1].fraction() - 0.25).abs() < f32::EPSILON);
-    // Dòng không có số thì tiến trình là 0, không phải "không biết".
+    // A line without numbers means progress 0, not "unknown".
     assert_eq!(events[0].fraction(), 0.0);
     assert_eq!(events[2].status, "success");
 }
@@ -397,7 +389,7 @@ async fn openai_sse_qua_http_that_voi_tool_call() {
         "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n",
         "data: [DONE]\n\n"
     );
-    // Khung 3 byte: mọi event SSE bị cắt nhiều lần, kể cả giữa `\n\n`.
+    // 3-byte frames: every SSE event is split repeatedly, `\n\n` included.
     let base = serve(vec![("/v1/chat/completions", Route::streamed(body, 3))]).await;
     let adapter = OpenAiAdapter::new("cloud", &base, "", client()).expect("dựng được");
 
@@ -424,8 +416,7 @@ async fn openai_sse_qua_http_that_voi_tool_call() {
     );
 }
 
-/// Base URL trần được thêm `/v1`; base URL đã có `/v1` thì giữ nguyên. Cả hai phải trỏ
-/// vào cùng một chỗ, nếu không người dùng gõ đúng theo cách của mình vẫn hỏng.
+/// A bare base URL gains `/v1` and one that already has it is left alone; both must reach the same place.
 #[tokio::test]
 async fn openai_chap_nhan_ca_hai_dang_base_url() {
     let body = "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
@@ -451,8 +442,7 @@ async fn openai_401_thanh_ma_auth() {
     assert_eq!(failure.expect("phải hỏng").code, LlmErrorCode::Auth);
 }
 
-/// Tràn cửa sổ ngữ cảnh về dưới dạng 400, y hệt một request sai cú pháp. Đây là chỗ duy
-/// nhất được phép ngó vào câu chữ, và nó phải hoạt động.
+/// A blown context window arrives as a 400, just like a malformed request; this is the one place allowed to read the wording, and it must work.
 #[tokio::test]
 async fn openai_tran_ngu_canh_co_ma_rieng() {
     let base = serve(vec![(
@@ -496,7 +486,7 @@ async fn openai_liet_ke_mo_hinh_doan_nang_luc_theo_ten() {
     .await;
     let adapter = OpenAiAdapter::new("cloud", &base, "", client()).expect("dựng được");
     let models = adapter.list_models().await.expect("liệt kê được");
-    // Sắp theo tên.
+    // Sorted by name.
     assert_eq!(models[0].name, "gpt-4o-mini");
     assert_eq!(models[0].capabilities.names(), vec!["chat", "vision"]);
     assert_eq!(models[1].capabilities.names(), vec!["embedding"]);
@@ -507,9 +497,7 @@ async fn openai_liet_ke_mo_hinh_doan_nang_luc_theo_ten() {
 
 #[tokio::test]
 async fn lmstudio_chat_sse_va_ttl_di_theo() {
-    // Đúng hình dạng SSE của OpenAI, vì LM Studio nói đúng giao thức ấy. Bài này khoá
-    // điều đó lại: nếu ai đó tách bộ giải mã ra thành một bản riêng cho LM Studio thì
-    // nó phải tiếp tục đi qua đây.
+    // Exactly OpenAI's SSE shape, because LM Studio speaks that protocol; a separate LM Studio decoder would still have to pass this.
     let body = concat!(
         "data: {\"choices\":[{\"delta\":{\"content\":\"Xin \"}}]}\n\n",
         "data: {\"choices\":[{\"delta\":{\"content\":\"chào 👋\"}}]}\n\n",
@@ -528,8 +516,7 @@ async fn lmstudio_chat_sse_va_ttl_di_theo() {
         &adapter,
         ChatRequest::new("qwen3-8b")
             .with_messages(vec![Message::user("chào")])
-            // `keep_alive` là từ vựng Ollama. Adapter OpenAI bỏ qua nó; LM Studio thì
-            // hiểu cùng khái niệm ấy dưới tên `ttl`, đo bằng giây.
+            // `keep_alive` is Ollama vocabulary; LM Studio knows the same idea as `ttl`, in seconds.
             .with_keep_alive("5m"),
     )
     .await;
@@ -543,14 +530,13 @@ async fn lmstudio_chat_sse_va_ttl_di_theo() {
     assert_eq!(path, "/v1/chat/completions");
     let sent: serde_json::Value = serde_json::from_str(body).expect("thân là JSON");
     assert_eq!(sent["ttl"], json!(300), "`5m` phải thành 300 giây");
-    // Và `keep_alive` **không** được lọt sang: LM Studio không biết trường ấy.
+    // And `keep_alive` must not leak through: LM Studio does not know that field.
     assert!(sent.get("keep_alive").is_none());
 }
 
 #[tokio::test]
 async fn lmstudio_nang_luc_doc_tu_api_v0_chu_khong_doan_theo_ten() {
-    // `nha-cua-toi-v3` là một bản fine-tune tự đặt tên: đoán theo tên không rút ra được
-    // gì từ nó. Đây đúng là chỗ `/v1/models` bó tay và `/api/v0/models` trả lời được.
+    // `nha-cua-toi-v3` is a self-named fine-tune that name inference cannot read; this is exactly where `/v1/models` gives up and `/api/v0/models` answers.
     let base = serve(vec![(
         "/api/v0/models/nha-cua-toi-v3",
         Route::ok(
@@ -570,13 +556,13 @@ async fn lmstudio_nang_luc_doc_tu_api_v0_chu_khong_doan_theo_ten() {
     assert!(caps.vision);
     assert!(caps.chat);
     assert_eq!(caps.source, pai_llm::CapabilitySource::Reported);
-    // Cửa sổ **đang nạp** thắng cửa sổ tối đa: đó là con số thật của lượt sắp chạy.
+    // The *loaded* window beats the maximum: it is the real number for the coming turn.
     assert_eq!(caps.context_window, Some(8192));
 }
 
 #[tokio::test]
 async fn lmstudio_khong_hoi_duoc_thi_doan_theo_ten_chu_khong_hong() {
-    // Máy chủ đời cũ, không có `/api/v0`. Một lượt vẫn phải chạy được.
+    // An older server without `/api/v0`. A turn must still run.
     let base = serve(vec![]).await;
     let adapter = LmStudioAdapter::new("lms", &base, "", client());
 
@@ -614,8 +600,7 @@ async fn lmstudio_danh_sach_biet_mo_hinh_nao_dang_nam_trong_vram() {
 
     assert_eq!(by_name("qwen3-8b").state, ModelState::Loaded);
     assert_eq!(by_name("gemma-3-4b").state, ModelState::Unloaded);
-    // Phân loại mô hình nhúng là thứ `/v1/models` không làm được, và là chỗ người dùng
-    // chọn nhầm nhiều nhất.
+    // Classifying embedding models is what `/v1/models` cannot do, and where users pick wrong most often.
     let embed = by_name("nomic-embed-text-v1.5");
     assert!(embed.capabilities.is_embedding_only());
     assert!(by_name("gemma-3-4b").capabilities.vision, "`vlm` là thị giác");
@@ -639,7 +624,7 @@ async fn lmstudio_ba_dong_tu_khong_co_thi_noi_ra_cach_khac() {
     let pulled = admin.pull("qwen3-8b").next().await.expect("có một dòng");
     let err = pulled.expect_err("LM Studio không tải về qua API");
     assert_eq!(err.code, LlmErrorCode::Unsupported);
-    // Câu chữ phải chỉ ra **việc phải làm**, không chỉ nói là không được.
+    // The wording must name the action to take, not merely say no.
     assert!(err.message.contains("lms get"), "{}", err.message);
 
     let err = admin.unload("qwen3-8b").await.expect_err("không nhả được");
@@ -653,8 +638,7 @@ async fn lmstudio_ba_dong_tu_khong_co_thi_noi_ra_cach_khac() {
 #[tokio::test]
 async fn lmstudio_nhan_ca_ba_dang_base_url_va_ma_hoa_ten_co_gach_cheo() {
     let (base, log) = serve_recording(vec![(
-        // Tên mô hình của LM Studio mang dấu `/`. Không mã hoá thì nó tự mọc thêm một
-        // đoạn đường dẫn và máy chủ trả 404 — một lỗi không ai đoán ra từ triệu chứng.
+        // LM Studio model names contain `/`; unencoded it grows a path segment and the server 404s.
         "/api/v0/models/lmstudio-community%2Fqwen3-8b",
         Route::ok(r#"{"id":"lmstudio-community/qwen3-8b","type":"llm","max_context_length":4096}"#),
     )])

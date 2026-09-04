@@ -1,16 +1,6 @@
-//! Một con trỏ tới **provider đang hoạt động**, chia sẻ cho mọi chỗ cần nói chuyện với mô
-//! hình.
-//!
-//! Không có tệp này thì việc đổi provider chỉ đổi được đúng một nửa. `Driver` giữ một
-//! `ArcSwap` nên nó theo kịp, nhưng ba chỗ khác thì không: `subagent` nhận adapter lúc cắm
-//! plugin, `Rebuild` giữ một bản để dựng lại tầng dự án, và phần quản trị mô hình giữ một
-//! bản nữa để liệt kê. Ba bản sao ấy được lấy lúc khởi động và không ai cập nhật chúng —
-//! nên sau khi người dùng đổi từ Ollama sang một provider từ xa, agent con vẫn lặng lẽ gọi
-//! máy chủ cũ, và màn hình mô hình vẫn liệt kê kho cũ. Đó là kiểu hỏng tệ nhất: không có
-//! thông báo lỗi nào, chỉ có câu trả lời đến từ chỗ người dùng nghĩ là đã tắt.
-//!
-//! Cách chữa là **không phát bản sao nào cả**. Mọi chỗ nhận cùng một `ActiveLlm`, và đổi
-//! provider là đổi cái nó trỏ tới.
+//! One pointer to the active provider, shared by everything that talks to the model. Without it a switch
+//! only half applies: sub-agents, `Rebuild` and model administration each captured an adapter at startup and
+//! kept calling the old server silently. The fix is to hand out no copies -- everyone holds this `ActiveLlm`.
 
 use std::sync::Arc;
 
@@ -20,8 +10,7 @@ use futures::stream::BoxStream;
 use pai_llm::{Capabilities, ChatRequest, LlmAdapter, LlmError, ModelAdmin, StreamChunk};
 
 pub struct ActiveLlm {
-    // Hai lớp `Arc` là bắt buộc: `arc-swap` chỉ nhận `Arc<T>` với `T: Sized`, còn
-    // `dyn LlmAdapter` thì không. Đây cũng đúng là cách `Driver` phải làm.
+    // Two layers of `Arc` are required: `arc-swap` needs `Arc<T>` with `T: Sized`, which `dyn LlmAdapter` is not.
     inner: ArcSwap<Arc<dyn LlmAdapter>>,
 }
 
@@ -33,7 +22,7 @@ impl ActiveLlm {
     }
 
     pub fn set(&self, next: Arc<dyn LlmAdapter>) {
-        tracing::info!(provider = next.id(), "đổi provider đang hoạt động");
+        tracing::info!(provider = next.id(), "switched the active provider");
         self.inner.store(Arc::new(next));
     }
 
@@ -44,39 +33,24 @@ impl ActiveLlm {
 
 #[async_trait]
 impl LlmAdapter for ActiveLlm {
-    /// Hằng số, không phải id của provider bên dưới.
-    ///
-    /// `id` trả `&str` mượn từ `self`, mà cái đang hoạt động lại nằm sau một `ArcSwap` —
-    /// không có cách nào trả về tham chiếu vào một giá trị có thể bị thay ngay sau đó. Id
-    /// thật của provider vẫn đi vào log ở [`ActiveLlm::set`] và trong `pai-providers`, nên
-    /// thông tin không mất, chỉ đổi chỗ.
+    /// A constant, not the underlying provider's id: `id` returns a `&str` borrowed from `self`, and the active
+    /// adapter sits behind an `ArcSwap`. The real id is logged in [`ActiveLlm::set`].
     fn id(&self) -> &str {
         "đang-hoạt-động"
     }
 
-    /// Bắc cầu qua một kênh thay vì trả thẳng luồng của adapter bên dưới.
-    ///
-    /// Không phải vì thích, mà vì hệ kiểu không cho cách khác: `stream` trả
-    /// `BoxStream<'_>` mượn từ `&self`, còn adapter đang hoạt động nằm sau một `ArcSwap`
-    /// nên nó là một giá trị **sở hữu** lấy ra lúc gọi. Một luồng vừa mượn từ một `Arc`
-    /// cục bộ vừa mang cái `Arc` ấy theo là một cấu trúc tự tham chiếu; viết được, nhưng
-    /// chỉ bằng `unsafe` hoặc bằng một crate nữa cho đúng một chỗ này.
-    ///
-    /// Cái giá là một lần chuyển tay cho mỗi chunk. Nó nhỏ so với chặng mạng đứng ngay
-    /// trước nó, và nhỏ hơn nữa so với bộ gộp token 16 ms đứng ngay sau. Huỷ vẫn đúng:
-    /// thả luồng là thả `Receiver`, `send` hỏng, và tác vụ bơm thoát — không có tiến trình
-    /// nào bị bỏ lại.
+    /// Bridge through a channel rather than returning the inner adapter's stream: `stream` returns a
+    /// `BoxStream<'_>` borrowed from `&self` while the active adapter is an owned value pulled from an
+    /// `ArcSwap`, and the self-referential alternative needs `unsafe`. One hand-off per chunk is cheap.
     fn stream(&self, req: ChatRequest) -> BoxStream<'_, Result<StreamChunk, LlmError>> {
-        // Chốt adapter **trước** khi mở luồng: một lượt phải đi trọn vẹn tới cùng một máy
-        // chủ. Đổi provider giữa chừng là gửi nửa hội thoại đi một nơi và nửa kia đi nơi
-        // khác — cùng bất biến mà `Driver` giữ ở tầng trên.
+        // Pin the adapter before opening the stream: a turn must run entirely against one server.
         let adapter = self.current();
         let (tx, rx) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
             let mut inner = adapter.stream(req);
             while let Some(chunk) = futures::StreamExt::next(&mut inner).await {
                 if tx.send(chunk).await.is_err() {
-                    // Người nhận đã đi. Thả `inner` ở đây chính là cú huỷ.
+                    // The receiver is gone; dropping `inner` here is the cancellation.
                     break;
                 }
             }

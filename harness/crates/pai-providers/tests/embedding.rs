@@ -1,21 +1,13 @@
-//! Vai nhúng: ai giữ nó, và câu giải thích khi nó chưa dùng được.
-//!
-//! Bài kiểm "gõ vào endpoint nào" từng ở đây đã đi cùng phần nhúng sang
-//! `services/rag/` — xem `tests/` của gói Python. Còn lại ở đây là phần mà kho provider
-//! vẫn chịu trách nhiệm: giữ vai, nhớ tên mô hình, và **nói ra vì sao chưa nhúng được**.
-//!
-//! Câu giải thích ấy là thứ đáng kiểm nhất trong tệp này. Nó là chỗ duy nhất người dùng
-//! biết được vì sao thư viện của họ chỉ tìm theo từ khoá, và ba nguyên nhân khác nhau —
-//! chưa ai giữ vai, provider bị tắt, chưa chọn mô hình — cần ba câu khác nhau.
-//!
-//! Không có gì ra khỏi máy này: một cổng loopback vừa nhả ra, và một `TcpListener` tự viết.
+//! The embedding role: who holds it, and the explanation when it is not usable. Endpoint tests moved to
+//! `services/rag/`; what remains is the store's job -- holding the role, remembering the model, and saying
+//! why embedding is unavailable, since three causes need three different sentences. Nothing leaves the machine.
 
 use std::net::TcpListener;
 
 use pai_llm::{ProviderConfig, ProviderKind};
 use pai_providers::{ProviderInput, ProviderStore, Role, SqliteProviderStore, StoredProvider};
 
-/// Một cổng loopback vừa được nhả ra: chắc chắn không có ai nghe.
+/// A just-released loopback port: guaranteed nobody is listening.
 fn cong_dong() -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").expect("mượn cổng");
     let port = listener.local_addr().expect("địa chỉ").port();
@@ -38,10 +30,7 @@ fn hang(kind: ProviderKind, url: &str, embedding_model: Option<&str>) -> StoredP
 fn chua_chon_mo_hinh_nhung_thi_khong_co_bo_nhung() {
     let chua_chon = hang(ProviderKind::Ollama, "http://localhost:11434", None);
     assert!(chua_chon.active_embedding, "vẫn giữ vai: {chua_chon:?}");
-    // Giữ vai mà chưa chọn mô hình thì tệp cấu hình ghi ra một `model` **rỗng**, chứ
-    // không mượn tạm `model` của vai hội thoại: `qwen3:8b` không có endpoint embed, và
-    // mọi lần nạp tài liệu sẽ trả 400.
-    // Tầng trên phải nói ra được vì sao.
+    // Holding the role with no model writes an empty `model` rather than borrowing the chat one, and the layer above must explain why.
     let ly_do = pai_providers::embedding_reason(Some(&chua_chon)).expect("phải có lý do");
     assert!(ly_do.contains("qwen3-embedding"), "{ly_do}");
     assert!(
@@ -77,8 +66,7 @@ async fn khong_noi_duoc_thi_dung_do_cho_cai_khoa() {
         "phải thuộc nhóm không nối được: {}",
         result.message
     );
-    // Sai khoá là một hành động khác hẳn của người dùng. Nhắc tới khoá ở đây là đẩy họ đi
-    // sửa nhầm chỗ.
+    // The bad-key case calls for a different user action; mentioning the key here sends them to fix the wrong thing.
     assert!(
         !result.message.to_lowercase().contains("khoá"),
         "không được đổ cho khoá: {}",

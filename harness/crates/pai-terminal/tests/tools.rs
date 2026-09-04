@@ -1,8 +1,6 @@
-//! Bộ sáu tool: đúng tên, đúng hình dạng tham số, và đúng một cửa duyệt.
-//!
-//! Tên và hình dạng được khoá lại vì chúng là **giao diện với mô hình**, không phải chi
-//! tiết cài đặt: mô hình học bộ này từ dữ liệu công khai, nên một chữ `sessionId` đổi
-//! thành `session_id` là một lớp gọi sai mà không có gì báo ngoài những lượt hỏng.
+//! The six tools: exact names, exact parameter shapes, exactly one approval gate.
+//! Names and shapes are locked because they are the interface to the model, not an implementation
+//! detail -- renaming `sessionId` would buy a class of wrong calls with nothing to signal it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -14,8 +12,7 @@ use pai_tools::{Approval, ApprovalRequest, Approver, ToolPipeline, Tools, ToolsP
 use parking_lot::Mutex;
 use serde_json::{Value, json};
 
-/// Ghi lại câu hỏi rồi trả lời sẵn một câu. Đủ để phân biệt "được hỏi rồi bị từ chối" với
-/// "không ai hỏi".
+/// Records the prompt and answers with a canned reply, enough to tell "asked and denied" from "never asked".
 struct Recorder {
     answer: bool,
     asked: Mutex<Vec<String>>,
@@ -115,8 +112,7 @@ async fn sau_tool_giu_dung_ten_va_hinh_dang_cua_dsh() {
 
     let signal = schema_of(&ctx, "terminal_signal");
     assert_eq!(required(&signal), vec!["sessionId", "signal"]);
-    // Bộ tín hiệu là một enum đóng trong chính schema, không phải một chuỗi tự do được
-    // kiểm ở thân tool: cái mô hình đọc được là cái nó không gõ sai.
+    // The signal set is a closed enum in the schema itself, not a free string validated in the tool body.
     let allowed = signal["properties"]["signal"]["enum"]
         .as_array()
         .expect("signal phải là enum trong schema");
@@ -139,7 +135,7 @@ async fn sau_tool_giu_dung_ten_va_hinh_dang_cua_dsh() {
 
 #[tokio::test]
 async fn tao_phien_phai_hoi_va_khong_ai_tra_loi_thi_khong_chay() {
-    // Không có approver nào cắm vào: fail-closed, y như `bash`.
+    // No approver plugged in: fail closed, exactly like `bash`.
     let (_ctx, pipeline) = harness(None).await;
     let outcome = pipeline
         .execute("call-1", "terminal_open", json!({ "type": "shell" }))
@@ -166,8 +162,7 @@ async fn cau_hoi_noi_dung_muc_rui_ro_va_noi_rang_phien_o_lai() {
 
     let asked = recorder.asked.lock().clone();
     assert_eq!(asked.len(), 1, "{asked:?}");
-    // Trên máy không có provider sandbox nào cắm vào, câu hỏi phải nói thẳng ra điều đó
-    // thay vì nói một câu chung chung — người dùng đọc đúng dòng này trước khi bấm.
+    // With no sandbox provider present the prompt must say so outright; this is the line the user reads before clicking.
     assert!(asked[0].contains("Không có vòng giam nào"), "{asked:?}");
     assert!(asked[0].contains("ở lại"), "{asked:?}");
 }
@@ -204,8 +199,7 @@ async fn nam_tool_con_lai_khong_hoi_lai_sau_khi_phien_da_duoc_duyet() {
         .await;
     assert!(!closed.is_error, "{}", closed.content);
 
-    // Đúng một câu hỏi cho cả ba lời gọi: cái được duyệt là quyền có một shell, không phải
-    // từng lần gõ phím vào nó.
+    // Exactly one prompt for all three calls: approval buys the shell, not each keystroke into it.
     assert_eq!(recorder.asked.lock().len(), 1);
 }
 

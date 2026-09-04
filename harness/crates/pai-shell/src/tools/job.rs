@@ -1,4 +1,4 @@
-//! `job_output`, `job_kill`, `job_list` — see and stop what is running in the background.
+//! `job_output`, `job_kill`, `job_list`: see and stop what is running in the background.
 
 use std::sync::Arc;
 
@@ -52,7 +52,7 @@ impl Tool for JobOutput {
 
         let state = job.state.lock().clone();
         let (text, meta) = match state {
-            // Not finished is not the same as hung, and the answer has to say so.
+            // Still running is not the same as hung, and the answer has to say so.
             JobState::Running => (
                 format!("Job `{}` vẫn đang chạy.", job.id),
                 json!({ "exit_code": serde_json::Value::Null, "background": true }),

@@ -1,20 +1,24 @@
 import { createSignal, createUniqueId, Show, type JSX } from "solid-js";
 import { useTranscriptActions } from "../lib/transcriptActions";
+import { S, t } from "../lib/i18n";
+import type { Msg } from "../lib/i18n";
+import { notify } from "../lib/toast";
 import Icon, { type IconName } from "./Icon";
 
-/** Trạng thái một tool call. `warn` dành cho lệnh xong nhưng exit code khác 0. */
+/** Tool call state; `warn` is for a command that finished with a non-zero exit code. */
 export type DotState = "running" | "ok" | "error" | "warn";
 
 export function StateDot(props: { state: DotState; label?: string }) {
+  // The label is computed at use site: `t()` reads the locale signal, so a language change updates it in place.
+  const label = () => props.label ?? t(stateLabel(props.state));
   return (
     <span
       role="img"
-      aria-label={props.label ?? LABEL[props.state]}
-      title={props.label ?? LABEL[props.state]}
+      aria-label={label()}
+      title={label()}
       class="size-1.5 shrink-0 rounded-pill"
       classList={{
-        // Chấm "đang chạy" thở nhẹ: một tool treo và một tool đã xong trông giống hệt
-        // nhau nếu chấm đứng im, và chờ nhầm là cách người dùng mất niềm tin nhanh nhất.
+        // The running dot pulses: a hung tool and a finished one look identical if the dot is still.
         "bg-muted motion-safe:animate-pulse": props.state === "running",
         "bg-success": props.state === "ok",
         "bg-warn": props.state === "warn",
@@ -24,25 +28,20 @@ export function StateDot(props: { state: DotState; label?: string }) {
   );
 }
 
-const LABEL: Record<DotState, string> = {
-  running: "đang chạy",
-  ok: "xong",
-  warn: "xong, có cảnh báo",
-  error: "lỗi",
+const LABEL: Record<DotState, Msg> = {
+  running: S.tools.state.running,
+  ok: S.tools.state.ok,
+  warn: S.tools.state.warn,
+  error: S.tools.state.error,
 };
+
+/** Status text for a dot, shared with the tool card's accessible label. */
+export const stateLabel = (state: DotState): Msg => LABEL[state];
 
 type TipSide = "right" | "bottom" | "left";
 
-/**
- * Nút chỉ có biểu tượng.
- *
- * `aria-label` là bắt buộc trong chữ ký chứ không phải tuỳ chọn: một nút biểu tượng
- * không nhãn là một nút không tồn tại với trình đọc màn hình, và "quên nhãn" là lỗi phải
- * chặn ở kiểu, không phải ở khâu rà soát.
- *
- * Chú giải là một `<span>` bình thường được `aria-hidden`, không phải `title` — `title`
- * chỉ hiện sau độ trễ của hệ điều hành và không bao giờ hiện khi đi bằng bàn phím.
- */
+/** Icon-only button; `aria-label` is required by the signature, since an unlabelled icon button does not exist
+ * for a screen reader. The tooltip is an `aria-hidden` span, not `title`, which never shows on keyboard focus. */
 export function IconButton(props: {
   icon: IconName;
   label: string;
@@ -57,7 +56,12 @@ export function IconButton(props: {
   tip?: TipSide;
   ref?: (el: HTMLButtonElement) => void;
 }) {
-  const box = () => (props.size === "lg" ? "size-10" : props.size === "sm" ? "size-6" : "size-8");
+  const box = () =>
+    props.size === "lg"
+      ? "size-(--cta-h)"
+      : props.size === "sm"
+        ? "size-(--icon-control-h)"
+        : "size-(--control-h)";
   const glyph = () => (props.size === "lg" ? 18 : props.size === "sm" ? 13 : 15);
   return (
     <span class="group/tip relative inline-flex shrink-0">
@@ -71,7 +75,7 @@ export function IconButton(props: {
         aria-expanded={props.expanded}
         aria-controls={props.controls}
         aria-keyshortcuts={props.keys}
-        class={`grid ${box()} place-items-center rounded-icon transition-colors duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-40`}
+        class={`grid ${box()} place-items-center rounded-icon border border-transparent transition duration-[var(--dur-fast)] disabled:cursor-not-allowed disabled:opacity-40`}
         classList={{
           "text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
             !props.active && !props.danger,
@@ -86,7 +90,7 @@ export function IconButton(props: {
   );
 }
 
-/** Chú giải dùng chung. Chỉ là trang trí — nội dung thật nằm ở `aria-label` của nút. */
+/** Shared tooltip; decoration only, since the real text is the button's `aria-label`. */
 function Tip(props: { side: TipSide; children: JSX.Element }) {
   return (
     <span
@@ -103,12 +107,7 @@ function Tip(props: { side: TipSide; children: JSX.Element }) {
   );
 }
 
-/**
- * Một khối gập được.
- *
- * `aria-controls` cần một id thật, và id phải sinh ra ở phía client vì có nhiều khối
- * cùng loại trên màn hình — `createUniqueId` lo phần đó.
- */
+/** A collapsible block; `aria-controls` needs a real id, which `createUniqueId` provides per instance. */
 export function Disclosure(props: {
   label: string;
   hint?: string;
@@ -124,7 +123,7 @@ export function Disclosure(props: {
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open()}
         aria-controls={id}
-        class="flex items-center gap-2xs self-start rounded-btn px-2xs py-3xs text-2xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
+        class="flex min-h-(--icon-control-h) items-center gap-2xs self-start rounded-btn px-xs text-2xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
       >
         <Icon
           name="chevron-right"
@@ -143,10 +142,7 @@ export function Disclosure(props: {
   );
 }
 
-/**
- * Nút chép. Đổi biểu tượng 1,5 giây rồi tự trả về — không có toast, vì một thao tác đã
- * thành công không đáng để chiếm một góc màn hình.
- */
+/** Copy button; the icon swaps for 1.5s and reverts, with no toast, since a success needs no screen corner. */
 export function CopyButton(props: { text: () => string; label?: string }) {
   const [done, setDone] = createSignal(false);
   const copy = async () => {
@@ -155,26 +151,21 @@ export function CopyButton(props: { text: () => string; label?: string }) {
       setDone(true);
       setTimeout(() => setDone(false), 1500);
     } catch (err) {
-      console.error("không chép được", err);
+      console.error("copy failed", err);
+      notify("error", t(S.tools.copy.failed));
     }
   };
   return (
     <IconButton
       icon={done() ? "check" : "copy"}
-      label={done() ? "Đã chép" : (props.label ?? "Chép nội dung")}
+      label={done() ? t(S.common.copied) : (props.label ?? t(S.tools.copy.content))}
       size="sm"
       onClick={() => void copy()}
     />
   );
 }
 
-/**
- * Đường dẫn dài: cắt ở *giữa*, giữ tên tệp — phần đuôi mới là phần phân biệt được.
- *
- * Khi có trình duyệt mã nguồn để mở vào thì đây là một cái nút: mọi đường dẫn trong bản
- * ghi đều là một chỗ người ta muốn nhìn vào, và bắt họ tự tìm lại tệp đó trong cây là
- * bắt họ làm cái việc mà bản ghi vừa nói cho họ biết.
- */
+/** Long paths are elided in the *middle*, keeping the filename; with a viewer available, the path is a button. */
 export function FilePath(props: { path: string; line?: number }) {
   const actions = useTranscriptActions();
   const open = () => actions.openFile;
@@ -194,7 +185,11 @@ export function FilePath(props: { path: string; line?: number }) {
             event.stopPropagation();
             go()(props.path, props.line);
           }}
-          title={`Mở ${props.path}${props.line === undefined ? "" : ` ở dòng ${props.line}`}`}
+          title={
+            props.line === undefined
+              ? t(S.tools.openFile, { path: props.path })
+              : t(S.tools.openFileAt, { path: props.path, n: props.line })
+          }
           class="min-w-0 truncate rounded-btn font-mono text-xs text-accent-ink underline decoration-transparent underline-offset-2 transition-colors duration-[var(--dur-fast)] hover:decoration-current"
           dir="rtl"
         >
@@ -205,7 +200,7 @@ export function FilePath(props: { path: string; line?: number }) {
   );
 }
 
-/** Nhãn nhỏ đứng cạnh tiêu đề: mô hình, phạm vi, số đếm. */
+/** Small label beside a title: model, scope, count. */
 export function Chip(props: { children: JSX.Element; tone?: "neutral" | "accent" | "warn" }) {
   return (
     <span

@@ -1,21 +1,14 @@
 import { createMemo, createSignal, For, Show } from "solid-js";
 import { diffRows, diffToText, diffTotals, foldRows } from "../lib/diff";
+import { S, t, tn } from "../lib/i18n";
 import type { DiffHunk } from "../lib/protocol";
 import { CopyButton } from "./primitives";
 
-/** Trong dòng chat, tám dòng là vừa đủ để nhận ra thay đổi mà không nuốt cả màn hình. */
+/** Inline in chat, eight lines is enough to recognise a change without swallowing the screen. */
 const CHAT_MAX_LINES = 8;
 
-/**
- * Khối diff *xếp chồng* — không side-by-side, không unified có prefix.
- *
- * Dòng thêm/xoá phân biệt bằng **nền màu**, không bằng ký tự `+`/`-` ở đầu dòng. Lý do
- * rất thực dụng: bôi đen một đoạn trên màn hình rồi dán vào editor phải ra đúng mã.
- * Ký tự prefix chỉ xuất hiện trong văn bản nút "Chép" sinh ra (xem `diffToText`).
- *
- * Nền màu một mình không đủ cho người mù màu, nên mỗi dòng còn mang `aria-label` nói rõ
- * "thêm"/"xoá" và cột số dòng cho biết dòng thuộc bản cũ hay bản mới.
- */
+/** Stacked diff block: added and removed lines differ by background, not `+`/`-`, so selected text pastes as code.
+ * Colour alone is not enough, so each line also carries an added/removed `aria-label`. */
 export default function DiffBlock(props: { diffs: DiffHunk[]; maxLines?: number }) {
   const [expanded, setExpanded] = createSignal(false);
   const all = createMemo(() => diffRows(props.diffs));
@@ -28,7 +21,7 @@ export default function DiffBlock(props: { diffs: DiffHunk[]; maxLines?: number 
     <figure class="m-0 overflow-hidden rounded-panel border border-line bg-surface">
       <div class="flex items-center justify-between gap-sm border-b border-line px-sm py-3xs">
         <figcaption class="text-2xs text-muted">
-          Thay đổi ({totals().files} tệp)
+          {tn(totals().files, S.chat.diff.captionOne, S.chat.diff.captionMany)}
         </figcaption>
         <div class="flex items-center gap-3xs">
           <Show when={foldable()}>
@@ -38,14 +31,16 @@ export default function DiffBlock(props: { diffs: DiffHunk[]; maxLines?: number 
               aria-expanded={expanded()}
               class="rounded-btn px-2xs py-3xs text-2xs text-muted transition-colors hover:bg-surface-hover hover:text-text"
             >
-              {expanded() ? "Gập lại" : `Mở rộng (${all().length} dòng)`}
+              {expanded()
+                ? t(S.chat.diff.collapse)
+                : t(S.chat.diff.expand, { n: all().length })}
             </button>
           </Show>
-          <CopyButton text={() => diffToText(props.diffs)} label="Chép diff dạng unified" />
+          <CopyButton text={() => diffToText(props.diffs)} label={t(S.chat.diff.copy)} />
         </div>
       </div>
 
-      {/* Cuộn ngang nằm trong khung riêng: dòng mã dài không được kéo giãn cả trang. */}
+      {/* Horizontal scrolling is contained here: a long code line must not stretch the page. */}
       <div class="overflow-x-auto">
         <div class="w-max min-w-full font-mono text-2xs leading-[1.55]">
           <For each={shown()}>
@@ -69,9 +64,9 @@ export default function DiffBlock(props: { diffs: DiffHunk[]; maxLines?: number 
                   class="whitespace-pre"
                   aria-label={
                     row.kind === "add"
-                      ? `dòng thêm: ${row.text}`
+                      ? t(S.chat.diff.lineAdded, { text: row.text })
                       : row.kind === "del"
-                        ? `dòng xoá: ${row.text}`
+                        ? t(S.chat.diff.lineRemoved, { text: row.text })
                         : undefined
                   }
                 >
@@ -85,7 +80,8 @@ export default function DiffBlock(props: { diffs: DiffHunk[]; maxLines?: number 
 
       <div class="border-t border-line px-sm py-3xs text-2xs text-faint tabular-nums">
         └ <span class="text-success">+{totals().added}</span>{" "}
-        <span class="text-danger">−{totals().removed}</span> · {totals().files} tệp
+        <span class="text-danger">−{totals().removed}</span> ·{" "}
+        {tn(totals().files, S.chat.changes.fileOne, S.chat.changes.fileMany)}
       </div>
     </figure>
   );

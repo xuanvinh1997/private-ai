@@ -5,50 +5,30 @@ export interface MenuItem {
   id: string;
   label: string;
   icon: IconName;
-  /**
-   * Dòng phụ nói ra **hậu quả** của hàng này.
-   *
-   * Có mặt vì hai hàng dễ bấm nhầm nhất — "đóng dự án" và "bỏ khỏi danh sách" — chỉ phân
-   * biệt được bằng hậu quả, và hậu quả nằm trong hộp xác nhận thì đã muộn: người ta quyết
-   * định bấm hay không *trước* khi hộp đó kịp hiện ra.
-   */
+  /** Secondary line naming this row's *consequence*; the two most confusable rows differ only by consequence. */
   hint?: string;
   danger?: boolean;
-  /**
-   * Khoá hàng lại thay vì cắt nó đi.
-   *
-   * Một hàng biến mất để lại câu hỏi "cái đó đâu rồi"; một hàng khoá cùng `hint` nói ra
-   * luôn vì sao chưa bấm được.
-   */
+  /** Disable a row instead of removing it: a missing row raises a question, a disabled one with a `hint` answers it. */
   disabled?: boolean;
   onSelect: () => void;
 }
 
-/**
- * Menu ngữ cảnh nhỏ.
- *
- * Nút mở nó hiện ra khi rê chuột, nhưng menu **không** mở bằng việc rê chuột: một menu
- * tự bung ra khi con trỏ đi ngang qua là thứ người ta phải né, không phải thứ người ta
- * dùng. Mở bằng cú bấm, bằng Enter, hoặc bằng chuột phải lên chính hàng đó.
- *
- * Mũi tên lên/xuống đi trong danh sách và Esc đóng lại, nên mọi thứ làm được bằng chuột
- * ở đây đều làm được bằng bàn phím — kể cả khi nút mở chỉ hiện lúc rê chuột, vì tiêu
- * điểm bàn phím cũng làm nó hiện.
- */
+/** Small context menu; the trigger appears on hover but the menu opens only on click, Enter or right-click,
+ * and arrow keys plus Esc make everything reachable from the keyboard. */
 export function Menu(props: {
   items: MenuItem[];
   label: string;
-  /** Cho hàng cha biết menu đang mở, để nó giữ nút "…" hiện ra. */
+  /** Tells the parent row the menu is open, so it keeps the trigger visible. */
   onOpenChange?: (open: boolean) => void;
   open?: boolean;
   onRequestClose?: () => void;
-  /** `pill` hiện luôn giá trị đang chọn: một lựa chọn phải đọc được mà không cần mở ra. */
+  /** `pill` shows the current value: a selection must be readable without opening the menu. */
   variant?: "icon" | "pill";
   icon?: IconName;
   text?: string;
   tone?: "neutral" | "warn";
   align?: "left" | "right";
-  /** Menu ở đáy màn hình phải bung lên, nếu không nó rơi ra ngoài cửa sổ. */
+  /** A menu at the bottom of the screen must open upward or it falls outside the window. */
   placement?: "down" | "up";
 }) {
   const [open, setOpen] = createSignal(false);
@@ -67,8 +47,7 @@ export function Menu(props: {
     props.onOpenChange?.(next);
   };
 
-  // Bấm ra ngoài đóng menu. Nghe ở pha bắt (capture) để cú bấm đó không kịp kích hoạt
-  // một hàng khác trước khi menu biết mình phải đóng.
+  // Click outside closes; listening in the capture phase so that click cannot trigger another row first.
   const onDocPointerDown = (event: PointerEvent) => {
     const target = event.target as Node | null;
     if (popup?.contains(target ?? null) || trigger?.contains(target ?? null)) return;
@@ -78,7 +57,7 @@ export function Menu(props: {
   onCleanup(() => document.removeEventListener("pointerdown", onDocPointerDown, true));
 
   const move = (delta: number) => {
-    // Bỏ qua hàng bị khoá: mũi tên dừng trên một hàng không bấm được là một ngõ cụt câm.
+    // Skip disabled rows: an arrow key landing on an unclickable row is a silent dead end.
     const buttons = [
       ...(popup?.querySelectorAll<HTMLButtonElement>("button:not([disabled])") ?? []),
     ];
@@ -150,8 +129,7 @@ export function Menu(props: {
           }}
           class="absolute z-40 flex flex-col gap-3xs rounded-menu border border-line bg-surface p-3xs shadow-pop motion-safe:animate-[pai-pop_var(--dur-fast)_var(--ease-out)]"
           classList={{
-            // Menu có dòng phụ phải rộng hơn: một câu giải thích bị bẻ thành bốn dòng hai
-            // chữ thì không ai đọc, và cả lý do để nó tồn tại mất theo.
+            // A menu with hints must be wider: an explanation broken into four two-word lines goes unread.
             "min-w-40": !props.items.some((item) => item.hint !== undefined),
             "w-56": props.items.some((item) => item.hint !== undefined),
             "right-0": (props.align ?? "right") === "right",
@@ -168,11 +146,8 @@ export function Menu(props: {
                 disabled={item.disabled}
                 onClick={(event) => {
                   event.stopPropagation();
-                  // `true`: trả tiêu điểm về nút mở menu **trước** khi chạy hành động.
-                  // Nhiều mục ở đây mở một hộp thoại, và hộp thoại đóng lại thì bẫy tiêu
-                  // điểm trả về chỗ nó đã ghi lúc mở — mà mục menu lúc ấy đã bị gỡ khỏi
-                  // DOM. Không trả về nút trước thì tiêu điểm rơi xuống `body`, và người
-                  // dùng bàn phím bắt đầu lại từ đầu trang sau mỗi lần xác nhận.
+                  // `true`: restore focus to the trigger *before* running the action, since the menu item is
+                  // gone by the time a dialog opened here closes and its focus trap restores.
                   close(true);
                   item.onSelect();
                 }}

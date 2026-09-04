@@ -1,20 +1,6 @@
-//! Ngân sách của một kết quả tool, đo bằng token chứ không bằng dòng.
-//!
-//! **Vì sao không đếm dòng.** Trần theo số dòng không tương quan với thứ thật sự cạn:
-//! cửa sổ ngữ cảnh. Một tệp JSON tối giản 100 dòng vượt ngân sách trong khi một tệp Rust
-//! 2000 dòng thưa thì không, nên "256 dòng" vừa cắt nhầm cái ngắn vừa thả lọt cái dài.
-//! Đếm dòng là đếm nhầm thứ. Ở đây đơn vị là **byte chia bốn** — xấp xỉ token, sai số
-//! vài chục phần trăm nhưng sai cùng chiều với thứ ta muốn giữ.
-//!
-//! **Vì sao đầu *và* đuôi.** Chỗ mô hình cần gần như luôn nằm ở một trong hai đầu: phần
-//! đầu nói tệp này là cái gì, phần đuôi nói nó kết thúc ra sao (mã thoát, dòng lỗi cuối,
-//! khớp cuối cùng). Giữ mỗi phần đầu là dạy mô hình rằng một lệnh chạy 10 nghìn dòng
-//! không có mã thoát.
-//!
-//! **Vì sao phải nói ra cách lấy tiếp.** Một dòng "…(đã cắt)" không kèm cách lấy phần dư
-//! dạy mô hình kết luận rằng nó đã thấy hết. Đó là kiểu nói dối tệ nhất một kết quả tool
-//! có thể làm, nên [`Overflow::fold`] **bắt buộc** người gọi cung cấp câu chỉ dẫn — nó là
-//! tham số, không phải tuỳ chọn.
+//! A tool result's budget, measured in tokens rather than lines.
+//! Line counts do not track the context window, so the unit here is bytes over four. Head
+//! and tail are both kept, and [`Overflow::fold`] requires a resume hint as a parameter.
 
 use pai_core::Context;
 
@@ -22,32 +8,23 @@ use crate::name::ToolName;
 use crate::seam::Spill;
 use crate::spill::SpillRef;
 
-/// Bao nhiêu byte thì xấp xỉ một token.
-///
-/// Bốn là con số các bộ tách token BPE cho văn bản Latin thường rơi vào. Tiếng Việt có
-/// dấu tốn nhiều byte hơn mỗi ký tự, nên phép xấp xỉ này *đánh giá cao* số token của văn
-/// bản tiếng Việt — sai về phía dè dặt, đúng phía cần sai.
+/// Bytes per approximate token; four suits BPE on Latin text and overestimates Vietnamese, which errs the safe way.
 pub const BYTES_PER_TOKEN: usize = 4;
 
-/// Ngân sách mặc định cho một kết quả tool, tính bằng token xấp xỉ (~24 KiB).
-///
-/// Codex dừng ở 10 KiB, và cộng đồng của nó báo rằng con số đó phá vỡ việc đọc trọn một
-/// tệp bình thường. Hai mươi tư KiB đủ cho hầu hết tệp mã nguồn thật mà vẫn còn chỗ cho
-/// vài lượt nữa trong một cửa sổ 200k.
+/// Default budget per tool result in approximate tokens (~24 KiB): enough for most real source files.
 pub const DEFAULT_TOKEN_BUDGET: usize = 6_000;
 
-/// Số token xấp xỉ của một đoạn văn bản.
+/// A text's approximate token count.
 pub fn approx_tokens(text: &str) -> usize {
     text.len().div_ceil(BYTES_PER_TOKEN)
 }
 
-/// Một kết quả đã bị gấp lại: phần đầu, phần đuôi, và những gì nằm giữa.
+/// A folded result: the head, the tail, and what sat between them.
 #[derive(Debug, PartialEq)]
 pub struct Split<'a> {
     pub head: &'a str,
     pub tail: &'a str,
-    /// Số dòng **trọn vẹn** trong phần đầu. Đây là con số để tính `offset` cho lần gọi
-    /// tiếp: một dòng bị cắt giữa chừng không được tính là đã đọc.
+    /// Complete lines in the head, the number a follow-up `offset` builds on; a half-cut line does not count as read.
     pub head_lines: usize,
     pub tail_lines: usize,
     pub total_lines: usize,
@@ -55,22 +32,18 @@ pub struct Split<'a> {
     pub total_bytes: usize,
 }
 
-/// Kết quả sau khi áp ngân sách.
+/// The result after the budget is applied.
 pub struct Folded {
-    /// Văn bản mô hình đọc — đã kèm lời chỉ dẫn lấy tiếp nếu có cắt.
+    /// The text the model reads, including the resume hint when something was cut.
     pub content: String,
-    /// Vé lấy lại toàn văn. `None` khi không cắt, hoặc khi không có kho nào cắm vào.
+    /// The ticket for the full text; `None` when nothing was cut or no store is mounted.
     pub spill: Option<SpillRef>,
     pub truncated: bool,
     pub omitted_lines: usize,
     pub total_lines: usize,
 }
 
-/// Chỗ một tool áp ngân sách lên kết quả của chính nó.
-///
-/// Giữ `Context` chứ không giữ sẵn kho tràn: kho được hỏi **tại thời điểm gọi**, giống
-/// mọi seam khác trong crate này. Gỡ kho ra phải làm mọi lần cắt sau đó biết là mình
-/// không còn chỗ cất, chứ không phải đi qua một bản sao còn sót lại.
+/// Where a tool applies the budget to its own result; it holds a `Context` and asks for the store at call time.
 #[derive(Clone)]
 pub struct Overflow {
     ctx: Context,
@@ -85,7 +58,7 @@ impl Overflow {
         }
     }
 
-    /// Ngân sách tính bằng token xấp xỉ.
+    /// The budget, in approximate tokens.
     pub fn with_budget(mut self, tokens: usize) -> Overflow {
         self.budget = tokens.max(1);
         self
@@ -99,7 +72,7 @@ impl Overflow {
         self.budget.saturating_mul(BYTES_PER_TOKEN)
     }
 
-    /// Vừa ngân sách thì `None`; không vừa thì đầu và đuôi, mỗi bên nửa ngân sách.
+    /// `None` when it fits; otherwise a head and a tail of half the budget each.
     pub fn split<'a>(&self, full: &'a str) -> Option<Split<'a>> {
         let budget = self.budget_bytes();
         if full.len() <= budget {
@@ -122,19 +95,12 @@ impl Overflow {
         })
     }
 
-    /// Cất toàn văn vào kho. `None` nghĩa là chưa ai cắm kho vào cây.
+    /// Store the full text; `None` means no store is mounted on the tree.
     pub fn store(&self, tool: &ToolName, full: &str) -> Option<SpillRef> {
         self.ctx.get::<Spill>().map(|store| store.spill(tool, full))
     }
 
-    /// Gấp một kết quả cho vừa ngân sách.
-    ///
-    /// `resume` nhận chỗ cắt và trả về **câu chỉ dẫn lấy tiếp** của chính tool đó — với
-    /// `read` là một `offset` cụ thể, với `grep` là một mẫu hẹp hơn. Nó là tham số bắt
-    /// buộc vì cắt mà không nói cách lấy tiếp là dạy mô hình kết luận nó đã thấy hết.
-    ///
-    /// Không có kho tràn nào cắm vào thì **không cắt gì cả**: dài thì còn sửa được, mất
-    /// thì không, và một lời chỉ dẫn trỏ tới một cái kho không tồn tại là một lời hứa suông.
+    /// Fold a result to fit; `resume` must supply the tool's own hint for reading on, and with no store mounted nothing is cut.
     pub fn fold(
         &self,
         tool: &ToolName,
@@ -151,7 +117,7 @@ impl Overflow {
             };
         };
         let Some(handle) = self.store(tool, &full) else {
-            tracing::warn!(tool = %tool, "vượt ngân sách nhưng chưa có kho tràn nào cắm vào");
+            tracing::warn!(tool = %tool, "over budget but no spill store is mounted");
             return Folded {
                 truncated: false,
                 total_lines: split.total_lines,
@@ -162,8 +128,7 @@ impl Overflow {
         };
 
         let hint = resume(&split);
-        // Nói cả byte lẫn dòng: một tệp một dòng dài 200 KiB bị cắt mà "0 dòng bị bỏ" là
-        // một con số đúng nhưng đọc thành một lời trấn an sai.
+        // Report bytes as well as lines: "0 lines omitted" on a 200 KiB single-line file is true but reassuringly wrong.
         let omitted_bytes = split
             .total_bytes
             .saturating_sub(split.head.len())
@@ -191,7 +156,7 @@ impl Overflow {
     }
 }
 
-/// Số dòng, đếm cả dòng cuối không có `\n`.
+/// Line count, including a final line with no `\n`.
 fn count_lines(text: &str) -> usize {
     if text.is_empty() {
         return 0;
@@ -199,7 +164,7 @@ fn count_lines(text: &str) -> usize {
     text.lines().count()
 }
 
-/// Lùi về ranh giới ký tự gần nhất không vượt `idx`.
+/// Step back to the nearest character boundary at or below `idx`.
 fn floor_boundary(text: &str, mut idx: usize) -> usize {
     if idx >= text.len() {
         return text.len();
@@ -210,7 +175,7 @@ fn floor_boundary(text: &str, mut idx: usize) -> usize {
     idx
 }
 
-/// Tiến tới ranh giới ký tự gần nhất không nhỏ hơn `idx`.
+/// Step forward to the nearest character boundary at or above `idx`.
 fn ceil_boundary(text: &str, mut idx: usize) -> usize {
     while idx < text.len() && !text.is_char_boundary(idx) {
         idx += 1;
@@ -218,10 +183,7 @@ fn ceil_boundary(text: &str, mut idx: usize) -> usize {
     idx.min(text.len())
 }
 
-/// Phần đầu, cắt ở cuối dòng nếu việc đó không vứt đi quá nửa phần được cấp.
-///
-/// Điều kiện "quá nửa" là chỗ xử lý tệp ít dòng mà dòng rất dài: một dòng JSON 200 KiB
-/// không có `\n` nào ở trong tầm, và lúc đó cắt giữa dòng vẫn tốt hơn trả về rỗng.
+/// The head, cut at a line end unless that discards over half the allowance, which handles very long single lines.
 fn head_slice(text: &str, budget: usize) -> &str {
     let mut end = floor_boundary(text, budget);
     if let Some(newline) = text[..end].rfind('\n')
@@ -232,7 +194,7 @@ fn head_slice(text: &str, budget: usize) -> &str {
     &text[..end]
 }
 
-/// Phần đuôi, theo cùng luật nhưng soi từ phía sau.
+/// The tail, by the same rule but read from the end.
 fn tail_slice(text: &str, budget: usize) -> &str {
     let start = ceil_boundary(text, text.len().saturating_sub(budget));
     let rest = &text[start..];
@@ -257,7 +219,7 @@ mod tests {
         assert!(bench(100).split("ngắn").is_none());
     }
 
-    /// Bài chứng minh đếm dòng là sai: ba dòng, nhưng mỗi dòng rất dài.
+    /// Proof that counting lines is wrong: three lines, each very long.
     #[test]
     fn it_dong_ma_dong_rat_dai_van_bi_cat() {
         let full = format!(
@@ -272,7 +234,7 @@ mod tests {
         assert!(split.head.len() + split.tail.len() < full.len());
     }
 
-    /// Một dòng duy nhất, không có `\n` nào để mà cắt cho gọn.
+    /// A single line, with no `\n` to cut neatly at.
     #[test]
     fn mot_dong_duy_nhat_van_cat_duoc_giua_dong() {
         let full = "x".repeat(10_000);
@@ -285,7 +247,7 @@ mod tests {
     fn cat_khong_bao_gio_roi_vao_giua_mot_ky_tu() {
         let full = "đường dẫn tiếng Việt ".repeat(500);
         let split = bench(50).split(&full).expect("phải cắt");
-        // `&str` chỉ dựng được ở ranh giới ký tự; nếu sai thì bài này đã panic ở trên.
+        // A `&str` only exists on character boundaries, so a mistake would already have panicked above.
         assert!(full.starts_with(split.head));
         assert!(full.ends_with(split.tail));
     }

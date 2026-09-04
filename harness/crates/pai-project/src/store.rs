@@ -20,17 +20,11 @@ pub enum ProjectError {
 
 type Result<T> = std::result::Result<T, ProjectError>;
 
-/// Source code, or a stack of documents.
-///
-/// Not a label for filtering a list: the kind decides **which plugin tier gets mounted**.
-/// Which is why the kind is always something the user states when adding the project,
-/// never something inferred from the directory's contents — guessing a document folder to
-/// be source code hands command execution to a place full of files strangers sent in.
+/// Source code or documents; picks the plugin tier to mount, so the user states it rather than it being guessed.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectKind {
-    /// The default, and also what every old row gets on migration: before this change
-    /// every project was source code.
+    /// The default, and what every migrated row gets: before this change all projects were code.
     #[default]
     Code,
     Docs,
@@ -55,10 +49,7 @@ impl FromSql for ProjectKind {
     fn column_result(value: ValueRef<'_>) -> FromSqlResult<ProjectKind> {
         match value.as_str()? {
             "docs" => Ok(ProjectKind::Docs),
-            // An unknown value — a later build wrote a third kind and the user reopened
-            // an older one — reads back as `Code` rather than failing the whole call.
-            // Losing a label is one click to fix; rejecting the row loses a project from
-            // the list, and this list cannot be rebuilt from anywhere.
+            // An unknown kind reads back as `Code`: a wrong label is one click to fix, a dropped row loses a project.
             _ => Ok(ProjectKind::Code),
         }
     }
@@ -74,10 +65,7 @@ pub struct Project {
     pub path: String,
     pub last_opened_at: i64,
     pub kind: ProjectKind,
-    /// The URL it was cloned from; `None` means a directory that was already on the
-    /// machine. Stored rather than asking `git remote` on every render: a project whose
-    /// remote was renamed, or whose `.git` was deleted, still has to remember where it
-    /// came from.
+    /// Clone URL, `None` for an already-local directory; stored, not read from `git remote`, so a deleted `.git` keeps it.
     pub origin: Option<String>,
 }
 
@@ -85,12 +73,7 @@ pub struct SqliteProjectStore {
     conn: std::sync::Mutex<Connection>,
 }
 
-/// Its own table, its own file, nowhere near the session journal.
-///
-/// The two have different lifetimes: a project outlives every session of it, and the
-/// session journal deliberately refuses to open on a schema mismatch. Putting this table
-/// in there would mean every new project field forces every old conversation record to
-/// migrate along with it.
+/// Its own file, away from the session journal: that one refuses to open on schema drift, and projects outlive sessions.
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS projects (
   id             TEXT    PRIMARY KEY,
@@ -104,8 +87,7 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS projects_recent ON projects (last_opened_at DESC);
 ";
 
-/// One place lists the columns, because four queries have to return the same shape for
-/// [`row`].
+/// One column list, because four queries have to return the same shape for [`row`].
 const COLUMNS: &str = "id, path, name, last_opened_at, kind, origin";
 
 impl SqliteProjectStore {
@@ -117,10 +99,7 @@ impl SqliteProjectStore {
         SqliteProjectStore::from_connection(Connection::open_in_memory()?)
     }
 
-    /// Build the store on an already-open `Connection`.
-    ///
-    /// Public because it is the only way to write a migration test: you have to be able to
-    /// build a database on the **old** schema and then open the store on top of it.
+    /// Build the store on an already-open `Connection`; public so a migration test can seed the old schema first.
     pub fn from_connection(conn: Connection) -> Result<SqliteProjectStore> {
         conn.pragma_update(None, "foreign_keys", "ON")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
@@ -140,19 +119,7 @@ impl SqliteProjectStore {
     }
 }
 
-/// Add missing columns to an existing table, **in place**.
-///
-/// The three SQLite stores in this tree handle schema drift three different ways, and the
-/// differences are deliberate. `pai-index` **rebuilds from scratch**, because the index can
-/// be regenerated from source. `pai-session` **refuses to open**, because one silent
-/// migration corrupting the journal is permanent and there is no other copy to compare
-/// against. The project list is in neither group: it is something the user typed in one
-/// line at a time, no source can rebuild it, and losing it means opening the application to
-/// an empty list. So here — and only here — we migrate.
-///
-/// The `CREATE TABLE IF NOT EXISTS` above silently skips an existing table, even one that
-/// is missing columns; so we have to ask `PRAGMA table_info` rather than infer anything
-/// from the statement having run cleanly.
+/// Add missing columns in place — unlike the index or the journal, this list cannot be rebuilt from anywhere else.
 fn migrate(conn: &Connection) -> Result<()> {
     let existing: Vec<String> = {
         let mut stmt = conn.prepare("PRAGMA table_info(projects)")?;
@@ -161,9 +128,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     };
     let has = |name: &str| existing.iter().any(|column| column == name);
 
-    // Old rows default to `kind='code'`, `origin=NULL`: before this change every project
-    // was source code and every one was a directory already on the machine, so these are
-    // not placeholder values — they are true of what the user actually has.
+    // `kind='code'`/`origin=NULL` are not placeholders: old projects really were local source directories.
     if !has("kind") {
         conn.execute(
             "ALTER TABLE projects ADD COLUMN kind TEXT NOT NULL DEFAULT 'code'",
@@ -176,11 +141,7 @@ fn migrate(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-/// The canonical path, which must be an existing directory.
-///
-/// Canonicalised at the **entrance**, not at comparison time: two ways into the same
-/// directory have to collide with the `UNIQUE` constraint on `path`, rather than creating
-/// two rows and being noticed afterwards.
+/// The canonical path, which must be an existing directory; resolved on entry so aliases collide on `UNIQUE(path)`.
 pub fn canonical(path: &Path) -> Result<PathBuf> {
     let resolved = path
         .canonicalize()
@@ -204,8 +165,7 @@ fn identity(resolved: &Path) -> (String, String) {
     let name = resolved
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
-        // The root directory has no `file_name`. Rare, but a blank row in the list is not
-        // clickable.
+        // The root directory has no `file_name`, and a blank row is not clickable.
         .unwrap_or_else(|| key.clone());
     (key, name)
 }
@@ -213,21 +173,11 @@ fn identity(resolved: &Path) -> (String, String) {
 pub trait ProjectStore: Send + Sync + 'static {
     /// Most recent first — the order people think in when reopening a project.
     fn list(&self) -> Result<Vec<Project>>;
-    /// Record a project and mark it just-opened. If it exists, update the timestamp
-    /// rather than adding a row.
-    ///
-    /// **Does not change the kind.** This path holds only a directory path; it does not
-    /// know what kind the user wants — see the setter below for why that matters.
+    /// Record a project and mark it just-opened; upserts on path and never changes the kind.
     fn touch(&self, path: &Path) -> Result<Project>;
     /// Record a new project with an **explicit** kind, and where it was cloned from.
     fn create(&self, path: &Path, kind: ProjectKind, origin: Option<&str>) -> Result<Project>;
-    /// Change an existing project's kind.
-    ///
-    /// Necessary because the kind is set **once** at record time and `touch` deliberately
-    /// preserves it — so a directory recorded as the wrong kind has no other way out. That
-    /// is a real dead end: a source repo accidentally recorded as a document library would
-    /// never have `read`, `grep` or `bash` again, and all the user would see is the
-    /// assistant saying it has no tools.
+    /// Change a project's kind: `touch` preserves it, so a wrongly recorded repo has no other way back to its tools.
     fn set_kind(&self, id: &str, kind: ProjectKind) -> Result<Project>;
     fn get(&self, id: &str) -> Result<Project>;
     /// Drop from the list. **Does not touch the disk** — that is the user's directory.
@@ -269,12 +219,7 @@ impl ProjectStore for SqliteProjectStore {
         let (key, name) = identity(&resolved);
 
         self.with_conn(|conn| {
-            // The `DO UPDATE` deliberately mentions neither `kind` nor `origin`. A new
-            // row created by this path is source code (the column default), but an existing
-            // row keeps whatever kind it had. Adding `kind = excluded.kind` here would turn
-            // every document project into a source project on its next reopen — silently,
-            // with no notice, only surfacing when command-running tools suddenly appear in
-            // a folder full of PDFs that strangers sent in.
+            // `DO UPDATE` omits `kind`/`origin`: setting them here would silently turn a document project back into code.
             conn.execute(
                 "INSERT INTO projects (id, path, name, last_opened_at, kind, origin)
                  VALUES (?1, ?2, ?3, ?4, ?5, NULL)
@@ -297,10 +242,7 @@ impl ProjectStore for SqliteProjectStore {
         let (key, name) = identity(&resolved);
 
         self.with_conn(|conn| {
-            // The opposite of `touch`: here the user just stated the kind, so the new
-            // kind wins. `origin` gets `COALESCE` — manually re-adding a directory that was
-            // cloned must not erase where it came from, because the manual path does not
-            // know the URL.
+            // Unlike `touch`, the stated kind wins; `origin` is `COALESCE`d so re-adding a clone keeps its URL.
             conn.execute(
                 "INSERT INTO projects (id, path, name, last_opened_at, kind, origin)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)

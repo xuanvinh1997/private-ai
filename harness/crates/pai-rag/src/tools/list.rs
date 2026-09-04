@@ -1,10 +1,6 @@
-//! `docs.list` — thư viện này có những gì.
-//!
-//! Tool rẻ nhất trong ba cái, và là tool mô hình nên gọi đầu tiên trong một dự án tài
-//! liệu: nó cho biết có bao nhiêu tài liệu, tên chúng là gì, và **phần ngữ nghĩa đã sẵn
-//! sàng chưa**. Câu cuối là lý do nó in cả `stats().reason` ra: khi vector chưa có, một
-//! mô hình biết điều đó sẽ hỏi `docs.search` bằng từ khoá cụ thể thay vì bằng một câu
-//! diễn giải mà chỉ tìm theo ý nghĩa mới hiểu được.
+//! `docs.list` - what this library holds.
+//! The cheapest of the three tools and the one to call first in a document project: it
+//! also prints `stats().reason`, so the model knows whether the semantic half is ready.
 
 use std::sync::Arc;
 
@@ -60,9 +56,7 @@ impl Tool for DocsList {
             .map_err(|err| ToolError::Failed(err.to_string()))?;
 
         if documents.is_empty() {
-            // Kể cả lời báo trống cũng phải nói **vì sao** trống: thư viện là thư mục dự
-            // án, nên câu trả lời gần như luôn nằm ở thư mục đó — chưa có tệp nào đọc
-            // được, hay thư mục không mở được. `stats().reason` đã dựng sẵn câu ấy.
+            // Even the empty report must say *why* it is empty; `stats().reason` already has that sentence.
             let mut lines = vec![
                 "Thư viện tài liệu của dự án này đang trống. Không có tool nào nạp tài liệu \
                  được — thư viện là thư mục của dự án, và người dùng thêm tệp bằng cách đặt \

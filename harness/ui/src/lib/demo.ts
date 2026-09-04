@@ -8,14 +8,8 @@ import type {
   ToolScope,
 } from "./protocol";
 
-/**
- * Dữ liệu mẫu để `npm run dev` dựng được mọi loại thẻ mà không cần lõi Rust.
- *
- * Bật bằng `?demo=1` trên URL hoặc `VITE_DEMO=1` lúc build. Cờ nằm ngoài đường chạy
- * thật và tệp này không được import ở bất kỳ đâu ngoài `App.tsx`, nên bundler loại nó
- * khỏi bản dựng thật khi cây phụ thuộc không chạm tới — và kể cả khi có chạm, không
- * đường nào từ luồng thật gọi vào đây.
- */
+/** Sample data so `npm run dev` can render every card without the Rust core; enabled by `?demo=1` or `VITE_DEMO=1`,
+ * and imported only from `App.tsx` so no real code path reaches it. */
 export function isDemo(): boolean {
   if (import.meta.env.VITE_DEMO === "1") return true;
   try {
@@ -25,40 +19,24 @@ export function isDemo(): boolean {
   }
 }
 
-/**
- * Núm vặn của trang demo: `?demo=1&state=empty&mode=document&changes=1&sidebar=0`.
- *
- * Trang demo tồn tại để *nhìn thấy* từng trạng thái, mà phần lớn trạng thái thú vị lại
- * chỉ xuất hiện trong một khoảnh khắc (khung xương) hoặc chỉ khi dữ liệu vắng mặt (màn
- * hình trống). Không có núm vặn thì cách duy nhất để chụp được chúng là sửa mã.
- */
+/** Demo knobs (`?demo=1&state=empty&mode=document&changes=1&panel=files&sidebar=0`): without them, the only way
+ * to capture a momentary or empty state is to edit code. */
 export function demoKnobs(): {
   state?: "skeleton" | "empty" | "full";
   mode?: DisplayMode;
   changes?: boolean;
-  /** Thu thanh bên lại — trạng thái duy nhất mà thanh trên phải tự chừa chỗ cho ba nút
-   * giao thông của macOS, và cũng là trạng thái không ai nhớ đi chụp. */
+  /** Open tab in the right inspector; `changes=1` is the switch that opens the inspector itself. */
+  panel?: "changes" | "files";
+  /** Collapse the sidebar: the one state where the top bar must reserve room for the macOS traffic lights. */
   sidebar?: boolean;
   tab?: string;
-  /** Mở sẵn menu dự án — nó chỉ tồn tại trong lúc con trỏ đang giữ nó mở. */
+  /** Open the project menu up front; it otherwise exists only while the pointer holds it open. */
   menu?: string;
-  /** Đóng băng trạng thái "đang chuyển dự án", thứ thật ra chỉ kéo dài một nhịp. */
+  /** Freeze the "switching project" state, which really lasts only a beat. */
   switching?: boolean;
-  /**
-   * Dự án nào đang mở: một id, hoặc `"0"` cho **không dự án nào**.
-   *
-   * `?demo=1&project=0` là trạng thái người dùng gặp **đầu tiên** sau khi cài xong — chưa
-   * chọn thư mục nào, trợ lý chỉ trò chuyện. Không có núm này thì nó là trạng thái duy
-   * nhất trong ứng dụng chưa ai nhìn thấy bao giờ, vì bộ dữ liệu mẫu luôn mở sẵn một dự án.
-   */
+  /** Which project is open: an id, or `"0"` for none, which is the very first state after install. */
   project?: string;
-  /**
-   * Ép bảng màu, bỏ qua `localStorage` và cả `prefers-color-scheme`.
-   *
-   * Có mặt vì việc chụp ảnh kiểm chứng: một trình duyệt chạy ngầm không có lựa chọn theme
-   * nào được lưu, nên không có núm này thì mọi ảnh chụp đều ra chế độ sáng — và chế độ tối
-   * là chế độ phần lớn người dùng thật sự nhìn.
-   */
+  /** Force the palette past `localStorage` and `prefers-color-scheme`; a headless browser would always shoot light. */
   theme?: "light" | "dark";
 } {
   try {
@@ -67,6 +45,7 @@ export function demoKnobs(): {
     const theme = params.get("theme");
     const mode = params.get("mode");
     const changes = params.get("changes");
+    const panel = params.get("panel");
     const sidebar = params.get("sidebar");
     const tab = params.get("tab");
     const menu = params.get("menu");
@@ -78,6 +57,7 @@ export function demoKnobs(): {
       ...(state === "skeleton" || state === "empty" || state === "full" ? { state } : {}),
       ...(mode === "bubble" || mode === "document" ? { mode } : {}),
       ...(changes === null ? {} : { changes: changes !== "0" }),
+      ...(panel === "changes" || panel === "files" ? { panel } : {}),
       ...(sidebar === null ? {} : { sidebar: sidebar !== "0" }),
       ...(tab === null ? {} : { tab }),
       ...(menu === null ? {} : { menu }),
@@ -90,14 +70,7 @@ export function demoKnobs(): {
 
 const MINUTE = 60_000;
 
-/**
- * Mô hình giả cho trang demo.
- *
- * Hai mục ở đây là **trạng thái cần nhìn thấy**, không phải để danh sách dài ra:
- *   - `tools: false` — trạng thái duy nhất mà bộ chọn phải cảnh báo;
- *   - `embedding && !chat` — trạng thái duy nhất mà bộ chọn phải **giấu**. Một dòng bị lọc
- *     mà không có trong bộ mẫu thì không ai kiểm được là nó có bị lọc thật không.
- */
+/** Fake models; two entries exist as states to see: `tools: false` must warn, and `embedding && !chat` must be hidden. */
 export function demoModels(): ModelChoice[] {
   return [
     { id: "qwen2.5-coder:14b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
@@ -107,17 +80,9 @@ export function demoModels(): ModelChoice[] {
   ];
 }
 
-/**
- * Phiên của **một** dự án.
- *
- * Danh sách phiên bị lọc theo dự án đang mở, nên trang demo phải dựng được đúng điều đó:
- * nếu mọi dự án cùng trả một danh sách thì đổi dự án trông như không có gì xảy ra, và
- * đúng cái không xảy ra đó là thứ cần nhìn thấy.
- */
+/** Sessions of *one* project: the real list is filtered by project, so the demo must show that switching changes it. */
 export function demoSessions(projectId = "p-harness", now = Date.now()): SessionSummary[] {
-  // Không dự án nào cũng vẫn có phiên: phía Rust ghi phiên với `cwd` là `null` và coi đó
-  // là hợp lệ. Bộ này cố tình chỉ toàn câu hỏi kiến thức — một dòng phụ nhắc tới tệp ở
-  // đây sẽ vẽ ra một quá khứ mà trạng thái này không thể có.
+  // With no project there are still sessions (Rust stores `cwd: null`), so these are knowledge questions only.
   if (projectId === "khong-co-du-an") {
     return [
       {
@@ -169,9 +134,7 @@ export function demoSessions(projectId = "p-harness", now = Date.now()): Session
       updatedAt: now - 3 * 24 * 60 * MINUTE,
       preview: "Ở app/src/protocol.rs, và bản sao TypeScript ở ui/src/lib/protocol.ts.",
     },
-    // Phiên chưa nói gì và cũng chưa mở lần nào: hàng **một dòng**. Nó ở đây để cái đó
-    // nhìn thấy được cạnh hàng hai dòng — một trạng thái không dựng ra được thì không ai
-    // biết nó trông thế nào cho tới khi gặp trên máy người dùng.
+    // A session that has said nothing: a *one-line* row, here so it can be seen beside the two-line ones.
     { id: "s-moi", title: "Phiên chưa dùng", updatedAt: now - 5 * 24 * 60 * MINUTE, preview: null },
   ];
 }
@@ -186,12 +149,10 @@ const NEW_CONFIG = `fn load(path: &Path) -> Result<Config, ConfigError> {
     serde_norway::from_str(&raw).map_err(ConfigError::Parse)
 }`;
 
-/** Một bản ghi đủ mọi loại node — dùng để mắt kiểm tra từng thẻ cạnh nhau. */
+/** A transcript covering every node kind, for eyeballing the cards side by side. */
 export function demoNodes(): ConversationNode[] {
   return [
-    // Bốn đường đi của bộ dựng khối — mermaid đúng, mermaid sai cú pháp, khối mã ngôn ngữ
-    // khác, và một khối chưa đóng rào. Cái nào không có ở đây là cái chưa ai nhìn thấy
-    // bao giờ, và ba trong bốn đường đó chỉ hiện ra khi có gì đó không hoàn hảo.
+    // The block builder's four paths: valid mermaid, broken mermaid, another language, and an unclosed fence.
     { id: "d-md-u", kind: "user", text: "Tóm tắt giúp mình luật lọc tool trong pai-tools." },
     { id: "d-md", kind: "assistant", text: demoMarkdownText(), streaming: false },
     { id: "d-u0", kind: "user", text: "Vẽ giúp mình kiến trúc của cây plugin." },
@@ -402,13 +363,7 @@ export function demoNodes(): ConversationNode[] {
   ];
 }
 
-/**
- * Một lượt giả, phát đúng hình dạng sự kiện của lõi — kể cả câu hỏi duyệt.
- *
- * `settleApproval` để chỗ gọi chặn lượt lại cho tới khi người dùng bấm. Không có nó thì
- * hộp thoại duyệt hiện lên rồi biến mất sau nửa giây, tức là đúng thứ *không* xảy ra
- * thật — và trang demo tồn tại để nhìn thấy thứ xảy ra thật.
- */
+/** A fake turn emitting the core's real event shapes; `settleApproval` lets the caller hold the turn until a click. */
 export async function runDemoTurn(
   text: string,
   scope: ToolScope,
@@ -446,9 +401,7 @@ export async function runDemoTurn(
     },
   });
 
-  // Phạm vi chỉ đọc thì lõi thật **không quảng cáo** `edit` nữa, nên bản demo cũng không
-  // được diễn cảnh sửa tệp: một trang demo hứa nhiều hơn sản phẩm là cùng một lời nói dối
-  // mà bộ chọn phạm vi sinh ra để chấm dứt.
+  // At read scope the real core stops advertising `edit`, so the demo must not act out an edit either.
   if (scope === "read") {
     onEvent({ kind: "todo", items: [
       { id: "1", text: "Đọc tệp liên quan", status: "done" },
@@ -496,13 +449,7 @@ export async function runDemoTurn(
   onEvent({ kind: "final", message_id: "demo" });
 }
 
-/**
- * Bản ghi rút gọn của những phiên **không** đang mở.
- *
- * Danh sách phiên lấy dòng phụ từ bản ghi đã nạp, nên không có mấy cái này thì trong
- * trang demo chỉ đúng một hàng có dòng phụ — và ta sẽ không nhìn thấy hàng ba dòng trông
- * ra sao khi cả cột đều đầy.
- */
+/** Short transcripts for the sessions that are *not* open, so more than one row has a preview line. */
 export function demoParked(): Record<string, ConversationNode[]> {
   return {
     "s-bash": [
@@ -526,16 +473,7 @@ export function demoParked(): Record<string, ConversationNode[]> {
   };
 }
 
-/**
- * Dự án giả.
- *
- * Ba cái, và ba cái là số nhỏ nhất còn nhìn thấy được thứ tự "mới nhất trước" — với hai
- * cái thì mọi thứ tự đều đúng, và một menu sắp sai sẽ đi qua mà không ai nhận ra.
- *
- * `current` chọn dòng nào đang mở. `"0"` — hay bất kỳ id nào không có trong danh sách —
- * nghĩa là **không dự án nào**: danh sách vẫn đủ ba dòng, đúng như sau một lần "Đóng dự
- * án", vì đóng không bỏ dòng nào khỏi danh sách.
- */
+/** Fake projects; three is the fewest that makes "newest first" visible. `current` of `"0"` means none is open. */
 export function demoProjects(current = "p-harness", now = Date.now()): Project[] {
   const all: Project[] = [
     {
@@ -554,7 +492,7 @@ export function demoProjects(current = "p-harness", now = Date.now()): Project[]
       lastOpenedAt: now - 22 * 60 * MINUTE,
       isCurrent: false,
       kind: "code",
-      // Dự án duy nhất trong bộ mẫu được clone về: nhãn nguồn gốc phải có chỗ để lộ ra.
+      // The only cloned project in the fixture, so the origin badge has somewhere to show.
       origin: "https://github.com/vinhpx/private-ai.git",
     },
     {
@@ -562,8 +500,7 @@ export function demoProjects(current = "p-harness", now = Date.now()): Project[]
       name: "so-tay",
       path: "/Users/vinhpx/Documents/so-tay",
       lastOpenedAt: now - 6 * 24 * 60 * MINUTE,
-      // Một dự án tài liệu trong danh sách, nếu không thì nhánh `docs` của mọi màn hình
-      // không bao giờ được nhìn thấy ở chế độ trình diễn.
+      // One docs project, or the `docs` branch of every screen is never seen in demo mode.
       kind: "docs",
       origin: null,
       isCurrent: false,
@@ -572,18 +509,8 @@ export function demoProjects(current = "p-harness", now = Date.now()): Project[]
   return all.map((entry) => ({ ...entry, isCurrent: entry.id === current }));
 }
 
-/**
- * Một tin nhắn trợ lý đi qua **mọi** loại token markdown mà `Markdown.tsx` dựng được.
- *
- * Danh sách này là danh sách kiểm, không phải một câu trả lời trông cho giống thật: đậm,
- * nghiêng, mã inline, gạch ngang, tiêu đề, danh sách có số và không số **lồng nhau**, danh
- * sách việc, bảng có căn cột, trích dẫn, đường kẻ ngang, liên kết. Cái gì không có ở đây là
- * cái chưa ai nhìn thấy bao giờ — và với một bộ dựng token thì chỗ hỏng luôn là đúng một
- * loại token không ai nghĩ tới.
- *
- * Cố ý **không có khối rào** trong này: đường rào đã có `demoDiagramText` lo, và tách hai
- * bộ mẫu ra thì lúc một trong hai hỏng, nhìn là biết hỏng ở bên nào.
- */
+/** An assistant message exercising every markdown token `Markdown.tsx` renders; a checklist, not a realistic reply.
+ * Deliberately fence-free: `demoDiagramText` covers fences, so a failure points at one side or the other. */
 function demoMarkdownText(): string {
   return [
     "## Lọc tool hai tầng",
@@ -615,13 +542,7 @@ function demoMarkdownText(): string {
   ].join("\n");
 }
 
-/**
- * Một tin nhắn trợ lý đi qua **cả bốn** đường của bộ dựng khối.
- *
- * Khối mermaid chưa đóng rào nằm ở cuối, đúng chỗ nó xuất hiện lúc chữ đang chảy. Không
- * có nó trong dữ liệu mẫu thì đường đi quan trọng nhất của `Blocks.tsx` — đường không
- * được gọi `mermaid.render` — là đường chưa ai nhìn thấy bao giờ.
- */
+/** An assistant message exercising all four block-builder paths; the unclosed mermaid fence is last, as while streaming. */
 function demoDiagramText(): string {
   return [
     "Đường đi của một lượt gọi provider, từ lúc agent đẩy lượt vào hàng đợi:",
@@ -658,14 +579,8 @@ function demoDiagramText(): string {
   ].join("\n");
 }
 
-/**
- * Đường dẫn giả cho ô hoàn thành `@` khi chạy không có lõi.
- *
- * Chấm điểm ở đây **cố ý thô hơn** bản Rust: chỉ cần khớp chuỗi con, không xếp hạng theo
- * tên tệp. Chép lại đúng thuật toán kia sẽ tạo ra bản thứ hai của một luật đã có chủ sở
- * hữu, và hai bản thì sớm muộn lệch nhau — lúc đó bản demo dạy sai về chính sản phẩm.
- * Việc của demo là chứng minh giao diện nối đúng dây, không phải tái hiện lõi.
- */
+/** Fake paths for `@` completion without a core; scoring is deliberately cruder than Rust's, to avoid a second
+ * copy of a rule that already has an owner. The demo proves the UI is wired up, not that it reimplements the core. */
 export function demoPaths(query: string, limit: number): string[] {
   const all = [
     "README.md",

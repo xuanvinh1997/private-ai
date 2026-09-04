@@ -1,8 +1,5 @@
-//! Budgets, spill, and the question "what is in this directory".
-//!
-//! Every test here locks a blind spot that was real: results truncated in silence, a cap
-//! counting the wrong unit, a large repo making `grep` run forever, and an unfamiliar repo
-//! where no tool could answer the model's first question.
+//! Budgets, spill, and listing a directory. Each test locks a real blind spot: silent
+//! truncation, a cap counting the wrong unit, `grep` running forever on a large repo.
 
 use std::sync::Arc;
 
@@ -24,7 +21,7 @@ fn call(name: &str, args: Value) -> Invocation {
     Invocation::new(ToolName::from(name), "c1", map)
 }
 
-/// A tree with a spill store mounted — without one nothing is folded, by design.
+/// A tree with a spill store mounted; without one nothing is folded, by design.
 fn tree() -> (Context, Arc<MemorySpillStore>) {
     let ctx = Context::root();
     let store = MemorySpillStore::new();
@@ -55,12 +52,7 @@ fn spill_of(outcome: &pai_tools::ToolOutcome) -> SpillRef {
 
 // --- 1. reading a file that blows the budget --------------------------------------------
 
-/// Locks in: **truncation is folding, not discarding.** The result must have both head and
-/// tail, must carry a ticket, and must say *in words the model reads* how to get the rest.
-///
-/// The assertions go at the real strings rather than at "some field exists": a
-/// `truncated = true` field whose content says nothing still leaves the model concluding it
-/// saw everything.
+/// Truncation folds rather than discards: head, tail, a ticket, and words saying how to read on.
 #[tokio::test]
 async fn reading_over_budget_keeps_head_and_tail_and_says_how_to_read_on() {
     let (ctx, store) = tree();
@@ -78,9 +70,7 @@ async fn reading_over_budget_keeps_head_and_tail_and_says_how_to_read_on() {
     let outcome = read
         .execute(&call(
             "read",
-            // An explicit `limit`: the budget is an **independent** ceiling, not another
-            // way of writing `limit`. Asking for all 4000 lines and still getting folded is
-            // what proves that.
+            // An explicit `limit`: folding all 4000 lines proves the budget is independent.
             json!({ "file_path": file.display().to_string(), "limit": 4000 }),
         ))
         .await
@@ -98,7 +88,7 @@ async fn reading_over_budget_keeps_head_and_tail_and_says_how_to_read_on() {
         "lost the tail:\n{}",
         outcome.content
     );
-    // Instructions for getting the rest, stated in words and **specifically**.
+    // Instructions for getting the rest, stated in words and specifically.
     assert!(
         outcome.content.contains("đã cắt bớt"),
         "did not say it truncated:\n{}",
@@ -132,8 +122,7 @@ async fn reading_over_budget_keeps_head_and_tail_and_says_how_to_read_on() {
 
 // --- 2. counting lines counts the wrong thing -------------------------------------------
 
-/// Locks in: **the budget measures bytes, not lines.** Five lines pass every line-based cap,
-/// but these five lines weigh 15 KiB.
+/// The budget measures bytes, not lines: five lines pass any line cap but weigh 15 KiB.
 #[tokio::test]
 async fn few_but_very_long_lines_are_still_folded_by_the_budget() {
     let (ctx, store) = tree();
@@ -158,7 +147,7 @@ async fn few_but_very_long_lines_are_still_folded_by_the_budget() {
         .await
         .expect("reads");
 
-    // Only five lines — a "256 lines" cap or `limit: 2000` would let the whole file through.
+    // Only five lines: a line cap or `limit: 2000` would let the whole file through.
     let read_meta = outcome.meta.get("read").expect("read meta is present");
     assert_eq!(read_meta["total_lines"], json!(5));
     assert!(
@@ -181,14 +170,13 @@ async fn few_but_very_long_lines_are_still_folded_by_the_budget() {
 
 // --- 3. grep over a large repo ----------------------------------------------------------
 
-/// Locks in: **hitting a cap has to be said out loud.** A truncated list looks exactly like
-/// a complete one.
+/// Hitting a cap must be said out loud: a truncated list looks exactly like a complete one.
 #[tokio::test]
 async fn grep_hitting_the_match_cap_says_so_and_spills() {
     let (ctx, store) = tree();
     let (dir, roots) = bench();
     let root = dir.path().canonicalize().unwrap();
-    // More matches than the cap, inside one file — the shape of a generated file.
+    // More matches than the cap inside one file: the shape of a generated file.
     let content: String = (0..6_000).map(|n| format!("khop {n}\n")).collect();
     std::fs::write(root.join("nhieu.txt"), content).unwrap();
 
@@ -225,9 +213,7 @@ async fn grep_hitting_the_match_cap_says_so_and_spills() {
 
 // --- 4. what is in this directory -------------------------------------------------------
 
-/// Locks four things at once: protected paths are **hidden from the listing** (rule 3),
-/// `.gitignore` takes effect **outside a git repo** (`require_git(false)`), hidden files
-/// still appear, and the order is directories first then by name.
+/// Protected paths hidden, `.gitignore` honoured outside git, hidden files shown, directories first.
 #[tokio::test]
 async fn list_dir_hides_protected_paths_and_honours_gitignore() {
     let (ctx, _) = tree();
@@ -252,8 +238,7 @@ async fn list_dir_hides_protected_paths_and_honours_gitignore() {
         !text.contains("bi-mat"),
         "the listing leaked a protected file:\n{text}"
     );
-    // This temp directory is **not** a git repo. Without `require_git(false)` the
-    // `.gitignore` is ignored and `bo-qua` shows up.
+    // This temp directory is not a git repo, so without `require_git(false)` the ignore file dies.
     assert!(
         !text.contains("bo-qua"),
         "`.gitignore` had no effect outside a git repo:\n{text}"
@@ -276,8 +261,7 @@ async fn list_dir_hides_protected_paths_and_honours_gitignore() {
 
 // --- 6. a new tool really registers in the real registry --------------------------------
 
-/// Locks in: **`list_dir` is a real tool in the real tree**, not a struct only the test can
-/// call. Goes the exact route the model goes: the registry, the wire name, the pipeline.
+/// `list_dir` is a real tool in the real tree, reached the way the model reaches it.
 #[tokio::test]
 async fn list_dir_registers_in_the_real_registry_and_is_callable() {
     let dir = TempDir::new().expect("temp dir");

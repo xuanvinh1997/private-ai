@@ -21,22 +21,15 @@ rusqlite = { workspace = true }
 ignore = { workspace = true }
 
 # --- tree-sitter ---
-# Khai cục bộ chứ không ở `[workspace.dependencies]`: chỉ crate này dùng, và một dòng ở
-# workspace là một lời mời cho crate khác cắm thẳng vào tree-sitter thay vì đi qua seam.
-#
-# Version bị ghim ở dòng `0.25` chứ không phải bản mới nhất, vì hệ sinh thái này lệch
-# version giữa core và grammar theo cách **không bắt được lúc biên dịch**: grammar chỉ
-# phụ thuộc `tree-sitter-language`, nên một ABI không khớp hiện ra lúc chạy. `0.25.8+` là
-# chính version mà tree-sitter-javascript và tree-sitter-python 0.25 khai trong
-# dev-dependencies của chúng — tức là bản mà grammar đã được chạy thử với.
+# Local, not workspace-wide: only this crate uses it; 0.25 is pinned because core/grammar ABI drift only fails at runtime.
 tree-sitter = "0.25"
-# Chỉ để gọi tên `LanguageFn` trong bảng ngôn ngữ; core không re-export nó.
+# Only to name `LanguageFn` in the language table; core does not re-export it.
 tree-sitter-language = "0.1"
 tree-sitter-rust = "0.24"
 tree-sitter-typescript = "0.23"
 tree-sitter-javascript = "0.25"
 tree-sitter-python = "0.25"
-# `QueryCursor::matches` trả về một streaming iterator từ 0.25; trait phải có trong scope.
+# `QueryCursor::matches` returns a streaming iterator since 0.25; the trait must be in scope.
 streaming-iterator = "0.1"
 
 [dev-dependencies]

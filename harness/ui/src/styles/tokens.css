@@ -1,99 +1,87 @@
-/* Token dịch trung thành từ src/private_ai/ui/theme.py.
- *
- * Bốn màu xám ở đây lệch khỏi bản CSS gốc của app web cũ là có chủ đích: theme.py:53-57
- * nâng chúng để đạt WCAG AA. Khi đối chiếu, lấy số của theme.py, không lấy styles.css cũ.
- *
- * Khối dark xuất hiện hai lần — một lần dưới [data-theme="dark"] để nút đổi theme thắng,
- * một lần dưới prefers-color-scheme cho chế độ "system" (theme.py:239 không stamp gì cả).
- * Lặp là cố ý: gộp lại bằng biến thì nút đổi theme không thắng được media query. */
+/* Palette from the "Claude design" analysis in `harness/ui/DESIGN.md`: warm cream ground, coral accent, warm-navy
+ * dark surfaces. Its hexes are not copied where text sits on them - coral drops to #ba5a3a for 4.55:1 - and the
+ * dark block is duplicated so the theme toggle beats the media query. */
 
 :root {
   font-size: 15px;
 
-  --bg: #f3f6f4;
-  --sidebar: #edf2ef;
-  --surface: #ffffff;
-  --surface-soft: #f7f9f8;
-  --surface-hover: #e6ede9;
-  --ink: #17231f;
-  --text: #293732;
-  --muted: #55635d;
-  --faint: #5f6e69;
-  --line: #d8e0dc;
-  --line-strong: #87968f;
-  --accent: #176b59;
-  --accent-hover: #115747;
-  --accent-soft: #deeee8;
-  --accent-ink: #0c4d3f;
+  /* Three surface tiers ordered by elevation, not raw lightness; the sidebar sinks below the page, and pure
+   * white survives only in `--on-accent`, where it sits on coral. */
+  --bg: #f5f0e8;
+  --sidebar: #eee7db;
+  --surface: #faf9f5;
+  --surface-soft: #f7f3ec;
+  --surface-hover: #e8e0d2;
+
+  --ink: #141413;
+  --text: #3d3d3a;
+  /* `--muted` 6.4:1 and `--faint` 5.0:1 on the ground: both AA, and 1.3:1 apart so they still read as two steps. */
+  --muted: #57554f;
+  --faint: #6a675f;
+
+  /* Without shadows, borders are the only separator, so the hairline is a step darker than DESIGN.md's, and
+   * `--line-strong` (input and secondary-button borders) holds 3:1 per WCAG 1.4.11. */
+  --line: #ddd2c2;
+  --line-strong: #948468;
+
+  --accent: #ba5a3a;
+  --accent-hover: #a04a2d;
+  --accent-soft: #f7e6df;
+  --accent-ink: #8c4025;
   --on-accent: #ffffff;
-  --success: #176b59;
-  --success-soft: #deeee8;
-  --warn: #8a5a12;
-  --warn-soft: #f6ecd8;
-  --danger: #ad403c;
-  --danger-soft: #f8e5e3;
-  --shadow: rgba(36, 58, 50, 0.12);
-  --scrim: rgba(19, 31, 27, 0.42);
-  /* Vệt sáng một pixel ở mép trên của mọi bề mặt nổi.
-   *
-   * Bảng màu này gần như đơn sắc: nền, thanh bên và mặt thẻ chỉ cách nhau vài phần trăm
-   * độ sáng, nên bóng đổ thôi thì chưa đủ để mắt đọc ra cái nào nằm trên cái nào — nhất
-   * là ở chế độ tối, nơi một bóng đen đổ xuống nền đen là một bóng vô hình. Cái mắt thật
-   * sự bắt được là **mép bắt sáng**: vật nổi lên thì cạnh trên của nó hứng ánh sáng.
-   *
-   * Ở chế độ sáng mặt thẻ vốn đã trắng nên vệt này gần như không thấy — và đúng như vậy:
-   * chỗ cần nó là chế độ tối. Giữ cả hai bên cùng một tên biến để `--shadow-float` và
-   * `--shadow-pop` ở app.css chỉ có một công thức, không phải hai nhánh theo theme. */
-  --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.75);
 
-  /* Tám màu dữ liệu — dành cho biểu đồ, không dùng cho giao diện (theme.py:120). */
-  --data-1: #1c7a63; --data-2: #3d6fb4; --data-3: #a8672c; --data-4: #7d55ab;
-  --data-5: #a8465c; --data-6: #2f8f8a; --data-7: #5c6f3a; --data-8: #8a5a86;
+  --success: #2b7449;
+  --success-soft: #dcece0;
+  --warn: #8a6114;
+  --warn-soft: #f4ebd8;
+  --danger: #b03a35;
+  --danger-soft: #f6e2e0;
 
-  /* Hai tên đứng đầu được `styles/fonts.css` khai bằng tệp `.woff2` nằm trong repo, nên
-   * chúng có mặt ở mọi máy chứ không chỉ máy đã cài sẵn. Phần đuôi giữ nguyên: nó là lối
-   * thoát cho khoảnh khắc font chưa tải xong và cho những ký tự nằm ngoài các subset ta
-   * đóng gói (latin, latin-ext, vietnamese). */
+  --scrim: rgba(20, 20, 19, 0.44);
+
+  /* One-pixel top-edge highlight on raised surfaces: with shadows dropped, this is what still reads as depth on a
+   * dark ground. One variable name in both themes, so app.css keeps a single formula. */
+  --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+
+  /* Eight data colours, for charts only, never for UI chrome; warm-leaning and darkened enough to read on cream. */
+  --data-1: #b85c3c; --data-2: #3c6f9e; --data-3: #2f7d70; --data-4: #8a6114;
+  --data-5: #8b4f7d; --data-6: #5c7a35; --data-7: #a04a52; --data-8: #6b5f9c;
+
+  /* Three families; the display serif is the new one. DESIGN.md pairs a display serif with a humanist sans and
+   * calls the split unbreakable, but both originals are unreleased, so these come from its own substitutes list.
+   * EB Garamond over Cormorant: our largest heading is ~35px, where Cormorant reads as blurred. Manrope stays for
+   * body text, since the app.css type scale is tuned to its x-height. */
+  --font-display: "EB Garamond", "Tiempos Headline", Georgia, "Times New Roman", serif;
   --font-ui: "Manrope", "Manrope Variable", "Segoe UI", "Helvetica Neue", sans-serif;
   --font-mono: "IBM Plex Mono", "SF Mono", "Cascadia Mono", Consolas, monospace;
 
   --sp-3xs: 2px; --sp-2xs: 4px; --sp-xs: 6px; --sp-sm: 8px; --sp-md: 12px;
   --sp-lg: 16px; --sp-xl: 20px; --sp-2xl: 24px; --sp-3xl: 32px; --sp-4xl: 40px;
 
-  --page-pad-x: 24px; --page-pad-y: 20px; --page-gap: 16px;
-  --card-pad-x: 16px; --card-pad-y: 12px; --card-gap: 12px;
-  --dialog-pad-x: 24px; --dialog-pad-y: 20px; --dialog-gap: 12px;
-  --control-h: 32px; --badge-h: 26px; --cta-h: 38px;
+  --page-pad-x: 28px; --page-pad-y: 24px; --page-gap: 20px;
+  --card-pad-x: 16px; --card-pad-y: 14px; --card-gap: 12px;
+  --dialog-pad-x: 28px; --dialog-pad-y: 24px; --dialog-gap: 14px;
+  --control-h: 32px; --icon-control-h: 30px; --badge-h: 26px; --cta-h: 40px;
 
-  /* Một thanh bên duy nhất, đúng như ChatGPT/Codex: không còn icon rail nào đứng trước
-   * nó. 260px là bề rộng nhỏ nhất còn đọc trọn được một tiêu đề phiên hai chữ cộng dấu
-   * thời gian bên phải — hẹp hơn thì mọi hàng đều cắt, và một danh sách toàn dấu ba chấm
-   * không giúp chọn được gì. */
-  --sidebar-w: 260px;
-  /* Bảng thay đổi bên phải. Hẹp hơn thanh bên vì mỗi hàng là một tên tệp đã rút gọn, không
-   * phải một tiêu đề phiên hai dòng. Nó **phải** có mặt ở đây: `ChangesPanel` đặt bề rộng
-   * bằng `w-(--changes-col-w)`, và một biến không tồn tại làm cả khai báo `width` bị bỏ —
-   * bảng khi ấy rộng theo nội dung, và một tên tệp dài đẩy cột hội thoại hẹp lại. */
-  --changes-col-w: 288px;
-  /* Cột đọc: ChatGPT giữ hội thoại ở khoảng 48rem và căn giữa. Trải hết bề rộng trên một
-   * màn hình 27" là ép mắt quét ngang 200 ký tự mỗi dòng. */
-  --reading-measure: 720px;
-  --header-h: 56px;
-  /* Chỗ cho ba nút giao thông của macOS: cửa sổ mở titleBarStyle "Overlay" nên chúng
-   * nằm đè lên nội dung của ta, không phải trên một thanh tiêu đề riêng. */
+  /* A single sidebar, no icon rail: 268px is the narrowest that still fits a short session title plus a timestamp. */
+  --sidebar-w: 268px;
+  /* Right inspector, one step wider; `WorkspacePanel` sizes itself from this token, so a missing one drops its width. */
+  --workspace-panel-w: 300px;
+  /* Reading column, centred like ChatGPT: full width on a 27-inch screen means 200-character lines. */
+  --reading-measure: 740px;
+  --header-h: 60px;
+  /* Room for the macOS traffic lights: titleBarStyle "Overlay" draws them over our content, not on a title bar. */
   --titlebar-h: 34px;
-  /* Bề ngang ba nút đó. Thanh bên mở thì chúng nằm trên dải kéo của thanh bên; thanh bên
-   * thu lại thì thanh trên phải tự chừa chỗ, nếu không nút đóng cửa sổ đè lên tiêu đề. */
+  /* Width of those buttons: with the sidebar collapsed the top bar must reserve the space itself. */
   --traffic-lights-w: 78px;
   --avatar: 28px;
 
-  /* Chuyển động: một thang ba bậc, không ai được tự đặt số ngoài thang này. */
+  /* Motion: a three-step scale, no ad-hoc durations outside it. */
   --dur-fast: 110ms;
   --dur-base: 170ms;
   --ease-out: cubic-bezier(0.22, 0.8, 0.32, 1);
 
-  /* Sắc độ dựng từ token sẵn có bằng color-mix — LobeChat có một tầng "fill" mờ mà
-   * bảng màu của ta không có, và thêm mã màu mới là thêm một màu chưa ai kiểm tương phản. */
+  /* Tints built from existing tokens with color-mix; a new hex would be a colour nobody has contrast-checked. */
   --overlay-hover: color-mix(in srgb, var(--ink) 6%, transparent);
   --overlay-faint: color-mix(in srgb, var(--ink) 3.5%, transparent);
   --glass: color-mix(in srgb, var(--surface) 82%, transparent);
@@ -106,76 +94,71 @@
 :root[data-scale="large"] { font-size: 18px; }
 
 :root[data-theme="dark"] {
-  --bg: #101c19;
-  /* Tối hơn `--bg`, không sáng hơn. Bản trước làm ngược, và cái ngược ấy đọc ra là thanh
-     bên nổi lên trước còn nội dung lùi ra sau — đúng thứ tự ngược với thứ người dùng đang
-     đọc. Mọi giao diện hội thoại tối đáng tin đều đặt cột điều hướng chìm xuống. */
-  --sidebar: #0a1310;
-  --surface: #13221e;
-  --surface-soft: #172923;
-  --surface-hover: #1d332c;
-  --ink: #e6efeb;
-  --text: #d2ded9;
-  --muted: #9aaba4;
-  --faint: #8a9c94;
-  --line: #294039;
-  --line-strong: #58776d;
-  --accent: #66c4aa;
-  --accent-hover: #7dd1b8;
-  --accent-soft: #173b31;
-  --accent-ink: #b9eadc;
-  --on-accent: #08201a;
-  --success: #66c4aa;
-  --success-soft: #173b31;
-  --warn: #e0b562;
-  --warn-soft: #39301c;
-  --danger: #ee8b83;
-  --danger-soft: #432725;
-  --shadow: rgba(0, 0, 0, 0.28);
-  --scrim: rgba(0, 0, 0, 0.58);
+  /* The dark surfaces are warm navy, not cool grey - DESIGN.md's three product-mock steps become page, card and
+   * nested card here. The sidebar still sits darker than the page, never in front of the content it serves. */
+  --bg: #181715;
+  --sidebar: #100f0e;
+  --surface: #1f1e1b;
+  --surface-soft: #252320;
+  --surface-hover: #2f2c27;
+  --ink: #faf9f5;
+  --text: #ddd8ce;
+  --muted: #a09d96;
+  --faint: #8d897f;
+  --line: #35312b;
+  --line-strong: #7b7469;
+  /* Coral moves the other way in dark mode: lighter to carry on navy, with dark brown ink on it instead of white. */
+  --accent: #e08b6b;
+  --accent-hover: #eb9f80;
+  --accent-soft: #3a2419;
+  --accent-ink: #f0b79c;
+  --on-accent: #2a1409;
+  --success: #6fc98a;
+  --success-soft: #1c3626;
+  --warn: #dfb45c;
+  --warn-soft: #3a301c;
+  --danger: #ef8f86;
+  --danger-soft: #42221f;
+  --scrim: rgba(0, 0, 0, 0.62);
   --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  --data-1: #5fc4a8; --data-2: #7fb0e8; --data-3: #e0a86a; --data-4: #b79ae6;
-  --data-5: #e58fa4; --data-6: #69c6c0; --data-7: #a6bd72; --data-8: #cf9ac9;
+  --data-1: #e08b6b; --data-2: #86b4e0; --data-3: #6bc4b2; --data-4: #dfb45c;
+  --data-5: #d295c4; --data-6: #a8c46e; --data-7: #ea9098; --data-8: #a79ae0;
   color-scheme: dark;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #101c19;
-    --sidebar: #0a1310;
-    --surface: #13221e;
-    --surface-soft: #172923;
-    --surface-hover: #1d332c;
-    --ink: #e6efeb;
-    --text: #d2ded9;
-    --muted: #9aaba4;
-    --faint: #8a9c94;
-    --line: #294039;
-    --line-strong: #58776d;
-    --accent: #66c4aa;
-    --accent-hover: #7dd1b8;
-    --accent-soft: #173b31;
-    --accent-ink: #b9eadc;
-    --on-accent: #08201a;
-    --success: #66c4aa;
-    --success-soft: #173b31;
-    --warn: #e0b562;
-    --warn-soft: #39301c;
-    --danger: #ee8b83;
-    --danger-soft: #432725;
-    --shadow: rgba(0, 0, 0, 0.28);
-    --scrim: rgba(0, 0, 0, 0.58);
+    --bg: #181715;
+    --sidebar: #100f0e;
+    --surface: #1f1e1b;
+    --surface-soft: #252320;
+    --surface-hover: #2f2c27;
+    --ink: #faf9f5;
+    --text: #ddd8ce;
+    --muted: #a09d96;
+    --faint: #8d897f;
+    --line: #35312b;
+    --line-strong: #7b7469;
+    --accent: #e08b6b;
+    --accent-hover: #eb9f80;
+    --accent-soft: #3a2419;
+    --accent-ink: #f0b79c;
+    --on-accent: #2a1409;
+    --success: #6fc98a;
+    --success-soft: #1c3626;
+    --warn: #dfb45c;
+    --warn-soft: #3a301c;
+    --danger: #ef8f86;
+    --danger-soft: #42221f;
+    --scrim: rgba(0, 0, 0, 0.62);
     --edge-top: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    --data-1: #5fc4a8; --data-2: #7fb0e8; --data-3: #e0a86a; --data-4: #b79ae6;
-    --data-5: #e58fa4; --data-6: #69c6c0; --data-7: #a6bd72; --data-8: #cf9ac9;
+    --data-1: #e08b6b; --data-2: #86b4e0; --data-3: #6bc4b2; --data-4: #dfb45c;
+    --data-5: #d295c4; --data-6: #a8c46e; --data-7: #ea9098; --data-8: #a79ae0;
     color-scheme: dark;
   }
 }
 
-/* Cửa sổ hẹp: hai cột bên nhường chỗ cho cột hội thoại thay vì bóp nó xuống dưới ngưỡng
- * đọc được. Không giấu hẳn cột nào — giấu thì người dùng mất lối đi mà không hiểu vì sao;
- * thanh bên vẫn thu được bằng tay, và đó là quyết định của họ chứ không của một media
- * query. */
+/* Narrow windows: the side columns give way instead of squeezing the conversation below a readable width. */
 @media (max-width: 1180px) {
-  :root { --sidebar-w: 232px; --changes-col-w: 248px; }
+  :root { --sidebar-w: 236px; --workspace-panel-w: 252px; }
 }

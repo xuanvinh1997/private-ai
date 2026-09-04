@@ -1,10 +1,8 @@
-//! Cắt một dòng byte thành từng dòng văn bản.
-//!
-//! Ollama trả NDJSON ở cả `/api/chat` lẫn `/api/pull` — mỗi dòng một object JSON, không
-//! có `data:`, không có dòng trống ngăn cách. Đơn giản hơn SSE, nhưng vẫn dính đúng cái
-//! bẫy ấy: một lần đọc socket có thể dừng ở giữa dòng.
+//! Splits a byte stream into text lines.
+//! Ollama returns NDJSON on `/api/chat` and `/api/pull`: one JSON object per line, no
+//! `data:` prefix, no blank separator - but a socket read can still stop mid-line.
 
-/// Bộ đệm byte cắt theo `\n`.
+/// Byte buffer split on `\n`.
 #[derive(Debug, Default)]
 pub struct LineDecoder {
     buffer: Vec<u8>,
@@ -15,12 +13,11 @@ impl LineDecoder {
         Self::default()
     }
 
-    /// Ăn một mảnh byte, trả về mọi dòng **đã trọn vẹn**. Phần đuôi dở dang ở lại trong
-    /// bộ đệm chờ lần đọc sau.
+    /// Eat a byte slice and return every *complete* line; a partial tail waits for the next read.
     pub fn push(&mut self, bytes: &[u8]) -> Vec<String> {
         self.buffer.extend_from_slice(bytes);
         let mut lines = Vec::new();
-        // `drain` từ đầu mỗi lần tìm thấy `\n`: bộ đệm không bao giờ lớn hơn một dòng dở.
+        // `drain` from the front on every `\n`, so the buffer never exceeds one partial line.
         while let Some(position) = self.buffer.iter().position(|byte| *byte == b'\n') {
             let raw: Vec<u8> = self.buffer.drain(..=position).collect();
             lines.push(decode(&raw[..position]));
@@ -28,8 +25,7 @@ impl LineDecoder {
         lines
     }
 
-    /// Phần còn lại khi luồng đóng mà không có `\n` cuối. Một số máy chủ làm vậy ở dòng
-    /// chót, nên bỏ nó đi là mất đúng cái dòng `done: true`.
+    /// The remainder when the stream closes without a trailing `\n`; dropping it would lose the `done: true` line.
     pub fn flush(&mut self) -> Option<String> {
         if self.buffer.is_empty() {
             return None;
@@ -43,10 +39,7 @@ impl LineDecoder {
     }
 }
 
-/// Giải mã một dòng đã trọn vẹn, bỏ `\r` của CRLF.
-///
-/// `from_utf8_lossy` chứ không `from_utf8(...).expect(...)`: một dòng lỗi mã hoá phải làm
-/// hỏng đúng dòng đó, không được giết cả lượt trả lời.
+/// Decode one complete line, dropping the CRLF `\r`; lossy on purpose, so a bad byte breaks one line rather than the whole turn.
 fn decode(raw: &[u8]) -> String {
     let trimmed = raw.strip_suffix(b"\r").unwrap_or(raw);
     String::from_utf8_lossy(trimmed).into_owned()

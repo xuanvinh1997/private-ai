@@ -1,17 +1,6 @@
-//! Sổ phiên cục bộ: bản cài đặt của seam trên chính máy này.
-//!
-//! Hai ý đáng nhớ trong tệp này.
-//!
-//! **Phiên thuộc về ai tạo ra nó.** Mọi lời gọi trình một [`Owner`], và một phiên chỉ trả
-//! lời đúng chủ của nó. Một id thuộc chủ khác nhận **cùng một lỗi** với một id không tồn
-//! tại — hai câu trả lời khác nhau ở đây biến hàm tra cứu thành một máy dò, và một agent
-//! kiên nhẫn sẽ đếm được số phiên của agent bên cạnh mà không đọc được dòng nào trong đó.
-//!
-//! **Vòng giam hỏi lúc mở, không hỏi lúc dựng.** Provider giữ một `Context` chứ không giữ
-//! một `Arc<dyn SandboxProvider>`, đúng lý do như `pai-shell::provider`: gỡ plugin sandbox
-//! ra phải làm mọi phiên mở sau đó chạy không giam, chứ không phải đi qua một bản sao còn
-//! sót lại. Và một vòng bọc **hỏng** thì không mở phiên — một lần bỏ qua im lặng là một
-//! lần người dùng tin vào một vòng vây không tồn tại.
+//! Local session registry: the on-machine implementation of the seam.
+//! Sessions belong to their creator, and another owner's id fails exactly like an unknown one.
+//! The sandbox is resolved from `Context` at open time, and a broken wrapper refuses to open.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -29,18 +18,10 @@ use crate::seam::{
 };
 use crate::session::{Session, Spec};
 
-/// Nhịp hỏi lại "có gì mới không" trong lúc chờ một lệnh yên.
-///
-/// Đủ nhặt để một lệnh nhanh không phải trả giá bằng một nhịp thừa, đủ thưa để việc chờ
-/// không tự nó thành một vòng lặp bận.
+/// Poll interval while waiting for a command to go quiet: fast enough for short commands, slow enough not to busy-loop.
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 
-/// Backend duy nhất hiện có.
-///
-/// Là một chuỗi tra trong bảng chứ không phải một tham số `command`, vì `command` biến
-/// `terminal_open` thành `bash` có trạng thái: mô hình gõ ra chương trình nào nó muốn và
-/// cái duyệt của `terminal_open` không còn nói được gì cụ thể. Bảng đóng thì câu hỏi
-/// "cho mở terminal không" có đúng một nghĩa.
+/// The only backend. A table lookup rather than a `command` parameter, so the approval prompt has exactly one meaning.
 pub const SHELL_BACKEND: &str = "shell";
 
 pub struct LocalTerminals {
@@ -67,10 +48,9 @@ impl LocalTerminals {
         self
     }
 
-    /// argv sau khi đã bọc, nếu có ai bọc. Xem ghi chú đầu module.
+    /// argv after sandbox wrapping, if anything wraps it. See the module header.
     fn argv(&self) -> Result<Vec<String>, TerminalError> {
-        // `-i` chứ không phải một lệnh: cái ta mở là một phiên, và một shell tương tác là
-        // thứ duy nhất trả lời đúng cho `cd` ở lần gọi trước.
+        // `-i` rather than a command: we are opening a session, and only an interactive shell remembers an earlier `cd`.
         let argv = vec!["/bin/sh".to_string(), "-i".to_string()];
         match self.ctx.get::<Sandbox>() {
             Some(sandbox) => sandbox
@@ -80,12 +60,12 @@ impl LocalTerminals {
         }
     }
 
-    /// Tra một phiên **của đúng chủ này**.
+    /// Look up a session belonging to this exact owner.
     fn find(&self, owner: Owner, id: &str) -> Result<Arc<Session>, TerminalError> {
         let found = self.sessions.lock().get(id).cloned();
         match found {
             Some(session) if session.owner == owner => Ok(session),
-            // Không tách hai nhánh còn lại. Xem ghi chú đầu module.
+            // The remaining two cases stay merged. See the module header.
             _ => Err(TerminalError::NoSession(id.to_string())),
         }
     }
@@ -103,8 +83,7 @@ impl TerminalHost for LocalTerminals {
 
         let id = uuid::Uuid::now_v7().to_string();
         let name = req.name.unwrap_or_else(|| {
-            // Một cái tên luôn có, kể cả khi không ai đặt: danh sách phiên là thứ người
-            // dùng đọc, và một cột trống ở đó không nói được gì.
+            // Always a name, even unnamed: the session list is read by humans and a blank column says nothing.
             format!("{}-{}", SHELL_BACKEND, &id[..8.min(id.len())])
         });
         let cwd = req.cwd.unwrap_or_else(|| self.cwd.clone());
@@ -137,8 +116,7 @@ impl TerminalHost for LocalTerminals {
             .filter(|session| session.owner == owner)
             .map(|session| session.info())
             .collect();
-        // Id là UUIDv7 nên sắp theo id là sắp theo thứ tự mở. Danh sách ổn định là thứ
-        // khiến "cái thứ hai" có nghĩa qua hai lần gọi.
+        // Ids are UUIDv7, so sorting by id sorts by open order and "the second one" stays meaningful across calls.
         rows.sort_unstable_by(|a, b| a.id.cmp(&b.id));
         rows
     }
@@ -159,8 +137,7 @@ impl TerminalHost for LocalTerminals {
             return Err(TerminalError::Ended(id.to_string()));
         }
 
-        // Lấy mốc **trước** khi ghi: lấy sau thì phần output in ra giữa hai câu lệnh này
-        // biến mất, và nó biến mất đúng vào những lệnh chạy nhanh nhất.
+        // Take the mark before writing: taking it after loses output produced in between, worst for the fastest commands.
         let mark = session.mark();
         session.write(bytes)?;
 
@@ -207,8 +184,7 @@ impl TerminalHost for LocalTerminals {
         offset: usize,
         count: usize,
     ) -> Result<Page, TerminalError> {
-        // Đọc được cả phiên đã chết, cố ý: chữ cuối cùng trước lúc chết thường là chữ
-        // đáng đọc nhất, và bắt đóng phiên mới đọc được nó là bắt vứt nó đi.
+        // Dead sessions stay readable on purpose: their last output is usually the most useful.
         Ok(self.find(owner, id)?.read(offset, count))
     }
 
@@ -223,8 +199,7 @@ impl TerminalHost for LocalTerminals {
     async fn close(&self, owner: Owner, id: &str) -> Result<(), TerminalError> {
         let session = self.find(owner, id)?;
         session.close().await;
-        // Gỡ khỏi sổ **sau** khi cây tiến trình đã biến mất: gỡ trước thì một lần đóng
-        // chậm trả lại một id "không tồn tại" trong khi tiến trình vẫn đang chạy.
+        // Drop from the registry only after the process tree is gone, so a slow close cannot report the id as missing while it runs.
         self.sessions.lock().remove(id);
         Ok(())
     }

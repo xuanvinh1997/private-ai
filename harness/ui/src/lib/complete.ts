@@ -1,68 +1,59 @@
 import { invoke } from "@tauri-apps/api/core";
 import { inTauri } from "./agent";
 import { demoPaths, isDemo } from "./demo";
+import { S, t } from "./i18n";
+import type { Msg } from "./i18n";
 
-/**
- * Nguồn cho hai bộ hoàn thành trong ô soạn tin: `@` ra tệp, `/` ra lệnh.
- *
- * Chấm điểm đường dẫn nằm ở **phía Rust** (`pai-index::complete`), không ở đây. Lý do là
- * dữ liệu: bảng `files` của một repo lớn có hàng chục nghìn hàng, và kéo cả bảng qua biên
- * IPC sau mỗi phím gõ là trả cái giá đắt nhất của Tauri ở đúng chỗ người dùng ít chịu
- * đựng nhất. Lõi lọc, giao diện vẽ.
- *
- * Lệnh `/` thì ngược lại — danh sách cố định, mười mấy mục, biết trước lúc biên dịch — nên
- * nó nằm hẳn ở đây và không tốn lời gọi nào.
- */
+/** The composer's two completions: `@` for files, scored in Rust to keep the file table off the IPC boundary,
+ * and `/` for commands, a fixed list that lives here and costs no call. */
 
-/** Một lệnh gõ được sau dấu `/`. */
+/** A command typeable after `/`. */
 export interface Command {
   name: string;
-  /** Câu mô tả hiện cạnh tên trong danh sách. */
+  /** Translated hint shown next to the name in the list. */
   hint: string;
-  /**
-   * Có cần một dự án đang mở không. Lệnh cần dự án vẫn **hiện** khi chưa mở, nhưng hiện
-   * kèm lý do và không chọn được — giấu đi thì người dùng không bao giờ biết nó tồn tại,
-   * và đó chính là vấn đề mà bảng lệnh sinh ra để sửa.
-   */
+  /** Whether an open project is required; such commands still show, disabled with a reason, rather than hiding. */
   needsProject?: boolean;
 }
 
-/**
- * Từ vựng lệnh.
- *
- * Mỗi mục ở đây phải là một việc người dùng **đã làm được bằng cách khác** — bảng lệnh là
- * lối tắt, không phải một cửa sau dẫn tới khả năng chưa có giao diện nào khác chạm tới.
- * Một lệnh không có đường đi thứ hai là một lệnh không ai tìm lại được sau khi quên tên nó.
- */
-export const COMMANDS: Command[] = [
-  { name: "moi", hint: "Phiên mới" },
-  { name: "tim", hint: "Tìm phiên đã có (⌘K)" },
-  { name: "duan", hint: "Mở màn hình dự án" },
-  { name: "thaydoi", hint: "Bảng thay đổi của lượt này", needsProject: true },
-  { name: "taplieu", hint: "Thư viện tài liệu", needsProject: true },
-  { name: "mohinh", hint: "Đổi nhà cung cấp và mô hình" },
-  { name: "mcp", hint: "Quản lý server MCP" },
-  { name: "quyen", hint: "Trang quyền và phạm vi tool" },
-  { name: "phimtat", hint: "Danh sách phím tắt" },
-  { name: "caidat", hint: "Cài đặt chung" },
+/** A command as declared, hint still untranslated: translating at call time lets the language change mid-session. */
+interface CommandDef {
+  name: string;
+  hint: Msg;
+  needsProject?: boolean;
+}
+
+/** Command vocabulary; every entry must also be reachable another way, since the palette is a shortcut, not a back door. */
+export const COMMANDS: CommandDef[] = [
+  { name: "moi", hint: S.libs.command.newSession },
+  { name: "tim", hint: S.libs.command.findSession },
+  { name: "duan", hint: S.libs.command.projects },
+  { name: "thaydoi", hint: S.libs.command.changes, needsProject: true },
+  { name: "taplieu", hint: S.libs.command.docs, needsProject: true },
+  { name: "mohinh", hint: S.libs.command.models },
+  { name: "mcp", hint: S.libs.command.mcp },
+  { name: "quyen", hint: S.libs.command.permissions },
+  { name: "phimtat", hint: S.libs.command.shortcuts },
+  { name: "caidat", hint: S.libs.command.settings },
 ];
 
-/**
- * Lọc lệnh theo phần đã gõ sau dấu `/`.
- *
- * Ba bậc: khớp tiền tố tên, rồi khớp giữa tên, rồi khớp trong câu mô tả. Bậc cuối là bậc
- * đáng giá nhất — người ta nhớ **việc** mình muốn làm, không nhớ cái tên ta đặt cho nó, nên
- * gõ "phím tắt" phải tìm ra `phimtat`.
- *
- * Cùng bậc thì xếp theo bảng chữ cái, không theo thứ tự khai báo: thứ tự khai báo là thứ tự
- * ta nghĩ ra chúng, và nó đổi mỗi lần ai đó thêm một dòng.
- */
+/** A translated command, ready for the UI. */
+function resolve(def: CommandDef): Command {
+  return {
+    name: def.name,
+    hint: t(def.hint),
+    ...(def.needsProject === true ? { needsProject: true } : {}),
+  };
+}
+
+/** Rank commands by name prefix, then name substring, then hint text; ties break alphabetically, not by declaration order. */
 export function rankCommands(query: string): Command[] {
   const needle = query.trim().toLowerCase();
-  if (needle === "") return COMMANDS;
+  const all = COMMANDS.map(resolve);
+  if (needle === "") return all;
 
   const scored: { command: Command; score: number }[] = [];
-  for (const command of COMMANDS) {
+  for (const command of all) {
     const name = command.name.toLowerCase();
     const hint = command.hint.toLowerCase();
     let score: number | null = null;
@@ -76,53 +67,33 @@ export function rankCommands(query: string): Command[] {
     .map((entry) => entry.command);
 }
 
-/**
- * Đường dẫn khớp phần đã gõ sau dấu `@`.
- *
- * Nuốt lỗi và trả về rỗng: gợi ý là thứ **thêm vào**, và một hộp thoại lỗi bật ra giữa lúc
- * đang gõ là đổi một tiện ích lấy một gián đoạn. Danh sách rỗng đọc ra là "không có gì
- * khớp", và đó cũng là điều đúng khi lõi không trả lời được.
- */
+/** Paths matching what was typed after `@`; errors return an empty list, since suggestions must never interrupt typing. */
 export async function completePaths(query: string, limit = 8): Promise<string[]> {
   if (isDemo() || !inTauri()) return demoPaths(query, limit);
   try {
     return await invoke<string[]>("complete_paths", { query, limit });
   } catch (err) {
-    console.error("không hoàn thành được đường dẫn", err);
+    console.error("failed to complete paths", err);
     return [];
   }
 }
 
-/** Cái đang được gõ dở tại con trỏ, nếu nó là một lời gọi hoàn thành. */
+/** What is half-typed at the caret, when it is a completion trigger. */
 export interface Trigger {
   kind: "path" | "command";
-  /** Phần sau dấu dẫn, đã gõ tới con trỏ. */
+  /** The text after the sigil, up to the caret. */
   query: string;
-  /** Vị trí dấu dẫn (`@` hoặc `/`) trong chuỗi. */
+  /** Index of the sigil (`@` or `/`) in the string. */
   start: number;
-  /** Vị trí con trỏ, tức hết phần đã gõ. */
+  /** Caret position, i.e. the end of what has been typed. */
   end: number;
 }
 
-/**
- * Tìm lời gọi hoàn thành tại con trỏ, hoặc `null` khi không có.
- *
- * # Hai luật, và luật thứ hai mới là luật đáng nói
- *
- * `@` mở bộ hoàn thành tệp ở **bất kỳ đâu** miễn là nó đứng đầu một từ. Đứng giữa từ thì
- * không: `a@b` là một địa chỉ thư, không phải một lời gọi.
- *
- * `/` chỉ mở bộ lệnh khi nó là **ký tự đầu tiên của cả ô nhập**. Đây là chỗ dễ làm sai
- * nhất: nới ra thành "đầu một từ" thì mỗi lần gõ một đường dẫn — `src/lib`, `crates/pai-fs`
- * — là một lần bảng lệnh nhảy ra che mất chữ đang gõ, trong đúng một ứng dụng mà đường dẫn
- * là thứ người ta gõ suốt ngày.
- *
- * Có khoảng trắng trong phần đã gõ thì lời gọi kết thúc: người dùng đã đi qua nó rồi.
- */
+/** Find the completion trigger at the caret: `@` at any word start, `/` only as the first character of the input. */
 export function findTrigger(text: string, caret: number): Trigger | null {
   const upto = text.slice(0, caret);
 
-  // Lệnh: cả ô nhập phải bắt đầu bằng `/` và chưa có khoảng trắng nào.
+  // Commands: the whole input must start with `/` and contain no whitespace yet.
   if (upto.startsWith("/")) {
     const query = upto.slice(1);
     if (!/\s/.test(query)) return { kind: "command", query, start: 0, end: caret };
@@ -138,12 +109,7 @@ export function findTrigger(text: string, caret: number): Trigger | null {
   return { kind: "path", query, start: at, end: caret };
 }
 
-/**
- * Thay phần đang gõ dở bằng giá trị đã chọn, và nói con trỏ đi đâu.
- *
- * Thêm một dấu cách ở cuối: gần như lần nào người dùng cũng gõ tiếp sau khi chèn một
- * đường dẫn, và bắt họ tự gõ dấu cách ấy là bắt họ trả một phím cho mỗi lần chèn.
- */
+/** Replace the half-typed trigger with the chosen value and report the new caret; a trailing space is appended. */
 export function applyCompletion(
   text: string,
   trigger: Trigger,

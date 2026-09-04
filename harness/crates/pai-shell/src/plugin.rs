@@ -1,12 +1,5 @@
-//! Mount the shell into the tree.
-//!
-//! The plugin does three things, and the third is the one that matters: provide the
-//! executor, register four tools, and attach a guard that routes `bash` through the ask-
-//! the-user path. Without that guard, `bash` is a tool that runs anything with nobody
-//! given a chance to say no.
-//!
-//! Disposing the plugin kills every background job. A process that outlives the thing that
-//! spawned it is a process nobody remembers to clean up.
+//! Mount the shell into the tree: provide the executor, register four tools, and attach the
+//! guard that routes `bash` through the user. Disposing the plugin kills every background job.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -24,16 +17,7 @@ use crate::tools::bash::Bash;
 use crate::tools::job::{JobKill, JobList, JobOutput};
 use pai_sandbox::Policy;
 
-/// Route every `bash` call through the user.
-///
-/// A middleware rather than a guard, because guards are deliberately **monotonic**: they
-/// only deny or abstain, and cannot open an ask. That is the right design — if a guard
-/// could return `Ask`, registration order would turn a denial into a question, and a
-/// question can be answered yes.
-///
-/// A separate plugin rather than a field on `ToolMeta`, because the policy has to be
-/// removable: a headless build with a real sandbox will swap it for something else, and
-/// nobody should have to edit `bash` to do that.
+/// Route every `bash` call through the user; middleware, since guards cannot open an ask.
 struct AskBeforeShell {
     ctx: Context,
 }
@@ -48,13 +32,9 @@ impl Middleware<PreExecute> for AskBeforeShell {
             if req.name.as_str() != Bash::NAME {
                 return next.run(req).await;
             }
-            // Delegate first, ask second: if a layer below already denied, there is
-            // nothing to ask about, and asking a question whose answer changes nothing
-            // trains the user to click straight through.
+            // Delegate first, ask second: a layer below may already have denied the call.
             match next.run(req).await {
-                // The question has to state the real level of risk. This is the exact
-                // line the user reads before clicking "allow", so anything vague here is
-                // a line that trains them to click through.
+                // The question must state the real risk; this is the line the user reads.
                 PreDecision::Allow => PreDecision::Ask {
                     reason: self.risk(),
                 },
@@ -102,8 +82,7 @@ impl Plugin for ShellPlugin {
     }
 
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
-        // `workspace-write` is the default: a coding agent has to be able to edit the
-        // repo, and nothing outside it. Tighter or looser is a per-session decision.
+        // `workspace-write` by default: edit the repo and nothing outside it.
         let policy = Policy::workspace_write(self.cwd.clone());
         let shell: Arc<dyn ShellExecutor> = Arc::new(LocalShell::new(ctx.clone(), policy));
         ctx.keep(ctx.provide::<Shell>(shell.clone())?);

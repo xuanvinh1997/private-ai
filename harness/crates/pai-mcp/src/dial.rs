@@ -1,14 +1,6 @@
-//! Mở một kết nối tới một server bên thứ ba.
-//!
-//! Tách ra khỏi [`crate::hub`] vì hai lý do khác nhau và cả hai đều đáng:
-//!
-//! - **Giám sát không cần biết transport.** Vòng lặp nối lại, đếm số lần thử, đăng ký và
-//!   gỡ tool giống hệt nhau cho stdio và cho HTTP. Trộn chúng vào nhau là viết vòng lặp
-//!   đó hai lần rồi để hai bản trôi ra khỏi nhau.
-//! - **Bài kiểm chứng nối được vào đây.** Một [`Dialer`] dựng sẵn một server giả trong
-//!   tiến trình qua [`tokio::io::duplex`] cho phép kiểm bất biến tiền tố, bất biến
-//!   best-effort và hot-reload mà không đụng mạng, không đẻ tiến trình con, và không phụ
-//!   thuộc vào một `npx` có trên máy chạy CI hay không.
+//! Open a connection to a third-party server.
+//! Split from [`crate::hub`] so the supervisor loop stays transport-agnostic, and so tests
+//! can dial an in-process fake over [`tokio::io::duplex`] with no network and no child.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -22,19 +14,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::{McpTransport, ServerConfig};
 
-/// Kết nối đi xa tới đâu.
-///
-/// Chỉ dùng cho đúng một quyết định: [`pai_tools::ToolMeta::leaves_device`]. Một server
-/// stdio là một tiến trình khác trên cùng máy — đáng nghi, nhưng dữ liệu chưa rời máy;
-/// một server HTTP thì có. Phân biệt được hai chuyện đó thì cảnh báo "rời máy" mới còn
-/// nghĩa; gộp lại thì nó kêu ở mọi lần gọi và người dùng học cách bỏ qua nó.
+/// How far a connection reaches; used for one decision only, [`pai_tools::ToolMeta::leaves_device`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Reach {
-    /// Cùng tiến trình. Chỉ có trong bài kiểm chứng.
+    /// Same process. Tests only.
     InProcess,
-    /// Tiến trình con trên cùng máy.
+    /// A child process on the same machine.
     ChildProcess,
-    /// Qua mạng.
+    /// Over the network.
     Network,
 }
 
@@ -44,30 +31,24 @@ impl Reach {
     }
 }
 
-/// Cách mở một kết nối. Một lần gọi = một kết nối mới.
+/// How to open a connection; one call means one new connection.
 #[async_trait]
 pub trait Dialer: Send + Sync + 'static {
-    /// `ct` là token của **riêng kết nối này**: huỷ nó là đóng kết nối, và task giám sát
-    /// vẫn được phép nối lại bằng một token con mới.
+    /// `ct` belongs to this connection alone: cancelling it closes the connection, and the supervisor may redial.
     async fn dial(&self, ct: CancellationToken) -> anyhow::Result<RunningService<RoleClient, ()>>;
 
-    /// Mặc định là giả định xấu nhất, cùng tinh thần với [`pai_tools::ToolMeta::default`].
+    /// Defaults to the worst assumption, as [`pai_tools::ToolMeta::default`] does.
     fn reach(&self) -> Reach {
         Reach::Network
     }
 }
 
-/// Cách dựng một [`Dialer`] từ một cấu hình.
-///
-/// Một tầng gián tiếp mỏng, và nó có đúng một lý do: bài kiểm chứng của [`crate::hub`] phải
-/// đi qua **đúng đường `reload` thật** — cùng phép so cấu hình, cùng phép cắm và gỡ — mà
-/// không cần một server MCP thật trên máy chạy CI. Không có nó thì mọi bài về hot-reload
-/// chỉ kiểm được đường `mount_dialer`, tức là kiểm một đường mà người dùng không bao giờ đi.
+/// How to build a [`Dialer`] from a config; one thin indirection so hub tests exercise the real `reload` path.
 pub trait DialerFactory: Send + Sync + 'static {
     fn make(&self, config: &ServerConfig) -> std::sync::Arc<dyn Dialer>;
 }
 
-/// Bản thật: transport lấy đúng từ cấu hình.
+/// The real one: transport taken straight from the config.
 pub struct ConfigDialers;
 
 impl DialerFactory for ConfigDialers {
@@ -76,7 +57,7 @@ impl DialerFactory for ConfigDialers {
     }
 }
 
-/// [`Dialer`] dựng từ cấu hình người dùng khai.
+/// A [`Dialer`] built from the user's declared config.
 pub struct ConfigDialer {
     config: ServerConfig,
 }
@@ -105,8 +86,7 @@ impl Dialer for ConfigDialer {
                 if let Some(dir) = cwd {
                     cmd.current_dir(dir);
                 }
-                // stderr của server đi thẳng ra stderr của ta: một server hỏng thường nói
-                // lý do ở đó, và nuốt nó đi là biến "không nối được" thành một bí ẩn.
+                // The server's stderr passes through: a broken server usually explains itself there.
                 let (transport, _) = TokioChildProcess::builder(cmd)
                     .stderr(Stdio::inherit())
                     .spawn()?;

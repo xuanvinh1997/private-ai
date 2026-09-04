@@ -1,9 +1,5 @@
-//! Invariants of running a command.
-//!
-//! The most important test here is the one about grandchildren. Killing a shell without
-//! killing its descendants is the kind of bug that never announces itself — everything
-//! still looks like it works, except a port is held, a file lock is held, and the next turn
-//! runs on a contaminated machine.
+//! Invariants of running a command. The grandchild test matters most: killing a shell without
+//! its descendants leaves ports and locks held, and nothing about it looks broken.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -13,9 +9,7 @@ use pai_sandbox::Policy;
 use pai_shell::provider::{LocalShell, Request, ShellExecutor};
 use tokio_util::sync::CancellationToken;
 
-/// A shell with no confinement. The tests below check the process tree, not the sandbox;
-/// wrapping another `sandbox-exec` layer around them only makes them measure something
-/// else.
+/// A shell with no confinement: these tests check the process tree, not the sandbox.
 fn shell() -> LocalShell {
     LocalShell::new(Context::root(), Policy::danger_full_access("/tmp"))
 }
@@ -43,7 +37,7 @@ async fn the_exit_code_survives_the_round_trip() {
         .run(request("exit 101", None, CancellationToken::new()))
         .await
         .expect("runs");
-    // A non-zero exit is still a successful run: the command did exactly what it was told.
+    // A non-zero exit is still a successful run: the command did what it was told.
     assert_eq!(failed.exit_code, Some(101));
 }
 
@@ -74,8 +68,7 @@ async fn killing_a_command_kills_its_grandchildren() {
     let marker = std::env::temp_dir().join(format!("pai-grandchild-{}", uuid_like()));
     let _ = std::fs::remove_file(&marker);
 
-    // The grandchild sleeps 30 seconds and only then touches the marker file. If it
-    // survives the kill the file appears; if it dies with its parent, it never does.
+    // The grandchild touches the marker only after 30s, so the file appears iff it survived.
     let command = format!("(sleep 30; touch {}) & sleep 30", marker.display());
     let cancel = CancellationToken::new();
     let token = cancel.clone();
@@ -90,7 +83,7 @@ async fn killing_a_command_kills_its_grandchildren() {
         .expect("runs");
     assert_eq!(run.interrupted.as_deref(), Some("lượt đã bị huỷ"));
 
-    // Wait past the point where the grandchild meant to touch the file. It must not.
+    // Wait past the moment the grandchild meant to touch the file; it must not appear.
     tokio::time::sleep(Duration::from_secs(2)).await;
     assert!(
         !Path::new(&marker).exists(),
@@ -114,7 +107,7 @@ async fn a_timeout_stops_the_command_and_still_returns_what_it_printed() {
         run.interrupted.is_some(),
         "a timeout has to be reported, not swallowed"
     );
-    // What was printed before the stop is still useful and must not be thrown away.
+    // What was printed before the stop is still useful and must survive.
     assert!(
         run.output.contains("bat-dau"),
         "lost output that had already arrived:\n{}",

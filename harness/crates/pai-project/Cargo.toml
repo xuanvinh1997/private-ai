@@ -17,8 +17,7 @@ ignore = { workspace = true }
 futures = { workspace = true }
 tokio-stream = { workspace = true }
 
-# Chỉ để gửi tín hiệu cho cả nhóm tiến trình lúc huỷ clone: giết `git` không giết
-# `git-remote-https` và `ssh` con của nó.
+# Signal the whole process group on clone cancel; killing `git` leaves its helper children alive.
 [target.'cfg(unix)'.dependencies]
 libc = { workspace = true }
 
@@ -26,5 +25,5 @@ libc = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tempfile = { workspace = true }
 futures = { workspace = true }
-# Test migration phải dựng được một cơ sở dữ liệu theo schema cũ bằng tay.
+# The migration test has to hand-build a database on the old schema.
 rusqlite = { workspace = true }

@@ -1,27 +1,6 @@
-//! Một kết nối tới một language server: bắt tay, hỏi–đáp, và chết cho tử tế.
-//!
-//! Bốn bất biến, và mỗi cái đều là một cách hỏng đã thấy trước:
-//!
-//! **1. Không truy vấn nào đi trước cái bắt tay.** [`Client::request`] từ chối mọi phương
-//! thức khi cờ `ready` chưa bật, và cờ đó chỉ bật sau khi `initialize` có trả lời *và*
-//! `initialized` đã gửi đi. Một `textDocument/definition` gửi sớm không được server trả
-//! lời tử tế — nó bị coi là lỗi giao thức, và tuỳ server mà kết nối bị đóng hoặc câu hỏi
-//! bị nuốt. Cái giá của việc kiểm là một `AtomicBool`; cái giá của việc không kiểm là một
-//! lỗi chỉ hiện ra trên máy của người dùng nào có server khởi động chậm hơn ta.
-//!
-//! **2. Server chết là mọi câu hỏi đang treo được trả lời ngay.** Task đọc, khi ống đóng,
-//! **rót lỗi vào mọi `oneshot` đang chờ** trước khi thoát. Không làm vậy thì mỗi câu hỏi
-//! dở dang phải chờ hết hạn của chính nó — sáu mươi giây nhìn vào một tiến trình đã không
-//! còn tồn tại.
-//!
-//! **3. Yêu cầu từ server luôn được trả lời.** Kể cả yêu cầu ta không hiểu, và lúc đó câu
-//! trả lời là một lỗi `MethodNotFound` đúng chuẩn. Một `id` không bao giờ được hồi đáp là
-//! một server ngồi chờ vô hạn, và với `rust-analyzer` thì đó là cả việc nạp workspace
-//! dừng lại.
-//!
-//! **4. "Đang bận" là một sự thật được ghi lại, không phải một phỏng đoán.** `$/progress`
-//! là cơ chế chuẩn của LSP 3.15; ta đếm token đang mở và đó là toàn bộ cơ sở để nói câu
-//! "server còn đang lập chỉ mục". Không có chỗ nào trong crate này đoán theo tên server.
+//! One connection to a language server: handshake, request/response, and a clean death.
+//! Four invariants: no query before the handshake; a dead server fails every pending call
+//! at once; every server request is answered; and "busy" comes from `$/progress`, not guesswork.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -38,11 +17,7 @@ use crate::error::LspError;
 use crate::launch::Channel;
 use crate::proto;
 
-/// Một chẩn đoán đúng như server gửi: 0-based, cột tính bằng đơn vị mã UTF-16.
-///
-/// Giữ nguyên toạ độ của giao thức tới tận chỗ có tệp trong tay để đổi. Đổi sớm, ngay
-/// trong task đọc, thì phải đi đọc đĩa từ trong đó — và một lần đọc đĩa chậm ở đấy làm
-/// nghẽn mọi tin đang tới trên cùng một ống.
+/// A diagnostic exactly as the server sent it: 0-based, columns in UTF-16 code units; converted only where the file is at hand, since disk reads must not stall the reader task.
 #[derive(Clone, Debug)]
 pub struct RawNote {
     pub line: u32,
@@ -55,19 +30,17 @@ pub struct RawNote {
 type Sink = Arc<tokio::sync::Mutex<Box<dyn AsyncWrite + Send + Unpin>>>;
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, LspError>>>>>;
 
-/// Thứ mà cả task đọc lẫn [`Client`] cùng nhìn.
+/// What the reader task and [`Client`] both see.
 struct State {
     label: String,
     alive: AtomicBool,
-    /// Vì sao chết. Đọc được trong thông báo lỗi, nên nó phải là một câu chứ không phải
-    /// một mã số.
+    /// Why it died; it is read in error messages, so it must be a sentence rather than a code.
     cause: Mutex<String>,
-    /// `uri` → (số thứ tự lần đăng, chẩn đoán). Số thứ tự để phân biệt "server chưa nói
-    /// gì" với "server nói rằng không có lỗi nào" — hai chuyện khác hẳn nhau.
+    /// `uri` -> (publish sequence, diagnostics); the sequence separates "server said nothing" from "server said there are no errors".
     diagnostics: Mutex<HashMap<String, (u64, Vec<RawNote>)>>,
     stamp: AtomicI64,
     fresh: Notify,
-    /// Token `$/progress` đang mở.
+    /// Open `$/progress` tokens.
     busy: Mutex<HashSet<String>>,
 }
 
@@ -80,18 +53,15 @@ impl State {
         for tx in taken {
             let _ = tx.send(Err(LspError::Dead(self.label.clone(), reason.clone())));
         }
-        // Đánh thức cả người đang chờ chẩn đoán: họ chờ một thứ sẽ không bao giờ tới nữa.
+        // Wake the diagnostics waiters too: they are waiting for something that will never arrive.
         self.fresh.notify_waiters();
     }
 }
 
-/// Một tài liệu ta đã mở với server.
+/// A document we have opened with the server.
 struct Doc {
     version: i64,
-    /// Vân tay nội dung lần gửi gần nhất. Tệp trên đĩa đổi giữa hai câu hỏi — mô hình vừa
-    /// `edit` xong rồi hỏi lỗi biên dịch là đường đi thường nhất — và một server còn giữ
-    /// bản cũ trong bộ nhớ sẽ trả lời về mã không còn tồn tại. So vân tay rẻ hơn gửi lại
-    /// cả tệp mỗi lần, và đúng hơn nhiều so với không gửi gì.
+    /// Content fingerprint of the last send; the file changes between questions, and a server holding the old copy would answer about code that no longer exists.
     digest: u64,
 }
 
@@ -108,7 +78,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Dựng client và bắt đầu đọc. **Chưa** bắt tay — xem [`Client::handshake`].
+    /// Build the client and start reading. No handshake yet - see [`Client::handshake`].
     pub fn start(label: impl Into<String>, channel: Channel) -> Arc<Client> {
         let label = label.into();
         let Channel {
@@ -157,7 +127,7 @@ impl Client {
         self.state.alive.load(Ordering::SeqCst)
     }
 
-    /// Server còn đang làm một việc dài (nạp workspace, lập chỉ mục).
+    /// Is the server still doing something long (loading a workspace, indexing)?
     pub fn busy(&self) -> bool {
         !self.state.busy.lock().is_empty()
     }
@@ -166,7 +136,7 @@ impl Client {
         LspError::Dead(self.label.clone(), self.state.cause.lock().clone())
     }
 
-    /// `initialize` → `initialized`. Chỉ sau hàm này client mới nhận truy vấn.
+    /// `initialize` -> `initialized`. Only after this does the client accept queries.
     pub async fn handshake(
         &self,
         root: &std::path::Path,
@@ -178,8 +148,7 @@ impl Client {
             "processId": std::process::id(),
             "clientInfo": { "name": "private-ai-harness", "version": env!("CARGO_PKG_VERSION") },
             "rootUri": root_uri,
-            // `rootPath` đã bị spec bỏ từ lâu nhưng vài server vẫn chỉ đọc nó. Gửi cả hai
-            // rẻ hơn nhiều so với việc dò xem server nào thuộc nhóm nào.
+            // `rootPath` was deprecated long ago but some servers read only it; sending both is cheaper than detecting which.
             "rootPath": root.display().to_string(),
             "workspaceFolders": [{
                 "uri": root_uri,
@@ -187,9 +156,7 @@ impl Client {
             }],
             "capabilities": {
                 "workspace": {
-                    // Khai `true` rồi trả lời `null` là hợp lệ và có nghĩa "dùng mặc định
-                    // của anh". Khai `false` thì vài server dừng luôn phần cấu hình động
-                    // và chạy ở một chế độ nghèo hơn mà không nói gì.
+                    // Declaring `true` and answering `null` means "use your defaults"; declaring `false` silently degrades some servers.
                     "configuration": true,
                     "workspaceFolders": true,
                 },
@@ -200,8 +167,7 @@ impl Client {
                     "hover": { "contentFormat": ["markdown", "plaintext"] },
                     "publishDiagnostics": { "relatedInformation": false },
                 },
-                // Đây là thứ mở đường cho `$/progress`, và `$/progress` là toàn bộ cơ sở
-                // để ta nói được "server còn đang lập chỉ mục" thay vì "không tìm thấy gì".
+                // This is what enables `$/progress`, and `$/progress` is the whole basis for saying "still indexing" instead of "nothing found".
                 "window": { "workDoneProgress": true },
             },
             "initializationOptions": options,
@@ -213,7 +179,7 @@ impl Client {
         Ok(result)
     }
 
-    /// Một truy vấn. Từ chối nếu chưa bắt tay xong — xem bất biến 1 ở đầu tệp.
+    /// One query. Refused before the handshake completes - see invariant 1 at the top of the file.
     pub async fn request(
         &self,
         method: &str,
@@ -221,9 +187,7 @@ impl Client {
         timeout: Duration,
     ) -> Result<Value, LspError> {
         if !self.ready.load(Ordering::SeqCst) {
-            // Lỗi của **ta**, không của server: một chỗ trong harness đã hỏi trước khi bắt
-            // tay xong. Nói ra như vậy thay vì mượn câu "server chưa sẵn sàng", vì hai
-            // chuyện đó được sửa ở hai nơi khác nhau.
+            // Our bug, not the server's: something in the harness asked too early, and the two are fixed in different places.
             return Err(LspError::Protocol(format!(
                 "harness gửi `{method}` tới `{}` trước khi bắt tay xong",
                 self.label
@@ -258,7 +222,7 @@ impl Client {
 
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
-            // Đầu gửi bị thả mà không gửi gì: chỉ xảy ra khi task đọc thoát giữa chừng.
+            // The sender was dropped without sending: only happens when the reader task exits mid-flight.
             Ok(Err(_)) => Err(self.dead()),
             Err(_) => {
                 self.pending.lock().remove(&id);
@@ -277,16 +241,14 @@ impl Client {
         match proto::write_message(&mut *sink, message).await {
             Ok(()) => Ok(()),
             Err(err) => {
-                // Ghi hỏng nghĩa là đầu kia đã đóng. Tuyên bố chết ngay tại đây chứ không
-                // chờ task đọc phát hiện ra: người gọi đang cầm lỗi này trong tay, và câu
-                // hỏi tiếp theo không nên được gửi vào một cái ống đã đứt.
+                // A failed write means the far end is closed; declare death here rather than waiting for the reader task to notice.
                 self.state.die(err.to_string(), &self.pending);
                 Err(self.dead())
             }
         }
     }
 
-    /// Bảo đảm server đang giữ đúng nội dung của tệp này.
+    /// Make sure the server is holding this file's current contents.
     pub async fn sync_document(
         &self,
         uri: &str,
@@ -294,9 +256,7 @@ impl Client {
         text: &str,
     ) -> Result<(), LspError> {
         let digest = fingerprint(text);
-        // Khoá bất đồng bộ và giữ qua cả lần gửi: hai truy vấn chồng nhau trên cùng một
-        // tệp mà cùng thấy "chưa mở" sẽ gửi `didOpen` hai lần, và một server nhận hai
-        // `didOpen` cho một URI là một server có hai bản của cùng một tài liệu.
+        // Async lock held across the send: two overlapping queries on one file would otherwise both send `didOpen` and give the server two copies.
         let mut docs = self.docs.lock().await;
         match docs.get(uri) {
             None => {
@@ -315,9 +275,7 @@ impl Client {
                     "textDocument/didChange",
                     json!({
                         "textDocument": { "uri": uri, "version": version },
-                        // Thay cả tệp, không gửi delta: ta không theo dõi từng phím gõ,
-                        // ta chỉ biết tệp trên đĩa đã khác. Dựng một delta từ hai bản đầy
-                        // đủ là làm thêm việc để gửi đi ít byte hơn trên một ống nội bộ.
+                        // Replace the whole file rather than sending a delta: we track disk state, not keystrokes, over a local pipe.
                         "contentChanges": [{ "text": text }],
                     }),
                 )
@@ -329,7 +287,7 @@ impl Client {
         Ok(())
     }
 
-    /// Số thứ tự lần đăng chẩn đoán gần nhất cho `uri`. Không có thì `0`.
+    /// Sequence number of the latest diagnostics publish for `uri`, or `0`.
     pub fn diagnostics_stamp(&self, uri: &str) -> u64 {
         self.state
             .diagnostics
@@ -339,7 +297,7 @@ impl Client {
             .unwrap_or(0)
     }
 
-    /// Lần đăng gần nhất, không chờ. `None` là server chưa từng nói gì về tệp này.
+    /// The latest publish, without waiting. `None` means the server never spoke about this file.
     pub fn diagnostics(&self, uri: &str) -> Option<Vec<RawNote>> {
         self.state
             .diagnostics
@@ -348,7 +306,7 @@ impl Client {
             .map(|(_, notes)| notes.clone())
     }
 
-    /// Chờ một lần đăng **mới hơn** `since`. `None` là hết giờ mà server chưa nói gì.
+    /// Wait for a publish newer than `since`. `None` means the wait timed out.
     pub async fn wait_diagnostics(
         &self,
         uri: &str,
@@ -357,8 +315,7 @@ impl Client {
     ) -> Option<Vec<RawNote>> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            // Đăng ký chờ **trước** khi xem, nếu không một lần đăng chen vào giữa hai
-            // bước sẽ mất và ta ngồi chờ hết giờ với câu trả lời đã nằm sẵn trong tay.
+            // Register the waiter *before* looking, or a publish slipping between the two steps is lost and we wait out the timeout.
             let waiter = self.state.fresh.notified();
             if let Some((stamp, notes)) = self.state.diagnostics.lock().get(uri)
                 && *stamp > since
@@ -374,11 +331,7 @@ impl Client {
         }
     }
 
-    /// `shutdown` → `exit` → giết nếu cần.
-    ///
-    /// Ba bước chứ không một, vì mỗi bước bắt một loại server: cái ngoan thoát ở bước hai,
-    /// cái đang kẹt trong một vòng lặp dài thì không, và cái đã chết rồi thì bước một
-    /// hỏng ngay và ta đi thẳng xuống bước ba.
+    /// `shutdown` -> `exit` -> kill if needed; three steps because each catches a different kind of server.
     pub async fn shutdown(&self) {
         if self.alive() {
             let _ = self
@@ -393,7 +346,7 @@ impl Client {
         if let Some(mut child) = child {
             let quit = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
             if quit.is_err() {
-                tracing::warn!(server = %self.label, "language server không thoát sau `exit`; giết nó");
+                tracing::warn!(server = %self.label, "language server did not exit after `exit`; killing it");
                 let _ = child.kill().await;
             }
         }
@@ -401,9 +354,7 @@ impl Client {
     }
 }
 
-/// FNV-1a. Không cần chống va chạm có chủ ý — nó chỉ trả lời "tệp có đổi không" giữa hai
-/// lần hỏi của cùng một phiên, và một dependency mật mã cho việc đó là trả tiền cho thứ
-/// không dùng. Cùng lý lẽ với `pai-index::plugin::db_name`.
+/// FNV-1a; it only answers "did the file change between two questions", so a cryptographic dependency would be paying for something unused.
 fn fingerprint(text: &str) -> u64 {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
     for byte in text.as_bytes() {
@@ -413,7 +364,7 @@ fn fingerprint(text: &str) -> u64 {
     hash
 }
 
-/// Task đọc: một tin một vòng, cho tới khi ống đóng.
+/// Reader task: one message per iteration, until the pipe closes.
 async fn pump(
     reader: Box<dyn AsyncRead + Send + Unpin>,
     sink: Sink,
@@ -441,10 +392,10 @@ async fn dispatch(message: Value, sink: &Sink, pending: &Pending, state: &Arc<St
     let method = message.get("method").and_then(Value::as_str);
 
     match (id, method) {
-        // Trả lời cho câu ta hỏi.
+        // A reply to something we asked.
         (Some(id), None) => {
             let Some(tx) = pending.lock().remove(&id) else {
-                tracing::debug!(server = %state.label, id, "trả lời cho một câu hỏi đã bỏ");
+                tracing::debug!(server = %state.label, id, "reply for a query that was already abandoned");
                 return;
             };
             let outcome = match message.get("error") {
@@ -453,7 +404,7 @@ async fn dispatch(message: Value, sink: &Sink, pending: &Pending, state: &Arc<St
             };
             let _ = tx.send(outcome);
         }
-        // Server hỏi ngược lại. Luôn phải trả lời — xem bất biến 3.
+        // The server is asking us. Always answer - see invariant 3.
         (Some(id), Some(method)) => {
             let result = answer(method, &message, state);
             let reply = match result {
@@ -470,25 +421,21 @@ async fn dispatch(message: Value, sink: &Sink, pending: &Pending, state: &Arc<St
             }
         }
         (None, Some(method)) => notice(method, &message, state),
-        (None, None) => tracing::debug!(server = %state.label, "tin không có `id` lẫn `method`"),
+        (None, None) => tracing::debug!(server = %state.label, "message has neither `id` nor `method`"),
     }
 }
 
-/// Trả lời một yêu cầu của server. `None` = ta không cài phương thức đó.
+/// Answer a server request. `None` = we do not implement that method.
 fn answer(method: &str, message: &Value, state: &Arc<State>) -> Option<Value> {
     match method {
-        // Server xin một token tiến trình. Ghi nhận ngay ở đây chứ không đợi `$/progress`
-        // với `kind: "begin"`: giữa hai tin đó là đúng khoảng thời gian ta hay bị hỏi, và
-        // trả lời "rảnh" trong khoảng đó là nói sai về một việc đang bắt đầu.
+        // The server wants a progress token; record it here rather than at `$/progress` `begin`, since we are often asked in exactly that gap.
         "window/workDoneProgress/create" => {
             if let Some(token) = message.pointer("/params/token") {
                 state.busy.lock().insert(token_key(token));
             }
             Some(Value::Null)
         }
-        // `null` cho mỗi mục nghĩa là "không có cấu hình riêng, dùng mặc định". Đó là câu
-        // trả lời đúng: harness không có tệp cấu hình cho từng language server, và bịa ra
-        // một cái ở đây là làm thay người dùng một lựa chọn họ chưa nói gì về nó.
+        // `null` per item means "no specific configuration, use defaults"; the harness has no per-server config file and must not invent one.
         "workspace/configuration" => {
             let count = message
                 .pointer("/params/items")
@@ -498,8 +445,7 @@ fn answer(method: &str, message: &Value, state: &Arc<State>) -> Option<Value> {
             Some(Value::Array(vec![Value::Null; count]))
         }
         "workspace/workspaceFolders" => Some(Value::Null),
-        // Ta không có sổ đăng ký khả năng động; nhận rồi bỏ qua là đúng, vì mọi phương
-        // thức ta gọi đều là phương thức tĩnh của spec.
+        // We have no dynamic capability registry; accepting and ignoring is right, since every method we call is static in the spec.
         "client/registerCapability" | "client/unregisterCapability" => Some(Value::Null),
         "window/showMessageRequest" => Some(Value::Null),
         _ => None,
@@ -548,11 +494,11 @@ fn notice(method: &str, message: &Value, state: &Arc<State>) {
                 tracing::debug!(server = %state.label, "{text}");
             }
         }
-        _ => tracing::trace!(server = %state.label, method, "thông báo bỏ qua"),
+        _ => tracing::trace!(server = %state.label, method, "notification ignored"),
     }
 }
 
-/// Token tiến trình là `string | integer`. Quy về chuỗi để một `HashSet` là đủ.
+/// A progress token is `string | integer`; normalize to a string so one `HashSet` suffices.
 fn token_key(token: &Value) -> String {
     match token {
         Value::String(text) => text.clone(),
@@ -570,9 +516,7 @@ fn raw_note(item: &Value) -> RawNote {
             .pointer("/range/start/character")
             .and_then(Value::as_u64)
             .unwrap_or(0) as u32,
-        // Spec cho phép vắng `severity`, và lúc đó "client tự quyết". Coi nó là lỗi là
-        // chiều sai an toàn: một cảnh báo bị báo thành lỗi làm mô hình đi xem, một lỗi bị
-        // báo thành gợi ý làm nó bỏ qua.
+            // The spec allows a missing `severity`, leaving it to the client; treating it as an error is the safe direction.
         severity: item.get("severity").and_then(Value::as_u64).unwrap_or(1),
         source: item
             .get("source")

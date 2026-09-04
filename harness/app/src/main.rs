@@ -1,4 +1,4 @@
-// Cửa sổ console trên Windows chỉ hữu ích khi debug, nên bản release không mở nó.
+// A Windows console window is only useful while debugging, so release builds do not open one.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {

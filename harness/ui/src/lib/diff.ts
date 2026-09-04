@@ -1,23 +1,14 @@
+import { S, t } from "./i18n";
 import type { DiffHunk } from "./protocol";
 
-/**
- * Dựng khối diff dạng *stacked block*, không phải unified diff.
- *
- * Ba luật chép từ bản web của dsh, và cả ba đều có lý do:
- *   1. Không side-by-side — chat rộng ~720px, hai cột thì mỗi cột hết chỗ thở.
- *   2. Không ký tự `+`/`-` ở đầu dòng. Màu nền phân biệt thêm/xoá; ký tự prefix chỉ
- *      tồn tại trong văn bản nút Copy sinh ra. Người dùng bôi đen một dòng trên màn
- *      hình rồi dán vào editor phải ra đúng dòng mã, không ra dòng mã có rác ở đầu.
- *   3. Toàn bộ dòng cũ trước, rồi toàn bộ dòng mới — không trộn xen kẽ. Mắt đọc "trước"
- *      rồi "sau", không phải nhảy qua lại từng dòng.
- */
+/** Stacked-block diffs, not unified: no side-by-side at ~720px, no `+`/`-` prefixes on screen, old lines then new. */
 
 export type DiffRow =
   | { kind: "path"; text: string; oldNo: null; newNo: null }
   | { kind: "del" | "add"; text: string; oldNo: number | null; newNo: number | null }
   | { kind: "gap"; text: string; oldNo: null; newNo: null };
 
-/** Tách dòng, bỏ dòng rỗng cuối do `\n` kết thúc tệp sinh ra. */
+/** Split into lines, dropping the empty last line left by a trailing `\n`. */
 function lines(text: string): string[] {
   const out = text.split("\n");
   if (out.length > 1 && out[out.length - 1] === "") out.pop();
@@ -40,8 +31,7 @@ export function diffRows(diffs: DiffHunk[]): DiffRow[] {
   const rows: DiffRow[] = [];
   let previousPath: string | null = null;
   for (const hunk of diffs) {
-    // Hunk kế tiếp trong cùng một tệp chỉ cần dấu ⋯: lặp lại đường dẫn dài ở mỗi hunk
-    // đẩy nội dung thật xuống dưới nếp gấp.
+    // A following hunk in the same file only needs an ellipsis; repeating a long path pushes content below the fold.
     rows.push({
       kind: "path",
       text: hunk.path === previousPath ? "⋯" : hunk.path,
@@ -64,11 +54,7 @@ export function diffRows(diffs: DiffHunk[]): DiffRow[] {
   return rows;
 }
 
-/**
- * Cắt bớt phần giữa khi khối quá cao. Cùng số học với khối terminal: nửa trên làm tròn
- * lên, phần còn lại xuống dưới — nên với `maxLines` lẻ thì phần đầu dài hơn, và đó là
- * phần người ta đọc thật.
- */
+/** Fold out the middle when the block is too tall; the head rounds up, since that is the part actually read. */
 export function foldRows(rows: DiffRow[], maxLines: number): DiffRow[] {
   if (rows.length <= maxLines) return rows;
   const head = Math.ceil(maxLines / 2);
@@ -76,15 +62,12 @@ export function foldRows(rows: DiffRow[], maxLines: number): DiffRow[] {
   const hidden = rows.length - head - tail;
   return [
     ...rows.slice(0, head),
-    { kind: "gap", text: `⋯ ẩn ${hidden} dòng`, oldNo: null, newNo: null } satisfies DiffRow,
+    { kind: "gap", text: t(S.libs.diff.gap, { n: hidden }), oldNo: null, newNo: null } satisfies DiffRow,
     ...(tail > 0 ? rows.slice(rows.length - tail) : []),
   ];
 }
 
-/**
- * Văn bản cho nút Copy. Đây là chỗ *duy nhất* `+`/`-` được sinh ra: dán vào chỗ khác
- * thì người ta mong một unified diff, còn trên màn hình thì mong mã sạch.
- */
+/** Text for the Copy button, the *only* place `+`/`-` prefixes are produced: pasted output should be a unified diff. */
 export function diffToText(diffs: DiffHunk[]): string {
   const parts: string[] = [];
   for (const hunk of diffs) {
@@ -96,13 +79,7 @@ export function diffToText(diffs: DiffHunk[]): string {
   return parts.join("\n");
 }
 
-/**
- * Diff *dự kiến*, suy từ đối số của tool khi nó còn đang chạy.
- *
- * Người dùng thấy được thay đổi sắp xảy ra trước cả khi tệp bị đụng vào — quan trọng
- * nhất đúng lúc hộp thoại duyệt đang mở. Khi `tool/result` về thì `meta.diffs` (diff
- * đã áp thật) thay chỗ, vì tool có quyền ghi khác điều nó nói.
- */
+/** *Intended* diff, inferred from tool arguments mid-run; `meta.diffs` replaces it once `tool/result` arrives. */
 export function intendedDiffs(name: string, args: unknown): DiffHunk[] | null {
   if (args === null || typeof args !== "object") return null;
   const bag = args as Record<string, unknown>;

@@ -1,54 +1,30 @@
-//! Bộ đệm đầu ra có trần.
-//!
-//! Một máy chủ phát triển in ra hàng giờ, và không ai đọc phần giữa. Ba quyết định:
-//!
-//! **Giữ phần mới nhất.** Dòng cuối là dòng nói vì sao mọi thứ dừng lại; dòng đầu là dòng
-//! nói phiên bản của một thư viện.
-//!
-//! **Nói ra phần đã bỏ.** Cắt trong im lặng để mô hình kết luận trên một bản ghi thiếu mà
-//! không biết là thiếu — nó sẽ đọc "không có lỗi nào" từ một khoảng trống. Nên [`Page`]
-//! mang theo số dòng đã rơi, và tool in nó ra thành chữ.
-//!
-//! **`\r` lẻ ghi đè thay vì xuống dòng.** Một thanh tiến trình vẽ lại chính nó hàng nghìn
-//! lần bằng carriage return. Coi mỗi lần vẽ lại là một dòng mới thì cái trần bị một thanh
-//! tiến trình duy nhất ăn hết, và thứ bị đẩy ra ngoài là mọi thứ đáng đọc.
-//!
-//! Nhưng `\r\n` thì là **một** lần xuống dòng, không phải một lần xoá rồi một lần xuống
-//! dòng. Đây không phải chuyện lý thuyết: một PTY ở chế độ cooked bật `ONLCR`, nên mọi
-//! `\n` mà chương trình in ra tới đây thành `\r\n`. Xử lý `\r` trước rồi mới nhìn `\n` sẽ
-//! xoá sạch từng dòng ngay trước khi ghi nó xuống — và cái hỏng ra là một bộ đệm đầy dòng
-//! rỗng, đúng số dòng, đúng thứ tự, không một chữ nào.
-//!
-//! Đây là chỗ duy nhất trong crate có mùi mô phỏng terminal, và nó dừng đúng ở đây: mô
-//! phỏng đủ để cái trần có nghĩa, không đi xa hơn.
+//! Capped output buffer: keep the newest lines and report how many were dropped.
+//! A lone `\r` redraws the current line so one progress bar cannot eat the cap, while `\r\n`
+//! stays a single newline -- a cooked PTY with `ONLCR` turns every `\n` into `\r\n`.
 
 use std::collections::VecDeque;
 
-/// Trần cho một dòng chưa kết thúc, tính bằng byte.
-///
-/// Một chương trình in ra hàng megabyte không có `\n` nào không được phép biến bộ đệm
-/// "có trần" thành một chuỗi lớn vô hạn.
+/// Byte cap for an unterminated line, so a program printing megabytes without `\n` cannot grow the buffer without bound.
 const MAX_PENDING: usize = 64 * 1024;
 
-/// Một trang đọc ra từ bộ đệm.
+/// One page read out of the buffer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Page {
     pub lines: Vec<String>,
-    /// Tổng số dòng đã bị bỏ vì vượt trần, tính từ lúc mở phiên.
+    /// Total lines dropped for exceeding the cap since the session opened.
     pub dropped: usize,
-    /// Số dòng đang có trong bộ đệm.
+    /// Lines currently held in the buffer.
     pub retained: usize,
 }
 
-/// Vòng đệm theo dòng.
+/// Line-oriented ring buffer.
 pub struct Ring {
     lines: VecDeque<String>,
     pending: String,
-    /// Đã thấy `\r` và chưa biết ký tự sau nó là gì. Xem [`Ring::push`].
+    /// Saw a `\r` and does not yet know the next char. See [`Ring::push`].
     after_cr: bool,
     dropped: usize,
-    /// Tổng số dòng từng được ghi vào, kể cả những dòng đã rơi ra ngoài. Đây là cái đồng
-    /// hồ mà [`crate::provider`] dùng để trả lời "có gì mới kể từ lúc tôi gửi lệnh".
+    /// Every line ever committed, dropped ones included; the clock [`crate::provider`] uses to answer "what is new".
     produced: u64,
     max_lines: usize,
 }
@@ -61,13 +37,12 @@ impl Ring {
             after_cr: false,
             dropped: 0,
             produced: 0,
-            // Một trần bằng 0 biến mọi lần ghi thành một lần bỏ, và cái đó thì không ai
-            // muốn kể cả khi đã gõ ra.
+            // A cap of 0 would turn every write into a drop, which nobody wants even if they typed it.
             max_lines: max_lines.max(1),
         }
     }
 
-    /// Số dòng đã hoàn tất từ trước tới giờ. Đơn điệu tăng.
+    /// Completed lines so far. Monotonically increasing.
     pub fn produced(&self) -> u64 {
         self.produced
     }
@@ -76,16 +51,11 @@ impl Ring {
         self.dropped
     }
 
-    /// Nuốt một mẩu byte từ PTY.
-    ///
-    /// Giải mã lossy chứ không từ chối: một mẩu có thể cắt ngang một ký tự nhiều byte, và
-    /// vứt cả mẩu vì một ký tự dở là mất một dòng lỗi để đổi lấy sự chính xác về mã hoá.
+    /// Swallow a byte chunk from the PTY. Lossy decoding, since a chunk may split a multi-byte char.
     pub fn push(&mut self, chunk: &[u8]) {
         for ch in String::from_utf8_lossy(chunk).chars() {
             match ch {
-                // Quyết định hoãn lại tới ký tự sau: chỉ lúc đó mới biết đây là `\r` lẻ
-                // hay là nửa đầu của `\r\n`. Cờ sống qua các lần `push` vì một mẩu byte
-                // được phép kết thúc đúng giữa hai nửa ấy.
+                // Defer the decision to the next char: only then is a lone `\r` distinguishable from `\r\n`.
                 '\r' => self.after_cr = true,
                 '\n' => {
                     self.after_cr = false;
@@ -115,11 +85,8 @@ impl Ring {
         }
     }
 
-    /// Trang tính từ dòng mới nhất về sau. `offset = 0` là trang mới nhất.
-    ///
-    /// Dòng dở dang cũng được trả về, vì lời nhắc của shell và câu hỏi "y/n" của một tiện
-    /// ích đều là những dòng không bao giờ có `\n` — và đó chính là những dòng mà người
-    /// đọc cần thấy nhất.
+    /// A page counting back from the newest line; `offset = 0` is the newest. The pending line is included,
+    /// because shell prompts and "y/n" questions never end in `\n`.
     pub fn page(&self, offset: usize, count: usize) -> Page {
         let mut all: Vec<&str> = self.lines.iter().map(String::as_str).collect();
         if !self.pending.is_empty() {
@@ -134,10 +101,7 @@ impl Ring {
         }
     }
 
-    /// Mọi dòng hoàn tất kể từ mốc `since` (một giá trị [`Ring::produced`] đã lấy trước đó).
-    ///
-    /// Mốc nằm trong phần đã rơi thì trả về những gì còn giữ được: một câu trả lời thiếu
-    /// nhưng nói được là thiếu vẫn hơn một câu trả lời trống.
+    /// Completed lines since the `since` mark (an earlier [`Ring::produced`]); if the mark has been dropped, returns what is left.
     pub fn since(&self, since: u64) -> Vec<String> {
         let fresh = self.produced.saturating_sub(since) as usize;
         let take = fresh.min(self.lines.len());
@@ -153,8 +117,7 @@ impl Ring {
         out
     }
 
-    /// Quên hết. Dùng đúng một lần, sau khi phiên đã được mồi xong — xem
-    /// [`crate::session`].
+    /// Forget everything. Used exactly once, after the session finishes priming -- see [`crate::session`].
     pub fn reset(&mut self) {
         self.lines.clear();
         self.pending.clear();
@@ -182,7 +145,7 @@ mod tests {
         assert_eq!(ring.page(0, 10).lines, vec!["100%", "xong"]);
     }
 
-    /// PTY ở chế độ cooked bật `ONLCR`, nên đây là hình dạng thật của mọi dòng đi qua đây.
+    /// A cooked PTY sets `ONLCR`, so this is the real shape of every line arriving here.
     #[test]
     fn crlf_la_mot_lan_xuong_dong_chu_khong_phai_mot_lan_xoa() {
         let mut ring = Ring::new(10);
@@ -190,7 +153,7 @@ mod tests {
         assert_eq!(ring.page(0, 10).lines, vec!["mot", "hai"]);
     }
 
-    /// Một mẩu byte được phép kết thúc đúng giữa `\r` và `\n`.
+    /// A byte chunk may end exactly between `\r` and `\n`.
     #[test]
     fn crlf_bi_cat_giua_hai_mau_van_la_mot_dong() {
         let mut ring = Ring::new(10);

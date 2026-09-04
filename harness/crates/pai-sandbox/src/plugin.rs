@@ -1,15 +1,6 @@
-//! Mount the sandbox into the tree.
-//!
-//! The plugin does not choose the policy — it only mounts a provider. The policy
-//! (`read-only` or `workspace-write`) belongs to the session, because one machine can run a
-//! read-only agent next to an agent allowed to edit the repo, and both share exactly one
-//! sandbox.
-//!
-//! Having no provider at all is a **valid** state, not a config error: test runs and runs on
-//! unsupported operating systems both land there. Consumers have to handle an empty seam,
-//! and `for_this_machine` always returns a provider with a reason rather than returning
-//! nothing — "nobody answered" and "the answer is that confinement is unavailable" are two
-//! different sentences as far as the approval dialog is concerned.
+//! Mount the sandbox into the tree. The plugin mounts a provider only; the policy belongs to
+//! the session, so one machine can run a read-only agent beside an editing one. An empty seam
+//! is valid, and `for_this_machine` always answers with a provider carrying a reason.
 
 use std::sync::Arc;
 
@@ -36,8 +27,7 @@ impl SandboxPlugin {
         SandboxPlugin::default()
     }
 
-    /// A caller-supplied provider. For tests, and for remote runs where the sandbox lives
-    /// at the far end rather than on this machine.
+    /// A caller-supplied provider, for tests and for runs sandboxed on a remote machine.
     pub fn with_provider(provider: Arc<dyn SandboxProvider>) -> SandboxPlugin {
         SandboxPlugin { provider }
     }
@@ -52,8 +42,7 @@ impl Plugin for SandboxPlugin {
     async fn apply(&self, ctx: &Context) -> anyhow::Result<()> {
         let enforcement = self.provider.enforcement();
         match enforcement.reason() {
-            // Logged at `warn`, not `info`: an installation running unconfined with
-            // nobody noticing is precisely the situation `Enforcement` exists to prevent.
+            // `warn`, not `info`: running unconfined unnoticed is what `Enforcement` prevents.
             Some(reason) => {
                 tracing::warn!(
                     mode = enforcement.label(),

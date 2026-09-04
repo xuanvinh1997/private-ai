@@ -1,8 +1,5 @@
-//! Command output is large output too.
-//!
-//! A `cargo build` or a red test suite emits a few hundred KiB, and the tail — the exit
-//! code, the last error line — is the most valuable part. Head-only truncation here
-//! teaches the model that a command producing ten thousand lines has no outcome at all.
+//! Command output is large output too. A build or a red test suite emits hundreds of KiB and
+//! the tail holds the outcome, so head-only truncation would hide every command's result.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,8 +19,7 @@ fn call(args: Value) -> Invocation {
     Invocation::new(ToolName::from("bash"), "c1", map)
 }
 
-/// Locks in: **long output is folded, not truncated** — head and tail both survive, the
-/// full text goes to the store, and the result says how to fetch the rest.
+/// Long output folds rather than truncates: head and tail survive and the full text is stored.
 #[tokio::test]
 async fn very_long_bash_output_is_folded_and_spilled_to_the_store() {
     let ctx = Context::root();
@@ -95,8 +91,7 @@ async fn very_long_bash_output_is_folded_and_spilled_to_the_store() {
     );
 }
 
-/// Locks in: **output within budget passes through untouched** — no ticket, no mention of
-/// truncation. Without this test, "always truncate" would make the one above pass too.
+/// Output within budget passes through untouched, so "always fold" cannot pass the test above.
 #[tokio::test]
 async fn short_output_passes_through_and_mints_no_ticket() {
     let ctx = Context::root();

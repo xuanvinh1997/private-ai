@@ -12,20 +12,8 @@ export interface PendingApproval {
   timeoutMs: number | null;
 }
 
-/**
- * Bản ghi hội thoại của một phiên.
- *
- * Dùng `createStore` chứ không `createSignal<ConversationNode[]>`: với signal, mỗi
- * token phải sinh một mảng mới và mọi thứ nghe mảng đó đều chạy lại — đó chính là cái
- * bẫy mà `createEffect(() => void props.messages)` ở bản trước rơi vào. Với store, ghi
- * vào `nodes[i].text` chỉ đánh thức đúng chỗ đọc `nodes[i].text`.
- */
-/**
- * Bản ghi đã lưu → node để vẽ.
- *
- * Ở đây chứ không trong `App` vì nó là phép dịch giữa hai từ vựng, và từ vựng bên trái
- * thuộc về sổ tay phiên — chỗ duy nhất hai bên chạm nhau nên ở cạnh phần dựng node.
- */
+/** A session transcript on `createStore`, not a signal: writing `nodes[i].text` only wakes readers of that field. */
+/** Stored history to renderable nodes: a translation between two vocabularies, kept next to the node builders. */
 export function nodesFromHistory(history: HistoryNode[]): ConversationNode[] {
   return history.map((entry): ConversationNode => {
     if (entry.kind === "tool") {
@@ -37,7 +25,7 @@ export function nodesFromHistory(history: HistoryNode[]): ConversationNode[] {
           callId: entry.call_id,
           name: entry.name,
           args: entry.args,
-          // Bản ghi đã lưu không có lượt nào đang chạy: mọi lời gọi trong đó đã xong.
+          // Stored history has no running turn: every call in it has already finished.
           state: entry.is_error ? "error" : "ok",
           preview: entry.preview,
           meta: entry.meta ?? undefined,
@@ -54,24 +42,16 @@ export function createConversation() {
   const [state, setState] = createStore<{ nodes: ConversationNode[] }>({ nodes: [] });
   const [busy, setBusy] = createSignal(false);
   const [approval, setApproval] = createSignal<PendingApproval | null>(null);
-  /**
-   * Ngữ cảnh đã dùng ở bước gần nhất, theo lời máy chủ.
-   *
-   * Chỉ giữ số của bước **cuối**, không cộng dồn: mỗi lần gọi mô hình gửi lại cả lịch sử,
-   * nên `input_tokens` của bước cuối *đã là* tổng chỗ đang chiếm. Cộng lại là đếm mỗi tin
-   * nhắn thêm một lần cho mỗi bước, và thanh sẽ báo đầy từ giữa lượt thứ hai.
-   */
+  /** Context used by the latest step; kept, not summed, because each call resends the whole history. */
   const [usage, setUsage] = createSignal<{ used: number; window: number | null } | null>(null);
 
   let seq = 0;
   const nextId = (prefix: string) => `${prefix}-${seq++}`;
 
-  /** Khối trợ lý đang mở. `null` nghĩa là token kế tiếp mở một khối mới. */
+  /** The open assistant block; `null` means the next token starts a new one. */
   let openAssistant: string | null = null;
 
-  // Gộp token trong một frame. Rust đã gộp ~16ms một lần rồi, nhưng một lượt chạy
-  // nhanh vẫn có thể dồn nhiều `item` vào cùng một frame; nối chuỗi trong bộ đệm rẻ
-  // hơn nhiều so với ghi store nhiều lần rồi để layout chạy nhiều lần.
+  // Coalesce tokens per frame: appending to a buffer is far cheaper than repeated store writes and relayouts.
   let buffer = "";
   let frame: number | undefined;
 
@@ -105,7 +85,7 @@ export function createConversation() {
     setState(produce((s) => void s.nodes.push(node)));
   };
 
-  /** Đóng khối trợ lý đang mở — dùng khi có gì đó chen vào giữa dòng chữ. */
+  /** Close the open assistant block, for when something interrupts mid-text. */
   const closeAssistant = () => {
     flush();
     if (openAssistant === null) return;
@@ -129,9 +109,7 @@ export function createConversation() {
   };
 
   const setTodos = (items: TodoItem[]) => {
-    // Danh sách việc là *projection*, không phải dòng thời gian: mỗi lần host gửi là
-    // toàn bộ trạng thái mới. Giữ một node duy nhất và ghi đè, đúng như dsh — nếu đẩy
-    // node mới mỗi lần thì transcript đầy bản sao của cùng một danh sách.
+    // The todo list is a projection, not a timeline: keep one node and overwrite it, or the transcript fills with copies.
     setState(
       produce((s) => {
         const node = s.nodes.find((n) => n.kind === "todo");
@@ -219,8 +197,7 @@ export function createConversation() {
         break;
       }
       case "approval_cancel": {
-        // Host rút câu hỏi. Chỉ đóng nếu đúng câu đang hỏi: một `cancel` đến muộn không
-        // được phép nuốt mất câu hỏi kế tiếp.
+        // The host withdrew the question; only close the matching one, so a late `cancel` cannot eat the next request.
         setApproval((current) => (current?.requestId === event.request_id ? null : current));
         break;
       }
@@ -236,25 +213,19 @@ export function createConversation() {
     busy,
     setBusy,
     usage,
-    /** Quên số cũ khi chuyển sang một phiên khác — nó nói về phiên vừa rời đi. */
+    /** Forget the old counters when switching sessions; they describe the session just left. */
     clearUsage: () => setUsage(null),
     approval,
     clearApproval: () => setApproval(null),
     applyEvent,
-    /** Người dùng gửi. Trả về id để chỗ gọi cuộn tới nếu cần. */
+    /** User submit. Returns the id so the caller can scroll to it. */
     addUser(text: string): string {
       closeAssistant();
       const id = nextId("u");
       push({ id, kind: "user", text, at: Date.now() });
       return id;
     },
-    /**
-     * Xoá một node khỏi bản ghi *đang xem*.
-     *
-     * Chỉ đụng tới bản sao trên màn hình: sổ tay phiên là sổ **chỉ ghi thêm**, và một
-     * nút "xoá" trong giao diện không được phép trở thành đường duy nhất làm thủng bất
-     * biến đó. Nạp lại phiên thì node quay về — đúng như nó phải thế.
-     */
+    /** Remove a node from the *displayed* transcript only; the session log is append-only, so a reload brings it back. */
     removeNode(id: string): void {
       setState(
         produce((s) => {
@@ -268,7 +239,7 @@ export function createConversation() {
       buffer = "";
       setState("nodes", nodes);
     },
-    /** Đóng mọi thứ còn mở khi lượt kết thúc bất thường. */
+    /** Close everything still open when a turn ends abnormally. */
     finishTurn(): void {
       closeAssistant();
       setBusy(false);

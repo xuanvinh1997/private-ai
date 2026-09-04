@@ -1,26 +1,6 @@
-//! Tệp cấu hình mà `pai-rag-service` đọc.
-//!
-//! # Vì sao là một tệp chứ không phải biến môi trường
-//!
-//! Người dùng đổi mô hình nhúng trong Cài đặt lúc service đang chạy là chuyện thường.
-//! Biến môi trường được ấn định lúc `spawn` và không đổi được nữa, nên mỗi lần đổi một ô
-//! trong Cài đặt sẽ phải giết tiến trình con và dựng lại — mất vài giây, và mất cả phiên
-//! ONNX của reranker đang nạp sẵn.
-//!
-//! Một tệp thì service soi `mtime` và tự nạp lại ở lời gọi kế tiếp. Đổi mô hình có hiệu
-//! lực ngay, không ai phải khởi động lại gì.
-//!
-//! # Ai là nguồn sự thật
-//!
-//! **Ứng dụng**, không phải service. Người dùng chọn provider và mô hình ở màn hình Cài
-//! đặt; kho provider giữ lựa chọn đó; module này chiếu nó xuống tệp. Service không có
-//! màn hình cấu hình nào và không được phép có — hai chỗ cùng nhớ một lựa chọn là hai
-//! chỗ sẽ lệch nhau, và lúc ấy người dùng nhìn thấy một mô hình trong Cài đặt còn tài
-//! liệu thì được nhúng bằng mô hình khác.
-//!
-//! Ngoại lệ đúng một nhóm: điểm cuối và mật khẩu của Qdrant với Neo4j đến từ
-//! `services/rag/deploy/.env` — tệp mà `docker compose` cũng đọc. Chép chúng vào kho
-//! provider là bắt người dùng khai cùng một mật khẩu ở hai nơi.
+//! The configuration file `pai-rag-service` reads. A file, not environment variables, because the service
+//! watches `mtime` and reloads, whereas env vars are fixed at `spawn` and would force a restart per setting.
+//! The app is the source of truth; only the Qdrant endpoint and the optional graph URL come from `services/rag/deploy/.env`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,38 +9,30 @@ use pai_llm::ProviderKind;
 use pai_providers::{Role, StoredProvider};
 use serde_json::{Value, json};
 
-/// Bản của định dạng tệp. Service từ chối một bản nó không hiểu thay vì đoán.
+/// File format version; the service rejects an unknown one rather than guessing.
 const VERSION: u32 = 1;
 
-/// Dự án đang mở, ở dạng service cần: mã ổn định, tên hiển thị, và thư mục.
-///
-/// Một struct nhỏ thay cho một bộ ba `(&str, &str, &Path)`: ba tham số cùng kiểu chuỗi
-/// đứng cạnh nhau là chỗ để hoán vị hai cái mà trình biên dịch không bắt được.
+/// The open project as the service needs it: stable id, display name, directory. A struct rather than a
+/// same-typed triple the compiler cannot keep in order.
 pub struct Project {
     pub id: String,
     pub name: String,
     pub root: PathBuf,
 }
 
-/// Chỗ đặt tệp, và cách dựng nội dung của nó.
+/// Where the file lives, and how its contents are built.
 pub struct RagConfigFile {
     path: PathBuf,
-    /// Thư mục dữ liệu của service — kho SQLite siêu dữ liệu của từng dự án.
+    /// The service's data directory: the per-project SQLite metadata store.
     data_dir: PathBuf,
-    /// `services/rag/deploy/.env`, nếu có.
+    /// `services/rag/deploy/.env`, if present.
     deploy_env: Option<PathBuf>,
 }
 
 impl RagConfigFile {
     pub fn new(app_data_dir: &Path, service_dir: &Path) -> RagConfigFile {
-        // **Tuyệt đối hoá.** Tiến trình service chạy với `cwd` riêng của nó
-        // (`services/rag`, để `uv` tìm thấy `pyproject.toml`), nên một đường dẫn tương
-        // đối trong biến môi trường của nó trỏ vào một chỗ khác hẳn chỗ ta vừa ghi.
-        //
-        // Đây không phải phòng xa: `Config::from_env` lùi về `"."` khi không có `HOME`,
-        // và trên Windows thì không có `HOME` — nên `data_dir` thật sự là tương đối ở
-        // đường chạy thường gặp nhất. Triệu chứng là service báo không thấy tệp cấu hình
-        // trong khi tệp nằm ngay đó, chỉ là "ngay đó" của hai tiến trình khác nhau.
+        // Absolutise: the service runs with its own `cwd`, so a relative path in its environment points
+        // somewhere else entirely -- and `Config::from_env` falls back to `"."` when `HOME` is unset, as on Windows.
         let base = absolute(app_data_dir);
         RagConfigFile {
             path: base.join("rag-config.json"),
@@ -73,27 +45,20 @@ impl RagConfigFile {
         &self.path
     }
 
-    /// Mục `rerank` đang nằm trong tệp, nếu người dùng đã đặt.
-    ///
-    /// `None` nghĩa là **chưa ai chạm vào** — và khi ấy service dùng mặc định của chính
-    /// nó. Đó là có chủ ý: mặc định hợp lý là chuyện của tầng RAG, không phải của một ứng
-    /// dụng desktop, và chép chúng lên đây là hai bộ số phải giữ khớp bằng tay.
+    /// The `rerank` entry currently in the file, or `None` when untouched, in which case the service uses its own
+    /// defaults -- sensible defaults belong to the RAG layer, not the desktop app.
     pub fn rerank(&self) -> Option<Value> {
         let raw = std::fs::read_to_string(&self.path).ok()?;
         let parsed: Value = serde_json::from_str(&raw).ok()?;
         parsed.get("rerank").cloned().filter(|found| found.is_object())
     }
 
-    /// Ghi lại mục `rerank`, giữ nguyên mọi thứ khác.
-    ///
-    /// Đọc–sửa–ghi thay vì dựng lại cả tệp: phần còn lại suy từ kho provider, mà lúc này
-    /// ta không cầm kho ấy. Dựng lại từ một danh sách rỗng sẽ xoá sạch cấu hình provider
-    /// cho tới lần áp lại kế tiếp.
+    /// Rewrite the `rerank` entry, leaving everything else alone: read-modify-write, because the rest derives
+    /// from the provider store we do not hold here.
     pub fn write_rerank(&self, rerank: Value) -> std::io::Result<()> {
         let mut root: Value = match std::fs::read_to_string(&self.path) {
             Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|_| json!({})),
-            // Chưa có tệp là chuyện bình thường lúc mới cài: người dùng có thể mở màn hình
-            // cài đặt trước khi bất cứ provider nào được áp.
+            // A missing file is normal on a fresh install: settings can be opened before any provider is applied.
             Err(_) => json!({}),
         };
         if !root.is_object() {
@@ -103,14 +68,11 @@ impl RagConfigFile {
         self.atomic(&serde_json::to_vec_pretty(&root)?)
     }
 
-    /// Ghi lại tệp từ trạng thái provider hiện tại.
-    ///
-    /// Nuốt lỗi ghi thành một dòng log chứ không trả `Result` lên: chỗ gọi là đường áp
-    /// lại provider, và một ổ đĩa đầy không được phép chặn người dùng đổi mô hình trò
-    /// chuyện. Service sẽ chạy bằng tệp cũ, và `stats().reason` nói ra khi có gì lệch.
+    /// Rewrite the file from current provider state; write errors become a log line rather than a `Result`,
+    /// so a full disk cannot block switching chat models.
     pub fn write(&self, providers: &[StoredProvider], project: Option<Project>) {
         if let Err(err) = self.try_write(providers, project) {
-            tracing::warn!(%err, path = %self.path.display(), "không ghi được cấu hình RAG");
+            tracing::warn!(%err, path = %self.path.display(), "could not write the RAG configuration");
         }
     }
 
@@ -122,11 +84,8 @@ impl RagConfigFile {
         self.atomic(&serde_json::to_vec_pretty(&self.build(providers, project))?)
     }
 
-    /// Ghi cả tệp bằng một phép đổi tên.
-    ///
-    /// Service soi `mtime` và có thể đọc đúng lúc ta đang ghi. Một lần đọc trúng nửa tệp
-    /// là một lỗi JSON khó hiểu ở phía bên kia, và nó xảy ra đúng vào lúc người dùng vừa
-    /// đổi một ô cài đặt — tức là lúc họ ít ngờ nhất.
+    /// Write the whole file via a rename: the service watches `mtime` and may read mid-write, where half a file
+    /// becomes a baffling JSON error on the other side.
     fn atomic(&self, body: &[u8]) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -138,12 +97,8 @@ impl RagConfigFile {
 
     fn build(&self, providers: &[StoredProvider], project: Option<Project>) -> Value {
         let mut root = self.build_inner(providers, project);
-        // Giữ nguyên lựa chọn của người dùng qua mỗi lần ghi lại. Thiếu bước này thì công
-        // tắc xếp hạng lại tự bật lại mỗi khi họ đổi một provider — một cài đặt không ở
-        // yên là một cài đặt người dùng thôi không dùng nữa.
-        //
-        // Chèn khi **có**, không phải chèn `null`: vắng khoá là cách nói "chưa ai đặt,
-        // dùng mặc định của service", còn `null` là một giá trị sai kiểu mà service từ chối.
+        // Preserve the user's choice across rewrites, and insert only when present: an absent key means
+        // "unset, use service defaults", while `null` is a type error the service rejects.
         if let Some(rerank) = self.rerank() {
             root["rerank"] = rerank;
         }
@@ -178,18 +133,20 @@ impl RagConfigFile {
                 "api_key": get("QDRANT_API_KEY", ""),
             },
             "graph": {
-                // Bật khi và chỉ khi có mật khẩu: một Neo4j không đăng nhập được thì
-                // chiến lược graph vắng mặt, và `auto` lùi về `hybrid`. Nói ra bằng một
-                // cờ tắt còn hơn để service thử nối rồi hỏng ở mỗi câu hỏi.
-                "enabled": !get("NEO4J_PASSWORD", "").is_empty(),
-                "uri": format!("bolt://127.0.0.1:{}", get("NEO4J_BOLT_PORT", "7687")),
-                "user": get("NEO4J_USER", "neo4j"),
-                "password": get("NEO4J_PASSWORD", ""),
+                // Always on: the graph store is embedded SurrealDB, a directory the service opens
+                // itself. There is no server to be down and no password to be missing, so the only
+                // reason left to disable it is a user asking for it.
+                "enabled": true,
+                // Empty means embedded, and the service derives a directory per project beside that
+                // project's SQLite. `PAI_RAG_GRAPH_URL` in `deploy/.env` points at a `surreal`
+                // someone else runs, which is also how the packaged app will hand over a store it
+                // supervises itself.
+                "url": get("PAI_RAG_GRAPH_URL", ""),
             },
         })
     }
 
-    /// Đọc `deploy/.env`. Rỗng khi chưa có tệp — người dùng chưa dựng Docker bao giờ.
+    /// Read `deploy/.env`; empty when the file is absent, meaning Docker was never set up.
     fn deploy_env(&self) -> BTreeMap<String, String> {
         let Some(path) = &self.deploy_env else {
             return BTreeMap::new();
@@ -203,7 +160,7 @@ impl RagConfigFile {
             .filter_map(|line| line.split_once('='))
             .map(|(key, value)| {
                 let value = value.trim();
-                // Bỏ nháy nếu người dùng gõ vào — `docker compose` cũng làm vậy.
+                // Strip quotes if the user typed them, as `docker compose` does.
                 let value = value
                     .strip_prefix('"')
                     .and_then(|rest| rest.strip_suffix('"'))
@@ -214,37 +171,25 @@ impl RagConfigFile {
     }
 }
 
-/// Đường dẫn tuyệt đối, ghép với thư mục hiện hành khi nó còn tương đối.
-///
-/// Không dùng `canonicalize`: nó đòi đường dẫn **phải tồn tại**, mà thư mục dữ liệu có
-/// thể chưa được tạo ở lần chạy đầu. Nó cũng trả về dạng `\?\` trên Windows, thứ mà
-/// một số công cụ xử lý không đúng.
+/// An absolute path, joined with the current directory when relative; not `canonicalize`, which requires the
+/// path to exist and yields Windows verbatim form.
 fn absolute(path: &Path) -> PathBuf {
     if path.is_absolute() {
         return strip_verbatim(path);
     }
     match std::env::current_dir() {
         Ok(cwd) => strip_verbatim(&cwd.join(path)),
-        // Không đọc được thư mục hiện hành thì đường dẫn tương đối vẫn hơn không có gì:
-        // lỗi phía service sẽ in ra chính nó, và đó là manh mối cần thiết.
+        // If the cwd is unreadable, a relative path beats nothing: the service's error will print it, which is the clue.
         Err(_) => path.to_path_buf(),
     }
 }
 
-/// Bỏ tiền tố đường dẫn "verbatim" của Windows.
-///
-/// `Path::canonicalize` trả về dạng ấy, và kho dự án dùng nó — nên đường dẫn đi qua đây
-/// thường mang tiền tố. Nó **chạy được** ở cả hai phía, nhưng nó lọt tới tận bảng tài
-/// liệu và dòng trích dẫn, nơi người dùng đọc một đường dẫn có bốn ký tự lạ ở đầu và
-/// không nhận ra thư mục của chính mình.
-///
-/// Cái mất là hỗ trợ đường dẫn dài hơn 260 ký tự trên những bản Windows chưa bật
-/// `LongPathsEnabled`. Với một thư viện tài liệu thì đó là đánh đổi đúng chiều: đường dẫn
-/// dài như vậy gần như không có, còn một đường dẫn không đọc được thì ở ngay trước mắt.
+/// Strip Windows verbatim path prefixes, which `canonicalize` produces and which reach the document table and
+/// citations where users cannot recognise their own folder. The cost is >260-character paths without
+/// `LongPathsEnabled`, which is the right trade for a document library.
 fn strip_verbatim(path: &Path) -> PathBuf {
     let text = path.to_string_lossy();
-    // Dạng UNC phải xử lý trước: nó cũng bắt đầu bằng cùng bốn ký tự ấy, và cắt theo
-    // nhánh dưới sẽ biến `\\server\share` thành `UNC\server\share`.
+    // Handle the UNC form first: it starts with the same four characters, and the branch below would mangle it.
     if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
         return PathBuf::from(format!(r"\\{rest}"));
     }
@@ -254,18 +199,15 @@ fn strip_verbatim(path: &Path) -> PathBuf {
     }
 }
 
-/// Provider đang giữ một vai.
+/// The provider holding a given role.
 fn holder(providers: &[StoredProvider], role: Role) -> Option<&StoredProvider> {
     providers
         .iter()
         .find(|provider| provider.holds(role) && provider.config.enabled)
 }
 
-/// Một provider, ở dạng service hiểu.
-///
-/// Provider vắng mặt hoặc chưa chọn mô hình thì `model` rỗng — và service coi chuỗi rỗng
-/// là "vai này chưa dùng được". Đừng mượn `model` của vai hội thoại điền vào: `qwen3:8b`
-/// không có endpoint embed và không nhìn được ảnh.
+/// One provider in the shape the service understands; an absent provider or unset model yields an empty
+/// `model`, which the service reads as "this role is unavailable". Never borrow the chat model here.
 fn provider_json(provider: Option<&StoredProvider>, role: Role) -> Value {
     let Some(provider) = provider else {
         return json!({ "kind": "ollama", "base_url": "", "api_key": "", "model": "" });
@@ -276,9 +218,7 @@ fn provider_json(provider: Option<&StoredProvider>, role: Role) -> Value {
         Role::Vision => provider.vision_model.clone(),
     };
     json!({
-        // Service chỉ phân biệt hai giao thức. LM Studio nói giao thức OpenAI ở cả phần
-        // nhúng lẫn phần chat-với-ảnh; khác biệt của nó nằm ở kho mô hình, chỗ mà service
-        // không đụng tới.
+        // The service distinguishes only two protocols; LM Studio speaks OpenAI for both embedding and vision chat.
         "kind": match provider.config.kind {
             ProviderKind::Ollama => "ollama",
             ProviderKind::LmStudio | ProviderKind::OpenAiCompatible => "openai",

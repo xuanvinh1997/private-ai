@@ -1,8 +1,6 @@
-//! Sổ trong bộ nhớ: mảng chỉ-ghi-thêm cộng phép chiếu ra lịch sử mô hình.
-//!
-//! Không có `history: Vec<Message>` sống song song ở đâu cả. Nếu có, sẽ tồn tại hai
-//! nguồn sự thật, và cái thứ hai chắc chắn sẽ lệch — thường là vào lúc khó chẩn đoán
-//! nhất, giữa một lần nén ngữ cảnh.
+//! In-memory log: an append-only vector plus the projection to model history.
+//! No parallel `history: Vec<Message>` anywhere -- a second source of truth would drift,
+//! usually mid-compaction where it is hardest to diagnose.
 
 use std::sync::Mutex;
 
@@ -11,20 +9,17 @@ use crate::event::{Seq, SessionEvent, SessionEventEnvelope};
 use crate::message::Message;
 use crate::surface::{Surface, SurfaceOp};
 
-/// Bộ nhớ đệm của [`SessionLog::derive_messages`].
-///
-/// Chi phí thường trực là O(node mới). Một lần `replace` làm `generation` nhảy và buộc
-/// dựng lại toàn bộ — đó là cái giá đúng, vì replace đổi cả hình dạng lịch sử.
+/// Cache for [`SessionLog::derive_messages`]: O(new nodes) normally, full rebuild when a `replace` bumps `generation`.
 #[derive(Default)]
 struct DeriveCache {
     generation: u64,
-    /// Số node đã gấp, **không** phải số message: node rỗng không đẻ ra message nào.
+    /// Nodes folded so far, not messages: an empty node produces none.
     folded: usize,
     messages: Vec<Message>,
 }
 
 pub struct SessionLog {
-    /// Chỉ số trong mảng chính là `seq`. Bất biến này được kiểm ở mọi lối vào.
+    /// The index in this vector is the `seq`; the invariant is checked at every entry point.
     events: Vec<SessionEventEnvelope>,
     surface: Surface,
     cache: Mutex<DeriveCache>,
@@ -45,8 +40,7 @@ impl SessionLog {
         }
     }
 
-    /// Phát lại một sổ đã lưu. Đây là chỗ duy nhất kiểm được rằng thứ đọc lên vẫn liền
-    /// mạch — kho lưu trữ có thể đã bị chép, cắt, hay ghi bởi hai tiến trình.
+    /// Replay a stored log; the only place that can verify it is still gapless after copies, truncation or two writers.
     pub fn replay(events: Vec<SessionEventEnvelope>) -> Result<SessionLog> {
         let mut log = SessionLog::new();
         for envelope in events {
@@ -86,21 +80,18 @@ impl SessionLog {
         self.events.len()
     }
 
-    /// Ghi thêm một sự kiện log-only.
+    /// Append a log-only event.
     pub fn append(&mut self, event: SessionEvent, time: i64) -> Result<Seq> {
         self.push_new(event, time, None, None)
     }
 
-    /// Ghi thêm một sự kiện surface vào cuối lịch sử.
+    /// Append a surface event at the end of history.
     pub fn append_surface(&mut self, event: SessionEvent, time: i64) -> Result<Seq> {
         self.push_new(event, time, Some(SurfaceOp::Append), None)
     }
 
-    /// Ghi thêm một sự kiện surface che dải node `start..end`.
-    ///
-    /// Danh sách node bị che được tính **tại đây** chứ không do người gọi truyền vào: đó
-    /// là cách duy nhất để "replace phải kê đủ" là một bất biến chứ không phải một lời
-    /// dặn trong tài liệu.
+    /// Append a surface event shadowing nodes `start..end`; the shadowed list is computed here, not passed in,
+    /// so "replace must cite everything" is an invariant rather than documentation.
     pub fn append_replacing(
         &mut self,
         event: SessionEvent,
@@ -147,14 +138,11 @@ impl SessionLog {
         Ok(())
     }
 
-    /// Lịch sử mà mô hình thấy.
-    ///
-    /// Chỉ ba loại surface đi qua đây, nguyên văn. Một `assistant/message` rỗng nội dung
-    /// bị loại khỏi lịch sử nhưng **vẫn nằm trong sổ** — nó là bằng chứng của một bước đã
-    /// chạy và đã tiêu token.
+    /// The history the model sees: only the three surface types, verbatim. An empty `assistant/message`
+    /// is dropped from history but stays in the log as evidence of a step that ran and spent tokens.
     pub fn derive_messages(&self) -> Vec<Message> {
         let Ok(mut cache) = self.cache.lock() else {
-            // Khoá nhiễm độc chỉ là mất phần đệm, không mất dữ liệu: dựng lại từ đầu.
+            // A poisoned lock loses only the cache, not data: rebuild from scratch.
             return self.fold_from(0);
         };
         if cache.generation != self.surface.generation() {
@@ -180,10 +168,7 @@ impl SessionLog {
             .collect()
     }
 
-    /// Lượt đang mở tại `boundary`, nếu có.
-    ///
-    /// Tìm cặp `turn/start` / `turn/end` cuối cùng trong `[0..=boundary]`. Nếu cái cuối là
-    /// `turn/start` thì tại điểm đó có một lượt chưa đóng.
+    /// The turn open at `boundary`, if any: the last `turn/start` / `turn/end` in `[0..=boundary]` being a start.
     pub fn open_turn_at(&self, boundary: Seq) -> Option<u64> {
         if self.events.is_empty() {
             return None;

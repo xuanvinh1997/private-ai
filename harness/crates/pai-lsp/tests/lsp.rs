@@ -1,11 +1,6 @@
-//! Những bất biến mà sai thì mô hình tin một điều không đúng về mã của người dùng.
-//!
-//! **Không bài nào cần một language server thật.** Server ở đây là một task trong cùng
-//! tiến trình, nói đúng giao thức — cùng khung `Content-Length`, cùng cái bắt tay
-//! `initialize`/`initialized`, cùng `textDocument/*` — trên một [`tokio::io::duplex`].
-//! Cùng cách mà `pai-mcp` kiểm nửa client của nó, và cùng lý do: một bộ test đòi
-//! `rust-analyzer` có mặt là một bộ test không chạy trên máy chạy CI, và một bộ test không
-//! chạy thì không khoá được gì.
+//! The invariants whose failure would make the model believe something untrue about the code.
+//! No test needs a real language server: the server here is an in-process task speaking
+//! the protocol over a [`tokio::io::duplex`], so the suite runs on any CI machine.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,22 +22,22 @@ use tempfile::TempDir;
 const NGUON: &str =
     "fn xin_chao() {\n    println!(\"chào\");\n}\n\nfn main() {\n    xin_chao();\n}\n";
 
-// --- server giả -----------------------------------------------------------------------
+// --- fake server ----------------------------------------------------------------------
 
-/// Kịch bản của server giả. Mỗi cờ là một cách hỏng mà một bài kiểm chứng nhắm tới.
+/// The fake server's script. Each flag is one failure mode a test aims at.
 #[derive(Clone)]
 struct Plan {
-    /// Phương thức nhận được, đúng thứ tự trên dây. Đây là bằng chứng của bất biến bắt tay.
+    /// Methods received, in wire order. This is the evidence for the handshake invariant.
     seen: Arc<Mutex<Vec<String>>>,
-    /// Không trả lời `initialize` — một server đang nạp một workspace khổng lồ.
+    /// Never answer `initialize` - a server loading a huge workspace.
     answer_initialize: bool,
-    /// Đóng ống ngay khi nhận truy vấn — một server chết giữa chừng.
+    /// Close the pipe as soon as a query arrives - a server dying mid-flight.
     die_on_query: bool,
-    /// Trả về đúng URI đã nhận. Chứng minh đường dẫn đi qua trọn vòng và về lại nguyên vẹn.
+    /// Echo the URI back. Proves a path survives the full round trip intact.
     echo_definition: bool,
-    /// Đăng chẩn đoán sau khi tệp được mở.
+    /// Publish diagnostics after the file is opened.
     publish: Option<Value>,
-    /// Còn đang bận: gửi `$/progress` `begin` mà không bao giờ `end`.
+    /// Stay busy: send `$/progress` `begin` and never `end`.
     stay_busy: bool,
 }
 
@@ -114,7 +109,7 @@ async fn serve(stream: tokio::io::DuplexStream, plan: Plan) {
             }
             "textDocument/definition" | "textDocument/references" => {
                 if plan.die_on_query {
-                    // Thả cả hai đầu ống: y hệt một tiến trình vừa bị hệ điều hành giết.
+                    // Drop both ends of the pipe: exactly like a process the OS just killed.
                     return;
                 }
                 let uri = message
@@ -158,7 +153,7 @@ async fn serve(stream: tokio::io::DuplexStream, plan: Plan) {
     }
 }
 
-/// Mở ống tới một server giả trong bộ nhớ. Không tiến trình con, không `PATH`, không cài gì.
+/// Opens a pipe to an in-memory fake server. No child process, no `PATH`, nothing installed.
 struct FakeLaunch {
     plan: Plan,
     launched: Arc<AtomicBool>,
@@ -179,7 +174,7 @@ impl Launch for FakeLaunch {
     }
 }
 
-// --- giàn dựng ------------------------------------------------------------------------
+// --- harness --------------------------------------------------------------------------
 
 struct Rig {
     _dir: TempDir,
@@ -228,20 +223,16 @@ fn nhanh() -> Limits {
 async fn goi(tool: &LspTool, args: Value) -> ToolOutcome {
     let arguments: Map<String, Value> = args.as_object().cloned().expect("tham số là object");
     let call = Invocation::new("lsp".into(), "goi-1", arguments);
-    // Trần cứng quanh mọi lần gọi: một bài kiểm chứng treo không nói được gì cả, và cái
-    // ta đang kiểm chính là "không treo".
+    // A hard ceiling around every call: a hanging test says nothing, and "does not hang" is what we are testing.
     tokio::time::timeout(Duration::from_secs(10), tool.execute(&call))
         .await
         .expect("tool trả lời trong mười giây")
         .unwrap_or_else(|err| ToolOutcome::error(err.to_string()))
 }
 
-// --- bất biến -------------------------------------------------------------------------
+// --- invariants -----------------------------------------------------------------------
 
-/// Không truy vấn nào đi trước cái bắt tay.
-///
-/// Thứ tự trên dây là bằng chứng duy nhất chấp nhận được: một cờ `ready` đúng trong bộ nhớ
-/// mà tin vẫn đi sai thứ tự thì server bên kia mới là bên chịu hậu quả.
+/// No query goes before the handshake; wire order is the only acceptable evidence, since a correct in-memory flag with wrong wire order still breaks the server.
 #[tokio::test]
 async fn khong_hoi_gi_truoc_khi_bat_tay_xong() {
     let rig = rig_with(Plan::new(), nhanh(), "nguon.rs");
@@ -265,10 +256,7 @@ async fn khong_hoi_gi_truoc_khi_bat_tay_xong() {
     );
 }
 
-/// Đường dẫn ↔ URI, cả hai chiều, với khoảng trắng và tiếng Việt có dấu.
-///
-/// Bài này kiểm hàm thuần tuý. Bài kế tiếp kiểm cùng bất biến đó *qua cả ngăn xếp*, vì một
-/// hàm đúng vẫn gọi sai được.
+/// Path <-> URI both ways, with spaces and accented characters; a pure-function test, with the next test covering the same invariant across the whole stack.
 #[test]
 fn uri_khu_hoi_duoc_voi_khoang_trang_va_tieng_viet() {
     for goc in [
@@ -295,7 +283,7 @@ fn uri_khu_hoi_duoc_voi_khoang_trang_va_tieng_viet() {
         );
     }
 
-    // Vài dạng phải bị từ chối chứ không được đoán bừa.
+    // Some shapes must be refused rather than guessed at.
     assert_eq!(
         to_uri(&PathBuf::from("/tmp/a b")).unwrap(),
         "file:///tmp/a%20b"
@@ -308,8 +296,7 @@ fn uri_khu_hoi_duoc_voi_khoang_trang_va_tieng_viet() {
     assert!(from_uri("file:///tmp/%zz").is_err());
 }
 
-/// Cùng bất biến, nhưng đi qua cả ngăn xếp: tên tệp có dấu và khoảng trắng đi ra dây dưới
-/// dạng URI, server trả lại đúng URI đó, và nó phải quay về thành đúng cái tên tệp cũ.
+/// The same invariant across the whole stack: an accented filename goes out as a URI, comes back, and must decode to exactly the original name.
 #[tokio::test]
 async fn duong_dan_co_dau_di_tron_vong_qua_server() {
     let ten = "tệp mã nguồn.rs";
@@ -326,7 +313,7 @@ async fn duong_dan_co_dau_di_tron_vong_qua_server() {
         "kết quả phải trỏ về đúng tệp ban đầu, theo đường dẫn tương đối: {}",
         outcome.content
     );
-    // Dòng mã ở đó đi kèm, để mô hình biết mình đang nhìn cái gì trước khi `read`.
+    // The source line comes along, so the model knows what it is looking at before it calls `read`.
     assert!(
         outcome.content.contains("fn xin_chao()"),
         "{}",
@@ -334,11 +321,7 @@ async fn duong_dan_co_dau_di_tron_vong_qua_server() {
     );
 }
 
-/// Server chết giữa chừng thì tool trả lỗi **đọc được**, và trả ngay.
-///
-/// Chỗ dễ sai là chờ hết hạn của chính câu hỏi — sáu mươi giây nhìn vào một tiến trình
-/// không còn tồn tại. Bài này ràng cả hai: nội dung nói ra chuyện gì đã xảy ra, và thời
-/// gian ngắn hơn nhiều so với hạn của một truy vấn bình thường.
+/// A server dying mid-flight yields a readable error, and yields it immediately rather than after the query's own sixty-second deadline.
 #[tokio::test]
 async fn server_chet_giua_chung_thi_bao_loi_chu_khong_treo() {
     let mut plan = Plan::new();
@@ -369,10 +352,7 @@ async fn server_chet_giua_chung_thi_bao_loi_chu_khong_treo() {
     );
 }
 
-/// Hết giờ mà server chưa sẵn sàng thì **nói ra**, chứ không trả về rỗng.
-///
-/// Đây là bất biến quan trọng nhất của crate. "Không tìm thấy gì" và "chưa trả lời được"
-/// là hai câu khác hẳn nhau, và gộp chúng là dạy mô hình rằng hàm nó đang tìm không tồn tại.
+/// A startup timeout must say so rather than return empty - the most important invariant here, because "nothing found" and "cannot answer yet" are different sentences.
 #[tokio::test]
 async fn het_gio_khi_server_chua_san_sang_thi_noi_ra() {
     let mut plan = Plan::new();
@@ -398,8 +378,7 @@ async fn het_gio_khi_server_chua_san_sang_thi_noi_ra() {
     );
 }
 
-/// Server còn đang lập chỉ mục thì mọi câu trả lời đi kèm lời nhắc — kể cả câu trả lời
-/// **không rỗng**, vì một danh sách thu được giữa lúc đang nạp là một danh sách thiếu.
+/// While the server is indexing, every answer carries the notice, non-empty ones included, because a list gathered mid-load is incomplete.
 #[tokio::test]
 async fn con_dang_lap_chi_muc_thi_ket_qua_noi_rang_no_co_the_thieu() {
     let mut plan = Plan::new();
@@ -420,8 +399,7 @@ async fn con_dang_lap_chi_muc_thi_ket_qua_noi_rang_no_co_the_thieu() {
     );
 }
 
-/// Chẩn đoán là thông báo đẩy: nó tới sau `didOpen`, và toạ độ của nó phải được đổi về
-/// 1-based như mọi thứ khác mô hình đọc.
+/// Diagnostics are push notifications: they arrive after `didOpen`, and their coordinates must be converted to 1-based like everything else the model reads.
 #[tokio::test]
 async fn chan_doan_ve_toa_do_1_based() {
     let mut plan = Plan::new();
@@ -447,8 +425,7 @@ async fn chan_doan_ve_toa_do_1_based() {
     );
 }
 
-/// `diagnostics` không cần con trỏ; ba thao tác kia thì cần, và thiếu thì phải nói rõ
-/// thiếu gì — một mô hình sửa được tham số chỉ khi nó đọc được tham số nào sai.
+/// `diagnostics` needs no cursor; the other three do, and a missing one must be named, since the model can only fix an argument it is told about.
 #[tokio::test]
 async fn thieu_con_tro_thi_noi_ro_thieu_gi() {
     let rig = rig_with(Plan::new(), nhanh(), "nguon.rs");
@@ -468,7 +445,7 @@ async fn thieu_con_tro_thi_noi_ro_thieu_gi() {
     assert!(err.to_string().contains("`line` và `character`"), "{err}");
 }
 
-/// Hỏi ngoài thư mục làm việc bị từ chối ở chính chỗ `pai-fs` từ chối, không ở đâu khác.
+/// Queries outside the working directory are refused exactly where `pai-fs` refuses them.
 #[tokio::test]
 async fn duong_dan_ngoai_thu_muc_lam_viec_bi_tu_choi() {
     let rig = rig_with(Plan::new(), nhanh(), "nguon.rs");
@@ -490,10 +467,7 @@ async fn duong_dan_ngoai_thu_muc_lam_viec_bi_tu_choi() {
     );
 }
 
-/// **Không dò được server nào thì không tool nào được đăng ký.**
-///
-/// Và mặt kia của cùng đồng xu: dò được thì có. Hai nửa phải đi cùng nhau, nếu không bài
-/// này vẫn xanh với một plugin không bao giờ đăng ký gì cả.
+/// No detected server means no registered tool - and the other side of the coin, that detection does register one, or this test would pass against a plugin that never registers anything.
 #[tokio::test]
 async fn khong_do_duoc_server_thi_khong_dang_ky_tool() {
     async fn ten_tool(languages: Vec<LanguageConfig>) -> Vec<String> {
@@ -531,7 +505,7 @@ async fn khong_do_duoc_server_thi_khong_dang_ky_tool() {
         "không có language server nào thì tool `lsp` không được có mặt: {khong_co:?}"
     );
 
-    // Một lệnh chắc chắn tồn tại và chạy được: chính tệp nhị phân đang chạy bài kiểm chứng.
+    // A command certain to exist and run: the test binary itself.
     let co_that = std::env::current_exe().expect("biết được tệp nhị phân của chính mình");
     let co = ten_tool(hang(&co_that.display().to_string())).await;
     assert!(

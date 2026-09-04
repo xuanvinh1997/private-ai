@@ -1,23 +1,6 @@
-"""Cross-encoder chạy bằng ONNX Runtime, không cần torch.
-
-# Vì sao ONNX và không phải torch
-
-``sentence-transformers`` kéo theo torch và, nếu muốn GPU, cả CUDA runtime: khoảng 3–5 GB
-trong một bản cài mà phần còn lại chưa tới 300 MB. ONNX Runtime chạy đúng model đó,
-nhanh tương đương trên CPU, và ``onnxruntime-gpu`` bật CUDA bằng cách đổi một gói chứ
-không đổi mã — xem extra ``gpu`` trong ``pyproject.toml``.
-
-# Nạp lười, và chỉ một lần
-
-Phiên ONNX tốn vài giây để dựng và vài trăm megabyte RAM. Dựng nó lúc khởi động nghĩa là
-mọi lần chạy ``pai-rag`` đều trả giá đó kể cả khi không ai tìm kiếm — và bản MCP stdio
-thì khởi động ở mỗi lần ứng dụng mở dự án. Nên nó được dựng ở lần chấm điểm đầu tiên và
-giữ lại sau đó.
-
-Lần đầu còn phải **tải model về**, cỡ một gigabyte. Đó là một sự việc phải nói ra chứ
-không phải một khoảng im lặng: xem ``pai-rag doctor``, thứ tải sẵn để lần tìm đầu tiên
-của người dùng không phải chờ.
-"""
+"""Cross-encoder on ONNX Runtime, no torch: the same model, but 300 MB instead of 3-5 GB,
+and GPU is a package swap rather than a code change. The session is built on the first
+score and kept, since it costs seconds and hundreds of megabytes."""
 
 from __future__ import annotations
 
@@ -34,16 +17,14 @@ __all__ = ["OnnxReranker"]
 
 log = logging.getLogger(__name__)
 
-#: Cửa sổ của XLM-RoBERTa. Cắt ở đây chứ không ở chỗ khác vì model **không đọc** quá 512
-#: token; đưa dài hơn thì phần đuôi bị bỏ lặng lẽ.
+#: XLM-RoBERTa's window; the model does not read past 512 tokens, and the tail is dropped silently.
 MAX_LENGTH = 512
-#: Bao nhiêu cặp một lần chạy. 16 cặp × 512 token là một ma trận vừa phải trên CPU và
-#: không làm GPU đói ở bản `onnxruntime-gpu`.
+#: Pairs per run. 16 x 512 is a reasonable matrix on CPU and does not starve the GPU build.
 BATCH = 16
 
 
 class OnnxReranker:
-    """Chấm cặp (câu hỏi, đoạn) bằng một cross-encoder ONNX."""
+    """Scores (query, passage) pairs with an ONNX cross-encoder."""
 
     def __init__(self, config: RerankConfig) -> None:
         self.config = config
@@ -59,17 +40,13 @@ class OnnxReranker:
 
     @property
     def provider(self) -> str:
-        """Execution provider thật sự đang chạy. Rỗng khi chưa nạp.
-
-        Là thứ **thật sự** dùng, không phải thứ đã xin — xem
-        :meth:`_canh_bao_neu_tut_ve_cpu`.
-        """
+        """The execution provider actually in use, empty until loaded - see :meth:`_canh_bao_neu_tut_ve_cpu`."""
         return self._provider
 
-    # -- nạp ---------------------------------------------------------------------------
+    # -- loading -------------------------------------------------------------------------
 
     def _ensure(self) -> None:
-        """Dựng phiên ONNX và tokenizer, đúng một lần."""
+        """Build the ONNX session and tokenizer, exactly once."""
         if self._session is not None:
             return
         with self._lock:
@@ -80,21 +57,13 @@ class OnnxReranker:
             from huggingface_hub import hf_hub_download
             from tokenizers import Tokenizer
 
-            # Nạp DLL của CUDA từ các gói `nvidia-*-cu12` trong site-packages.
-            #
-            # Không có bước này thì `onnxruntime_providers_cuda.dll` không tìm thấy
-            # `cublasLt64_12.dll` và ONNX Runtime **lùi về CPU trong im lặng** — GPU vẫn
-            # rảnh, tìm kiếm vẫn chạy, chỉ là chậm gấp mấy chục lần. Thư viện CUDA của
-            # gói pip không nằm trên PATH của hệ thống, nên phải chỉ đường tường minh.
-            #
-            # `hasattr` vì hàm này chỉ có từ onnxruntime 1.21; bản CPU cũ hơn vẫn chạy
-            # được, chỉ là không có gì để nạp.
+            # Load the CUDA DLLs from `nvidia-*-cu12`; without this ONNX Runtime falls back to CPU silently. `hasattr` because the call only exists from onnxruntime 1.21.
             if hasattr(onnxruntime, "preload_dlls"):
                 try:
                     onnxruntime.preload_dlls()
                 except Exception as err:
-                    # Không chặn: thiếu CUDA thì phiên vẫn dựng được trên CPU.
-                    log.debug("không nạp sẵn được DLL của CUDA: %s", err)
+                    # Not fatal: without CUDA the session still builds on CPU.
+                    log.debug("could not preload the CUDA DLLs: %s", err)
 
             repo = self.config.model
             try:
@@ -109,9 +78,7 @@ class OnnxReranker:
                     "Kiểm tra tên model trong Cài đặt, hoặc tắt xếp hạng lại."
                 ) from err
 
-            # Model lớn tách trọng số ra `model.onnx_data` nằm cạnh. `hf_hub_download`
-            # chỉ lấy đúng tệp được hỏi, nên phải hỏi thêm — không có nó thì phiên ONNX
-            # dựng lên rồi hỏng ở lần chạy đầu với một lỗi không nói được vì sao.
+            # Large models keep weights in a neighbouring `model.onnx_data`; `hf_hub_download` fetches only what is asked, and without it the session fails on first run.
             self._fetch_external_data(repo)
 
             try:
@@ -125,8 +92,7 @@ class OnnxReranker:
             options.graph_optimization_level = (
                 onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
             )
-            # `onnxruntime-gpu` có CUDA trong danh sách; bản CPU thì không, và khi ấy
-            # danh sách này rút gọn về đúng CPU. Một dòng cho cả hai bản cài.
+            # `onnxruntime-gpu` lists CUDA; the CPU build does not, and the list collapses to CPU. One line for both installs.
             available = onnxruntime.get_available_providers()
             wanted = ("CUDAExecutionProvider", "CPUExecutionProvider")
             providers = [name for name in wanted if name in available]
@@ -141,7 +107,7 @@ class OnnxReranker:
             self._inputs = {item.name for item in self._session.get_inputs()}
             self._provider = self._session.get_providers()[0]
             log.info(
-                "reranker sẵn sàng: %s (%s), đầu vào %s",
+                "reranker ready: %s (%s), inputs %s",
                 repo,
                 self._provider,
                 sorted(self._inputs),
@@ -149,40 +115,27 @@ class OnnxReranker:
             self._canh_bao_neu_tut_ve_cpu(available, providers)
 
     def _canh_bao_neu_tut_ve_cpu(self, available: list[str], asked: list[str]) -> None:
-        """Nói to khi phiên tụt về CPU dù CUDA có trong danh sách.
-
-        # Vì sao đây là một cảnh báo chứ không phải một dòng debug
-
-        ONNX Runtime **lùi về CPU trong im lặng** khi provider CUDA không nạp được — DLL
-        thiếu, sai đời CUDA, driver cũ. Phiên vẫn dựng, kết quả vẫn đúng, và không có gì
-        báo lỗi.
-
-        Cái mất là tốc độ, và nó lớn tới mức đổi hẳn tính dùng được: đo trên máy thật với
-        `bge-reranker-v2-m3` (XLM-RoBERTa large, 568M tham số), CPU chấm khoảng **0,4 giây
-        mỗi đoạn** — 30 ứng viên là hơn mười giây cho mỗi câu hỏi. Người dùng chỉ thấy tìm
-        kiếm chậm và không có cách nào đoán ra vì sao.
-        """
+        """Say it loudly when the session lands on CPU although CUDA was listed: ONNX Runtime falls back silently, and the cost is about 0.4 s per passage."""
         if self._provider != "CPUExecutionProvider":
             return
         if "CUDAExecutionProvider" not in available:
-            # Bản `onnxruntime` CPU. Đây là lựa chọn, không phải sự cố — nhưng vẫn nói ra
-            # cái giá, vì nó quyết định `candidates` nên đặt bao nhiêu.
+            # The CPU `onnxruntime` build. A choice, not a fault - but name the cost, since it decides how many `candidates` to ask for.
             log.info(
-                "reranker chạy trên CPU (~0,4s mỗi đoạn). Cài extra `gpu` và CUDA khớp "
-                "đời với onnxruntime để nhanh hơn nhiều lần."
+                "reranker running on CPU (~0.4s per passage). Install the `gpu` extra with a CUDA "
+                "generation matching onnxruntime to make it many times faster."
             )
             return
         log.warning(
-            "reranker TỤT VỀ CPU dù đã xin %s. ONNX Runtime lùi về CPU trong im lặng khi "
-            "thư viện CUDA không nạp được — thường là sai đời CUDA hoặc driver cũ; dòng "
-            "chẩn đoán của nó nằm ngay phía trên. Hậu quả: mỗi đoạn mất ~0,4s, nên %d ứng "
-            "viên là hơn mười giây cho mỗi câu hỏi.",
+            "reranker FELL BACK TO CPU although %s was requested. ONNX Runtime falls back "
+            "silently when the CUDA libraries cannot load - usually a CUDA generation "
+            "mismatch or an old driver; its diagnostic line is just above. Cost: ~0.4s per "
+            "passage, so %d candidates is over ten seconds per query.",
             asked,
             self.config.candidates,
         )
 
     def _fetch_external_data(self, repo: str) -> None:
-        """Lấy tệp trọng số ngoài, nếu repo có."""
+        """Fetch the external weights file, if the repo has one."""
         from huggingface_hub import hf_hub_download
         from huggingface_hub.errors import EntryNotFoundError
 
@@ -190,12 +143,12 @@ class OnnxReranker:
         try:
             hf_hub_download(repo_id=repo, filename=sidecar, cache_dir=self.config.cache_dir)
         except EntryNotFoundError:
-            # Model nhỏ gói trọn trong một tệp. Đây là trường hợp thường gặp, không phải lỗi.
+            # Small models fit in a single file. Common, not an error.
             return
         except Exception as err:
-            log.debug("không lấy được `%s` của `%s`: %s", sidecar, repo, err)
+            log.debug("could not fetch `%s` of `%s`: %s", sidecar, repo, err)
 
-    # -- chấm điểm ---------------------------------------------------------------------
+    # -- scoring -------------------------------------------------------------------------
 
     def score(self, query: str, passages: list[str]) -> list[float]:
         if not passages:
@@ -212,9 +165,7 @@ class OnnxReranker:
                     [item.attention_mask for item in encoded], dtype=np.int64
                 ),
             }
-            # XLM-RoBERTa không dùng `token_type_ids`, nhưng vài bản export vẫn khai nó ở
-            # đầu vào. Chỉ đưa những gì phiên thật sự hỏi: thừa một khoá là một lỗi
-            # "invalid input name", thiếu một khoá cũng vậy.
+            # XLM-RoBERTa does not use `token_type_ids`, but some exports declare it; feed exactly what the session asks for, since an extra or missing key is an error.
             if "token_type_ids" in self._inputs:
                 feed["token_type_ids"] = np.array(
                     [item.type_ids for item in encoded], dtype=np.int64
@@ -227,15 +178,7 @@ class OnnxReranker:
 
     @staticmethod
     def _as_scores(logits: np.ndarray) -> list[float]:
-        """Logits → điểm.
-
-        Cross-encoder rerank trả về **một** logit mỗi cặp. Vài bản export trả hình dạng
-        ``(batch, 1)``, vài bản trả ``(batch,)``; một số model phân loại trả ``(batch, 2)``
-        và khi ấy điểm liên quan là lớp dương.
-
-        Không bọc sigmoid: xếp hạng chỉ cần thứ tự, mà sigmoid là hàm đơn điệu tăng nên
-        nó không đổi thứ tự — chỉ nén khoảng cách lại và làm điểm hiển thị khó đọc hơn.
-        """
+        """Logits -> scores; exports return `(batch, 1)`, `(batch,)` or `(batch, 2)`, and no sigmoid is applied because ranking only needs order."""
         array = np.asarray(logits, dtype=np.float32)
         if array.ndim == 1:
             return [float(value) for value in array]
