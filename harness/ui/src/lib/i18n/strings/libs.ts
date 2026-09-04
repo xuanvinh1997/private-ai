@@ -32,62 +32,6 @@ export const libs = {
     settings: { en: "General settings", vi: "Cài đặt chung" },
   },
 
-  /** `prompts.ts`: suggestion chips on the empty screen. */
-  prompt: {
-    // Code project, static set
-    codeArchitecture: {
-      en: "Explain this project's architecture",
-      vi: "Giải thích kiến trúc của dự án này",
-    },
-    codeTests: {
-      en: "Run tests and summarize failures",
-      vi: "Chạy bộ test và tóm tắt chỗ hỏng",
-    },
-    codeChanges: {
-      en: "What changed since last commit?",
-      vi: "Có gì thay đổi so với commit gần nhất?",
-    },
-    codeUntested: { en: "Write tests for untested code", vi: "Viết test cho phần chưa được kiểm" },
-    codeErrors: { en: "Find sloppy error handling", vi: "Tìm chỗ xử lý lỗi cẩu thả" },
-
-    // Docs project, static set
-    docsList: { en: "What documents are here?", vi: "Thư viện này có những tài liệu gì?" },
-    docsSummaries: { en: "Summarize each document briefly", vi: "Tóm tắt mỗi tài liệu trong một câu" },
-    docsTopics: { en: "What are the main topics?", vi: "Những chủ đề chính ở đây là gì?" },
-    docsQuote: {
-      en: "Quote key passages with filenames",
-      vi: "Trích đoạn nói về chủ đề chính, kèm tên tệp",
-    },
-
-    // No project open, static set
-    idleAsync: {
-      en: "Async or threads in Rust?",
-      vi: "Khác nhau giữa async và luồng trong Rust là gì?",
-    },
-    idleRegex: {
-      en: "Write an email regex, explained",
-      vi: "Viết regex khớp email rồi giải thích từng phần",
-    },
-    idleDatabase: {
-      en: "SQLite or Postgres, running locally?",
-      vi: "SQLite hay Postgres cho một ứng dụng chạy tại chỗ?",
-    },
-    idleRebase: {
-      en: "Explain `git rebase` with an example",
-      vi: "Giải thích `git rebase` bằng một ví dụ ngắn",
-    },
-
-    // Built from the user's index
-    symbolWhat: { en: "What does `{name}` do?", vi: "`{name}` làm gì?" },
-    symbolCallers: { en: "Who calls `{name}`?", vi: "Ai gọi `{name}`?" },
-    dirContents: { en: "What is inside `{path}`?", vi: "Có gì trong `{path}`?" },
-    docSummary: { en: "Summarize “{title}” in one line", vi: "Tóm tắt “{title}” trong một câu" },
-    docCompare: {
-      en: "How do “{first}” and “{second}” differ?",
-      vi: "“{first}” và “{second}” khác nhau chỗ nào?",
-    },
-  },
-
   /** `diff.ts`: the separator row shown when a diff block is folded. */
   diff: {
     gap: common.linesHidden,

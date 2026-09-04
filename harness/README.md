@@ -76,7 +76,7 @@ npm run dev --prefix ui     # rồi mở http://localhost:5173/?demo=1
 
 ## Trạng thái
 
-**434 test Rust + 76 test giao diện xanh, clippy sạch ở phần lõi, `tsc` sạch.**
+**432 test Rust + 66 test giao diện xanh, clippy sạch ở phần lõi, `tsc` sạch.**
 
 Tool mà mô hình thấy, và **chúng phụ thuộc vào loại dự án đang mở**:
 

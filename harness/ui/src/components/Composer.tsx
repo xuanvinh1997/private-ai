@@ -12,6 +12,8 @@ import {
   dictation,
   dictationText,
   elapsed,
+  meterFill,
+  micQuiet,
   startDictation,
   stopDictation,
 } from "../lib/asr";
@@ -52,6 +54,45 @@ function Wave() {
   return (
     <span class="pai-wave" aria-hidden="true">
       <span />
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
+
+/** How many bars the level meter has. Enough that one syllable moves several of them, few enough that each
+ * bar is wide enough to see. */
+const MUC_BARS = 14;
+
+/** The microphone level, as bars that fill from the left.
+ *
+ * This is the only part of the dictation bar that reacts to the room. The clock proves the app is recording;
+ * a moving meter is what proves the *microphone* is, which is a different claim and the one users doubt. */
+function Meter(props: { level: number }) {
+  const lit = () => Math.round(meterFill(props.level) * MUC_BARS);
+  return (
+    <span class="flex items-center gap-[2px]" aria-hidden="true">
+      <For each={Array.from({ length: MUC_BARS }, (_, i) => i)}>
+        {(i) => (
+          <span
+            class="h-[11px] w-[2px] rounded-pill transition-colors duration-100"
+            classList={{
+              "bg-accent": i < lit(),
+              "bg-line": i >= lit(),
+            }}
+          />
+        )}
+      </For>
+    </span>
+  );
+}
+
+/** The mode in between: the speech model is being read off disk. The same three dots the assistant uses
+ * while it thinks, so "the app is working" looks the same everywhere it happens. */
+function Loading() {
+  return (
+    <span class="pai-dots inline-flex items-center gap-3xs" aria-hidden="true">
       <span />
       <span />
       <span />
@@ -104,8 +145,6 @@ export default function Composer(props: {
   projectKind?: ProjectKind;
   /** Number of *connected* MCP servers, not declared ones; `0` is never spelled out (see `meta` below). */
   mcpConnected: number;
-  /** Something else sits below the composer (the prompt chips), so the bottom padding drops a step. */
-  moreBelow?: boolean;
   /** Run a `/` command; omitted, the command palette never opens. */
   onCommand?: (name: string) => void;
   /** Context used by the latest step; a `null` `window` means no denominator, so only the token count is shown. */
@@ -315,11 +354,13 @@ export default function Composer(props: {
 
   /** Write every tick straight into the box. `committed + tentative` is flicker-free by construction: the
    * committed half never shrinks, so what is already on screen does not jump while the tail is revised. */
+  const recording = () => dictation().phase === "recording";
+
   createEffect(() => {
     const base = spokenFrom();
     if (base === null) return;
     const state = dictation();
-    if (!state.active) return;
+    if (state.phase !== "recording") return;
     const spoken = dictationText(state);
     if (spoken === "") return;
     props.onChange(base === "" ? spoken : `${base.trimEnd()} ${spoken}`);
@@ -328,7 +369,9 @@ export default function Composer(props: {
   });
 
   const toggleDictation = async () => {
-    if (dictation().active) {
+    // Nothing to stop while the model loads, and the button is disabled through that window anyway.
+    if (dictation().phase === "loading") return;
+    if (recording()) {
       await stopDictation();
       return;
     }
@@ -413,19 +456,17 @@ export default function Composer(props: {
     }
   };
 
-  // Auto-height up to ~10 lines, measured via `scrollHeight` after resetting to 0, or it can never shrink again.
+  // Auto-height between two lines and ~11, measured via `scrollHeight` after resetting to 0, or it can never
+  // shrink again. The floor is what an empty composer looks like: one line reads as a search box, and this is
+  // where whole paragraphs get written.
   const resize = (el: HTMLTextAreaElement) => {
     el.style.height = "0px";
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    el.style.height = `${Math.min(Math.max(el.scrollHeight, 64), 240)}px`;
   };
 
   return (
     <form
-      class="shrink-0 bg-bg px-(--page-pad-x) pt-sm"
-      classList={{
-        "pb-(--page-pad-y)": props.moreBelow !== true,
-        "pb-sm": props.moreBelow === true,
-      }}
+      class="shrink-0 bg-bg px-(--page-pad-x) pt-sm pb-(--page-pad-y)"
       onSubmit={(event) => {
         event.preventDefault();
         submit();
@@ -518,7 +559,7 @@ export default function Composer(props: {
             field = el;
             queueMicrotask(() => resize(el));
           }}
-          rows={1}
+          rows={2}
           value={props.value}
           disabled={props.disabled}
           placeholder={t(
@@ -545,30 +586,69 @@ export default function Composer(props: {
           onKeyUp={(event) => syncCaret(event.currentTarget)}
           onClick={(event) => syncCaret(event.currentTarget)}
           onKeyDown={onKeyDown}
-          class="max-h-[220px] w-full resize-none bg-transparent px-md pt-md pb-2xs text-base text-text outline-none placeholder:text-faint"
+          class="max-h-[240px] min-h-16 w-full resize-none bg-transparent px-md pt-md pb-2xs text-base text-text outline-none placeholder:text-faint"
         />
 
         {/* Tier three: every conditional line, gathered into one wrapping row rather than three stacked strips,
             so toggling a condition does not shunt the button row up and down. `role="status"`, not `alert`,
             because these are standing conditions. No error text belongs here by rule: a failed attach describes
             something that just happened, so it goes to a toast (`lib/toast.ts`) instead. */}
-        <Show when={!props.hasProject || props.modelWarning || dictation().active}>
-          <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-xs">
-            {/* While the microphone is open, one line saying so and for how long. A model that cannot
-                stream says the words arrive at the end, because an empty box would otherwise read as
-                a feature that is not working. */}
-            <Show when={dictation().active}>
-              <p class="m-0 flex items-center gap-2xs text-accent-ink" role="status">
-                <Icon name="mic" size={12} />
+        {/* The dictation bar: its own strip, not a line in the status row below, because it is a mode the user
+            is holding open and must be able to read the state of without hunting -- is it recording, is the
+            microphone hearing anything, for how long, and which device. It appears and disappears with the
+            mode, which is a layout shift the user just caused, so it does not surprise anyone. */}
+        <Show when={dictation().phase !== "idle"}>
+          <div
+            class="mx-md mb-2xs flex flex-wrap items-center gap-x-sm gap-y-3xs rounded-panel bg-accent-soft px-sm py-3xs text-xs"
+            role="status"
+          >
+            <Show
+              when={recording()}
+              fallback={
+                <span class="flex items-center gap-2xs text-accent-ink">
+                  <Loading />
+                  {t(S.speech.dictation.loading)}
+                </span>
+              }
+            >
+              <span class="flex items-center gap-2xs font-medium text-accent-ink">
+                <span class="pai-rec" aria-hidden="true" />
                 {t(
                   dictation().streaming
                     ? S.speech.dictation.listening
                     : S.speech.dictation.buffering,
                 )}
-                <span class="font-mono text-muted">{elapsed(dictation().recordedMs)}</span>
-              </p>
-            </Show>
+              </span>
 
+              <span class="flex items-center gap-2xs" aria-label={t(S.speech.dictation.level)}>
+                <Meter level={dictation().level} />
+                {/* Tabular, so a widening second does not shove the meter sideways every tick. */}
+                <span class="font-mono tabular-nums text-muted">
+                  {elapsed(dictation().openMs)}
+                </span>
+              </span>
+
+              {/* Two mutually exclusive endings: silence is the one worth interrupting for, so it replaces
+                  the device name rather than sitting next to it. */}
+              <Show
+                when={micQuiet(dictation())}
+                fallback={
+                  <Show when={dictation().device}>
+                    {(device) => <span class="truncate text-faint">{device()}</span>}
+                  </Show>
+                }
+              >
+                <span class="flex items-center gap-3xs text-warn">
+                  <Icon name="warn" size={12} />
+                  {t(S.speech.dictation.quiet)}
+                </span>
+              </Show>
+            </Show>
+          </div>
+        </Show>
+
+        <Show when={!props.hasProject || props.modelWarning}>
+          <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-xs">
             {/* The sentence ends on "you can still send": a standing limit, not a breakage, and this is now the
                 only place that says "no project" in words, together with its consequence. */}
             <Show when={!props.hasProject}>
@@ -603,20 +683,35 @@ export default function Composer(props: {
           />
 
           {/* Dictation writes into this same box as you speak, so it is a composer control, not a mode: the
-              draft you had is kept and the words are appended to it. One button, two modes -- pressing it
-              starts, pressing it again stops and keeps the text. While it runs the mic becomes a wave, so
-              the button reports the microphone's state instead of needing a lamp beside it. */}
+              draft you had is kept and the words are appended to it. One button, pressing it starts and
+              pressing it again stops and keeps the text -- but three looks, because the first press pays for
+              loading the model. Mic, then dots while it loads (disabled: there is nothing to stop yet), then
+              a wave while the microphone is open. The button reports the state instead of needing a lamp
+              beside it. */}
           <IconButton
             icon="mic"
-            glyph={dictation().active ? () => <Wave /> : undefined}
-            label={t(dictation().active ? S.speech.dictation.stop : S.speech.dictation.start)}
-            active={dictation().active}
+            glyph={
+              recording()
+                ? () => <Wave />
+                : dictation().phase === "loading"
+                  ? () => <Loading />
+                  : undefined
+            }
+            label={t(
+              recording()
+                ? S.speech.dictation.stop
+                : dictation().phase === "loading"
+                  ? S.speech.dictation.loading
+                  : S.speech.dictation.start,
+            )}
+            active={recording()}
+            busy={dictation().phase === "loading"}
             disabled={props.disabled}
             onClick={() => void toggleDictation()}
           />
           {/* The third outcome, and the only one that loses words: stop keeps what was said, this throws it
               away and puts the draft back. `danger` and half the size, because it is the rarer choice. */}
-          <Show when={dictation().active}>
+          <Show when={recording()}>
             <IconButton
               icon="x"
               size="sm"

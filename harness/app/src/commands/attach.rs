@@ -13,7 +13,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use futures::StreamExt;
-use pai_rag::{Docs, IngestStage, needs_extraction};
+use pai_rag::{Docs, IngestFile, IngestStage, needs_extraction};
 use serde::Serialize;
 use tauri::State;
 
@@ -89,10 +89,11 @@ pub async fn resolve_attachments(
 /// through the vision role. Nothing here re-implements any of that; the whole point is that one path exists.
 /// Failures land on the file they belong to, so the rest of the batch still attaches.
 async fn trich_xuat(state: &State<'_, AppState>, harness: &Harness, placed: &mut [Attachment]) {
-    let can_doc: Vec<PathBuf> = placed
+    // No upload list to tick boxes on here, so these follow the saved OCR setting.
+    let can_doc: Vec<IngestFile> = placed
         .iter()
         .filter(|entry| entry.error.is_none() && needs_extraction(Path::new(&entry.path)))
-        .map(|entry| PathBuf::from(&entry.path))
+        .map(|entry| IngestFile::new(PathBuf::from(&entry.path)))
         .collect();
     if can_doc.is_empty() {
         return;

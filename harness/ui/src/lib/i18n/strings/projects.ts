@@ -149,8 +149,8 @@ export const projects = {
     vi: "Chép tệp vào {name}",
   },
   uploadMore: {
-    en: "Files are copied into the project root. A document library indexes them immediately. Existing files are never replaced, and folders are not accepted.",
-    vi: "Tệp được chép vào thư mục gốc của dự án. Thư viện tài liệu lập chỉ mục ngay sau khi chép. Tệp đã có sẽ không bị ghi đè và không nhận cả thư mục.",
+    en: "Files are copied into the project root. A document library indexes them immediately — PDF, images, recordings, Word, Markdown, HTML, data and plain text. Existing files are never replaced, and folders are not accepted.",
+    vi: "Tệp được chép vào thư mục gốc của dự án. Thư viện tài liệu lập chỉ mục ngay sau khi chép — PDF, ảnh, bản ghi âm, Word, Markdown, HTML, dữ liệu và văn bản thuần. Tệp đã có sẽ không bị ghi đè và không nhận cả thư mục.",
   },
   uploadDropTitle: { en: "Drop files here", vi: "Thả tệp vào đây" },
   uploadDropHint: {

@@ -81,7 +81,16 @@ pub async fn start_dictation(
     if let Some(previous) = state.dictation.lock().take() {
         previous.cancel();
     }
-    let mut dictation = pai_asr::dictate(&harness.asr).map_err(|error| error.to_string())?;
+    // Load before the device opens. `dictate` would otherwise do it inline -- on this runtime thread, for
+    // as long as half a gigabyte takes to read -- and the microphone would come up seconds after the button
+    // said it had. The UI holds the button disabled across this await.
+    harness
+        .asr
+        .warm()
+        .await
+        .map_err(|error| error.to_string())?;
+    let mut dictation = pai_asr::dictate(&harness.asr, pai_asr::Source::Microphone)
+        .map_err(|error| error.to_string())?;
     *state.dictation.lock() = Some(dictation.control());
 
     tauri::async_runtime::spawn(async move {
@@ -125,6 +134,7 @@ fn translate(event: DictationEvent) -> DictationUpdate {
         committed: String::new(),
         tentative: String::new(),
         recorded_ms: 0,
+        level: 0.0,
         device: None,
         streaming: false,
         text: None,
@@ -149,9 +159,10 @@ fn translate(event: DictationEvent) -> DictationUpdate {
             streaming: true,
             ..blank
         },
-        DictationEvent::Recording { recorded_ms } => DictationUpdate {
+        DictationEvent::Recording { recorded_ms, level } => DictationUpdate {
             kind: "recording".into(),
             recorded_ms,
+            level,
             ..blank
         },
         DictationEvent::Finished { text } => DictationUpdate {

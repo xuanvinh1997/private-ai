@@ -1,13 +1,11 @@
-import { For, Show, createResource } from "solid-js";
+import { Show } from "solid-js";
 import { S, t } from "../lib/i18n";
-import { displayMode } from "../lib/prefs";
-import { NO_SEEDS, goiY, promptSeeds } from "../lib/prompts";
 import type { ProjectKind } from "../lib/protocol";
 import Icon from "./Icon";
 import { InfoDot } from "./settings/FormKit";
 
-/** Top half of the empty screen: the big question and what must be read *before* typing. Split from the chips
- * because the two halves sit on either side of the composer, with nothing between question and input. */
+/** The empty screen: the big question and what must be read *before* typing; it sits directly above the
+ * composer, with nothing between question and input. */
 export function EmptyLead(props: {
   /** Kind of the open project, `null` when none; getting it wrong promises the wrong tool set above the composer. */
   kind: ProjectKind | null;
@@ -69,46 +67,5 @@ export function EmptyLead(props: {
         </p>
       </Show>
     </div>
-  );
-}
-
-/** Bottom half: clickable prompts under the composer, matching its width and left edge so they read as one unit. */
-export function PromptChips(props: {
-  onPick: (text: string) => void;
-  disabled?: boolean;
-  kind: ProjectKind | null;
-  /** Changes when the project does; `kind` is not a sufficient key, since two code projects share one kind. */
-  projectKey: string;
-}) {
-  const [seeds] = createResource(() => props.projectKey, promptSeeds, {
-    initialValue: NO_SEEDS,
-  });
-
-  // Show the static set while the core answers, rather than a gap that would shift the layout as the user starts typing.
-  const goi_y = () => goiY(props.kind, seeds());
-
-  return (
-    <ul
-      class="mx-auto my-0 flex w-full list-none flex-wrap gap-2xs px-2xs py-0"
-      classList={{
-        "max-w-(--reading-measure)": displayMode() === "bubble",
-        "max-w-[min(100%,980px)]": displayMode() === "document",
-      }}
-    >
-      <For each={goi_y()}>
-        {(text) => (
-          <li>
-            <button
-              type="button"
-              disabled={props.disabled}
-              onClick={() => props.onPick(text)}
-              class="pai-btn pai-btn-secondary text-xs hover:border-accent hover:bg-accent-soft hover:text-accent-ink"
-            >
-              {text}
-            </button>
-          </li>
-        )}
-      </For>
-    </ul>
   );
 }

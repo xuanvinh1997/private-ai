@@ -5,7 +5,7 @@ use std::{
 };
 
 use futures::StreamExt;
-use pai_rag::{DocLibrary, IngestStage, NativeLibrary, purge_library};
+use pai_rag::{DocLibrary, IngestFile, IngestStage, NativeLibrary, purge_library};
 use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -75,6 +75,87 @@ fn library_with_asr(asr_config: serde_json::Value) -> (tempfile::TempDir, Native
     .unwrap();
     let library = NativeLibrary::open(config_path, "docs-test".into(), root, asr()).unwrap();
     (temp, library)
+}
+
+/// The whole audio path through the library, with a real model: a recording in the project folder becomes
+/// a document whose stored text is the transcript. `#[ignore]`d because it loads half a gigabyte of weights.
+///
+/// ```text
+/// PAI_ASR_TEST_AUDIO=/tmp/asr-fixtures/vi-short.aiff \
+///   cargo test -p pai-rag --test native audio_file -- --ignored --nocapture
+/// ```
+#[tokio::test]
+#[ignore = "cần mô hình tiếng nói thật và PAI_ASR_TEST_AUDIO"]
+async fn audio_file_in_a_project_becomes_a_readable_transcript() {
+    let (Some(home), Some(source)) = (
+        std::env::var_os("HOME").map(std::path::PathBuf::from),
+        std::env::var_os("PAI_ASR_TEST_AUDIO").map(std::path::PathBuf::from),
+    ) else {
+        eprintln!("bỏ qua: thiếu HOME hoặc PAI_ASR_TEST_AUDIO");
+        return;
+    };
+    let Some(model) = pai_asr::discover_model(&home.join(".private-ai")) else {
+        eprintln!("bỏ qua: chưa có mô hình trong ~/.private-ai/asr/models");
+        return;
+    };
+
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("documents");
+    fs::create_dir_all(&root).unwrap();
+    let name = source.file_name().expect("tên tệp");
+    fs::copy(&source, root.join(name)).unwrap();
+    let config_path = temp.path().join("rag-config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "data_dir": temp.path().join("data"),
+            "projects": [{"id": "docs-test", "name": "Docs", "root": root}],
+            "active_project": "docs-test",
+            "embedding": {"kind": "ollama", "base_url": "", "api_key": "", "model": ""},
+            "vectors": {"url": "http://127.0.0.1:1", "api_key": "", "collection_prefix": "test"},
+            "chunk": {"size": 400, "overlap": 40},
+            "asr": {"enabled": true, "model": model, "language": ""}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let library = NativeLibrary::open(
+        config_path,
+        "docs-test".into(),
+        root,
+        pai_asr::Asr::new(pai_asr::AsrConfig::default()),
+    )
+    .unwrap();
+
+    let events: Vec<_> = library.sync().collect().await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.stage == IngestStage::Transcribing),
+        "phải báo giai đoạn đang nghe: {events:#?}"
+    );
+    let stored = events
+        .iter()
+        .find(|event| event.stage == IngestStage::Stored)
+        .unwrap_or_else(|| panic!("bản ghi âm phải được lưu: {events:#?}"));
+    println!("đã lưu {}", stored.path);
+
+    let documents = library.documents().await.unwrap();
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].format.as_str(), "audio");
+    assert!(documents[0].chunks > 0);
+
+    // The point of the whole feature: the words are there to read back.
+    let chunks = library.chunks(&documents[0].id, 0, 20).await.unwrap();
+    assert!(!chunks.is_empty(), "bản chép phải cắt ra ít nhất một đoạn");
+    for chunk in &chunks {
+        println!("  [{}] {}", chunk.heading.as_deref().unwrap_or("-"), chunk.text);
+    }
+    assert!(
+        chunks.iter().any(|chunk| chunk.text.chars().count() > 20),
+        "bản chép quá ngắn để là chữ thật"
+    );
 }
 
 /// A recording with speech recognition switched off is left out of the library, exactly as an image is
@@ -554,6 +635,61 @@ async fn ocr_off_skips_images_instead_of_failing_them() {
             .iter()
             .any(|event| event.stage == IngestStage::Failed),
         "bỏ qua không phải là lỗi"
+    );
+
+    let documents = library.documents().await.unwrap();
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].title, "guide");
+}
+
+/// The box unticked beside one file on the upload list answers for that file alone, even with the saved
+/// setting on. Without this, the only way to keep one scan out of the vision model is to switch OCR off for
+/// the whole project and remember to switch it back.
+#[tokio::test]
+async fn unticking_ocr_for_one_file_skips_only_that_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("documents");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join("guide.md"), "# Cài đặt\n\nMột đoạn chữ đủ dài để nạp.").unwrap();
+    // Never decoded: the answer for this file is read before the file is opened.
+    fs::write(root.join("scan.png"), b"khong phai anh that").unwrap();
+    let config_path = temp.path().join("rag-config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "data_dir": temp.path().join("data"),
+            "projects": [{"id": "docs-test", "name": "Docs", "root": root}],
+            "active_project": "docs-test",
+            "embedding": {"kind": "ollama", "base_url": "", "api_key": "", "model": ""},
+            "vision": {"kind": "ollama", "base_url": "", "api_key": "", "model": ""},
+            "vectors": {"url": "http://127.0.0.1:1", "api_key": "", "collection_prefix": "test"},
+            "chunk": {"size": 80, "overlap": 10},
+            "ocr": {"enabled": true}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let library = NativeLibrary::open(config_path, "docs-test".into(), root.clone(), asr()).unwrap();
+
+    let events: Vec<_> = library
+        .ingest(vec![
+            IngestFile::with_ocr(root.join("scan.png"), false),
+            IngestFile::new(root.join("guide.md")),
+        ])
+        .collect()
+        .await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.stage == IngestStage::Skipped && event.path.ends_with("scan.png")),
+        "ảnh bị bỏ tích OCR phải được bỏ qua"
+    );
+    assert!(
+        events
+            .iter()
+            .any(|event| event.stage == IngestStage::Stored && event.path.ends_with("guide.md")),
+        "tệp còn lại vẫn phải được nạp"
     );
 
     let documents = library.documents().await.unwrap();

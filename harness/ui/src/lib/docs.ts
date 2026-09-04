@@ -5,6 +5,7 @@ import { inTauri } from "./agent";
 import { S, t, type Msg } from "./i18n";
 import { dismissAppNotification, upsertAppNotification } from "./notifications";
 import type {
+  DocumentChunkView,
   DocumentFormat,
   DocumentHit,
   DocumentView,
@@ -307,14 +308,42 @@ export async function libraryStats(): Promise<LibraryStats> {
   }
 }
 
-/** Ingest documents, progress over a `Channel`; returns the library after ingest, and throws only if the whole batch fails. */
+/** One file waiting on the upload list, with the answer given for that file alone. */
+export interface UploadFile {
+  path: string;
+  /** `null` means nobody was asked about this file: the saved OCR setting decides. */
+  ocr: boolean | null;
+}
+
+/** Extensions the vision model is asked about; every other format carries its own text. Mirrors `PDF`/`IMAGE`
+ * in `crates/pai-rag/src/native/extract.rs`, so the checkbox appears exactly where OCR can run. */
+const OCR_FORMATS = new Set(["pdf", "png", "jpg", "jpeg", "webp", "bmp", "gif", "tif", "tiff"]);
+
+/** Whether OCR is even a question for this file. A `.docx` has its own characters; a scan does not. */
+export function ocrCapable(path: string): boolean {
+  const extension = fileName(path).split(".").pop()?.toLowerCase() ?? "";
+  return OCR_FORMATS.has(extension);
+}
+
+/** File name for a row: a full path pushes everything else off screen. */
+export function fileName(path: string): string {
+  return path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || path;
+}
+
+/** Queue a path nobody was asked about -- a re-index click, an attachment -- so it follows the saved setting. */
+export function queued(path: string): UploadFile {
+  return { path, ocr: null };
+}
+
+/** Ingest documents, progress over a `Channel`; returns the library after ingest, and throws only if the whole
+ * batch fails. Each file carries its own OCR answer, ticked on the upload list before this call. */
 export function addDocuments(
-  paths: string[],
+  files: UploadFile[],
   onProgress: (p: IngestProgress) => void,
 ): Promise<DocumentView[]> {
   const channel = new Channel<IngestProgress>();
   channel.onmessage = onProgress;
-  return invoke<DocumentView[]>("add_documents", { paths, onProgress: channel });
+  return invoke<DocumentView[]>("add_documents", { files, onProgress: channel });
 }
 
 /** Remove a document from the library, along with every chunk cut from it. */
@@ -337,6 +366,17 @@ export function reprocessLibrary(
 
 export function removeDocument(id: string): Promise<void> {
   return invoke("remove_document", { id });
+}
+
+/** Read one document's stored text, in order. This is the only way to see what a recording became: an
+ * audio file has no text layer to open elsewhere, so "what did it actually hear" is answerable here or
+ * nowhere. Throws: it sits behind a click. */
+export function readDocument(
+  documentId: string,
+  offset = 0,
+  limit = 40,
+): Promise<DocumentChunkView[]> {
+  return invoke<DocumentChunkView[]>("read_document", { id: documentId, offset, limit });
 }
 
 /** Probe search: `limit` has a default because the probe answers "can the library find this", not "show me everything". */

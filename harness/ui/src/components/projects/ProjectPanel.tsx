@@ -1,5 +1,5 @@
 import { createResource, createSignal, For, Show, Suspense } from "solid-js";
-import { addDocuments, stageLabel, stopDocumentIndexing } from "../../lib/docs";
+import { addDocuments, queued, stageLabel, stopDocumentIndexing } from "../../lib/docs";
 import { S, t } from "../../lib/i18n";
 import { deleteProjectDocument, listDir, originHost } from "../../lib/projects";
 import { relativeTime } from "../../lib/sessions";
@@ -240,7 +240,7 @@ function Node(props: {
       error: null,
     });
     try {
-      await addDocuments([props.entry.path], (frame) => {
+      await addDocuments([queued(props.entry.path)], (frame) => {
         setReindexProgress(frame);
         setReindexDetail(stageLabel(frame.stage));
         if (frame.stage === "cancelled") cancelled = true;

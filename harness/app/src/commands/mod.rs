@@ -11,5 +11,4 @@ pub mod mcp;
 pub mod projects;
 pub mod providers;
 pub mod rerank;
-pub mod suggest;
 pub mod system;

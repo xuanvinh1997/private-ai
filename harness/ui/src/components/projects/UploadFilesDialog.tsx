@@ -1,5 +1,5 @@
 import { createSignal, Show } from "solid-js";
-import { addDocuments, stageLabel, stopDocumentIndexing } from "../../lib/docs";
+import { addDocuments, queued, stageLabel, stopDocumentIndexing } from "../../lib/docs";
 import { S, t, tn } from "../../lib/i18n";
 import { importProjectFiles, pickProjectFiles } from "../../lib/projects";
 import type { Project } from "../../lib/protocol";
@@ -44,7 +44,7 @@ export default function UploadFilesDialog(props: {
       if (props.project.kind === "docs") {
         let failure: string | null = null;
         setIndexing(stageLabel("preparing"));
-        await addDocuments(imported, (frame) => {
+        await addDocuments(imported.map(queued), (frame) => {
           setIndexing(`${stageLabel(frame.stage)} · ${frame.done}/${frame.total}`);
           if (frame.stage === "cancelled") setIndexCancelled(true);
           if (frame.error !== null) failure = frame.error;

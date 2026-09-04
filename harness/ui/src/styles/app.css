@@ -303,3 +303,24 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
 @media (prefers-reduced-motion: reduce) {
   .pai-wave > span { transform: scaleY(0.62); }
 }
+
+/* The recording lamp on the dictation bar: the one thing on screen that says "the microphone is open right
+   now", in the colour every recorder has used for fifty years. It pulses on its own clock, not the audio's,
+   so it keeps saying so through a silence. */
+.pai-rec {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-pill);
+  background: var(--danger);
+  animation: pai-rec 1.6s ease-in-out infinite;
+}
+
+@keyframes pai-rec {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* Still a lit lamp, just a still one: the meter beside it carries the movement. */
+@media (prefers-reduced-motion: reduce) {
+  .pai-rec { animation: none; }
+}

@@ -224,16 +224,6 @@ export type DocumentFormat =
   | "data"
   | "code";
 
-/** Raw facts about the open project for empty-screen suggestions; the wording itself lives in `lib/prompts.ts`. */
-export interface PromptSeeds {
-  /** Symbols with the most relations first; names only, no paths. */
-  symbols: string[];
-  /** Directories with the most symbols first. */
-  directories: string[];
-  /** Document titles in the library; docs projects only. */
-  documents: string[];
-}
-
 /** A document in the library. */
 export interface DocumentView {
   id: string;
@@ -248,6 +238,16 @@ export interface DocumentView {
   embedded: boolean;
   addedAt: number;
   error: string | null;
+}
+
+/** One stored chunk, read straight through instead of searched: no score, nothing matched. */
+export interface DocumentChunkView {
+  ordinal: number;
+  /** The Markdown heading it sits under — for a recording, the timestamp range. */
+  heading: string | null;
+  text: string;
+  /** Zero when the format has no pages. */
+  page: number;
 }
 
 export interface OcrSetting {
@@ -362,6 +362,8 @@ export interface DictationUpdate {
   committed: string;
   tentative: string;
   recordedMs: number;
+  /** Microphone peak of this tick, `0`–`1`, on `recording`; the meter's only input. */
+  level: number;
   device: string | null;
   /** Whether text appears as you speak; false means it arrives when you stop. */
   streaming: boolean;

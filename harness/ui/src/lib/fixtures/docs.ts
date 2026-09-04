@@ -1,4 +1,10 @@
-import type { DocumentHit, DocumentView, IngestProgress, LibraryStats } from "../protocol";
+import type {
+  DocumentChunkView,
+  DocumentHit,
+  DocumentView,
+  IngestProgress,
+  LibraryStats,
+} from "../protocol";
 
 /** Sample data for the document library under `?demo=1`; all three embedding states appear side by side, and
  * `demoLibraryStats()` deliberately reports `semanticReady: false`, which keyword search survives. */
@@ -75,6 +81,21 @@ export function demoDocuments(now = Date.now()): DocumentView[] {
       embedded: false,
       addedAt: now - 3 * HOUR,
       error: "Tệp PDF chỉ có ảnh quét, không rút được chữ nào. Cần OCR trước khi nạp.",
+    },
+    {
+      // A recording: the row whose stored text nobody can check any other way, since there is no
+      // document to open beside the app.
+      id: "d-ghi-am",
+      path: "/Users/vinhpx/Documents/so-tay/hop-tuan-04-09.m4a",
+      title: "Họp tuần 04-09",
+      format: "audio",
+      bytes: 7_340_032,
+      chunks: 9,
+      pages: 0,
+      ocrPages: [],
+      embedded: true,
+      addedAt: now - 55 * MINUTE,
+      error: null,
     },
     {
       id: "d-kien-truc",
@@ -165,6 +186,47 @@ export function demoHits(query: string): DocumentHit[] {
       text: `Kết luận: hoãn việc chuyển kho sang cụm mới tới quý IV, giữ nguyên lịch sao lưu hằng đêm. Từ khoá đã khớp: ${q}.`,
       score: 0.58,
       matchedBy: "keyword",
+    },
+  ];
+}
+
+/** Stored chunks for the viewer. The recording carries timestamp headings, because that is what a
+ * transcript looks like once the library has cut it up; everything else carries its own Markdown heading. */
+export function demoChunks(documentId: string): DocumentChunkView[] {
+  if (documentId === "d-ghi-am") {
+    return [
+      {
+        ordinal: 1,
+        heading: "0:00 – 5:00",
+        page: 0,
+        text: "Chào mọi người. Tuần này có ba việc: bản đóng gói macOS, chỉ mục tài liệu, và phần nhận dạng tiếng nói vừa xong.",
+      },
+      {
+        ordinal: 2,
+        heading: "0:00 – 5:00",
+        page: 0,
+        text: "Bản đóng gói đã ký được, còn vướng phần notarize. Ai rảnh thì lấy máy sạch thử cài lại giúp.",
+      },
+      {
+        ordinal: 3,
+        heading: "5:00 – 10:00",
+        page: 0,
+        text: "Chỉ mục tài liệu chạy ổn với thư mục hai nghìn tệp. Phần chậm nhất vẫn là nhúng vector, không phải rút chữ.",
+      },
+    ];
+  }
+  return [
+    {
+      ordinal: 1,
+      heading: "Cài đặt",
+      page: 1,
+      text: "Dịch vụ chạy hoàn toàn trên máy người dùng. Không có bước nào gửi tài liệu ra ngoài.",
+    },
+    {
+      ordinal: 2,
+      heading: "Vận hành",
+      page: 2,
+      text: "Mỗi dự án có một kho riêng; xoá dự án là xoá kho, và tệp gốc của người dùng không bị đụng tới.",
     },
   ];
 }

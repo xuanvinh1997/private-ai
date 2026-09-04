@@ -553,6 +553,7 @@ pub fn run() {
             commands::docs::add_documents,
             commands::docs::remove_document,
             commands::docs::delete_project_document,
+            commands::docs::read_document,
             commands::docs::search_documents,
             commands::chunk::chunk_setting,
             commands::chunk::set_chunk,
@@ -564,7 +565,6 @@ pub fn run() {
             commands::asr::cancel_dictation,
             commands::rerank::rerank_setting,
             commands::rerank::set_rerank,
-            commands::suggest::prompt_seeds,
             commands::system::sandbox_status,
             commands::system::list_hooks,
             commands::system::hook_config_path

@@ -396,6 +396,17 @@ pub struct OcrSetting {
     pub vision_model: Option<String>,
 }
 
+/// One file on the upload list, with the OCR box ticked beside it. Sent by `add_documents` only: a folder
+/// scan has no list to tick, so it keeps following the saved setting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestRequest {
+    pub path: String,
+    /// `None` means the user was never asked -- follow the saved OCR setting.
+    #[serde(default)]
+    pub ocr: Option<bool>,
+}
+
 /// Progress of ingesting documents into the library.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -440,20 +451,6 @@ pub struct LibraryStats {
 pub struct ScanProgress {
     pub done: u32,
     pub total: u32,
-}
-
-/// Material the UI turns into empty-screen suggestions: facts about the open project only, never phrasing,
-/// which lives with the static sets in `ui/src/lib/prompts.ts`. All three fields empty is a valid state, and
-/// the UI falls back to the static set.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PromptSeeds {
-    /// Most-connected symbols first, in `code.overview` order; names only, since a chip a few words wide cannot hold a path.
-    pub symbols: Vec<String>,
-    /// Directories with the most symbols first.
-    pub directories: Vec<String>,
-    /// Document names in the library; document projects only.
-    pub documents: Vec<String>,
 }
 
 /// One matching passage, enough to build a citation card.
@@ -572,6 +569,19 @@ pub struct RerankSetting {
     pub reason: Option<String>,
 }
 
+/// One stored chunk of a document, read straight through rather than searched. No score and no
+/// `matched_by`: nothing was matched, this is the text the library holds, in the order it holds it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DocumentChunkView {
+    pub ordinal: u32,
+    /// The Markdown heading this chunk sits under -- for a recording, the timestamp range.
+    pub heading: Option<String>,
+    pub text: String,
+    /// Zero when the format has no pages.
+    pub page: u32,
+}
+
 /// The speech-recognition settings, and enough about the chosen model to explain what it can do.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -613,6 +623,9 @@ pub struct DictationUpdate {
     pub tentative: String,
     /// Audio captured so far, in milliseconds.
     pub recorded_ms: i64,
+    /// Microphone peak since the previous tick, `0.0` to `1.0`, on `recording`. This is the only thing on
+    /// screen that answers "is it hearing me" while nothing has been recognized yet.
+    pub level: f32,
     /// The input device, on `started`.
     pub device: Option<String>,
     /// Whether text will appear as you speak, on `started`.

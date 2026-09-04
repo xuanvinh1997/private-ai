@@ -134,6 +134,36 @@ pub struct IngestEvent {
     pub document: Option<Document>,
 }
 
+/// One file queued for ingest, carrying the choice made for that file alone on the upload list.
+#[derive(Clone, Debug)]
+pub struct IngestFile {
+    pub path: PathBuf,
+    /// Whether to read scans in *this* file. `None` follows the saved OCR setting -- what a folder scan
+    /// uses, since nobody ticked a box for those files.
+    pub ocr: Option<bool>,
+}
+
+impl IngestFile {
+    /// A file nobody made a choice for: the saved setting decides.
+    pub fn new(path: PathBuf) -> IngestFile {
+        IngestFile { path, ocr: None }
+    }
+
+    /// A file the user ticked or unticked before confirming the upload.
+    pub fn with_ocr(path: PathBuf, ocr: bool) -> IngestFile {
+        IngestFile {
+            path,
+            ocr: Some(ocr),
+        }
+    }
+}
+
+impl From<PathBuf> for IngestFile {
+    fn from(path: PathBuf) -> IngestFile {
+        IngestFile::new(path)
+    }
+}
+
 /// What the tools and the layers above see; `sync`, `ingest` and `remove` are UI commands rather than model tools, but they stay on the seam so there is only one path to the service.
 #[async_trait]
 pub trait DocLibrary: Send + Sync + 'static {
@@ -149,8 +179,9 @@ pub trait DocLibrary: Send + Sync + 'static {
     async fn stats(&self) -> Result<Stats, RagError>;
     /// Catch up with the project folder. The main entry point for a document project.
     fn sync(&self) -> BoxStream<'_, IngestEvent>;
-    /// Ingest a specific list of files; the stream borrows `&self` so it cannot outlive the library.
-    fn ingest(&self, paths: Vec<PathBuf>) -> BoxStream<'_, IngestEvent>;
+    /// Ingest a specific list of files, each with its own OCR answer; the stream borrows `&self` so it
+    /// cannot outlive the library.
+    fn ingest(&self, files: Vec<IngestFile>) -> BoxStream<'_, IngestEvent>;
     /// Forget every fingerprint and read the whole folder again.
     fn reprocess(&self) -> BoxStream<'_, IngestEvent>;
     /// Stop the active ingest pass, if any. Work already committed stays in the library.

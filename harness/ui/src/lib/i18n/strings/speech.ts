@@ -64,12 +64,19 @@ export const speech = {
   dictation: {
     start: { en: "Dictate", vi: "Đọc chính tả" },
     stop: { en: "Stop dictating", vi: "Dừng đọc" },
+    loading: { en: "Loading model…", vi: "Đang nạp mô hình…" },
     cancel: { en: "Discard dictation", vi: "Bỏ đoạn vừa đọc" },
     listening: { en: "Listening", vi: "Đang nghe" },
     buffering: {
       en: "Recording — text appears when you stop",
       vi: "Đang ghi — chữ hiện ra khi bạn dừng",
     },
+    // Said only after several seconds of silence: the meter answers this faster, in a glance.
+    quiet: {
+      en: "No sound reaching the microphone",
+      vi: "Không có tiếng nào vào micro",
+    },
+    level: { en: "Microphone level", vi: "Mức âm micro" },
     failed: { en: "Dictation stopped", vi: "Đọc chính tả dừng lại" },
     needsModel: {
       en: "Choose a speech model in Settings first.",

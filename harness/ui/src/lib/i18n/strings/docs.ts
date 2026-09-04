@@ -117,6 +117,17 @@ export const docs = {
     },
   },
 
+  // The dialog that shows what the library stored for one document.
+  viewer: {
+    open: { en: 'Read "{title}"', vi: 'Xem nội dung "{title}"' },
+    desc: { en: "{format} · {chunks} chunks stored", vi: "{format} · đã lưu {chunks} đoạn" },
+    empty: { en: "Nothing stored yet.", vi: "Chưa có nội dung nào được lưu." },
+    page: { en: "p.{n}", vi: "tr.{n}" },
+    ordinal: { en: "#{n}", vi: "#{n}" },
+    loadMore: { en: "Read more", vi: "Xem tiếp" },
+    rerun: { en: "Read again", vi: "Đọc lại tệp này" },
+  },
+
   // File format names; keys match `DocumentFormat`.
   format: {
     pdf: { en: "PDF", vi: "PDF" },
@@ -130,15 +141,34 @@ export const docs = {
     code: { en: "Code", vi: "Mã nguồn" },
   },
 
-  ocr: {
-    enable: { en: "OCR scanned PDFs and images", vi: "OCR PDF quét và tệp ảnh" },
-    ready: {
-      en: "Uses vision model {model}. Dense PDF pages keep their original text layer.",
-      vi: "Dùng model vision {model}. Trang PDF đã có đủ chữ vẫn giữ nguyên lớp chữ gốc.",
+  // The upload list: files wait here, one tickable OCR box each, until the batch is confirmed.
+  upload: {
+    headingOne: { en: "{n} file ready", vi: "{n} tệp chờ nạp" },
+    headingOther: { en: "{n} files ready", vi: "{n} tệp chờ nạp" },
+    hint: { en: "Tick OCR per file.", vi: "Tích OCR cho từng tệp trước khi nạp." },
+    more: {
+      en: "OCR sends that file's pages to the vision model, one request per page, and only that file. A file that carries its own text layer never needs it, so only scans and images can be ticked.",
+      vi: "OCR gửi từng trang của riêng tệp đó tới model vision, mỗi trang một lượt gọi. Tệp đã có sẵn lớp chữ thì không cần, nên chỉ bản quét và ảnh mới tích được.",
+    },
+    ocr: { en: "OCR", vi: "OCR" },
+    ocrFor: { en: 'Read "{name}" with OCR', vi: 'Đọc "{name}" bằng OCR' },
+    ocrNone: { en: "has text", vi: "đã có chữ" },
+    tickAll: { en: "Tick all", vi: "Tích tất cả" },
+    untickAll: { en: "Untick all", vi: "Bỏ tích tất cả" },
+    remove: {
+      en: 'Take "{name}" off the upload list',
+      vi: 'Bỏ "{name}" khỏi danh sách chờ nạp',
+    },
+    clear: { en: "Clear list", vi: "Bỏ hết" },
+    confirmOne: { en: "Add {n} file", vi: "Nạp {n} tệp" },
+    confirmOther: { en: "Add {n} files", vi: "Nạp {n} tệp" },
+    model: {
+      en: "Ticked files go to {model}. Pages that already carry text keep it.",
+      vi: "Tệp đã tích sẽ do model {model} đọc. Trang đã có sẵn chữ vẫn giữ nguyên.",
     },
     noModel: {
-      en: "OCR is enabled, but a vision model must be selected in Settings before it can read images.",
-      vi: "OCR đang bật nhưng cần chọn model vision trong Cài đặt trước khi có thể đọc ảnh.",
+      en: "No vision model selected, so ticked files are skipped. Choose one in Settings.",
+      vi: "Chưa chọn model vision nên tệp đã tích sẽ bị bỏ qua. Chọn model trong Cài đặt.",
     },
   },
 
@@ -153,8 +183,8 @@ export const docs = {
   drop: {
     emptyTitle: { en: "Library empty", vi: "Thư viện còn trống" },
     emptyMore: {
-      en: "Takes PDF, images, Word, Markdown, HTML, data and plain text. Scans use the selected vision model; original files stay where they are.",
-      vi: "Nhận PDF, ảnh, Word, Markdown, HTML, dữ liệu và văn bản thuần. Bản quét dùng model vision đã chọn; tệp gốc vẫn nằm nguyên chỗ cũ.",
+      en: "Takes PDF, images, recordings, Word, Markdown, HTML, data and plain text. Scans go through the vision model and recordings through the speech model; original files stay where they are.",
+      vi: "Nhận PDF, ảnh, bản ghi âm, Word, Markdown, HTML, dữ liệu và văn bản thuần. Bản quét đi qua model vision, bản ghi âm đi qua model tiếng nói; tệp gốc vẫn nằm nguyên chỗ cũ.",
     },
     emptyHint: {
       en: "Drop files here, or browse.",
@@ -216,7 +246,6 @@ export const docs = {
     },
     pick: common.pickerFailed,
     remove: { en: 'Could not delete "{title}": {err}', vi: 'Không xoá được "{title}": {err}' },
-    ocr: { en: "Could not save OCR setting: {err}", vi: "Không lưu được cấu hình OCR: {err}" },
     stats: {
       en: "Could not read the library status.",
       vi: "Không hỏi được tình trạng thư viện.",

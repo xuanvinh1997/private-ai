@@ -156,10 +156,12 @@ ONNX, và khác hẳn ba vai kia.
 
 Nó có đúng hai lối vào, và cả hai dùng **chung một `Asr`**:
 
-- **Tệp âm thanh trong dự án tài liệu.** `pai-rag` thêm một `ReaderKind::Audio` bên cạnh
+- **Tệp âm thanh trong dự án tài liệu**, thả vào cửa sổ hoặc chọn từ hộp thoại tải tệp. `pai-rag` thêm một `ReaderKind::Audio` bên cạnh
   PDF và ảnh; đường đi giống hệt ảnh qua vai vision — một tệp chỉ thành chữ nhờ một mô
   hình, và tắt mô hình đó thì tệp bị **bỏ qua**, không bị ghi là hỏng. Bản chép ra
-  Markdown có tiêu đề mỗi năm phút, nên trích dẫn chỉ đúng đoạn nghe lại được.
+  Markdown có tiêu đề mỗi năm phút, nên trích dẫn chỉ đúng đoạn nghe lại được. Màn hình
+  thư viện mở được nội dung đã lưu của từng tài liệu — với bản ghi âm thì đó là **chỗ duy
+  nhất** kiểm lại được máy nghe ra gì, vì tệp âm thanh không có chữ để mở ở đâu khác.
 - **Micro ở ô soạn tin.** `pai-asr` mở thiết bị bằng `cpal`, hạ về 16 kHz mono, rồi nạp
   vào một `stream` của cùng mô hình đó. **PCM không đi qua cầu IPC**: lõi thu, lấy mẫu và
   nhận dạng, còn thứ đi lên giao diện là chữ.

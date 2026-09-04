@@ -36,7 +36,8 @@ use self::{
     vision::VisionClient,
 };
 use crate::{
-    DocLibrary, Document, Format, Hit, IngestEvent, IngestStage, MatchedBy, RagError, Scanning,
+    DocLibrary, Document, Format, Hit, IngestEvent, IngestFile, IngestStage, MatchedBy, RagError,
+    Scanning,
     Stats,
 };
 
@@ -469,7 +470,7 @@ impl NativeLibrary {
                 .forget_fingerprints()
                 .map_err(store_error)?;
         }
-        let (paths, over_limit, scan_mode) = match source {
+        let (files, over_limit, scan_mode) = match source {
             Source::Sync | Source::Reprocess => {
                 if !self.root.is_dir() {
                     return Err(RagError::Service(format!(
@@ -484,11 +485,11 @@ impl NativeLibrary {
                         .map_err(|error| {
                             RagError::Service(format!("luồng quét bị dừng: {error}"))
                         })?;
-                (paths, over, true)
+                (paths.into_iter().map(IngestFile::new).collect(), over, true)
             }
-            Source::Paths(paths) => (paths, 0, false),
+            Source::Paths(files) => (files, 0, false),
         };
-        let total = paths.len() as u32;
+        let total = files.len() as u32;
         *self.scanning.lock() = Some(Scanning { done: 0, total });
         let known = self.store.lock().known_files().map_err(store_error)?;
         let excluded = self.store.lock().excluded().map_err(store_error)?;
@@ -498,7 +499,8 @@ impl NativeLibrary {
             ..RunReport::default()
         };
 
-        for (index, path) in paths.into_iter().enumerate() {
+        for (index, file) in files.into_iter().enumerate() {
+            let IngestFile { path, ocr } = file;
             let shown = path.display().to_string();
             let done = index as u32 + 1;
             send_progress(
@@ -547,7 +549,7 @@ impl NativeLibrary {
             let outcome = match reader_for(&path) {
                 Some(ReaderKind::Native(format)) => self.ingest_native(&path, format).await,
                 Some(ReaderKind::Pdf) => {
-                    self.ingest_pdf(&path, |done, total| {
+                    self.ingest_pdf(&path, ocr, |done, total| {
                         send_progress(
                             progress,
                             event(IngestStage::Ocr, shown.clone(), None, done, total),
@@ -556,7 +558,7 @@ impl NativeLibrary {
                     .await
                 }
                 Some(ReaderKind::Image) => {
-                    self.ingest_image(&path, |done, total| {
+                    self.ingest_image(&path, ocr, |done, total| {
                         send_progress(
                             progress,
                             event(IngestStage::Ocr, shown.clone(), None, done, total),
@@ -680,9 +682,16 @@ impl NativeLibrary {
     async fn ingest_pdf(
         &self,
         path: &Path,
+        ocr: Option<bool>,
         mut on_ocr: impl FnMut(u32, u32),
     ) -> Result<Ingested, RagError> {
         let runtime = self.runtime()?;
+        // The box ticked beside this file on the upload list decides for this file. A folder scan ticks
+        // nothing, so there the saved setting still answers.
+        let ocr_enabled = ocr.unwrap_or(runtime.ocr.enabled);
+        // Reading the pictures inside a page is the optional half of OCR: unticking the file switches it
+        // off too, or a file the user said to leave alone would still be sent off picture by picture.
+        let ocr_images = ocr_enabled && runtime.ocr.images;
         let owned = path.to_owned();
         let mut pages = tokio::task::spawn_blocking(move || extract::pdf_text_pages(&owned))
             .await
@@ -706,7 +715,7 @@ impl NativeLibrary {
             .collect();
 
         // Nothing left to read once every page has its text, so no model is needed at all.
-        if blank.is_empty() && !runtime.ocr.images {
+        if blank.is_empty() && !ocr_images {
             return self
                 .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
                 .await
@@ -714,8 +723,12 @@ impl NativeLibrary {
         }
         // Why OCR cannot run here, if it cannot. Pages nobody can read never cost the whole document: the
         // text layer is stored and those pages are simply left out of it.
-        let blocked = if !runtime.ocr.enabled {
-            Some("OCR đang tắt")
+        let blocked = if !ocr_enabled {
+            if ocr == Some(false) {
+                Some("bạn đã bỏ chọn OCR cho tệp này")
+            } else {
+                Some("OCR đang tắt")
+            }
         } else if runtime.vision.is_none() {
             Some("chưa chọn mô hình vision trong Cài đặt")
         } else {
@@ -757,7 +770,7 @@ impl NativeLibrary {
 
         // The second pass is opt-in: plenty of documents are full of pictures nobody needs read, and each
         // one is a request. Off means the pages keep their own text and nothing else is sent anywhere.
-        let embedded: Vec<_> = if runtime.ocr.images {
+        let embedded: Vec<_> = if ocr_images {
             let to_scan = path.to_owned();
             let min_side = runtime.ocr.min_image_side;
             let per_page = runtime.ocr.max_images_per_page;
@@ -835,14 +848,21 @@ impl NativeLibrary {
     async fn ingest_image(
         &self,
         path: &Path,
+        ocr: Option<bool>,
         mut on_ocr: impl FnMut(u32, u32),
     ) -> Result<Ingested, RagError> {
         let runtime = self.runtime()?;
         // An image file is nothing but an image: with OCR off there is nothing to read, so it is left out
-        // rather than filed as a broken document.
-        if !runtime.ocr.enabled {
+        // rather than filed as a broken document. Unticking it on the upload list says the same thing about
+        // this one file.
+        if !ocr.unwrap_or(runtime.ocr.enabled) {
+            let reason = if ocr == Some(false) {
+                "bạn đã bỏ chọn OCR cho tệp này"
+            } else {
+                "OCR đang tắt"
+            };
             return Ok(Ingested::Skipped(format!(
-                "`{}` là ảnh, OCR đang tắt nên bỏ qua",
+                "`{}` là ảnh, {reason} nên bỏ qua",
                 path.display()
             )));
         }
@@ -1185,8 +1205,8 @@ impl DocLibrary for NativeLibrary {
         self.run(Source::Sync)
     }
 
-    fn ingest(&self, paths: Vec<PathBuf>) -> BoxStream<'_, IngestEvent> {
-        self.run(Source::Paths(paths))
+    fn ingest(&self, files: Vec<IngestFile>) -> BoxStream<'_, IngestEvent> {
+        self.run(Source::Paths(files))
     }
 
     fn reprocess(&self) -> BoxStream<'_, IngestEvent> {
@@ -1225,7 +1245,7 @@ impl DocLibrary for NativeLibrary {
 #[derive(Clone, Debug)]
 enum Source {
     Sync,
-    Paths(Vec<PathBuf>),
+    Paths(Vec<IngestFile>),
     Reprocess,
 }
 

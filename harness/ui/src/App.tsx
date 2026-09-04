@@ -62,7 +62,7 @@ import { notify } from "./lib/toast";
 import ApprovalDialog from "./components/ApprovalDialog";
 import { ChangesBoard } from "./components/ChangesPanel";
 import Composer from "./components/Composer";
-import { EmptyLead, PromptChips } from "./components/EmptyState";
+import { EmptyLead } from "./components/EmptyState";
 import { usableForChat } from "./components/ModelPicker";
 import ProjectSwitcher from "./components/ProjectSwitcher";
 import PromptDialog from "./components/PromptDialog";
@@ -784,10 +784,6 @@ export default function App() {
 
   /** Nothing in the transcript yet - the state that decides whether the composer sits centred or at the bottom. */
   const chatEmpty = () => conversation.nodes().length === 0;
-  /** Whether to show the prompt chips: only with an empty transcript and nothing else occupying that space, or
-   * they invite starting work that a loading transcript is about to cover. */
-  const showPrompts = () => chatEmpty() && loadingSession() === null && loadError() === null;
-
   const title = () =>
     tab() === "chat"
       ? (sessions().find((session) => session.id === currentId())?.title ?? t(S.app.sessionTitle))
@@ -978,20 +974,7 @@ export default function App() {
                       projectName={project()?.name}
                       projectKind={project()?.kind}
                       mcpConnected={mcpConnected()}
-                      moreBelow={showPrompts()}
                     />
-
-                    {/* The chips sit *below* the composer: the big question must touch the place that answers it. */}
-                    <Show when={showPrompts()}>
-                      <div class="shrink-0 px-(--page-pad-x) pb-(--page-pad-y)">
-                        <PromptChips
-                          disabled={conversation.busy()}
-                          kind={project()?.kind ?? null}
-                          projectKey={projectKey()}
-                          onPick={(text) => void send(text)}
-                        />
-                      </div>
-                    </Show>
                   </div>
                 </Match>
 

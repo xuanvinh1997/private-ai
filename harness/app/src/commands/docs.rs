@@ -7,13 +7,16 @@ use std::sync::Arc;
 
 use futures::StreamExt;
 use futures::stream::BoxStream;
-use pai_rag::{DocLibrary, Docs, Document, IngestEvent};
+use pai_rag::{DocLibrary, Docs, Document, IngestEvent, IngestFile};
 use tauri::State;
 use tauri::ipc::Channel;
 
 use crate::AppState;
 use crate::harness::Harness;
-use crate::protocol::{DocumentHit, DocumentView, IngestProgress, LibraryStats, OcrSetting};
+use crate::protocol::{
+    DocumentChunkView, DocumentHit, DocumentView, IngestProgress, IngestRequest, LibraryStats,
+    OcrSetting,
+};
 
 /// The open project's library; absence is valid, since code projects do not load `rag`, and the answer says
 /// which project type this is rather than reporting a technical error.
@@ -141,18 +144,25 @@ pub async fn library_stats(state: State<'_, AppState>) -> Result<LibraryStats, S
 
 /// Ingest a batch, emit progress, and return the whole library rather than the additions, since re-ingesting
 /// updates existing rows. One bad file never fails the batch -- that is `pai-rag`'s contract, unchanged here.
+/// Each entry carries its own OCR answer: the box is ticked per file on the upload list, before this call.
 #[tauri::command]
 pub async fn add_documents(
-    paths: Vec<String>,
+    files: Vec<IngestRequest>,
     on_progress: Channel<IngestProgress>,
     state: State<'_, AppState>,
 ) -> Result<Vec<DocumentView>, String> {
     state.qdrant.ensure().await?;
     let harness = state.harness().await?;
     let library = library(&harness)?;
-    let files: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+    let queued: Vec<IngestFile> = files
+        .into_iter()
+        .map(|file| IngestFile {
+            path: PathBuf::from(file.path),
+            ocr: file.ocr,
+        })
+        .collect();
 
-    let stream = library.ingest(files);
+    let stream = library.ingest(queued);
     drain(&library, stream, on_progress).await
 }
 
@@ -251,6 +261,34 @@ pub async fn delete_project_document(
         .await
         .map_err(|err| format!("tác vụ xoá tệp bị dừng: {err}"))?
         .map_err(|err| format!("không xoá được {}: {err}", path))
+}
+
+/// Read one document straight through, in stored order. This is how the transcript of a recording
+/// becomes visible: audio has no text layer to open in another app, so what the library heard is only
+/// checkable here. The same call serves every other format, since "what did it actually extract" is the
+/// same question for a scanned PDF.
+#[tauri::command]
+pub async fn read_document(
+    id: String,
+    offset: usize,
+    limit: usize,
+    state: State<'_, AppState>,
+) -> Result<Vec<DocumentChunkView>, String> {
+    let harness = state.harness().await?;
+    // Clamped, not trusted: a limit of zero renders an empty viewer that looks like a broken document.
+    let limit = limit.clamp(1, 200);
+    Ok(library(&harness)?
+        .chunks(&id, offset, limit)
+        .await
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .map(|hit| DocumentChunkView {
+            ordinal: hit.ordinal,
+            heading: hit.heading,
+            text: hit.text,
+            page: hit.page,
+        })
+        .collect())
 }
 
 /// A test search, so the user can verify the library before asking the assistant; matches come back verbatim

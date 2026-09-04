@@ -1,21 +1,23 @@
 import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
-import { isDemo } from "../../lib/demo";
+import { demoKnobs, isDemo } from "../../lib/demo";
 import {
   addDocuments,
   dismissDocumentTask,
   documentTasks,
+  fileName,
   getOcrSetting,
   libraryStats,
   listDocuments,
+  ocrCapable,
   reprocessLibrary,
   syncLibrary,
   pickDocuments,
   removeDocument,
   runDocumentTask,
-  setOcrEnabled,
   stageLabel,
   stopDocumentTask,
   type DocumentTask,
+  type UploadFile,
 } from "../../lib/docs";
 import { demoDocuments, demoIngestFrames, demoLibraryStats } from "../../lib/fixtures/docs";
 import { S, t, tn } from "../../lib/i18n";
@@ -25,8 +27,10 @@ import { InfoDot } from "../settings/FormKit";
 import ConfirmDialog from "../projects/ConfirmDialog";
 import { Button } from "../projects/DialogShell";
 import DocumentTable from "./DocumentTable";
+import DocumentViewer from "./DocumentViewer";
 import DropZone from "./DropZone";
 import SearchProbe from "./SearchProbe";
+import UploadQueue from "./UploadQueue";
 
 /** Document library screen for a `docs` project: one bad file never fails the batch, and semantic search being unready still leaves keyword search working. */
 export default function DocsView(props: {
@@ -40,9 +44,13 @@ export default function DocsView(props: {
   const [loading, setLoading] = createSignal(true);
   const [error, setError] = createSignal<string | null>(null);
   const [removing, setRemoving] = createSignal<DocumentView | null>(null);
+  const [viewing, setViewing] = createSignal<DocumentView | null>(null);
+  /** `?demo=1&doc=<id>` opens the viewer on load; a dialog reached only by clicking cannot be captured. */
+  const demoDoc = isDemo() ? demoKnobs().doc : undefined;
   const [actionBusy, setActionBusy] = createSignal(false);
   const [ocr, setOcr] = createSignal<OcrSetting | null>(null);
-  const [ocrBusy, setOcrBusy] = createSignal(false);
+  /** Dropped or picked files, waiting for their OCR boxes and one confirming click. */
+  const [queue, setQueue] = createSignal<UploadFile[]>([]);
   const task = createMemo(() => documentTasks()[props.resetKey] ?? null);
   const busy = () => actionBusy() || task()?.state === "running";
 
@@ -51,10 +59,14 @@ export default function DocsView(props: {
   const load = async () => {
     setLoading(true);
     if (isDemo()) {
-      setDocs(demoDocuments());
+      const list = demoDocuments();
+      setDocs(list);
       setStats(demoLibraryStats());
       setOcr({ enabled: true, visionModel: "qwen2.5vl" });
       setLoading(false);
+      if (demoDoc !== undefined) {
+        setViewing(list.find((entry) => entry.id === demoDoc) ?? null);
+      }
       return;
     }
     // Show what is known first, then scan, or the screen stays blank through a large folder.
@@ -93,6 +105,7 @@ export default function DocsView(props: {
         setStats(null);
         setError(null);
         setOcr(null);
+        setQueue([]);
         appliedTaskId = "";
         void load();
       },
@@ -120,19 +133,47 @@ export default function DocsView(props: {
     return demoDocuments();
   }
 
-  const addFiles = async (paths: string[]) => {
-    if (paths.length === 0 || busy()) return;
+  const addFiles = async (files: UploadFile[]) => {
+    if (files.length === 0 || busy()) return;
     setError(null);
+    const paths = files.map((file) => file.path);
     try {
       await runDocumentTask(
         props.resetKey,
         "add",
-        progress(paths[0] ?? "", paths.length),
-        (note) => (isDemo() ? runDemoIngest(paths, note) : addDocuments(paths, note)),
+        progress(paths[0] ?? "", files.length),
+        (note) => (isDemo() ? runDemoIngest(paths, note) : addDocuments(files, note)),
       );
     } catch (err) {
       console.error("document ingest failed", err);
     }
+  };
+
+  /** Put dropped or picked files on the list instead of reading them: OCR is answered per file, and the
+   * answer has to be given before anything is sent to a model. Paths already listed are not duplicated. */
+  const stage = (paths: string[]) => {
+    if (paths.length === 0) return;
+    setError(null);
+    setQueue((current) => {
+      // One row per path, so a path dropped twice cannot show two boxes disagreeing about the same file.
+      const seen = new Set(current.map((file) => file.path));
+      const added: UploadFile[] = [];
+      for (const path of paths) {
+        if (seen.has(path)) continue;
+        seen.add(path);
+        // The saved setting is the starting position, not the verdict: it is what the user last said about
+        // scans in general, and every box on this list can still be changed before the batch is confirmed.
+        added.push({ path, ocr: ocrCapable(path) ? (ocr()?.enabled ?? true) : null });
+      }
+      return [...current, ...added];
+    });
+  };
+
+  const confirmQueue = async () => {
+    const files = queue();
+    if (files.length === 0 || busy()) return;
+    setQueue([]);
+    await addFiles(files);
   };
 
   /** Reprocess the whole library through the same progress path as ingest, file by file. */
@@ -155,24 +196,9 @@ export default function DocsView(props: {
   const pick = async () => {
     setError(null);
     try {
-      await addFiles(await pickDocuments());
+      stage(await pickDocuments());
     } catch (err) {
       setError(t(S.docs.error.pick, { err: String(err) }));
-    }
-  };
-
-  const toggleOcr = async (enabled: boolean) => {
-    const previous = ocr();
-    if (previous === null || ocrBusy()) return;
-    setOcrBusy(true);
-    setOcr({ ...previous, enabled });
-    try {
-      if (!isDemo()) setOcr(await setOcrEnabled(enabled));
-    } catch (err) {
-      setOcr(previous);
-      setError(t(S.docs.error.ocr, { err: String(err) }));
-    } finally {
-      setOcrBusy(false);
     }
   };
 
@@ -218,35 +244,35 @@ export default function DocsView(props: {
 
         <section class="flex flex-col gap-md">
           <DropZone
-            compact={docs().length > 0}
+            compact={docs().length > 0 || queue().length > 0}
             busy={busy()}
-            onPaths={(paths) => void addFiles(paths)}
+            onPaths={stage}
             onPick={() => void pick()}
           />
 
-          <Show when={ocr()}>
-            {(setting) => (
-              <label class="flex items-start gap-sm rounded-card border border-line bg-surface px-(--card-pad-x) py-(--card-pad-y) text-xs text-text">
-                <input
-                  type="checkbox"
-                  checked={setting().enabled}
-                  disabled={ocrBusy() || busy()}
-                  onChange={(event) => void toggleOcr(event.currentTarget.checked)}
-                  class="mt-3xs size-4 shrink-0 accent-[var(--accent)]"
-                />
-                <span class="flex min-w-0 flex-col gap-3xs">
-                  <span class="font-medium text-ink">{t(S.docs.ocr.enable)}</span>
-                  <span class="text-2xs text-muted">
-                    <Show
-                      when={setting().visionModel}
-                      fallback={<>{t(S.docs.ocr.noModel)}</>}
-                    >
-                      {(model) => t(S.docs.ocr.ready, { model: model() })}
-                    </Show>
-                  </span>
-                </span>
-              </label>
-            )}
+          <Show when={queue().length > 0}>
+            <UploadQueue
+              files={queue()}
+              visionModel={ocr()?.visionModel ?? null}
+              busy={busy()}
+              onOcr={(path, enabled) =>
+                setQueue((current) =>
+                  current.map((file) => (file.path === path ? { ...file, ocr: enabled } : file)),
+                )
+              }
+              onOcrAll={(enabled) =>
+                setQueue((current) =>
+                  current.map((file) =>
+                    ocrCapable(file.path) ? { ...file, ocr: enabled } : file,
+                  ),
+                )
+              }
+              onRemove={(path) =>
+                setQueue((current) => current.filter((file) => file.path !== path))
+              }
+              onClear={() => setQueue([])}
+              onConfirm={() => void confirmQueue()}
+            />
           </Show>
 
           <Show when={task()}>
@@ -272,6 +298,7 @@ export default function DocsView(props: {
               docs={docs()}
               busy={busy()}
               task={task()}
+              onOpen={(doc) => setViewing(doc)}
               onRemove={(doc) => setRemoving(doc)}
             />
           </Show>
@@ -287,6 +314,33 @@ export default function DocsView(props: {
           <SearchProbe disabled={actionBusy()} />
         </Show>
       </div>
+
+      {/* Keyed: opening a different document must remount the dialog, or it would show the first one's
+          text under the second one's title until the fetch lands. */}
+      <Show when={viewing()} keyed>
+        {(doc) => (
+          <DocumentViewer
+            doc={doc}
+            busy={busy()}
+            onRerun={() => {
+              // Close, run, then reopen on the fresh row: the point of the button is to see the new
+              // text, and leaving the dialog up over a document being rewritten would show the old one.
+              setViewing(null);
+              // Re-reading keeps this document's own answer: a file that was OCR'd is OCR'd again, and one
+              // that was not stays a plain read. `null` on anything else means the saved setting decides.
+              void addFiles([
+                {
+                  path: doc.path,
+                  ocr: ocrCapable(doc.path) ? doc.ocrPages.length > 0 : null,
+                },
+              ]).then(() => {
+                setViewing(docs().find((entry) => entry.path === doc.path) ?? null);
+              });
+            }}
+            onClose={() => setViewing(null)}
+          />
+        )}
+      </Show>
 
       <Show when={removing()}>
         {(doc) => (
@@ -640,9 +694,4 @@ function Stat(props: { label: string; value: string }) {
       <dd class="m-0 text-sm text-ink tabular-nums">{props.value}</dd>
     </div>
   );
-}
-
-/** File name for the progress row: a full path pushes the done/total counter off screen. */
-function fileName(path: string): string {
-  return path.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || path;
 }

@@ -15,6 +15,6 @@ pub mod error;
 
 pub use audio::{Clip, MAX_DURATION_MS, SAMPLE_RATE, decode_file, is_audio};
 pub use config::{AsrConfig, MODEL_DIR, discover_model};
-pub use dictate::{Dictation, DictationControl, DictationEvent, start as dictate};
+pub use dictate::{Dictation, DictationControl, DictationEvent, Source, start as dictate};
 pub use engine::{Asr, Line, ModelInfo, Transcription};
 pub use error::AsrError;

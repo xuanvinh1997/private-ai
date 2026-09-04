@@ -12,6 +12,7 @@ export default function DocumentTable(props: {
   docs: DocumentView[];
   busy?: boolean;
   task?: DocumentTask | null;
+  onOpen: (doc: DocumentView) => void;
   onRemove: (doc: DocumentView) => void;
 }) {
   const active = () => inlineProgress(props.task);
@@ -34,7 +35,7 @@ export default function DocumentTable(props: {
             <Th>{t(S.docs.table.pages)}</Th>
             <Th>{t(S.docs.table.addedAt)}</Th>
             <Th>{t(S.docs.table.embed)}</Th>
-            <th class="w-10 px-sm py-xs">
+            <th class="w-20 px-sm py-xs">
               <span class="sr-only">{t(S.docs.table.actions)}</span>
             </th>
           </tr>
@@ -76,9 +77,17 @@ export default function DocumentTable(props: {
                 <tr class={`border-b border-line transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-faint)] ${activeMatches(keyed().path) ? rowTone(active()?.stage ?? "reading") : ""}`}>
                   <td class="max-w-[280px] px-sm py-xs align-top">
                     <span class="flex flex-col gap-3xs">
-                      <span class="min-w-0 truncate text-xs text-ink" title={keyed().title}>
+                      {/* The title opens the document rather than a separate icon doing it: a row about a
+                          file should open that file, and the eye button beside it is for the same job from
+                          the keyboard's point of view. */}
+                      <button
+                        type="button"
+                        onClick={() => props.onOpen(keyed())}
+                        title={keyed().title}
+                        class="min-w-0 truncate rounded-btn text-left text-xs text-ink underline-offset-2 transition-colors duration-[var(--dur-fast)] hover:text-accent-ink hover:underline"
+                      >
                         {keyed().title}
-                      </span>
+                      </button>
                       <span
                         class="min-w-0 truncate font-mono text-2xs text-faint"
                         dir="rtl"
@@ -109,15 +118,24 @@ export default function DocumentTable(props: {
                     <EmbedBadge doc={keyed()} />
                   </td>
                   <td class="px-sm py-xs align-top">
-                    <IconButton
-                      icon="trash"
-                      size="sm"
-                      danger
-                      disabled={props.busy}
-                      tip="left"
-                      label={t(S.docs.table.remove, { title: keyed().title })}
-                      onClick={() => props.onRemove(keyed())}
-                    />
+                    <span class="flex items-center justify-end gap-3xs">
+                      <IconButton
+                        icon="eye"
+                        size="sm"
+                        tip="left"
+                        label={t(S.docs.viewer.open, { title: keyed().title })}
+                        onClick={() => props.onOpen(keyed())}
+                      />
+                      <IconButton
+                        icon="trash"
+                        size="sm"
+                        danger
+                        disabled={props.busy}
+                        tip="left"
+                        label={t(S.docs.table.remove, { title: keyed().title })}
+                        onClick={() => props.onRemove(keyed())}
+                      />
+                    </span>
                   </td>
                 </tr>
                 <Show when={activeMatches(keyed().path) && active()}>

@@ -28,10 +28,13 @@ pub const MAX_DURATION_MS: u64 = 60 * 60 * 1_000;
 
 /// Container extensions worth handing to Symphonia. Deliberately a list rather than "try everything":
 /// a document folder is full of files that are not audio, and probing each one costs a file open.
-/// Every entry here is a container Symphonia is compiled to read in this build; `.opus`, `.aiff`
-/// and `.caf` are absent because it cannot, and claiming them would only move the failure later.
+/// Every entry here is a container Symphonia is compiled to read in this build. `.aiff` and `.caf` earn
+/// their place by being what a Mac produces when it is not producing `.m4a`; `.opus` and `.wma` are absent
+/// because this build genuinely cannot read them, and listing a format we then refuse only moves the
+/// failure to a worse place -- after the copy, inside the library, as a broken document.
 const AUDIO: &[&str] = &[
-    "wav", "wave", "mp3", "m4a", "m4b", "mp4", "aac", "flac", "ogg", "oga", "mka", "webm",
+    "wav", "wave", "aiff", "aif", "aifc", "caf", "mp3", "m4a", "m4b", "mp4", "aac", "flac", "ogg",
+    "oga", "mka", "webm",
 ];
 
 /// Whether this path is one the recognizer will try to read.
@@ -183,6 +186,13 @@ fn downmix(interleaved: &[f32], channels: u16, out: &mut Vec<f32>) {
 
 /// Resample one mono buffer to [`SAMPLE_RATE`]. A file already at 16 kHz is passed through
 /// untouched -- running it through the filter would only cost time and a little quality.
+///
+/// Two corrections the naive loop gets wrong, and both are audible in a transcript. The filter has a
+/// latency it reports itself, and the samples before it are the filter warming up: left in, they become a
+/// quarter-second of silence glued to the front of every recording, and every timestamp in the transcript
+/// is late by exactly that much. And the tail needs flushing -- the last input block is still inside the
+/// filter when the input runs out -- but flushing zero-pads, so the result is trimmed back to the length
+/// the sample-rate ratio says it must have.
 fn resample(mono: Vec<f32>, from: u32) -> Result<Vec<f32>, AsrError> {
     if from == SAMPLE_RATE {
         return Ok(mono);
@@ -192,8 +202,10 @@ fn resample(mono: Vec<f32>, from: u32) -> Result<Vec<f32>, AsrError> {
     let chunk = from as usize;
     let mut resampler = FftFixedIn::<f32>::new(from as usize, SAMPLE_RATE as usize, chunk, 2, 1)
         .map_err(|error| AsrError::Decode(format!("không lấy mẫu lại được từ {from} Hz: {error}")))?;
+    let delay = resampler.output_delay();
+    let wanted = mono.len() * SAMPLE_RATE as usize / from as usize;
 
-    let mut out: Vec<f32> = Vec::with_capacity(mono.len() * SAMPLE_RATE as usize / from as usize + chunk);
+    let mut out: Vec<f32> = Vec::with_capacity(wanted + delay + chunk);
     let mut cursor = 0;
     while cursor + chunk <= mono.len() {
         let block = [&mono[cursor..cursor + chunk]];
@@ -203,14 +215,24 @@ fn resample(mono: Vec<f32>, from: u32) -> Result<Vec<f32>, AsrError> {
         out.extend_from_slice(&processed[0]);
         cursor += chunk;
     }
-    if cursor < mono.len() {
-        // The tail is shorter than one pass; `process_partial` zero-pads it rather than dropping it.
-        let block = [&mono[cursor..]];
+
+    // Push the remainder through, then keep pushing nothing until everything the filter still holds has
+    // come out the other side. `None` input means "pad with silence", which is what a flush is.
+    let remainder = [&mono[cursor..]];
+    let mut tail: Option<&[&[f32]]> = (cursor < mono.len()).then(|| &remainder[..]);
+    while out.len() < wanted + delay {
         let processed = resampler
-            .process_partial(Some(&block), None)
+            .process_partial(tail, None)
             .map_err(|error| AsrError::Decode(format!("lấy mẫu lại phần cuối thất bại: {error}")))?;
+        tail = None;
+        if processed[0].is_empty() {
+            break;
+        }
         out.extend_from_slice(&processed[0]);
     }
+
+    out.drain(..delay.min(out.len()));
+    out.truncate(wanted);
     Ok(out)
 }
 
@@ -222,6 +244,9 @@ pub struct LiveResampler {
     channels: u16,
     chunk: usize,
     pending: Vec<f32>,
+    /// Output samples still to be dropped: the filter's own latency, which is silence and warm-up rather
+    /// than anything anyone said. Left in, it prepends a beat of nothing to every dictation.
+    skip: usize,
 }
 
 impl LiveResampler {
@@ -247,11 +272,16 @@ impl LiveResampler {
                 )?,
             )
         };
+        let skip = resampler
+            .as_ref()
+            .map(rubato::Resampler::output_delay)
+            .unwrap_or(0);
         Ok(Self {
             resampler,
             channels: channels.max(1),
             chunk,
             pending: Vec::new(),
+            skip,
         })
     }
 
@@ -272,7 +302,18 @@ impl LiveResampler {
             cursor += self.chunk;
         }
         self.pending.drain(..cursor);
-        Ok(out)
+        Ok(self.trim(out))
+    }
+
+    /// Drop whatever remains of the filter's latency from the front of a block.
+    fn trim(&mut self, mut samples: Vec<f32>) -> Vec<f32> {
+        if self.skip == 0 {
+            return samples;
+        }
+        let dropped = self.skip.min(samples.len());
+        samples.drain(..dropped);
+        self.skip -= dropped;
+        samples
     }
 
     /// Flush the partial block held back by the last [`LiveResampler::push`].
@@ -288,7 +329,8 @@ impl LiveResampler {
         let processed = resampler
             .process_partial(Some(&block), None)
             .map_err(|error| AsrError::Engine(format!("lấy mẫu lại phần cuối micro thất bại: {error}")))?;
-        Ok(processed[0].clone())
+        let tail = processed[0].clone();
+        Ok(self.trim(tail))
     }
 }
 
@@ -310,20 +352,54 @@ mod tests {
         assert_eq!(resampled, samples);
     }
 
+    /// Length is exact, not approximate. It used to be "near enough", and what hid behind that slack was a
+    /// quarter-second of filter latency left on the front of every recording -- which shifts every timestamp
+    /// in a transcript and, on a real recording, was enough to make the model drop a whole clause.
     #[test]
-    fn resampling_48k_lands_within_a_block_of_a_third_of_the_samples() {
-        let seconds = 3;
-        let samples = vec![0.0_f32; 48_000 * seconds];
-        let resampled = resample(samples, 48_000).unwrap();
-        let expected = SAMPLE_RATE as usize * seconds;
-        // Not exact: the FFT resampler carries a filter delay, so the count lands near the ideal.
-        assert!(resampled.len().abs_diff(expected) < SAMPLE_RATE as usize / 4);
+    fn resampling_preserves_the_duration_exactly() {
+        for rate in [48_000_usize, 44_100, 22_050, 8_000] {
+            let seconds = 3;
+            let samples = vec![0.0_f32; rate * seconds];
+            let resampled = resample(samples, rate as u32).unwrap();
+            assert_eq!(
+                resampled.len(),
+                SAMPLE_RATE as usize * seconds,
+                "{rate} Hz đổi sai độ dài"
+            );
+        }
+    }
+
+    /// The same guarantee for the microphone: a dictation must not open with the filter's own silence.
+    #[test]
+    fn live_resampling_drops_the_filter_latency_before_the_first_sample() {
+        let mut live = LiveResampler::new(48_000, 1).unwrap();
+        // One second of a tone, fed the way a device feeds: many small buffers.
+        let tone: Vec<f32> = (0..48_000)
+            .map(|n| (n as f32 * 0.05).sin())
+            .collect();
+        let mut out = Vec::new();
+        for block in tone.chunks(480) {
+            out.extend(live.push(block).unwrap());
+        }
+        out.extend(live.drain().unwrap());
+        assert!(!out.is_empty());
+        // Nothing but the delay was dropped, so a second of tone is still about a second of audio.
+        assert!(out.len().abs_diff(SAMPLE_RATE as usize) < SAMPLE_RATE as usize / 10);
+        // The very first samples are tone, not the silence the filter starts with.
+        let head: f32 = out[..160].iter().map(|value| value.abs()).sum();
+        assert!(head > 0.1, "đầu bản ghi vẫn là im lặng của bộ lọc");
     }
 
     #[test]
     fn only_known_containers_are_offered_to_the_decoder() {
         assert!(is_audio(Path::new("hop.m4a")));
         assert!(is_audio(Path::new("/tmp/GHI.WAV")));
+        // What a Mac records when it is not recording `.m4a`.
+        assert!(is_audio(Path::new("ghi-am.aiff")));
+        assert!(is_audio(Path::new("ghi-am.caf")));
         assert!(!is_audio(Path::new("bao-cao.pdf")));
+        // Readable by a lot of players, not by this build: better refused at the picker than filed as a
+        // broken document afterwards.
+        assert!(!is_audio(Path::new("ghi-am.opus")));
     }
 }

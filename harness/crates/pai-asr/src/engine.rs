@@ -52,10 +52,16 @@ impl Transcription {
     /// The transcript as the document library wants it: Markdown, with a heading every
     /// [`BLOCK_MS`] so a chunk carries the moment it came from into its citation.
     /// Without timestamps there is nothing to head the blocks with, so the text goes through whole.
+    ///
+    /// The recording's name rides in every block heading rather than sitting once at the top as a title.
+    /// Two reasons, and both are about what happens downstream: the chunker copies a heading into the
+    /// chunk's section, and the section is what gets prefixed to the text before it is embedded -- a bare
+    /// `0:00 – 5:00` is no context at all. And a lone `# title` line at the top is content nobody wrote,
+    /// which then shows up verbatim in the reader beside the title it duplicates.
     pub fn to_markdown(&self, title: &str) -> String {
-        let mut out = format!("# {title}\n\n");
+        let mut out = String::new();
         if let Some(language) = &self.language {
-            out.push_str(&format!("*Ngôn ngữ nhận ra: {language}*\n\n"));
+            out.push_str(&format!("*Ngôn ngữ nhận ra: {language}*\n"));
         }
         if self.lines.is_empty() {
             out.push_str(self.text.trim());
@@ -73,7 +79,7 @@ impl Transcription {
                 block = current;
                 let start = block * BLOCK_MS;
                 out.push_str(&format!(
-                    "\n## {} – {}\n\n",
+                    "\n## {title} · {} – {}\n\n",
                     clock(start),
                     clock(start + BLOCK_MS)
                 ));
@@ -163,6 +169,15 @@ impl Asr {
             })
         })
         .await
+    }
+
+    /// Load the model and do nothing else with it. Dictation calls this first: the load is seconds of
+    /// blocking work, and doing it inside `dictate` would either freeze the caller's runtime or open the
+    /// microphone before the recognizer exists -- a button that says "recording" over a model still being
+    /// read off disk.
+    pub async fn warm(&self) -> Result<(), AsrError> {
+        let inner = self.inner.clone();
+        blocking(move || load(&inner).map(|_| ())).await
     }
 
     /// Transcribe one audio file end to end. Decoding and recognition are both blocking CPU/GPU
@@ -337,10 +352,12 @@ mod tests {
             duration_ms: 7 * 60_000,
         };
         let markdown = transcription.to_markdown("Họp tuần");
-        assert!(markdown.starts_with("# Họp tuần"));
         assert_eq!(markdown.matches("\n## ").count(), 2);
-        assert!(markdown.contains("## 0:00 – 5:00"));
-        assert!(markdown.contains("## 5:00 – 10:00"));
+        assert!(markdown.contains("## Họp tuần · 0:00 – 5:00"));
+        assert!(markdown.contains("## Họp tuần · 5:00 – 10:00"));
+        // No title line of its own: the document row already carries the name, and a `# title` here
+        // would be read back as if someone had typed it into the recording.
+        assert!(!markdown.contains("# Họp tuần\n"));
     }
 
     /// The whole path, with the real model: decode a container this machine can read, recognize it, and
@@ -387,6 +404,6 @@ mod tests {
         };
         let markdown = transcription.to_markdown("Ghi âm");
         assert!(markdown.contains("Toàn bộ nội dung."));
-        assert!(!markdown.contains("##"));
+        assert!(!markdown.contains("#"));
     }
 }

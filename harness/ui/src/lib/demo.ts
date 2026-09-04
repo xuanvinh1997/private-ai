@@ -32,6 +32,8 @@ export function demoKnobs(): {
   tab?: string;
   /** Open the project menu up front; it otherwise exists only while the pointer holds it open. */
   menu?: string;
+  /** Open the library's document viewer on this document id; it otherwise takes a click to reach. */
+  doc?: string;
   /** Freeze the "switching project" state, which really lasts only a beat. */
   switching?: boolean;
   /** Which project is open: an id, or `"0"` for none, which is the very first state after install. */
@@ -49,6 +51,7 @@ export function demoKnobs(): {
     const sidebar = params.get("sidebar");
     const tab = params.get("tab");
     const menu = params.get("menu");
+    const doc = params.get("doc");
     const switching = params.get("switching");
     const project = params.get("project");
     return {
@@ -61,6 +64,7 @@ export function demoKnobs(): {
       ...(sidebar === null ? {} : { sidebar: sidebar !== "0" }),
       ...(tab === null ? {} : { tab }),
       ...(menu === null ? {} : { menu }),
+      ...(doc === null ? {} : { doc }),
       ...(switching === null ? {} : { switching: switching !== "0" }),
     };
   } catch {
