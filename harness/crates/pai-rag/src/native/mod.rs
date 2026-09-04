@@ -13,6 +13,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use pai_asr::Asr;
 use futures::{
     channel::mpsc,
     future::{self, AbortHandle, Abortable},
@@ -50,7 +51,7 @@ const MAX_FILES: usize = 5_000;
 pub fn needs_extraction(path: &Path) -> bool {
     matches!(
         extract::reader_for(path),
-        Some(ReaderKind::Pdf | ReaderKind::Image | ReaderKind::Native(Format::Office))
+        Some(ReaderKind::Pdf | ReaderKind::Image | ReaderKind::Audio | ReaderKind::Native(Format::Office))
     )
 }
 
@@ -59,6 +60,9 @@ pub struct NativeLibrary {
     root: PathBuf,
     project: String,
     config_path: PathBuf,
+    /// Shared with the rest of the app, and shared on purpose: a speech model is half a gigabyte,
+    /// and the microphone and the two library mounts must not each load their own copy.
+    asr: Asr,
     store: Mutex<Store>,
     runtime: Mutex<RuntimeState>,
     last_embed_error: Mutex<Option<String>>,
@@ -75,6 +79,7 @@ struct RuntimeState {
     chunk_config: ChunkConfig,
     ocr_config: OcrConfig,
     rerank_config: RerankConfig,
+    asr_config: pai_asr::AsrConfig,
     reranker: LocalReranker,
     embedder: Option<EmbeddingClient>,
     vision: Option<VisionClient>,
@@ -93,6 +98,7 @@ struct RuntimeSnapshot {
     ocr: OcrConfig,
     rerank: RerankConfig,
     reranker: LocalReranker,
+    asr: pai_asr::AsrConfig,
 }
 
 /// Delete a closed project's native index. User documents are never inside this directory.
@@ -116,7 +122,12 @@ pub async fn purge_library(config_path: &Path, project: &str) -> Result<(), RagE
 }
 
 impl NativeLibrary {
-    pub fn open(config_path: PathBuf, project: String, root: PathBuf) -> Result<Self, RagError> {
+    pub fn open(
+        config_path: PathBuf,
+        project: String,
+        root: PathBuf,
+        asr: Asr,
+    ) -> Result<Self, RagError> {
         let native = NativeConfig::load(&config_path, &project, &root)?;
         let mut store = Store::open(&native.store_path).map_err(store_error)?;
         reconcile(&mut store, &native)?;
@@ -131,6 +142,9 @@ impl NativeLibrary {
         } else {
             Some(VisionClient::new(native.vision.clone())?)
         };
+        // The file is the source of truth for both mounts; adopting it here means a library opened
+        // after a settings change does not wait for the next mtime poll to see it.
+        asr.set_config(native.asr.clone());
         let runtime = RuntimeState {
             stamp: config_stamp(&config_path),
             embedding_config: native.embedding.clone(),
@@ -139,6 +153,7 @@ impl NativeLibrary {
             chunk_config: native.chunk.clone(),
             ocr_config: native.ocr.clone(),
             rerank_config: native.rerank.clone(),
+            asr_config: native.asr.clone(),
             reranker: LocalReranker::new(&native.rerank),
             embedder,
             vision,
@@ -150,6 +165,7 @@ impl NativeLibrary {
             root: native.root,
             project: native.project,
             config_path,
+            asr,
             store: Mutex::new(store),
             runtime: Mutex::new(runtime),
             last_embed_error: Mutex::new(None),
@@ -211,6 +227,12 @@ impl NativeLibrary {
                     .map_err(store_error)?;
             }
             state.ocr_config = fresh.ocr.clone();
+            if fresh.asr != state.asr_config {
+                // `set_config` drops the loaded model only when the path changed, so flipping the
+                // switch or the language hint costs nothing.
+                self.asr.set_config(fresh.asr.clone());
+                state.asr_config = fresh.asr.clone();
+            }
             if fresh.rerank.model != state.rerank_config.model
                 || fresh.rerank.path != state.rerank_config.path
             {
@@ -229,6 +251,7 @@ impl NativeLibrary {
             ocr: state.ocr_config.clone(),
             rerank: state.rerank_config.clone(),
             reranker: state.reranker.clone(),
+            asr: state.asr_config.clone(),
         })
     }
 
@@ -541,6 +564,17 @@ impl NativeLibrary {
                     })
                     .await
                 }
+                Some(ReaderKind::Audio) => {
+                    self.ingest_audio(&path, || {
+                        send_progress(
+                            progress,
+                            // No count: a recording has no pages, and its length is not known
+                            // until it is decoded. The stage name alone is the honest signal.
+                            event(IngestStage::Transcribing, shown.clone(), None, 0, 0),
+                        );
+                    })
+                    .await
+                }
                 Some(ReaderKind::Unsupported) => Err(RagError::Extraction(format!(
                     "`{shown}` cần bộ đọc chưa có trong bản Rust"
                 ))),
@@ -840,6 +874,60 @@ impl NativeLibrary {
                 .unwrap_or_else(|| path.display().to_string()),
             pages: 1,
             ocr_pages: vec![1],
+        };
+        self.store_extracted(path, extracted)
+            .await
+            .map(|_| Ingested::Stored)
+    }
+
+    /// Turn a recording into a document. The shape mirrors [`NativeLibrary::ingest_image`]: a file
+    /// that only becomes text through a model, skipped rather than filed as broken when that model
+    /// is switched off.
+    async fn ingest_audio(
+        &self,
+        path: &Path,
+        on_start: impl FnOnce(),
+    ) -> Result<Ingested, RagError> {
+        let runtime = self.runtime()?;
+        if !runtime.asr.enabled {
+            return Ok(Ingested::Skipped(format!(
+                "`{}` là bản ghi âm, nhận dạng tiếng nói đang tắt nên bỏ qua",
+                path.display()
+            )));
+        }
+        if !self.asr.configured() {
+            return Err(RagError::Extraction(format!(
+                "`{}` là bản ghi âm; hãy chọn mô hình nhận dạng tiếng nói trong Cài đặt rồi nạp lại",
+                path.display()
+            )));
+        }
+        on_start();
+        let transcription = self
+            .asr
+            .transcribe_file(path)
+            .await
+            .map_err(|error| match error {
+                // A file this machine cannot decode is a property of the bytes: the sync loop
+                // fingerprints it and stops retrying. A missing model is not.
+                pai_asr::AsrError::Decode(message) => RagError::Extraction(message),
+                other => RagError::Service(other.to_string()),
+            })?;
+        if transcription.text.trim().is_empty() {
+            return Err(RagError::Extraction(format!(
+                "không nghe ra chữ nào trong `{}`",
+                path.display()
+            )));
+        }
+        let title = path
+            .file_stem()
+            .map(|stem| stem.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string());
+        let extracted = extract::Extracted {
+            text: transcription.to_markdown(&title),
+            format: Format::Audio,
+            title,
+            pages: 0,
+            ocr_pages: Vec::new(),
         };
         self.store_extracted(path, extracted)
             .await

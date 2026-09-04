@@ -21,6 +21,7 @@ export const providers = {
     embedding: common.embedding,
     vision: common.vision,
     rerank: common.rerank,
+    speech: { en: "Speech", vi: "Tiếng nói" },
   },
 
   /** API kinds. Ollama and LM Studio are proper nouns and stay untranslated. */

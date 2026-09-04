@@ -43,6 +43,9 @@ pub(crate) struct AppState {
     pub(crate) running: Mutex<HashMap<String, CancellationToken>>,
     /// The running clone, if any; one, not a map, because a user clones one repository at a time.
     pub(crate) cloning: Mutex<Option<CancellationToken>>,
+    /// The dictation in flight, if any. One microphone, so one entry: starting a second cancels the
+    /// first rather than interleaving two transcripts into the same box.
+    pub(crate) dictation: Mutex<Option<pai_asr::DictationControl>>,
     /// Local vector database owned by the desktop process. It starts eagerly, while document commands also
     /// await the same guard so an early re-index cannot race sidecar startup.
     qdrant: Arc<qdrant::ManagedQdrant>,
@@ -553,6 +556,12 @@ pub fn run() {
             commands::docs::search_documents,
             commands::chunk::chunk_setting,
             commands::chunk::set_chunk,
+            commands::asr::asr_setting,
+            commands::asr::set_asr,
+            commands::asr::probe_asr,
+            commands::asr::start_dictation,
+            commands::asr::stop_dictation,
+            commands::asr::cancel_dictation,
             commands::rerank::rerank_setting,
             commands::rerank::set_rerank,
             commands::suggest::prompt_seeds,

@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use pai_asr::Asr;
 use pai_core::{Context, Plugin};
 use pai_tools::Tools;
 
@@ -29,27 +30,31 @@ pub struct RagPlugin {
     project: String,
     /// The folder the library reads. The library *is* that folder; nothing is copied.
     root: PathBuf,
+    /// The app's one speech recognizer, so an audio file in a project and the microphone in the
+    /// composer share a single loaded model.
+    asr: Asr,
 }
 
 impl RagPlugin {
     /// The document project's own library: the folder the user chose.
-    pub fn new(config_path: PathBuf, project: String, root: PathBuf) -> RagPlugin {
+    pub fn new(config_path: PathBuf, project: String, root: PathBuf, asr: Asr) -> RagPlugin {
         RagPlugin {
             name: "rag",
             ten: DOCS,
             config_path,
             project,
             root,
+            asr,
         }
     }
 
     /// The same library over a code project's attachment folder. A separate `project` id, so its store and its
     /// vector collection never share a name with a document library.
-    pub fn attachments(config_path: PathBuf, project: String, root: PathBuf) -> RagPlugin {
+    pub fn attachments(config_path: PathBuf, project: String, root: PathBuf, asr: Asr) -> RagPlugin {
         RagPlugin {
             name: "attachments",
             ten: ATTACHMENTS,
-            ..RagPlugin::new(config_path, project, root)
+            ..RagPlugin::new(config_path, project, root, asr)
         }
     }
 }
@@ -65,6 +70,7 @@ impl Plugin for RagPlugin {
             self.config_path.clone(),
             self.project.clone(),
             self.root.clone(),
+            self.asr.clone(),
         )?);
         tracing::info!("document library backend: native Rust");
         ctx.keep(ctx.provide::<Docs>(docs.clone())?);

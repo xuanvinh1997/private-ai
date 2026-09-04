@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use pai_asr::AsrConfig;
 use serde::Deserialize;
 
 use crate::RagError;
@@ -163,6 +164,7 @@ struct FileConfig {
     chunk: ChunkConfig,
     ocr: OcrConfig,
     rerank: RerankConfig,
+    asr: AsrConfig,
 }
 
 impl Default for FileConfig {
@@ -178,6 +180,7 @@ impl Default for FileConfig {
             chunk: ChunkConfig::default(),
             ocr: OcrConfig::default(),
             rerank: RerankConfig::default(),
+            asr: AsrConfig::default(),
         }
     }
 }
@@ -193,6 +196,7 @@ pub struct NativeConfig {
     pub chunk: ChunkConfig,
     pub ocr: OcrConfig,
     pub rerank: RerankConfig,
+    pub asr: AsrConfig,
 }
 
 impl NativeConfig {
@@ -244,6 +248,7 @@ impl NativeConfig {
             chunk: parsed.chunk,
             ocr: parsed.ocr,
             rerank: parsed.rerank,
+            asr: parsed.asr,
         })
     }
 

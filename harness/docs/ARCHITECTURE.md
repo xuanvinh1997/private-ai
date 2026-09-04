@@ -147,6 +147,39 @@ gian, và cosine giữa chúng cho ra một con số vô nghĩa trông y hệt m
 `pai-rag` lưu danh tính bộ nhúng trong bảng `meta` và tự dọn khi nó đổi; `LibraryStats`
 nói ra rằng thư viện đang nhúng lại, kèm tiến độ, và rằng tìm bằng từ khoá vẫn chạy.
 
+## Một mô hình tiếng nói, hai lối vào
+
+Nhận dạng tiếng nói không phải một vai provider như hội thoại hay nhúng: nó là **một tệp
+`.gguf` trên đĩa**, chạy trong tiến trình qua `transcribe.cpp`. Không có máy chủ nào để
+trỏ tới, nên cũng không có gì để cấu hình ngoài đường dẫn tệp — giống hệt bộ xếp hạng lại
+ONNX, và khác hẳn ba vai kia.
+
+Nó có đúng hai lối vào, và cả hai dùng **chung một `Asr`**:
+
+- **Tệp âm thanh trong dự án tài liệu.** `pai-rag` thêm một `ReaderKind::Audio` bên cạnh
+  PDF và ảnh; đường đi giống hệt ảnh qua vai vision — một tệp chỉ thành chữ nhờ một mô
+  hình, và tắt mô hình đó thì tệp bị **bỏ qua**, không bị ghi là hỏng. Bản chép ra
+  Markdown có tiêu đề mỗi năm phút, nên trích dẫn chỉ đúng đoạn nghe lại được.
+- **Micro ở ô soạn tin.** `pai-asr` mở thiết bị bằng `cpal`, hạ về 16 kHz mono, rồi nạp
+  vào một `stream` của cùng mô hình đó. **PCM không đi qua cầu IPC**: lõi thu, lấy mẫu và
+  nhận dạng, còn thứ đi lên giao diện là chữ.
+
+Một mô hình nửa gigabyte không được nạp hai lần, nên `Asr` được dựng **trước** cây plugin
+và cả hai chỗ mount thư viện đều nhận một bản sao của cùng handle đó. Cái giá của việc
+dùng chung: `transcribe.cpp` chỉ cho **một lượt tính toán tại một thời điểm** trên mỗi mô
+hình, nên đọc chính tả trong lúc thư viện đang nghe một tệp âm thanh sẽ **xếp hàng** sau
+tệp đó. Đổi lại là không nhân đôi bộ nhớ; nếu sau này cần chạy song song thật thì cách
+đúng là nạp một `Model` riêng cho micro, không phải bỏ khoá đi.
+
+Chữ khi đang nói có ba lớp, và giao diện phải chọn đúng lớp: `full` là giả thuyết thô của
+mô hình và **viết lại được ở bất cứ đâu**; `committed` chỉ nối thêm, không bao giờ sửa
+lại; `tentative` là cái đuôi bay hơi. Ô soạn tin vẽ `committed + tentative` — không nháy —
+còn bản chép cuối cùng lấy `full`, vì lúc đó không còn gì để nháy nữa.
+
+Mô hình không chạy theo dòng vẫn đọc chính tả được: `pai-asr` giữ âm thanh lại và nhận
+dạng một lần khi dừng. Đó là khác biệt giữa "mô hình của bạn không làm được việc này" và
+một nút bấm vào không có gì xảy ra.
+
 ## Bố cục: ChatGPT và Codex, cộng đúng một thứ
 
 Vỏ giao diện lấy khung của **ChatGPT và Codex**. Bản gộp có thật và đã ship: Codex nhập
@@ -189,6 +222,7 @@ pai-mcp        Client cho server bên thứ ba + một server duy nhất phơi c
 pai-agent      Vòng lặp turn/step. Là plugin, thay được.
 pai-index      Chỉ mục ký hiệu + đồ thị bộ nhớ mã nguồn (tree-sitter, SQLite FTS5).
 pai-rag        Thư viện tài liệu: rút chữ, cắt đoạn, nhúng vector, tìm lai ghép.
+pai-asr        Nhận dạng tiếng nói tại chỗ (transcribe.cpp): tệp âm thanh và micro.
 pai-providers  Kho provider mô hình, danh mục dựng sẵn, đổi provider lúc đang chạy.
 pai-project    Danh sách dự án, clone từ Git, cây tệp và nội dung tệp cho *người đọc*.
 pai-app        Vỏ Tauri: lệnh invoke và kênh sự kiện. Cố tình mỏng.

@@ -88,6 +88,9 @@ pub enum IngestStage {
     Reading,
     /// Page-level optical character recognition for scanned PDFs and images.
     Ocr,
+    /// Turning a recording into words. Distinct from `Ocr` because it is the one stage whose
+    /// duration the user can predict -- it tracks the length of the audio, not the page count.
+    Transcribing,
     Stored,
     Failed,
     /// Skipped for a reason: too large, or past the file cap. Distinct from `Failed` - the file is fine, the library refused it.
@@ -106,6 +109,7 @@ impl IngestStage {
         match self {
             IngestStage::Reading => "reading",
             IngestStage::Ocr => "ocr",
+            IngestStage::Transcribing => "transcribing",
             IngestStage::Stored => "stored",
             IngestStage::Failed => "failed",
             IngestStage::Skipped => "skipped",

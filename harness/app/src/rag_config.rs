@@ -4,6 +4,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+use pai_asr::AsrConfig;
 use pai_llm::ProviderKind;
 use pai_providers::{Role, StoredProvider};
 use serde_json::{Value, json};
@@ -61,6 +62,34 @@ impl RagConfigFile {
             .get("chunk")
             .cloned()
             .filter(|found| found.is_object())
+    }
+
+    /// The speech-recognition settings currently in the file. Defaults when untouched, because
+    /// "no model chosen yet" is the state of a fresh install rather than a broken file.
+    pub fn asr(&self) -> AsrConfig {
+        std::fs::read_to_string(&self.path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .and_then(|parsed| parsed.get("asr").cloned())
+            .and_then(|found| serde_json::from_value(found).ok())
+            .unwrap_or_default()
+    }
+
+    /// Rewrite the `asr` entry, leaving everything else alone.
+    pub fn write_asr(&self, config: &AsrConfig) -> std::io::Result<()> {
+        let mut root: Value = match std::fs::read_to_string(&self.path) {
+            Ok(raw) => serde_json::from_str(&raw).unwrap_or_else(|_| json!({})),
+            Err(_) => json!({}),
+        };
+        if !root.is_object() {
+            root = json!({});
+        }
+        root["asr"] = json!({
+            "enabled": config.enabled,
+            "model": config.model.display().to_string(),
+            "language": config.language,
+        });
+        self.atomic(&serde_json::to_vec_pretty(&root)?)
     }
 
     /// Rewrite the `chunk` entry, leaving everything else alone.
@@ -181,6 +210,14 @@ impl RagConfigFile {
         // Same rule for chunking: switching chat model must not silently re-cut and re-embed the library.
         if let Some(chunk) = self.chunk() {
             root["chunk"] = chunk;
+        }
+        // The chosen speech model is a user setting like the two above, and switching chat provider
+        // must not silently unset it.
+        if let Ok(raw) = std::fs::read_to_string(&self.path)
+            && let Ok(previous) = serde_json::from_str::<Value>(&raw)
+            && let Some(asr) = previous.get("asr").filter(|value| value.is_object())
+        {
+            root["asr"] = asr.clone();
         }
         // Provider changes rewrite this file; preserve a user's OCR choice through those unrelated updates.
         if let Ok(raw) = std::fs::read_to_string(&self.path)
@@ -321,6 +358,34 @@ fn provider_json(provider: Option<&StoredProvider>, role: Role) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The chosen speech model is the same kind of setting as chunking: a provider rewrite must not unset
+    /// it, or picking a different chat model would silently stop reading audio files.
+    #[test]
+    fn a_provider_rewrite_keeps_the_speech_model_the_user_chose() {
+        let temp = tempfile::tempdir().expect("thư mục tạm");
+        let config = RagConfigFile::new(temp.path(), None);
+
+        let chosen = AsrConfig {
+            enabled: true,
+            model: temp.path().join("nemotron.gguf"),
+            language: "vi-VN".into(),
+        };
+        config.write_asr(&chosen).expect("ghi cấu hình tiếng nói");
+        assert_eq!(config.asr(), chosen);
+
+        config.write(&[], None);
+
+        assert_eq!(config.asr(), chosen);
+    }
+
+    /// A file with no `asr` block is a fresh install, not a broken file.
+    #[test]
+    fn an_untouched_file_reports_the_default_speech_setting() {
+        let temp = tempfile::tempdir().expect("thư mục tạm");
+        let config = RagConfigFile::new(temp.path(), None);
+        assert_eq!(config.asr(), AsrConfig::default());
+    }
 
     /// A provider save rewrites this whole file. The user's own settings -- chunking here -- must survive
     /// that, or picking a different chat model would silently re-cut and re-embed the entire library.

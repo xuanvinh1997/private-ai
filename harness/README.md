@@ -26,7 +26,7 @@ hình sinh ra.
 ## Cây thư mục
 
 ```
-crates/       Chín crate, chia theo họ khả năng như dsh
+crates/       Mười tám crate, chia theo họ khả năng như dsh
 app/          Vỏ Tauri: lệnh invoke và kênh sự kiện. Cố tình mỏng
 ui/           SolidJS + TypeScript + Tailwind v4
 docs/         Kiến trúc và lộ trình
@@ -76,7 +76,7 @@ npm run dev --prefix ui     # rồi mở http://localhost:5173/?demo=1
 
 ## Trạng thái
 
-**316 test xanh, clippy 0 cảnh báo, `tsc` sạch.**
+**434 test Rust + 76 test giao diện xanh, clippy sạch ở phần lõi, `tsc` sạch.**
 
 Tool mà mô hình thấy, và **chúng phụ thuộc vào loại dự án đang mở**:
 
@@ -92,9 +92,10 @@ thiếu sót: một thư viện tài liệu là một chồng tệp do người 
 
 Ngoài ra: **dự án hai loại** (mã nguồn / tài liệu, clone được từ Git), **nhiều nhà cung
 cấp mô hình** đổi được lúc đang chạy với **vai nhúng tách khỏi vai hội thoại**, **quản lý
-server MCP** kèm danh mục dựng sẵn, thư viện tài liệu tìm lai ghép BM25 + vector, đồ thị bộ
-nhớ mã nguồn, chín skill vẽ sơ đồ với mermaid dựng trong bản ghi, vòng lặp turn/step, sổ
-tay phiên trên SQLite, giam tiến trình trên macOS và Linux, MCP hai chiều, nén ngữ cảnh,
-hook, và cấu hình theo lớp.
+server MCP** kèm danh mục dựng sẵn, thư viện tài liệu tìm lai ghép BM25 + vector, **nhận
+dạng tiếng nói tại chỗ** — tệp âm thanh trong dự án tài liệu, và micro đọc chính tả vào ô
+soạn tin — đồ thị bộ nhớ mã nguồn, chín skill vẽ sơ đồ với mermaid dựng trong bản ghi,
+vòng lặp turn/step, sổ tay phiên trên SQLite, giam tiến trình trên macOS và Linux, MCP
+hai chiều, nén ngữ cảnh, hook, và cấu hình theo lớp.
 
 Nợ còn lại và các giới hạn cố ý: `docs/ROADMAP.md`.

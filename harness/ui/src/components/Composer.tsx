@@ -7,6 +7,14 @@ import {
   pickFiles,
   resolveAttachments,
 } from "../lib/attach";
+import {
+  cancelDictation,
+  dictation,
+  dictationText,
+  elapsed,
+  startDictation,
+  stopDictation,
+} from "../lib/asr";
 import { applyCompletion, completePaths, findTrigger, rankCommands } from "../lib/complete";
 import CompletionPopup, { type Suggestion } from "./CompletionPopup";
 import { S, t, tn, type Msg } from "../lib/i18n";
@@ -37,6 +45,19 @@ const SCOPE_LABEL: Record<ToolScope, Msg> = {
   write: S.chat.composer.scopeWrite,
   shell: S.chat.composer.scopeShell,
 };
+
+/** The microphone button's running mode: four bars in `currentColor`, animated in `styles/app.css`.
+ * `aria-hidden`, because the button's own label already says what pressing it does. */
+function Wave() {
+  return (
+    <span class="pai-wave" aria-hidden="true">
+      <span />
+      <span />
+      <span />
+      <span />
+    </span>
+  );
+}
 
 /** One piece of the status line under the composer; local because a shared primitive with one caller is premature.
  * `note` is a quieter suffix rather than its own piece, and `warn` is only for a piece that is actually worrying. */
@@ -286,6 +307,65 @@ export default function Composer(props: {
     }
   };
 
+  /* --- Dictation -------------------------------------------------------- */
+
+  /** The draft as it stood when the microphone opened. Spoken words are appended to it, so starting to
+   * dictate never erases what was typed, and a revision mid-sentence rewrites only the spoken half. */
+  const [spokenFrom, setSpokenFrom] = createSignal<string | null>(null);
+
+  /** Write every tick straight into the box. `committed + tentative` is flicker-free by construction: the
+   * committed half never shrinks, so what is already on screen does not jump while the tail is revised. */
+  createEffect(() => {
+    const base = spokenFrom();
+    if (base === null) return;
+    const state = dictation();
+    if (!state.active) return;
+    const spoken = dictationText(state);
+    if (spoken === "") return;
+    props.onChange(base === "" ? spoken : `${base.trimEnd()} ${spoken}`);
+    const el = field;
+    if (el) queueMicrotask(() => resize(el));
+  });
+
+  const toggleDictation = async () => {
+    if (dictation().active) {
+      await stopDictation();
+      return;
+    }
+    const base = props.value;
+    setSpokenFrom(base);
+    try {
+      await startDictation({
+        onFinished: (text) => {
+          setSpokenFrom(null);
+          if (text.trim() === "") return;
+          props.onChange(base === "" ? text : `${base.trimEnd()} ${text}`);
+          field?.focus();
+          const el = field;
+    if (el) queueMicrotask(() => resize(el));
+        },
+        onFailed: (message) => {
+          setSpokenFrom(null);
+          // Restore what was typed: a failed dictation must not eat the draft it was appending to.
+          props.onChange(base);
+          notify("error", `${t(S.speech.dictation.failed)}: ${message}`);
+        },
+      });
+    } catch (err) {
+      setSpokenFrom(null);
+      props.onChange(base);
+      notify("error", String(err));
+    }
+  };
+
+  /** Escape's meaning: stop, and put the draft back the way it was. */
+  const discardDictation = async () => {
+    const base = spokenFrom();
+    setSpokenFrom(null);
+    await cancelDictation();
+    if (base !== null) props.onChange(base);
+  };
+
   // Not blocked while `busy`: App queues the message, and blocking here would make Enter do nothing mid-turn.
   // A message of attachments and no words is a real message -- "read this" is what the chips already say.
   const submit = () => {
@@ -472,8 +552,23 @@ export default function Composer(props: {
             so toggling a condition does not shunt the button row up and down. `role="status"`, not `alert`,
             because these are standing conditions. No error text belongs here by rule: a failed attach describes
             something that just happened, so it goes to a toast (`lib/toast.ts`) instead. */}
-        <Show when={!props.hasProject || props.modelWarning}>
+        <Show when={!props.hasProject || props.modelWarning || dictation().active}>
           <div class="flex flex-wrap items-center gap-x-md gap-y-3xs px-md pb-2xs text-xs">
+            {/* While the microphone is open, one line saying so and for how long. A model that cannot
+                stream says the words arrive at the end, because an empty box would otherwise read as
+                a feature that is not working. */}
+            <Show when={dictation().active}>
+              <p class="m-0 flex items-center gap-2xs text-accent-ink" role="status">
+                <Icon name="mic" size={12} />
+                {t(
+                  dictation().streaming
+                    ? S.speech.dictation.listening
+                    : S.speech.dictation.buffering,
+                )}
+                <span class="font-mono text-muted">{elapsed(dictation().recordedMs)}</span>
+              </p>
+            </Show>
+
             {/* The sentence ends on "you can still send": a standing limit, not a breakage, and this is now the
                 only place that says "no project" in words, together with its consequence. */}
             <Show when={!props.hasProject}>
@@ -506,6 +601,30 @@ export default function Composer(props: {
             label={t(S.chat.composer.attach)}
             onClick={() => void browse()}
           />
+
+          {/* Dictation writes into this same box as you speak, so it is a composer control, not a mode: the
+              draft you had is kept and the words are appended to it. One button, two modes -- pressing it
+              starts, pressing it again stops and keeps the text. While it runs the mic becomes a wave, so
+              the button reports the microphone's state instead of needing a lamp beside it. */}
+          <IconButton
+            icon="mic"
+            glyph={dictation().active ? () => <Wave /> : undefined}
+            label={t(dictation().active ? S.speech.dictation.stop : S.speech.dictation.start)}
+            active={dictation().active}
+            disabled={props.disabled}
+            onClick={() => void toggleDictation()}
+          />
+          {/* The third outcome, and the only one that loses words: stop keeps what was said, this throws it
+              away and puts the draft back. `danger` and half the size, because it is the rarer choice. */}
+          <Show when={dictation().active}>
+            <IconButton
+              icon="x"
+              size="sm"
+              danger
+              label={t(S.speech.dictation.cancel)}
+              onClick={() => void discardDictation()}
+            />
+          </Show>
 
           {/* Disabled, not hidden, so the picker keeps its place and the change is visible; it also leaves the tab
               order, since there is nothing to choose. Said in words rather than struck through, because this is a

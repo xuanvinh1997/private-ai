@@ -29,6 +29,9 @@ pub enum ReaderKind {
     Native(Format),
     Pdf,
     Image,
+    /// A recording. Extension list and decoding both live in `pai-asr`, so the library and the
+    /// microphone never disagree about what counts as audio.
+    Audio,
     Unsupported,
 }
 
@@ -52,6 +55,8 @@ pub fn reader_for(path: &Path) -> Option<ReaderKind> {
         Some(ReaderKind::Pdf)
     } else if IMAGE.contains(&ext) {
         Some(ReaderKind::Image)
+    } else if pai_asr::is_audio(path) {
+        Some(ReaderKind::Audio)
     } else if ext == "docx" {
         Some(ReaderKind::Native(Format::Office))
     } else if MARKDOWN.contains(&ext) {

@@ -572,6 +572,56 @@ pub struct RerankSetting {
     pub reason: Option<String>,
 }
 
+/// The speech-recognition settings, and enough about the chosen model to explain what it can do.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AsrSetting {
+    /// Read audio files found in a document project. Off leaves them out of the library entirely.
+    pub enabled: bool,
+    /// The chosen GGUF file, or empty when the user has not chosen one.
+    pub model: String,
+    /// Language hint; empty means let the model decide.
+    pub language: String,
+    /// Filled in once the model has been loaded: its family, the compute backend it landed on, and
+    /// whether it can do live dictation. `None` means it has not been probed yet.
+    pub info: Option<AsrModelInfo>,
+    /// Why dictation or audio ingest is unavailable right now, in one sentence.
+    pub reason: Option<String>,
+}
+
+/// What a loaded speech model turned out to be.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AsrModelInfo {
+    pub arch: String,
+    pub variant: String,
+    pub backend: String,
+    /// False for a model that can only transcribe finished files -- dictation still works there, it
+    /// just produces its text at the end instead of as you speak.
+    pub streaming: bool,
+    pub languages: Vec<String>,
+}
+
+/// One tick of a dictation. `committed` never shrinks, so the composer can render
+/// `committed + tentative` without the text flickering as the model revises its guess.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DictationUpdate {
+    /// `started`, `text`, `recording`, `finished` or `failed`.
+    pub kind: String,
+    pub committed: String,
+    pub tentative: String,
+    /// Audio captured so far, in milliseconds.
+    pub recorded_ms: i64,
+    /// The input device, on `started`.
+    pub device: Option<String>,
+    /// Whether text will appear as you speak, on `started`.
+    pub streaming: bool,
+    /// The final transcript, on `finished`.
+    pub text: Option<String>,
+    pub error: Option<String>,
+}
+
 /// The result of really embedding a sentence, not of listing models: listing cannot say which model embeds,
 /// so this sends text and reports the dimensions that come back.
 #[derive(Debug, Clone, Serialize, Deserialize)]

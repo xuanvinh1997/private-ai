@@ -19,6 +19,7 @@ use pai_project::{Project, ProjectKind, ProjectStore, SqliteProjectStore};
 use pai_providers::{
     DB_FILE, ProviderInput, ProviderRuntime, ProviderStore, Providers, Role, SqliteProviderStore,
 };
+use pai_asr::Asr;
 use pai_rag::{RagPlugin, purge_library};
 use pai_sandbox::SandboxPlugin;
 use pai_session::{SessionScope, SessionService, SessionStore, SqliteSessionStore};
@@ -56,6 +57,9 @@ pub struct Harness {
     pub llm: Arc<ActiveLlm>,
     /// The configuration file the native RAG library reads whenever a provider role changes.
     pub rag_config: Arc<RagConfigFile>,
+    /// The one speech recognizer in the process. Both document-library mounts and the composer's
+    /// microphone hold this same handle, so the model is loaded once and switched in one place.
+    pub asr: Asr,
     pub providers: Arc<ProviderRuntime>,
     /// MCP servers declared in the config row (`patch.yaml`), kept so every reload can pass them back in:
     /// `pai_mcp::apply` removes any server missing from the list it receives.
@@ -71,6 +75,7 @@ struct Rebuild {
     config: Config,
     llm: Arc<ActiveLlm>,
     rag_config: Arc<RagConfigFile>,
+    asr: Asr,
     sessions: SessionService,
     composed: Composed,
 }
@@ -321,6 +326,7 @@ impl Harness {
             self.rebuild.llm.clone(),
             self.rebuild.rag_config.clone(),
             self.rebuild.sessions.clone(),
+            self.rebuild.asr.clone(),
         );
         for row in self
             .rebuild
@@ -635,6 +641,7 @@ fn catalog(
     llm: Arc<ActiveLlm>,
     rag_config: Arc<RagConfigFile>,
     sessions: SessionService,
+    asr: Asr,
 ) -> PluginCatalog {
     let mut catalog = PluginCatalog::new();
     let identity = IDENTITY.to_string();
@@ -706,6 +713,7 @@ fn catalog(
     {
         let workspace = workspace.clone();
         let rag_config = rag_config.clone();
+        let asr = asr.clone();
         catalog.register("rag", move |_| {
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
@@ -717,12 +725,14 @@ fn catalog(
                 rag_config.path().to_path_buf(),
                 project_slug(&workspace),
                 workspace.clone(),
+                asr.clone(),
             )) as Box<dyn Plugin>)
         });
     }
     {
         let (data_dir, workspace) = (data_dir.clone(), workspace.clone());
         let rag_config = rag_config.clone();
+        let asr = asr.clone();
         catalog.register("attachments", move |_| {
             let Some(workspace) = workspace.clone() else {
                 return Err(khong_co_du_an());
@@ -736,6 +746,7 @@ fn catalog(
                 rag_config.path().to_path_buf(),
                 attachments_project(&workspace),
                 attachments_root(&data_dir, &workspace),
+                asr.clone(),
             )) as Box<dyn Plugin>)
         });
     }
@@ -933,12 +944,27 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
         Err(err) => tracing::warn!("could not read the provider list: {err}"),
     }
 
+    // Built before the plugin tree: both library mounts take a clone, and dictation needs one even
+    // with no project open. A first launch has no model chosen; if one is already sitting in the data
+    // directory, seed it and write that choice down, so the settings screen shows the same model the
+    // library is about to use rather than an empty field over a working feature.
+    let mut asr_config = rag_config.asr();
+    if asr_config.model_path().is_none()
+        && let Some(found) = pai_asr::discover_model(&config.data_dir)
+    {
+        asr_config.model = found;
+        if let Err(err) = rag_config.write_asr(&asr_config) {
+            tracing::warn!("could not seed the speech model setting: {err}");
+        }
+    }
+    let asr = Asr::new(asr_config);
     let catalog = catalog(
         &config,
         project.as_ref().map(|open| Path::new(open.path.as_str())),
         llm.clone(),
         rag_config.clone(),
         sessions.clone(),
+        asr.clone(),
     );
 
     // List order does not decide load order: dependencies are expressed with `require`. Keep the scopes rather
@@ -1007,10 +1033,12 @@ pub async fn boot(config: Config) -> anyhow::Result<Harness> {
             config,
             llm: llm.clone(),
             rag_config: rag_config.clone(),
+            asr: asr.clone(),
             sessions,
             composed,
         },
         llm,
         rag_config,
+        asr,
     })
 }

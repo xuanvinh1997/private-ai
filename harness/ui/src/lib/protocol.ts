@@ -217,6 +217,7 @@ export type DocumentFormat =
   | "pdf"
   | "office"
   | "image"
+  | "audio"
   | "markdown"
   | "text"
   | "html"
@@ -256,7 +257,7 @@ export interface OcrSetting {
 
 export interface IngestProgress {
   path: string;
-  /** One of `reading` `ocr` `stored` `failed` `skipped` `removed` `embedding` `finished`. */
+  /** One of `reading` `ocr` `transcribing` `stored` `failed` `skipped` `removed` `embedding` `finished`. */
   stage: string;
   done: number;
   total: number;
@@ -331,6 +332,43 @@ export interface ChunkSetting {
 }
 
 /** Local ONNX rerank settings. */
+/** What a loaded speech model turned out to be. */
+export interface AsrModelInfo {
+  arch: string;
+  variant: string;
+  /** The compute backend it landed on: Metal, CPU, and so on. */
+  backend: string;
+  /** False for a model that only transcribes finished audio: dictation then produces its text at the end. */
+  streaming: boolean;
+  languages: string[];
+}
+
+export interface AsrSetting {
+  /** Read audio files found in a document project. Off leaves them out of the library entirely. */
+  enabled: boolean;
+  /** Path of the chosen `.gguf`, or empty when none is chosen. */
+  model: string;
+  /** Language hint; empty means let the model decide. */
+  language: string;
+  /** Filled in only after a probe, which is what pays the load. */
+  info: AsrModelInfo | null;
+  /** One sentence saying what is currently true, including the states that look like breakage. */
+  reason: string | null;
+}
+
+/** One tick of a dictation. `committed` never shrinks, so `committed + tentative` never flickers. */
+export interface DictationUpdate {
+  kind: "started" | "text" | "recording" | "finished" | "failed";
+  committed: string;
+  tentative: string;
+  recordedMs: number;
+  device: string | null;
+  /** Whether text appears as you speak; false means it arrives when you stop. */
+  streaming: boolean;
+  text: string | null;
+  error: string | null;
+}
+
 export interface RerankSetting {
   enabled: boolean;
   /** Currently only in-process ONNX Runtime is supported. */

@@ -70,6 +70,14 @@ pdfium-bundled = "0.1.1"
 # pinned and bundled separately by scripts/prepare-reranker.mjs.
 fastembed = { version = "6.0.2", default-features = false, features = ["ort-download-binaries-rustls-tls"] }
 
+# --- audio / ASR ---
+# Giải mã âm thanh thuần Rust (wav, mp3, m4a/aac, flac, ogg) và lấy mẫu lại về 16 kHz;
+# `transcribe.cpp` chỉ nhận PCM f32 mono 16 kHz và cố ý không liên kết bộ resample nào.
+symphonia = { version = "0.5", default-features = false, features = ["wav", "pcm", "adpcm", "mp3", "aac", "isomp4", "alac", "flac", "ogg", "vorbis", "mkv"] }
+rubato = "0.16"
+# Micro cho đọc chính tả. PCM không đi qua cầu IPC: lõi lấy mẫu rồi trả về chữ.
+cpal = "0.16"
+
 # --- internal crates ---
 pai-core = { path = "crates/pai-core" }
 pai-session = { path = "crates/pai-session" }
@@ -88,6 +96,7 @@ pai-lsp = { path = "crates/pai-lsp" }
 pai-rag = { path = "crates/pai-rag" }
 pai-rag-core = { path = "crates/pai-rag-core" }
 pai-providers = { path = "crates/pai-providers" }
+pai-asr = { path = "crates/pai-asr" }
 
 [profile.dev]
 opt-level = 1

@@ -55,6 +55,10 @@ export function IconButton(props: {
   expanded?: boolean;
   controls?: string;
   hasPopup?: "menu" | "dialog";
+  /** Replaces the icon while the button is in a live state -- a recording wave, say. Everything else about
+   * the button is unchanged, so the two modes keep one box, one tooltip and one accessible name. `icon`
+   * stays required: it is what the button is when nothing is running. */
+  glyph?: () => JSX.Element;
   keys?: string;
   tip?: TipSide;
   ref?: (el: HTMLButtonElement) => void;
@@ -67,7 +71,7 @@ export function IconButton(props: {
       : props.size === "sm"
         ? "size-(--icon-control-h)"
         : "size-(--control-h)";
-  const glyph = () => (props.size === "lg" ? 18 : props.size === "sm" ? 13 : 15);
+  const size = () => (props.size === "lg" ? 18 : props.size === "sm" ? 13 : 15);
   return (
     <span class="group/tip relative inline-flex shrink-0">
       <button
@@ -100,11 +104,18 @@ export function IconButton(props: {
           "disabled:cursor-not-allowed disabled:opacity-40": props.busy !== true,
         }}
       >
-        <Icon
-          name={props.icon}
-          size={glyph()}
-          class={props.busy ? "motion-safe:animate-spin" : undefined}
-        />
+        <Show
+          when={props.glyph}
+          fallback={
+            <Icon
+              name={props.icon}
+              size={size()}
+              class={props.busy ? "motion-safe:animate-spin" : undefined}
+            />
+          }
+        >
+          {(render) => render()()}
+        </Show>
       </button>
       <Tip
         anchor={() => trigger}

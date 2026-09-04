@@ -2,6 +2,7 @@
 //! Every command returns `Result<_, String>` where the error is a sentence the user reads directly,
 //! never the `Debug` of an error type.
 
+pub mod asr;
 pub mod attach;
 pub mod chunk;
 pub mod complete;

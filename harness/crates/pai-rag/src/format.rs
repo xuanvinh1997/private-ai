@@ -12,6 +12,8 @@ pub enum Format {
     Office,
     /// Raster image whose text is extracted by the configured vision model.
     Image,
+    /// A recording whose words are extracted by the speech recognizer.
+    Audio,
     Html,
     /// `.csv`, `.tsv`, `.json`, `.xml`, `.yaml` — structured, but read out as text.
     Data,
@@ -26,6 +28,7 @@ impl Format {
             Format::Pdf => "pdf",
             Format::Office => "office",
             Format::Image => "image",
+            Format::Audio => "audio",
             Format::Html => "html",
             Format::Data => "data",
             Format::Markdown => "markdown",
@@ -40,6 +43,7 @@ impl Format {
             "pdf" => Format::Pdf,
             "office" | "docx" | "xlsx" | "pptx" => Format::Office,
             "image" => Format::Image,
+            "audio" => Format::Audio,
             "html" => Format::Html,
             "data" | "csv" => Format::Data,
             "markdown" => Format::Markdown,

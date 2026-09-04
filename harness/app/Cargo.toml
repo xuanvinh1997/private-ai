@@ -48,6 +48,7 @@ async-trait = { workspace = true }
 arc-swap = { workspace = true }
 pai-providers = { workspace = true }
 pai-rag = { workspace = true }
+pai-asr = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }
 reqwest = { workspace = true }

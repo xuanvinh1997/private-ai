@@ -271,3 +271,35 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
 @media (prefers-reduced-motion: reduce) {
   .pai-dots > span { opacity: 0.65; }
 }
+
+/* Recording wave (components/Composer.tsx): the microphone button's second mode. Four bars breathing out
+   of phase, in `currentColor`, so the button carries its own state instead of needing a second control or a
+   label beside it. Deliberately not a blinking dot: a blinking dot is the shape of an error light. The
+   delays are uneven on purpose - an even stagger reads as a loading spinner, not as sound. */
+.pai-wave {
+  display: flex;
+  align-items: center;
+  gap: 1.5px;
+  height: 13px;
+}
+.pai-wave > span {
+  width: 2px;
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: currentColor;
+  animation: pai-wave 1.05s ease-in-out infinite;
+}
+.pai-wave > span:nth-child(1) { animation-delay: 0.18s; }
+.pai-wave > span:nth-child(2) { animation-delay: 0s; }
+.pai-wave > span:nth-child(3) { animation-delay: 0.32s; }
+.pai-wave > span:nth-child(4) { animation-delay: 0.1s; }
+
+@keyframes pai-wave {
+  0%, 100% { transform: scaleY(0.3); }
+  50% { transform: scaleY(1); }
+}
+
+/* Frozen at the last frame the bars are 30% tall, which reads as a broken icon rather than a state. */
+@media (prefers-reduced-motion: reduce) {
+  .pai-wave > span { transform: scaleY(0.62); }
+}

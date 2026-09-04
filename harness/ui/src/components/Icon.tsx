@@ -93,6 +93,12 @@ const PATHS = {
   eye: ["M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z", "M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"],
   palette: ["M12 3a9 9 0 0 0 0 18 2 2 0 0 0 1.6-3.2 2 2 0 0 1 1.6-3.2H18a3 3 0 0 0 3-3c0-4.8-4-8.6-9-8.6z", "M7.5 11h.01", "M10 7.5h.01", "M14.5 7.5h.01"],
   bolt: ["M13 2 4.5 13.5H11l-1 8.5 8.5-11.5H12z"],
+  // A capsule in a cradle: the microphone, for dictation and for the speech settings.
+  mic: [
+    "M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z",
+    "M5 11a7 7 0 0 0 14 0",
+    "M12 18v3",
+  ],
   // Two chevrons apart or together: the expand/collapse pair used everywhere, so both actions share one shape.
   unfold: ["m7 9 5-5 5 5", "m7 15 5 5 5-5"],
   fold: ["m7 4 5 5 5-5", "m7 20 5-5 5 5"],

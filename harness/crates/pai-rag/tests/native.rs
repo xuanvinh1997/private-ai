@@ -13,6 +13,12 @@ use tokio::{
     task::JoinHandle,
 };
 
+/// A recognizer with no model chosen: every test here reads text, and loading half a gigabyte to
+/// prove that would test the wrong thing.
+fn asr() -> pai_asr::Asr {
+    pai_asr::Asr::new(pai_asr::AsrConfig::default())
+}
+
 fn library() -> (tempfile::TempDir, NativeLibrary) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("documents");
@@ -38,8 +44,75 @@ fn library() -> (tempfile::TempDir, NativeLibrary) {
         .unwrap(),
     )
     .unwrap();
-    let library = NativeLibrary::open(config_path, "docs-test".into(), root).unwrap();
+    let library = NativeLibrary::open(config_path, "docs-test".into(), root, asr()).unwrap();
     (temp, library)
+}
+
+/// A library whose configuration carries an explicit `asr` block, for the two audio cases where the
+/// setting -- not the file -- decides the outcome.
+fn library_with_asr(asr_config: serde_json::Value) -> (tempfile::TempDir, NativeLibrary) {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("documents");
+    let data = temp.path().join("data");
+    fs::create_dir_all(&root).unwrap();
+    // Not real audio: nothing here gets as far as decoding it, which is the point of both tests.
+    fs::write(root.join("hop.m4a"), b"khong-phai-am-thanh-that").unwrap();
+    let config_path = temp.path().join("rag-config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "data_dir": data,
+            "projects": [{"id": "docs-test", "name": "Docs", "root": root}],
+            "active_project": "docs-test",
+            "embedding": {"kind": "ollama", "base_url": "", "api_key": "", "model": ""},
+            "vectors": {"url": "http://127.0.0.1:1", "api_key": "", "collection_prefix": "test"},
+            "chunk": {"size": 80, "overlap": 10},
+            "asr": asr_config
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let library = NativeLibrary::open(config_path, "docs-test".into(), root, asr()).unwrap();
+    (temp, library)
+}
+
+/// A recording with speech recognition switched off is left out of the library, exactly as an image is
+/// with OCR off. Not `Failed`: the file is fine, and filing it as broken would make the user hunt for a
+/// fault that is a setting.
+#[tokio::test]
+async fn audio_is_skipped_when_speech_recognition_is_off() {
+    let (_temp, library) = library_with_asr(json!({ "enabled": false, "model": "", "language": "" }));
+
+    let events: Vec<_> = library.sync().collect().await;
+    let audio: Vec<_> = events
+        .iter()
+        .filter(|event| event.path.ends_with("hop.m4a"))
+        .collect();
+    assert!(
+        audio.iter().any(|event| event.stage == IngestStage::Skipped),
+        "bản ghi âm phải được bỏ qua: {audio:#?}"
+    );
+    assert!(!audio.iter().any(|event| event.stage == IngestStage::Failed));
+    assert!(library.documents().await.unwrap().is_empty());
+}
+
+/// On, but with no model chosen: that *is* a failure, and the message has to name the setting that fixes
+/// it -- silently skipping would leave a document folder that quietly indexes less than it holds.
+#[tokio::test]
+async fn audio_without_a_model_fails_with_a_sentence_naming_the_setting() {
+    let (_temp, library) = library_with_asr(json!({ "enabled": true, "model": "", "language": "" }));
+
+    let events: Vec<_> = library.sync().collect().await;
+    let failure = events
+        .iter()
+        .find(|event| event.path.ends_with("hop.m4a") && event.stage == IngestStage::Failed)
+        .expect("một sự kiện hỏng cho tệp âm thanh");
+    let reason = failure.error.as_deref().unwrap_or_default();
+    assert!(
+        reason.contains("Cài đặt"),
+        "câu lỗi phải chỉ tới Cài đặt: {reason}"
+    );
 }
 
 #[tokio::test]
@@ -166,7 +239,7 @@ async fn native_embedding_and_qdrant_path_runs_end_to_end() {
     };
     write_config("");
     let library =
-        NativeLibrary::open(config_path.clone(), "docs-test".into(), root.clone()).unwrap();
+        NativeLibrary::open(config_path.clone(), "docs-test".into(), root.clone(), asr()).unwrap();
 
     let first: Vec<_> = library.sync().collect().await;
     assert!(
@@ -265,7 +338,7 @@ async fn native_sync_scale() {
         .unwrap(),
     )
     .unwrap();
-    let library = NativeLibrary::open(config_path, "scale".into(), root).unwrap();
+    let library = NativeLibrary::open(config_path, "scale".into(), root, asr()).unwrap();
 
     let started = Instant::now();
     library.sync().collect::<Vec<_>>().await;
@@ -467,7 +540,7 @@ async fn ocr_off_skips_images_instead_of_failing_them() {
         .unwrap(),
     )
     .unwrap();
-    let library = NativeLibrary::open(config_path, "docs-test".into(), root).unwrap();
+    let library = NativeLibrary::open(config_path, "docs-test".into(), root, asr()).unwrap();
 
     let events: Vec<_> = library.sync().collect().await;
     assert!(

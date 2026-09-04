@@ -19,6 +19,7 @@ import ConfirmDialog from "./ConfirmDialog";
 import ChunkView from "./ChunkView";
 import EmbeddingView from "./EmbeddingView";
 import RerankView from "./RerankView";
+import SpeechView from "./SpeechView";
 import VisionView from "./VisionView";
 import { Banner, Button, InfoDot, Row, RowGroup, SectionHead, Select, Toggle } from "../settings/FormKit";
 import ProviderForm from "./ProviderForm";
@@ -28,13 +29,14 @@ type Sheet =
   | { kind: "form"; provider: Provider | null; preset: ProviderPreset | null }
   | { kind: "delete"; provider: Provider };
 
-type ModelsTab = "chat" | "embedding" | "vision" | "rerank";
+type ModelsTab = "chat" | "embedding" | "vision" | "rerank" | "speech";
 
 const MODEL_TABS: readonly { id: ModelsTab; icon: IconName }[] = [
   { id: "chat", icon: "chat" },
   { id: "embedding", icon: "model" },
   { id: "vision", icon: "eye" },
   { id: "rerank", icon: "graph" },
+  { id: "speech", icon: "mic" },
 ];
 
 /** One tab per model role. Panels remain mounted so a tab switch never discards an unfinished form. */
@@ -283,6 +285,15 @@ export default function ProvidersView() {
         hidden={tab() !== "rerank"}
       >
         <RerankView />
+      </section>
+
+      <section
+        id={panelId("speech")}
+        role="tabpanel"
+        aria-labelledby={tabId("speech")}
+        hidden={tab() !== "speech"}
+      >
+        <SpeechView />
       </section>
 
       <Show when={formSheet()} keyed>

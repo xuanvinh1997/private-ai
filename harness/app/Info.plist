@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- Đọc chính tả cần micro. Không có khoá này thì macOS **giết tiến trình** ngay lần đầu mở
+       thiết bị thu, và triệu chứng - ứng dụng biến mất không một dòng lỗi - không hề chỉ về đây.
+       Chữ này là câu người dùng đọc trong hộp xin quyền, nên nó nói việc app làm với micro, và
+       nói luôn phần quan trọng nhất: âm thanh không rời khỏi máy. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Private AI dùng micro để đọc chính tả vào ô soạn tin. Âm thanh được nhận dạng ngay trên máy này và không gửi đi đâu.</string>
+</dict>
+</plist>
