@@ -1,7 +1,9 @@
-import { createEffect, createSignal, For, on, Show } from "solid-js";
+import { createEffect, createMemo, createSignal, For, on, onCleanup, Show } from "solid-js";
 import { isDemo } from "../../lib/demo";
 import {
   addDocuments,
+  dismissDocumentTask,
+  documentTasks,
   getOcrSetting,
   libraryStats,
   listDocuments,
@@ -9,8 +11,10 @@ import {
   syncLibrary,
   pickDocuments,
   removeDocument,
+  runDocumentTask,
   setOcrEnabled,
   stageLabel,
+  type DocumentTask,
 } from "../../lib/docs";
 import { demoDocuments, demoIngestFrames, demoLibraryStats } from "../../lib/fixtures/docs";
 import { S, t, tn } from "../../lib/i18n";
@@ -23,11 +27,6 @@ import DocumentTable from "./DocumentTable";
 import DropZone from "./DropZone";
 import SearchProbe from "./SearchProbe";
 
-interface Failure {
-  path: string;
-  error: string;
-}
-
 /** Document library screen for a `docs` project: one bad file never fails the batch, and semantic search being unready still leaves keyword search working. */
 export default function DocsView(props: {
   /** A new value means a new project: drop all state and reload from scratch. */
@@ -38,14 +37,15 @@ export default function DocsView(props: {
   const [docs, setDocs] = createSignal<DocumentView[]>([]);
   const [stats, setStats] = createSignal<LibraryStats | null>(null);
   const [loading, setLoading] = createSignal(true);
-  const [ingest, setIngest] = createSignal<IngestProgress | null>(null);
-  const [failures, setFailures] = createSignal<Failure[]>([]);
-  const [added, setAdded] = createSignal(0);
   const [error, setError] = createSignal<string | null>(null);
   const [removing, setRemoving] = createSignal<DocumentView | null>(null);
-  const [busy, setBusy] = createSignal(false);
+  const [actionBusy, setActionBusy] = createSignal(false);
   const [ocr, setOcr] = createSignal<OcrSetting | null>(null);
   const [ocrBusy, setOcrBusy] = createSignal(false);
+  const task = createMemo(() => documentTasks()[props.resetKey] ?? null);
+  const busy = () => actionBusy() || task()?.state === "running";
+
+  let appliedTaskId = "";
 
   const load = async () => {
     setLoading(true);
@@ -67,16 +67,19 @@ export default function DocsView(props: {
     setOcr(ocrSetting);
     setLoading(false);
 
-    // Then sync with the folder: the project folder is the library, so opening it scans.
+    // Then sync with the folder. A task already running survives screen navigation and must not be duplicated.
+    if (task()?.state === "running") return;
     try {
-      const sau = await syncLibrary(note);
-      setDocs(sau);
-      setStats(await libraryStats());
+      const root = health.root;
+      await runDocumentTask(
+        props.resetKey,
+        "sync",
+        progress(root, 0),
+        (note) => syncLibrary(note),
+      );
     } catch (err) {
       // A failed scan must not erase the list: what was ingested before is still searchable.
-      setError(t(S.docs.error.scan, { err: String(err) }));
-    } finally {
-      setIngest(null);
+      console.error(t(S.docs.error.scan, { err: String(err) }));
     }
   };
 
@@ -87,29 +90,27 @@ export default function DocsView(props: {
       () => {
         setDocs([]);
         setStats(null);
-        setIngest(null);
-        setFailures([]);
-        setAdded(0);
         setError(null);
         setOcr(null);
+        appliedTaskId = "";
         void load();
       },
     ),
   );
 
-  const note = (frame: IngestProgress) => {
-    setIngest(frame);
-    const reason = frame.error;
-    if (reason === null) return;
-    // A failed embedding pass is not a failed file: the files landed, the embedder did not answer.
-    if (frame.stage === "embedding") {
-      setError(reason);
-      return;
-    }
-    setFailures((all) => [...all, { path: frame.path, error: reason }]);
-  };
+  // A task can finish while this screen is unmounted. Apply its result when the project view returns.
+  createEffect(() => {
+    const current = task();
+    if (current?.documents === null || current === null || current.id === appliedTaskId) return;
+    appliedTaskId = current.id;
+    setDocs(current.documents);
+    if (!isDemo()) void libraryStats().then(setStats);
+  });
 
-  async function runDemoIngest(paths: string[]): Promise<DocumentView[]> {
+  async function runDemoIngest(
+    paths: string[],
+    note: (frame: IngestProgress) => void,
+  ): Promise<DocumentView[]> {
     for (const frame of demoIngestFrames(paths)) {
       await new Promise<void>((resolve) => setTimeout(resolve, 320));
       note(frame);
@@ -120,60 +121,33 @@ export default function DocsView(props: {
 
   const addFiles = async (paths: string[]) => {
     if (paths.length === 0 || busy()) return;
-    setBusy(true);
     setError(null);
-    setFailures([]);
-    setAdded(0);
-    setIngest({
-      path: paths[0] ?? "",
-      stage: "preparing",
-      done: 0,
-      total: paths.length,
-      finished: false,
-      error: null,
-    });
     try {
-      const next = isDemo() ? await runDemoIngest(paths) : await addDocuments(paths, note);
-      setDocs(next);
-      setAdded(paths.length - failures().length);
-      if (!isDemo()) setStats(await libraryStats());
+      await runDocumentTask(
+        props.resetKey,
+        "add",
+        progress(paths[0] ?? "", paths.length),
+        (note) => (isDemo() ? runDemoIngest(paths, note) : addDocuments(paths, note)),
+      );
     } catch (err) {
-      // Only reached when the whole batch fails; single bad files come through `note`.
-      setError(String(err));
-    } finally {
-      setIngest(null);
-      setBusy(false);
+      console.error("document ingest failed", err);
     }
   };
 
   /** Reprocess the whole library through the same progress path as ingest, file by file. */
   const reprocess = async () => {
     if (busy()) return;
-    setBusy(true);
     setError(null);
-    setFailures([]);
-    setAdded(0);
-    setIngest({
-      path: stats()?.root ?? "",
-      stage: "preparing",
-      done: 0,
-      total: 0,
-      finished: false,
-      error: null,
-    });
     try {
-      if (isDemo()) {
-        await runDemoIngest(demoDocuments().map((doc) => doc.path));
-        setDocs(demoDocuments());
-      } else {
-        setDocs(await reprocessLibrary(note));
-        setStats(await libraryStats());
-      }
+      const paths = demoDocuments().map((doc) => doc.path);
+      await runDocumentTask(
+        props.resetKey,
+        "reprocess",
+        progress(stats()?.root ?? "", 0),
+        (note) => (isDemo() ? runDemoIngest(paths, note) : reprocessLibrary(note)),
+      );
     } catch (err) {
-      setError(t(S.docs.error.reprocess, { err: String(err) }));
-    } finally {
-      setIngest(null);
-      setBusy(false);
+      console.error(t(S.docs.error.reprocess, { err: String(err) }));
     }
   };
 
@@ -203,7 +177,7 @@ export default function DocsView(props: {
 
   const confirmRemove = async (doc: DocumentView) => {
     setRemoving(null);
-    setBusy(true);
+    setActionBusy(true);
     setError(null);
     try {
       if (!isDemo()) await removeDocument(doc.id);
@@ -212,7 +186,7 @@ export default function DocsView(props: {
     } catch (err) {
       setError(t(S.docs.error.remove, { title: doc.title, err: String(err) }));
     } finally {
-      setBusy(false);
+      setActionBusy(false);
     }
   };
 
@@ -274,77 +248,13 @@ export default function DocsView(props: {
             )}
           </Show>
 
-          <Show when={ingest()}>
-            {(frame) => (
-              <div
-                class="flex flex-col gap-2xs rounded-card border border-line bg-surface-soft px-(--card-pad-x) py-(--card-pad-y)"
-                role="status"
-                aria-live="polite"
-              >
-                <div class="flex items-baseline justify-between gap-sm">
-                  <span class="min-w-0 truncate text-xs text-text">
-                    {stageLabel(frame().stage)}: <span class="font-mono text-2xs">{fileName(frame().path)}</span>
-                  </span>
-                  <span class="shrink-0 text-2xs text-muted tabular-nums">
-                    {frame().done}/{frame().total}
-                  </span>
-                </div>
-                <div
-                  role="progressbar"
-                  aria-valuenow={frame().done}
-                  aria-valuemin={0}
-                  aria-valuemax={frame().total}
-                  aria-label={t(S.docs.ingest.progressLabel)}
-                  class="h-1.5 overflow-hidden rounded-pill bg-[var(--overlay-faint)]"
-                >
-                  <div
-                    class="h-full rounded-pill bg-accent transition-[width] duration-[var(--dur-base)]"
-                    style={{
-                      width: `${frame().total === 0 ? 0 : Math.round((frame().done / frame().total) * 100)}%`,
-                    }}
-                  />
-                </div>
-              </div>
+          <Show when={task()}>
+            {(current) => (
+              <DocumentTaskCard
+                task={current()}
+                onDismiss={() => dismissDocumentTask(props.resetKey)}
+              />
             )}
-          </Show>
-
-          {/* Failed files stand apart from a batch error, and the first line counts what landed. */}
-          <Show when={failures().length > 0}>
-            <div class="flex flex-col gap-2xs rounded-card border border-line bg-warn-soft px-(--card-pad-x) py-(--card-pad-y)">
-              <div class="flex items-start gap-sm">
-                <span class="mt-3xs shrink-0 text-warn">
-                  <Icon name="warn" size={15} />
-                </span>
-                <p class="m-0 flex flex-1 flex-wrap items-center gap-2xs text-xs text-text">
-                  <span>
-                    <Show when={added() > 0} fallback={<>{t(S.docs.failures.none)}</>}>
-                      {t(S.docs.failures.some, { ok: added(), bad: failures().length })}
-                    </Show>
-                  </span>
-                  <InfoDot text={t(S.docs.failures.more)} />
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setFailures([])}
-                  aria-label={t(S.docs.failures.dismiss)}
-                  class="shrink-0 rounded-icon p-3xs text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
-                >
-                  <Icon name="x" size={13} />
-                </button>
-              </div>
-              <ul class="m-0 flex list-none flex-col gap-2xs p-0 pl-lg">
-                <For each={failures()}>
-                  {(failure) => (
-                    <li class="flex flex-col gap-3xs">
-                      <span class="min-w-0 truncate font-mono text-2xs text-text" title={failure.path}>
-                        {fileName(failure.path)}
-                      </span>
-                      <span class="text-2xs text-muted">{failure.error}</span>
-                    </li>
-                  )}
-                </For>
-              </ul>
-            </div>
           </Show>
 
           <Show when={error()}>
@@ -371,7 +281,7 @@ export default function DocsView(props: {
         </section>
 
         <Show when={docs().length > 0}>
-          <SearchProbe disabled={busy()} />
+          <SearchProbe disabled={actionBusy()} />
         </Show>
       </div>
 
@@ -391,6 +301,182 @@ export default function DocsView(props: {
       </Show>
     </div>
   );
+}
+
+function progress(path: string, total: number): IngestProgress {
+  return {
+    path,
+    stage: "preparing",
+    done: 0,
+    total,
+    finished: false,
+    error: null,
+  };
+}
+
+/** Persistent task card: determinate for known work, indeterminate while scanning or probing a model. */
+function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) {
+  const [clock, setClock] = createSignal(Date.now());
+  const timer = window.setInterval(() => setClock(Date.now()), 1_000);
+  onCleanup(() => window.clearInterval(timer));
+
+  const running = () => props.task.state === "running";
+  const frame = () => props.task.progress;
+  const determinate = () => frame().total > 0;
+  const percentage = () =>
+    determinate() ? Math.min(100, Math.round((frame().done / frame().total) * 100)) : 0;
+  const elapsed = () =>
+    formatDuration((props.task.finishedAt ?? clock()) - props.task.startedAt);
+  const count = () =>
+    frame().stage === "embedding"
+      ? t(S.docs.ingest.chunks, { done: frame().done, total: frame().total })
+      : frame().stage === "ocr"
+        ? t(S.docs.ingest.pages, { done: frame().done, total: frame().total })
+        : t(S.docs.ingest.files, { done: frame().done, total: frame().total });
+  const stateLabel = () =>
+    props.task.state === "completed"
+      ? t(S.docs.ingest.statusCompleted)
+      : props.task.state === "failed"
+        ? t(S.docs.ingest.statusFailed)
+        : stageLabel(frame().stage);
+  const kindLabel = () =>
+    props.task.kind === "sync"
+      ? t(S.docs.ingest.kindSync)
+      : props.task.kind === "add"
+        ? t(S.docs.ingest.kindAdd)
+        : t(S.docs.ingest.kindReprocess);
+  const icon = () =>
+    props.task.state === "completed" ? "check" : props.task.state === "failed" ? "warn" : "clock";
+
+  return (
+    <div class="flex flex-col gap-sm rounded-card border border-line bg-surface-soft px-(--card-pad-x) py-(--card-pad-y)">
+      <span class="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {kindLabel()}, {stateLabel()}
+        <Show when={determinate()}>, {count()}</Show>
+      </span>
+      <div class="flex items-start gap-sm">
+        <span
+          class={`mt-3xs grid size-6 shrink-0 place-items-center rounded-panel ${
+            props.task.state === "failed"
+              ? "bg-danger-soft text-danger"
+              : props.task.state === "completed"
+                ? "bg-success-soft text-success"
+                : "bg-accent-soft text-accent-ink"
+          }`}
+        >
+          <Icon name={icon()} size={13} />
+        </span>
+        <div class="flex min-w-0 flex-1 flex-col gap-3xs">
+          <div class="flex min-w-0 items-baseline justify-between gap-sm">
+            <p class="m-0 min-w-0 truncate text-xs font-medium text-ink">
+              {kindLabel()}
+              <span class="font-normal text-muted"> · {stateLabel()}</span>
+            </p>
+            <span class="shrink-0 text-2xs text-muted tabular-nums">
+              {t(S.docs.ingest.elapsed, { time: elapsed() })}
+            </span>
+          </div>
+          <Show when={running()}>
+            <p class="m-0 truncate text-2xs text-muted" title={frame().path}>
+              {stageLabel(frame().stage)}
+              <Show when={frame().path}> · <span class="font-mono">{fileName(frame().path)}</span></Show>
+            </p>
+          </Show>
+        </div>
+        <Show when={!running()}>
+          <button
+            type="button"
+            onClick={props.onDismiss}
+            aria-label={t(S.docs.ingest.dismiss)}
+            class="grid size-6 shrink-0 place-items-center rounded-icon text-muted transition-colors duration-[var(--dur-fast)] hover:bg-[var(--overlay-hover)] hover:text-ink"
+          >
+            <Icon name="x" size={13} />
+          </button>
+        </Show>
+      </div>
+
+      <Show when={running()}>
+        <div class="flex flex-col gap-2xs">
+          <div class="flex items-center justify-between gap-sm text-2xs text-muted tabular-nums">
+            <span>{determinate() ? count() : t(S.docs.ingest.background)}</span>
+            <Show when={determinate()}>
+              <span>{percentage()}%</span>
+            </Show>
+          </div>
+          <div
+            role="progressbar"
+            aria-valuenow={determinate() ? frame().done : undefined}
+            aria-valuemin={determinate() ? 0 : undefined}
+            aria-valuemax={determinate() ? frame().total : undefined}
+            aria-valuetext={`${stageLabel(frame().stage)}${determinate() ? `, ${count()}` : ""}`}
+            aria-label={t(S.docs.ingest.progressLabel)}
+            class="h-1.5 overflow-hidden rounded-pill bg-[var(--overlay-faint)]"
+          >
+            <div
+              class={`h-full w-full origin-left rounded-pill bg-accent transition-transform duration-[var(--dur-base)] motion-reduce:transition-none ${
+                determinate() ? "" : "animate-pulse motion-reduce:animate-none"
+              }`}
+              style={{ transform: `scaleX(${determinate() ? percentage() / 100 : 0.35})` }}
+            />
+          </div>
+        </div>
+      </Show>
+
+      <Show when={!running()}>
+        <p class="m-0 text-2xs text-muted">
+          {t(S.docs.ingest.summary, {
+            stored: props.task.stored,
+            skipped: props.task.skipped,
+            failed: props.task.failures.length,
+          })}
+        </p>
+      </Show>
+
+      <Show when={props.task.warning}>
+        {(warning) => (
+          <p class="m-0 rounded-panel bg-warn-soft px-sm py-2xs text-2xs break-words text-text">
+            <strong class="font-medium">{t(S.docs.ingest.warning)}:</strong> {warning()}
+          </p>
+        )}
+      </Show>
+      <Show when={props.task.error}>
+        {(message) => (
+          <p class="m-0 rounded-panel bg-danger-soft px-sm py-2xs text-2xs break-words text-danger" role="alert">
+            {message()}
+          </p>
+        )}
+      </Show>
+      <Show when={props.task.failures.length > 0}>
+        <ul class="m-0 flex list-none flex-col gap-2xs border-t border-line p-0 pt-sm">
+          <For each={props.task.failures.slice(0, 5)}>
+            {(failure) => (
+              <li class="flex min-w-0 items-baseline gap-sm text-2xs">
+                <span class="min-w-0 flex-1 truncate font-mono text-text" title={failure.path}>
+                  {fileName(failure.path)}
+                </span>
+                <span class="max-w-[55%] truncate text-danger" title={failure.error}>
+                  {failure.error}
+                </span>
+              </li>
+            )}
+          </For>
+          <Show when={props.task.failures.length > 5}>
+            <li class="text-2xs text-muted">
+              {t(S.docs.ingest.moreFailures, { count: props.task.failures.length - 5 })}
+            </li>
+          </Show>
+        </ul>
+      </Show>
+    </div>
+  );
+}
+
+function formatDuration(milliseconds: number): string {
+  const seconds = Math.max(0, Math.floor(milliseconds / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}m ${rest}s`;
 }
 
 /** Library health strip; when semantic search is not ready, say that keyword search still works. */

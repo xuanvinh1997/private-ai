@@ -12,7 +12,11 @@ use std::{
 };
 
 use async_trait::async_trait;
-use futures::stream::{self, BoxStream, StreamExt};
+use futures::{
+    channel::mpsc,
+    future,
+    stream::{self, BoxStream, StreamExt},
+};
 use pai_rag_core::{
     ChunkRow, DocumentInput, MatchedBy as CoreMatchedBy, SectionAwareSplitter, Store,
     embedding_text_for, fuse,
@@ -25,6 +29,7 @@ use self::{
     config::{ChunkConfig, NativeConfig, OcrConfig, ProviderConfig, RerankConfig, VectorConfig},
     embedding::{EMBED_INPUT_VERSION, EmbeddingClient, MAX_BATCH},
     extract::{EXTRACT_VERSION, ReaderKind, reader_for},
+    rerank::LocalReranker,
     vector::Qdrant,
     vision::VisionClient,
 };
@@ -54,6 +59,7 @@ struct RuntimeState {
     chunk_config: ChunkConfig,
     ocr_config: OcrConfig,
     rerank_config: RerankConfig,
+    reranker: LocalReranker,
     embedder: Option<EmbeddingClient>,
     vision: Option<VisionClient>,
     vectors: Qdrant,
@@ -70,6 +76,7 @@ struct RuntimeSnapshot {
     candidate_pool: usize,
     ocr: OcrConfig,
     rerank: RerankConfig,
+    reranker: LocalReranker,
 }
 
 /// Delete a closed project's native index. User documents are never inside this directory.
@@ -116,6 +123,7 @@ impl NativeLibrary {
             chunk_config: native.chunk.clone(),
             ocr_config: native.ocr.clone(),
             rerank_config: native.rerank.clone(),
+            reranker: LocalReranker::new(&native.rerank),
             embedder,
             vision,
             vectors,
@@ -185,6 +193,11 @@ impl NativeLibrary {
                     .map_err(store_error)?;
             }
             state.ocr_config = fresh.ocr.clone();
+            if fresh.rerank.model != state.rerank_config.model
+                || fresh.rerank.path != state.rerank_config.path
+            {
+                state.reranker = LocalReranker::new(&fresh.rerank);
+            }
             state.rerank_config = fresh.rerank.clone();
             state.candidate_pool = fresh.rerank.candidates.max(20);
             state.stamp = stamp;
@@ -197,6 +210,7 @@ impl NativeLibrary {
             candidate_pool: state.candidate_pool,
             ocr: state.ocr_config.clone(),
             rerank: state.rerank_config.clone(),
+            reranker: state.reranker.clone(),
         })
     }
 
@@ -226,7 +240,10 @@ impl NativeLibrary {
         }
     }
 
-    async fn embed_pending(&self) -> Result<usize, RagError> {
+    async fn embed_pending(
+        &self,
+        mut on_progress: impl FnMut(u32, u32),
+    ) -> Result<usize, RagError> {
         let runtime = self.runtime()?;
         let Some(embedder) = &runtime.embedder else {
             return Err(RagError::Unavailable(
@@ -234,6 +251,7 @@ impl NativeLibrary {
             ));
         };
         let rows = self.store.lock().all_chunks().map_err(store_error)?;
+        on_progress(0, rows.len() as u32);
         if rows.is_empty() {
             return Ok(0);
         }
@@ -265,6 +283,7 @@ impl NativeLibrary {
             .into_iter()
             .filter(|row| !existing.contains(&row.id))
             .collect();
+        on_progress(0, pending.len() as u32);
         let mut total = 0;
         for batch in pending.chunks(MAX_BATCH) {
             let texts: Vec<_> = batch
@@ -294,6 +313,7 @@ impl NativeLibrary {
                 )
                 .await?;
             total += batch.len();
+            on_progress(total as u32, pending.len() as u32);
         }
         *self.last_embed_error.lock() = None;
         Ok(total)
@@ -313,40 +333,63 @@ impl NativeLibrary {
 
     fn run(&self, source: Source) -> BoxStream<'_, IngestEvent> {
         let root = self.root.display().to_string();
-        let started = event(IngestStage::Reading, root.clone(), None, 0, 0);
-        let tail = async move { self.process(source).await };
+        let started = event(IngestStage::Reading, root, None, 0, 0);
+        let (progress, events) = mpsc::unbounded();
+        // Poll the worker and receiver as one stream. This makes each milestone observable while
+        // extraction/OCR/embedding is still running instead of buffering every event until the end.
+        let worker = stream::once(async move { self.process(source, progress).await })
+            .filter_map(|_| future::ready(None::<IngestEvent>));
         stream::once(async move { started })
-            .chain(stream::once(tail).flat_map(stream::iter))
+            .chain(stream::select(events, worker))
             .boxed()
     }
 
-    async fn process(&self, source: Source) -> Vec<IngestEvent> {
-        let result = self.process_inner(source).await;
+    async fn process(&self, source: Source, progress: mpsc::UnboundedSender<IngestEvent>) {
+        let result = self.process_inner(source, &progress).await;
         // Clear even when SQLite/config/extraction aborts the whole pass; otherwise the
         // UI would keep reporting a scan that can never make progress.
         *self.scanning.lock() = None;
         match result {
-            Ok(report) => report.events(&self.root),
-            Err(error) => vec![
-                event(
-                    IngestStage::Failed,
-                    self.root.display().to_string(),
-                    Some(error.to_string()),
-                    0,
-                    0,
-                ),
+            Ok(report) => send_progress(
+                &progress,
                 event(
                     IngestStage::Finished,
                     self.root.display().to_string(),
                     None,
-                    0,
-                    0,
+                    report.scanned,
+                    report.scanned,
                 ),
-            ],
+            ),
+            Err(error) => {
+                send_progress(
+                    &progress,
+                    event(
+                        IngestStage::Failed,
+                        self.root.display().to_string(),
+                        Some(error.to_string()),
+                        0,
+                        0,
+                    ),
+                );
+                send_progress(
+                    &progress,
+                    event(
+                        IngestStage::Finished,
+                        self.root.display().to_string(),
+                        None,
+                        0,
+                        0,
+                    ),
+                );
+            }
         }
     }
 
-    async fn process_inner(&self, source: Source) -> Result<RunReport, RagError> {
+    async fn process_inner(
+        &self,
+        source: Source,
+        progress: &mpsc::UnboundedSender<IngestEvent>,
+    ) -> Result<RunReport, RagError> {
         if matches!(source, Source::Reprocess) {
             self.store
                 .lock()
@@ -384,33 +427,70 @@ impl NativeLibrary {
 
         for (index, path) in paths.into_iter().enumerate() {
             let shown = path.display().to_string();
+            let done = index as u32 + 1;
+            send_progress(
+                progress,
+                event(
+                    IngestStage::Reading,
+                    shown.clone(),
+                    None,
+                    index as u32,
+                    total,
+                ),
+            );
             if scan_mode && excluded.contains(&shown) {
                 report.excluded += 1;
+                self.set_scan_progress(done, total);
+                send_progress(
+                    progress,
+                    event(IngestStage::Skipped, shown, None, done, total),
+                );
                 continue;
             }
             let metadata = match std::fs::metadata(&path) {
                 Ok(metadata) => metadata,
                 Err(error) => {
-                    report
-                        .failures
-                        .push((shown, format!("không đọc được thuộc tính: {error}")));
+                    let reason = format!("không đọc được thuộc tính: {error}");
+                    report.failures.push((shown.clone(), reason.clone()));
+                    self.set_scan_progress(done, total);
+                    send_progress(
+                        progress,
+                        event(IngestStage::Failed, shown, Some(reason), done, total),
+                    );
                     continue;
                 }
             };
             let fingerprint = (modified_seconds(&metadata), metadata.len() as i64);
             if scan_mode && known.get(&shown) == Some(&fingerprint) {
                 report.unchanged += 1;
-                *self.scanning.lock() = Some(Scanning {
-                    done: index as u32 + 1,
-                    total,
-                });
+                self.set_scan_progress(done, total);
+                send_progress(
+                    progress,
+                    event(IngestStage::Skipped, shown, None, done, total),
+                );
                 continue;
             }
 
             let outcome = match reader_for(&path) {
                 Some(ReaderKind::Native(format)) => self.ingest_native(&path, format).await,
-                Some(ReaderKind::Pdf) => self.ingest_pdf(&path).await,
-                Some(ReaderKind::Image) => self.ingest_image(&path).await,
+                Some(ReaderKind::Pdf) => {
+                    self.ingest_pdf(&path, |done, total| {
+                        send_progress(
+                            progress,
+                            event(IngestStage::Ocr, shown.clone(), None, done, total),
+                        );
+                    })
+                    .await
+                }
+                Some(ReaderKind::Image) => {
+                    self.ingest_image(&path, |done, total| {
+                        send_progress(
+                            progress,
+                            event(IngestStage::Ocr, shown.clone(), None, done, total),
+                        );
+                    })
+                    .await
+                }
                 Some(ReaderKind::Unsupported) => Err(RagError::Extraction(format!(
                     "`{shown}` cần bộ đọc chưa có trong bản Rust"
                 ))),
@@ -419,7 +499,22 @@ impl NativeLibrary {
                 ))),
             };
             match outcome {
-                Ok(_) => report.ingested += 1,
+                Ok(Ingested::Stored) => {
+                    report.ingested += 1;
+                    send_progress(
+                        progress,
+                        event(IngestStage::Stored, shown, None, done, total),
+                    );
+                }
+                // Neither stored nor failed: the settings say to leave this file alone. Nothing is written to
+                // the store, so flipping OCR back on brings it in on the next sync.
+                Ok(Ingested::Skipped(reason)) => {
+                    report.skipped += 1;
+                    send_progress(
+                        progress,
+                        event(IngestStage::Skipped, shown, Some(reason), done, total),
+                    );
+                }
                 Err(error) => {
                     let reason = error.to_string();
                     if scan_mode && error.is_extraction() {
@@ -428,20 +523,39 @@ impl NativeLibrary {
                             .put_failure(&shown, fingerprint.0, fingerprint.1, &reason)
                             .map_err(store_error)?;
                     }
-                    report.failures.push((shown, reason));
+                    report.failures.push((shown.clone(), reason.clone()));
+                    send_progress(
+                        progress,
+                        event(IngestStage::Failed, shown, Some(reason), done, total),
+                    );
                 }
             }
-            *self.scanning.lock() = Some(Scanning {
-                done: index as u32 + 1,
-                total,
-            });
+            self.set_scan_progress(done, total);
         }
 
-        match self.embed_pending().await {
+        let root = self.root.display().to_string();
+        send_progress(
+            progress,
+            event(IngestStage::Embedding, root.clone(), None, 0, 0),
+        );
+        match self
+            .embed_pending(|done, total| {
+                send_progress(
+                    progress,
+                    event(IngestStage::Embedding, root.clone(), None, done, total),
+                );
+            })
+            .await
+        {
             Ok(count) => report.embedded = count as u32,
             Err(error) => {
-                report.embed_error = Some(error.to_string());
-                *self.last_embed_error.lock() = report.embed_error.clone();
+                let reason = error.to_string();
+                report.embed_error = Some(reason.clone());
+                *self.last_embed_error.lock() = Some(reason.clone());
+                send_progress(
+                    progress,
+                    event(IngestStage::Embedding, root, Some(reason), 0, 0),
+                );
             }
         }
         if scan_mode {
@@ -465,52 +579,73 @@ impl NativeLibrary {
         Ok(report)
     }
 
-    async fn ingest_native(&self, path: &Path, format: Format) -> Result<String, RagError> {
+    fn set_scan_progress(&self, done: u32, total: u32) {
+        *self.scanning.lock() = Some(Scanning { done, total });
+    }
+
+    async fn ingest_native(&self, path: &Path, format: Format) -> Result<Ingested, RagError> {
         let owned = path.to_owned();
         let extracted = tokio::task::spawn_blocking(move || extract::extract(&owned, format))
             .await
             .map_err(|error| RagError::Service(format!("luồng đọc tệp bị dừng: {error}")))??;
-        self.store_extracted(path, extracted).await
+        self.store_extracted(path, extracted)
+            .await
+            .map(|_| Ingested::Stored)
     }
 
-    async fn ingest_pdf(&self, path: &Path) -> Result<String, RagError> {
+    async fn ingest_pdf(
+        &self,
+        path: &Path,
+        mut on_ocr: impl FnMut(u32, u32),
+    ) -> Result<Ingested, RagError> {
         let runtime = self.runtime()?;
         let owned = path.to_owned();
         let mut pages = tokio::task::spawn_blocking(move || extract::pdf_text_pages(&owned))
             .await
             .map_err(|error| RagError::Service(format!("luồng đọc PDF bị dừng: {error}")))??;
-        let average_chars = extract::average_chars(&pages);
+        // Whole-document text, not the per-page average: a novel with a few plates, a cover and a blank page
+        // averages badly while still being a perfectly readable book. Only a PDF with no text layer at all
+        // needs OCR to be usable.
+        let text_chars: usize = pages.iter().map(|page| page.trim().chars().count()).sum();
         let has_sparse_page = pages
             .iter()
             .any(|page| page.trim().chars().count() < runtime.ocr.min_chars_per_page);
         if !has_sparse_page {
             return self
                 .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
-                .await;
+                .await
+                .map(|_| Ingested::Stored);
         }
-        if !runtime.ocr.enabled {
-            // A mixed PDF is still useful without OCR: keep its native text instead of rejecting the whole
-            // document because a cover or illustration page is blank. Fully scanned PDFs remain actionable
-            // failures, so the UI can tell the user to enable OCR.
-            if average_chars >= runtime.ocr.min_chars_per_page {
+        // Why OCR cannot run here, if it cannot. Unreadable pages never cost the whole document: the text
+        // layer is stored and those images are simply left out.
+        let blocked = if !runtime.ocr.enabled {
+            Some("OCR đang tắt")
+        } else if runtime.vision.is_none() {
+            Some("chưa chọn mô hình vision trong Cài đặt")
+        } else {
+            None
+        };
+        if let Some(reason) = blocked {
+            if text_chars >= runtime.ocr.min_chars_per_page {
                 return self
                     .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
-                    .await;
+                    .await
+                    .map(|_| Ingested::Stored);
             }
-            return Err(RagError::Extraction(format!(
-                "PDF `{}` không có đủ lớp chữ và OCR đang tắt",
+            // Nothing but images, and no way to read them: left out rather than recorded as a broken
+            // document, since the user turned OCR off. Nothing is remembered, so turning it on picks the
+            // file up on the next sync.
+            return Ok(Ingested::Skipped(format!(
+                "`{}` là PDF quét, {reason} nên bỏ qua",
                 path.display()
             )));
         }
         let Some(vision) = runtime.vision else {
-            if average_chars >= runtime.ocr.min_chars_per_page {
-                return self
-                    .store_extracted(path, extract::pdf_from_pages(path, pages, Vec::new()))
-                    .await;
-            }
-            return Err(RagError::Extraction(
-                "đây là PDF quét; hãy chọn mô hình vision trong Cài đặt rồi xử lý lại".into(),
-            ));
+            // Unreachable: `blocked` returns above when there is no vision model.
+            return Ok(Ingested::Skipped(format!(
+                "`{}` là PDF quét, chưa chọn mô hình vision nên bỏ qua",
+                path.display()
+            )));
         };
         let owned = path.to_owned();
         let scale = runtime.ocr.scale;
@@ -519,12 +654,15 @@ impl NativeLibrary {
             tokio::task::spawn_blocking(move || extract::render_pdf_pages(&owned, scale, limit))
                 .await
                 .map_err(|error| RagError::Service(format!("luồng dựng PDF bị dừng: {error}")))??;
+        let ocr_total = images.len() as u32;
+        on_ocr(0, ocr_total);
         let mut ocr_pages = Vec::new();
         for (index, image) in images.iter().enumerate() {
             if pages
                 .get(index)
                 .is_some_and(|page| page.trim().chars().count() >= runtime.ocr.min_chars_per_page)
             {
+                on_ocr(index as u32 + 1, ocr_total);
                 continue;
             }
             match vision.ocr(image, "image/png").await {
@@ -539,6 +677,7 @@ impl NativeLibrary {
                     tracing::warn!(%error, page = index + 1, path = %path.display(), "OCR page failed")
                 }
             }
+            on_ocr(index as u32 + 1, ocr_total);
         }
         if !pages.iter().any(|page| !page.trim().is_empty()) {
             return Err(RagError::Extraction(format!(
@@ -548,14 +687,22 @@ impl NativeLibrary {
             )));
         }
         let extracted = extract::pdf_from_pages(path, pages, ocr_pages);
-        self.store_extracted(path, extracted).await
+        self.store_extracted(path, extracted)
+            .await
+            .map(|_| Ingested::Stored)
     }
 
-    async fn ingest_image(&self, path: &Path) -> Result<String, RagError> {
+    async fn ingest_image(
+        &self,
+        path: &Path,
+        mut on_ocr: impl FnMut(u32, u32),
+    ) -> Result<Ingested, RagError> {
         let runtime = self.runtime()?;
+        // An image file is nothing but an image: with OCR off there is nothing to read, so it is left out
+        // rather than filed as a broken document.
         if !runtime.ocr.enabled {
-            return Err(RagError::Extraction(format!(
-                "`{}` là ảnh và OCR đang tắt",
+            return Ok(Ingested::Skipped(format!(
+                "`{}` là ảnh, OCR đang tắt nên bỏ qua",
                 path.display()
             )));
         }
@@ -568,7 +715,9 @@ impl NativeLibrary {
         let (bytes, mime) = tokio::task::spawn_blocking(move || extract::image_bytes(&owned))
             .await
             .map_err(|error| RagError::Service(format!("luồng đọc ảnh bị dừng: {error}")))??;
+        on_ocr(0, 1);
         let text = vision.ocr(&bytes, mime).await?;
+        on_ocr(1, 1);
         if text.is_empty() {
             return Err(RagError::Extraction(format!(
                 "model vision `{}` không đọc được chữ trong `{}`",
@@ -586,7 +735,9 @@ impl NativeLibrary {
             pages: 1,
             ocr_pages: vec![1],
         };
-        self.store_extracted(path, extracted).await
+        self.store_extracted(path, extracted)
+            .await
+            .map(|_| Ingested::Stored)
     }
 
     async fn store_extracted(
@@ -633,19 +784,57 @@ impl DocLibrary for NativeLibrary {
     async fn search(&self, query: &str, limit: usize) -> Result<Vec<Hit>, RagError> {
         let limit = limit.clamp(1, 30);
         let runtime = self.runtime()?;
+        let keep = if runtime.rerank.enabled {
+            runtime.rerank.top_n.clamp(1, limit)
+        } else {
+            limit
+        };
         let keyword_only = prefers_keyword(query) || runtime.embedder.is_none();
-        let pool = runtime.candidate_pool.max(limit * 4);
+        let pool = runtime.candidate_pool.max(keep * 4);
         let keyword = self
             .store
             .lock()
-            .search_keyword(query, if keyword_only { limit } else { pool })
+            .search_keyword(
+                query,
+                if keyword_only && !runtime.rerank.enabled {
+                    keep
+                } else {
+                    pool
+                },
+            )
             .map_err(store_error)?;
         if keyword_only {
             let rows = rows_by_id(&self.store.lock(), &keyword)?;
+            if runtime.rerank.enabled {
+                let ordered: Vec<_> = keyword
+                    .iter()
+                    .filter(|id| rows.contains_key(id))
+                    .copied()
+                    .collect();
+                let passages: Vec<_> = ordered
+                    .iter()
+                    .filter_map(|id| rows.get(id).map(|chunk| chunk.body.as_str()))
+                    .collect();
+                match runtime.reranker.score(query, &passages, keep).await {
+                    Ok(scored) => {
+                        return Ok(Self::rows_to_hits(
+                            rows,
+                            scored.into_iter().filter_map(|item| {
+                                Some((*ordered.get(item.index)?, item.score, MatchedBy::Keyword))
+                            }),
+                        ));
+                    }
+                    Err(error) => tracing::warn!(
+                        %error,
+                        "local ONNX reranker unavailable; keeping keyword order"
+                    ),
+                }
+            }
             return Ok(Self::rows_to_hits(
                 rows,
                 keyword
                     .into_iter()
+                    .take(keep)
                     .enumerate()
                     .map(|(rank, id)| (id, 1.0 / (rank + 1) as f32, MatchedBy::Keyword)),
             ));
@@ -654,18 +843,12 @@ impl DocLibrary for NativeLibrary {
         let ranked = fuse(&keyword, &semantic, pool);
         let ids: Vec<_> = ranked.iter().map(|row| row.chunk_id).collect();
         let rows = rows_by_id(&self.store.lock(), &ids)?;
-        if runtime.rerank.enabled && !runtime.rerank.backend.eq_ignore_ascii_case("http") {
-            tracing::warn!(
-                backend = %runtime.rerank.backend,
-                "unsupported native rerank backend; keeping RRF order"
-            );
-        }
-        if runtime.rerank.enabled && runtime.rerank.backend.eq_ignore_ascii_case("http") {
+        if runtime.rerank.enabled {
             let passages: Vec<_> = ranked
                 .iter()
                 .filter_map(|row| rows.get(&row.chunk_id).map(|chunk| chunk.body.as_str()))
                 .collect();
-            match rerank::http(&runtime.rerank, query, &passages, limit).await {
+            match runtime.reranker.score(query, &passages, keep).await {
                 Ok(scored) => {
                     let ordered: Vec<_> = ranked
                         .iter()
@@ -686,13 +869,13 @@ impl DocLibrary for NativeLibrary {
                 }
                 Err(error) => tracing::warn!(
                     %error,
-                    "HTTP reranker unavailable; keeping native RRF order"
+                    "local ONNX reranker unavailable; keeping native RRF order"
                 ),
             }
         }
         Ok(Self::rows_to_hits(
             rows,
-            ranked.into_iter().take(limit).map(|row| {
+            ranked.into_iter().take(keep).map(|row| {
                 let matched = match row.matched_by {
                     CoreMatchedBy::Keyword => MatchedBy::Keyword,
                     CoreMatchedBy::Semantic => MatchedBy::Semantic,
@@ -843,48 +1026,26 @@ enum Source {
     Reprocess,
 }
 
+/// What one file's ingest produced. `Skipped` is deliberately not an error: with OCR off, an image is a file
+/// the user asked to leave alone, and filing it as a broken document would be a lie the table repeats forever.
+enum Ingested {
+    Stored,
+    /// Left out, with the sentence naming the setting that did it.
+    Skipped(String),
+}
+
 #[derive(Default)]
 struct RunReport {
     scanned: u32,
     ingested: u32,
     unchanged: u32,
+    /// Left out on purpose -- an image or a scanned PDF while OCR is off -- so neither ingested nor failed.
+    skipped: u32,
     over_limit: u32,
     excluded: u32,
     embedded: u32,
     failures: Vec<(String, String)>,
     embed_error: Option<String>,
-}
-
-impl RunReport {
-    fn events(self, root: &Path) -> Vec<IngestEvent> {
-        let mut events = Vec::new();
-        for (path, reason) in self.failures {
-            events.push(event(
-                IngestStage::Failed,
-                path,
-                Some(reason),
-                self.ingested,
-                self.scanned,
-            ));
-        }
-        if let Some(error) = self.embed_error {
-            events.push(event(
-                IngestStage::Embedding,
-                root.display().to_string(),
-                Some(error),
-                self.ingested,
-                self.scanned,
-            ));
-        }
-        events.push(event(
-            IngestStage::Finished,
-            root.display().to_string(),
-            None,
-            self.ingested,
-            self.scanned,
-        ));
-        events
-    }
 }
 
 fn reconcile(store: &mut Store, config: &NativeConfig) -> Result<(), RagError> {
@@ -961,6 +1122,11 @@ fn event(
         error,
         document: None,
     }
+}
+
+/// Progress delivery is best-effort: closing the UI must not interrupt a half-written ingest.
+fn send_progress(sender: &mpsc::UnboundedSender<IngestEvent>, item: IngestEvent) {
+    let _ = sender.unbounded_send(item);
 }
 
 fn document_id(root: &Path, path: &Path) -> String {

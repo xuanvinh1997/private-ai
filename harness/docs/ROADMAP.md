@@ -104,9 +104,10 @@ tốt hơn hẳn cho mã nguồn), MarkItDown và tầng OCR, ASR, `graph_view`,
 phải giữ một sidecar Python.
 
 > **Sửa lại ở v1.1:** thư viện tài liệu quay lại bằng Rust thuần trong tiến trình
-> (`pdf-extract`, `zip` + `quick-xml`, SQLite/FTS, Qdrant HTTP và HTTP reranker).
-> Python sidecar đã bị loại bỏ. OCR, ảnh, bảng tính/slide, Office cũ và reranker ONNX
-> cục bộ tạm thời báo chưa hỗ trợ cho tới khi có bộ đọc Rust tương ứng.
+> (`pdf-extract`, `zip` + `quick-xml`, SQLite/FTS, Qdrant HTTP và
+> `BAAI/bge-reranker-v2-m3` ONNX chạy ngay trong tiến trình). Python sidecar và inference
+> API cho reranker đã bị loại bỏ. Các định dạng chưa có bộ đọc Rust tiếp tục báo lỗi khả
+> năng rõ ràng thay vì rơi ngầm về Python.
 
 > Nói cách khác: đường chạy RAG hiện tại không còn cần Python; phần còn thiếu được biểu
 > diễn thành lỗi khả năng rõ ràng thay vì một tiến trình fallback ẩn.

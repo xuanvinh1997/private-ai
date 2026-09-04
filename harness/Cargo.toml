@@ -66,6 +66,9 @@ tempfile = "3"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 pdfium-bundled = "0.1.1"
+# Local cross-encoder inference. ONNX Runtime is fetched at build time; model weights are
+# pinned and bundled separately by scripts/prepare-reranker.mjs.
+fastembed = { version = "6.0.2", default-features = false, features = ["ort-download-binaries-rustls-tls"] }
 
 # --- internal crates ---
 pai-core = { path = "crates/pai-core" }

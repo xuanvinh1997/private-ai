@@ -170,6 +170,8 @@ pub fn pdf_text_pages(path: &Path) -> Result<Vec<String>, RagError> {
     Ok(pages)
 }
 
+/// Only [`extract_pdf`] still averages; the library judges a PDF by its whole text layer, not per page.
+#[cfg(test)]
 pub fn average_chars(pages: &[String]) -> usize {
     if pages.is_empty() {
         return 0;

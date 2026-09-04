@@ -204,10 +204,11 @@ export const embedding = {
       vi: "Sắp lại thứ tự đoạn tìm được: đúng hơn, đổi lại chậm hơn.",
     },
     more: {
-      en: "An optional HTTP rerank server reads the question and each chunk together, then returns a better order than vector similarity alone. Changing this does not re-embed the library.",
-      vi: "Một máy chủ rerank HTTP tùy chọn đọc cả câu hỏi lẫn từng đoạn rồi trả về thứ tự tốt hơn so vector đơn thuần. Đổi ở đây không nhúng lại thư viện.",
+      en: "The bundled BGE cross-encoder reads the question and each chunk together using ONNX Runtime. No text is sent to an API, and changing this does not re-embed the library.",
+      vi: "Cross-encoder BGE đóng kèm đọc cả câu hỏi lẫn từng đoạn bằng ONNX Runtime. Không có văn bản nào được gửi tới API, và đổi ở đây không nhúng lại thư viện.",
     },
     saveFailed: { en: "Save failed", vi: "Không lưu được" },
+    unsaved: { en: "Changes not saved", vi: "Thay đổi chưa được lưu" },
 
     enableLabel: { en: "Enable", vi: "Bật" },
     enableDesc: {
@@ -226,8 +227,8 @@ export const embedding = {
       vi: "Càng nhiều đoạn thì thứ tự càng đúng và càng chờ lâu.",
     },
     candidatesMore: {
-      en: "Each candidate is sent to the configured HTTP rerank endpoint. Lowering this number reduces network and scoring latency.",
-      vi: "Mỗi ứng viên được gửi tới endpoint rerank HTTP đã cấu hình. Hạ số này để giảm độ trễ mạng và chấm điểm.",
+      en: "Each candidate is scored locally by the ONNX cross-encoder. Lowering this number reduces CPU time and memory pressure.",
+      vi: "Mỗi ứng viên được ONNX cross-encoder chấm ngay trên máy. Hạ số này để giảm thời gian CPU và áp lực bộ nhớ.",
     },
 
     topNLabel: { en: "Kept", vi: "Số đoạn giữ lại" },
@@ -236,19 +237,11 @@ export const embedding = {
       vi: "Mấy đoạn đứng đầu được đưa cho mô hình trả lời.",
     },
 
-    urlLabel: { en: "Server", vi: "Máy chủ" },
-    urlDesc: {
-      en: "Base URL or full /v1/rerank endpoint.",
-      vi: "URL gốc hoặc endpoint /v1/rerank đầy đủ.",
+    localModelLabel: { en: "Local model", vi: "Mô hình cục bộ" },
+    localModelDesc: {
+      en: "Multilingual INT8 cross-encoder bundled with the application.",
+      vi: "Cross-encoder đa ngôn ngữ INT8 được đóng cùng ứng dụng.",
     },
-    urlFieldLabel: { en: "Rerank server URL", vi: "URL máy chủ rerank" },
-
-    remoteModelLabel: { en: "Model name", vi: "Tên mô hình" },
-    remoteModelDesc: {
-      en: "Model your server serves.",
-      vi: "Tên mô hình mà máy chủ của bạn phục vụ.",
-    },
-    modelFieldLabel: { en: "Rerank model", vi: "Mô hình xếp hạng lại" },
 
     reasonMore: {
       en: "Turning this back on is not a re-embed — this step only reorders chunks that were already found, so the next question already follows the new setting.",

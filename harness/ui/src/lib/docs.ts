@@ -1,5 +1,6 @@
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
+import { createSignal } from "solid-js";
 import { inTauri } from "./agent";
 import { S, t, type Msg } from "./i18n";
 import type {
@@ -10,6 +11,134 @@ import type {
   LibraryStats,
   OcrSetting,
 } from "./protocol";
+
+export type DocumentTaskKind = "sync" | "add" | "reprocess";
+export type DocumentTaskState = "running" | "completed" | "failed";
+
+export interface DocumentTaskFailure {
+  path: string;
+  error: string;
+}
+
+/** App-lifetime ingest state. Keeping this outside `DocsView` means switching screens does not lose a running task. */
+export interface DocumentTask {
+  id: string;
+  scope: string;
+  kind: DocumentTaskKind;
+  state: DocumentTaskState;
+  progress: IngestProgress;
+  startedAt: number;
+  finishedAt: number | null;
+  stored: number;
+  skipped: number;
+  failures: DocumentTaskFailure[];
+  warning: string | null;
+  error: string | null;
+  documents: DocumentView[] | null;
+}
+
+const [documentTasks, setDocumentTasks] = createSignal<Record<string, DocumentTask>>({});
+const runningTasks = new Map<string, Promise<DocumentView[]>>();
+let taskSequence = 0;
+
+export { documentTasks };
+
+function updateDocumentTask(
+  scope: string,
+  id: string,
+  update: (task: DocumentTask) => DocumentTask,
+) {
+  setDocumentTasks((all) => {
+    const current = all[scope];
+    if (current === undefined || current.id !== id) return all;
+    return { ...all, [scope]: update(current) };
+  });
+}
+
+/** Run at most one document mutation per project while exposing its lifecycle to any mounted screen. */
+export function runDocumentTask(
+  scope: string,
+  kind: DocumentTaskKind,
+  initial: IngestProgress,
+  execute: (onProgress: (progress: IngestProgress) => void) => Promise<DocumentView[]>,
+): Promise<DocumentView[]> {
+  const active = runningTasks.get(scope);
+  if (active !== undefined) return active;
+
+  const id = `${Date.now()}-${++taskSequence}`;
+  const task: DocumentTask = {
+    id,
+    scope,
+    kind,
+    state: "running",
+    progress: initial,
+    startedAt: Date.now(),
+    finishedAt: null,
+    stored: 0,
+    skipped: 0,
+    failures: [],
+    warning: null,
+    error: null,
+    documents: null,
+  };
+  setDocumentTasks((all) => ({ ...all, [scope]: task }));
+
+  const note = (progress: IngestProgress) => {
+    updateDocumentTask(scope, id, (current) => {
+      const fatal = progress.stage === "failed" && progress.error !== null && progress.total === 0;
+      const failure =
+        progress.stage === "failed" && progress.error !== null && !fatal
+          ? [{ path: progress.path, error: progress.error }]
+          : [];
+      return {
+        ...current,
+        progress,
+        stored: current.stored + (progress.stage === "stored" ? 1 : 0),
+        skipped: current.skipped + (progress.stage === "skipped" ? 1 : 0),
+        failures: [...current.failures, ...failure],
+        warning:
+          progress.stage === "embedding" && progress.error !== null
+            ? progress.error
+            : current.warning,
+        error: fatal ? progress.error : current.error,
+      };
+    });
+  };
+
+  const promise = execute(note)
+    .then((documents) => {
+      updateDocumentTask(scope, id, (current) => ({
+        ...current,
+        state: current.error === null ? "completed" : "failed",
+        finishedAt: Date.now(),
+        documents,
+      }));
+      return documents;
+    })
+    .catch((error: unknown) => {
+      updateDocumentTask(scope, id, (current) => ({
+        ...current,
+        state: "failed",
+        finishedAt: Date.now(),
+        error: String(error),
+      }));
+      throw error;
+    })
+    .finally(() => {
+      if (runningTasks.get(scope) === promise) runningTasks.delete(scope);
+    });
+  runningTasks.set(scope, promise);
+  return promise;
+}
+
+export function dismissDocumentTask(scope: string) {
+  setDocumentTasks((all) => {
+    if (all[scope]?.state === "running") return all;
+    const next = { ...all };
+    delete next[scope];
+    return next;
+  });
+}
 
 export async function getOcrSetting(): Promise<OcrSetting> {
   if (!inTauri()) return { enabled: true, visionModel: null };

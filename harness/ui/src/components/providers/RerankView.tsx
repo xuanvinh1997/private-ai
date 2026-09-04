@@ -4,6 +4,7 @@ import type { RerankSetting } from "../../lib/protocol";
 import { S, t } from "../../lib/i18n";
 import {
   Banner,
+  Button,
   Row,
   RowGroup,
   SectionHead,
@@ -11,13 +12,12 @@ import {
   Toggle,
 } from "../settings/FormKit";
 
-/** The optional HTTP rerank section. Changing it never re-embeds documents. */
+/** The optional local ONNX rerank section. Changing it never re-embeds documents. */
 /** A `TextField` that commits on blur or Enter, since per-keystroke saves let the core clamp a half-typed number. */
 function CommitField(props: {
   label: string;
   value: string;
   disabled?: boolean;
-  mono?: boolean;
   onCommit: (value: string) => void;
 }) {
   const [draft, setDraft] = createSignal(props.value);
@@ -32,7 +32,6 @@ function CommitField(props: {
     <TextField
       label={props.label}
       hideLabel
-      mono={props.mono}
       value={draft()}
       disabled={props.disabled}
       onInput={setDraft}
@@ -52,34 +51,47 @@ function CommitField(props: {
 
 export default function RerankView() {
   const [setting, setSetting] = createSignal<RerankSetting | null>(null);
+  const [draft, setDraft] = createSignal<RerankSetting | null>(null);
   const [saving, setSaving] = createSignal(false);
+  const [saved, setSaved] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
-  onMount(async () => setSetting(await rerankSetting()));
+  onMount(async () => {
+    const current = await rerankSetting();
+    setSetting(current);
+    setDraft(current);
+  });
 
-  /** Save a change, then redraw from what the core returned, not from what was sent. */
-  async function save(patch: Partial<Omit<RerankSetting, "reason">>) {
-    const now = setting();
-    if (!now || saving()) return;
-    // Draw optimistically: a toggle that waits for the round trip feels stuck.
-    const next = { ...now, ...patch };
-    setSetting(next);
+  const update = (patch: Partial<Omit<RerankSetting, "reason">>) => {
+    setDraft((current) => (current === null ? null : { ...current, ...patch }));
+    setSaved(false);
+    setError(null);
+  };
+
+  const dirty = () => {
+    const current = setting();
+    const next = draft();
+    return (
+      current !== null &&
+      next !== null &&
+      (current.enabled !== next.enabled ||
+        current.candidates !== next.candidates ||
+        current.topN !== next.topN)
+    );
+  };
+
+  /** Persist the complete draft, then redraw from the core's clamped response. */
+  async function save() {
+    const next = draft();
+    if (next === null || saving() || !dirty()) return;
     setSaving(true);
     setError(null);
     try {
-      // The core clamps `candidates` and `topN`, so the reply can differ from the request.
-      setSetting(
-        await setRerank({
-          enabled: next.enabled,
-          backend: next.backend,
-          url: next.url,
-          model: next.model,
-          candidates: next.candidates,
-          topN: next.topN,
-        }),
-      );
+      const current = await setRerank(next);
+      setSetting(current);
+      setDraft(current);
+      setSaved(true);
     } catch (err) {
-      setSetting(now);
       setError(String(err));
     } finally {
       setSaving(false);
@@ -109,7 +121,7 @@ export default function RerankView() {
         )}
       </Show>
 
-      <Show when={setting()}>
+      <Show when={draft()}>
         {(value) => (
           <>
             <RowGroup>
@@ -124,7 +136,7 @@ export default function RerankView() {
                     checked={value().enabled}
                     disabled={saving()}
                     busy={saving()}
-                    onChange={(enabled) => void save({ enabled })}
+                    onChange={(enabled) => update({ enabled })}
                   />
                 )}
               />
@@ -143,7 +155,7 @@ export default function RerankView() {
                         disabled={saving()}
                         onCommit={(raw) => {
                           const next = asNumber(raw);
-                          if (next !== null) void save({ candidates: next });
+                          if (next !== null) update({ candidates: next });
                         }}
                       />
                     </div>
@@ -162,7 +174,7 @@ export default function RerankView() {
                         disabled={saving()}
                         onCommit={(raw) => {
                           const next = asNumber(raw);
-                          if (next !== null) void save({ topN: next });
+                          if (next !== null) update({ topN: next });
                         }}
                       />
                     </div>
@@ -170,42 +182,19 @@ export default function RerankView() {
                 />
 
                 <Row
-                  label={t(S.embedding.rerank.urlLabel)}
-                  icon="server"
-                  desc={t(S.embedding.rerank.urlDesc)}
-                  control={() => (
-                    <div class="w-[280px] max-w-full">
-                      <CommitField
-                        label={t(S.embedding.rerank.urlFieldLabel)}
-                        mono
-                        value={value().url}
-                        disabled={saving()}
-                        onCommit={(url) => void save({ url })}
-                      />
-                    </div>
-                  )}
-                />
-
-                <Row
-                  label={t(S.embedding.rerank.remoteModelLabel)}
+                  label={t(S.embedding.rerank.localModelLabel)}
                   icon="model"
-                  desc={t(S.embedding.rerank.remoteModelDesc)}
+                  desc={t(S.embedding.rerank.localModelDesc)}
                   control={() => (
-                    <div class="w-[280px] max-w-full">
-                      <CommitField
-                        label={t(S.embedding.rerank.modelFieldLabel)}
-                        mono
-                        value={value().model}
-                        disabled={saving()}
-                        onCommit={(model) => void save({ model })}
-                      />
-                    </div>
+                    <span class="max-w-[320px] break-all font-mono text-xs text-ink-muted">
+                      {value().model} · ONNX INT8
+                    </span>
                   )}
                 />
               </Show>
             </RowGroup>
 
-            <Show when={value().reason}>
+            <Show when={setting()?.reason}>
               {(reason) => (
                 <Banner
                   tone="warn"
@@ -216,6 +205,19 @@ export default function RerankView() {
                 </Banner>
               )}
             </Show>
+
+            <div class="flex flex-wrap items-center justify-end gap-sm">
+              <span role="status" aria-live="polite" class="mr-auto text-2xs text-muted">
+                {saved() ? t(S.common.saved) : dirty() ? t(S.embedding.rerank.unsaved) : ""}
+              </span>
+              <Button
+                label={t(S.common.save)}
+                icon="check"
+                busy={saving()}
+                disabled={!dirty()}
+                onClick={() => void save()}
+              />
+            </div>
           </>
         )}
       </Show>

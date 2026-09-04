@@ -29,5 +29,6 @@ harness/target/
 harness/ui/dist/
 harness/app/gen/
 
-# Đóng gói: binary tải về. Không commit vì có thể dựng lại từ version đã ghim.
+# Đóng gói: binary và model tải về. Không commit vì có thể dựng lại từ revision + SHA đã ghim.
 harness/app/binaries/
+harness/app/models/

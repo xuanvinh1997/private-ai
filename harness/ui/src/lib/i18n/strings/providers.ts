@@ -4,16 +4,23 @@ import { common } from "./common";
 /** Strings for the `providers` area. See lib/i18n/README.md for the wording rules. */
 export const providers = {
   // Page header
-  title: { en: "Providers", vi: "Nhà cung cấp mô hình" },
+  title: { en: "Models", vi: "Mô hình" },
   desc: {
-    en: "One provider for chat",
-    vi: "Mỗi lúc chỉ một nhà cung cấp được dùng để trò chuyện.",
+    en: "Chat, embedding, and reranking.",
+    vi: "Cấu hình hội thoại, nhúng và xếp hạng lại.",
   },
   more: {
-    en: "Only one provider runs chat at a time. The provider that embeds documents is chosen in the section below.",
-    vi: "Mỗi lúc chỉ một nhà cung cấp được dùng để trò chuyện. Nhà cung cấp nhúng tài liệu chọn riêng ở mục bên dưới.",
+    en: "Each tab owns one model role. Switching tabs keeps unfinished fields intact until you return.",
+    vi: "Mỗi tab quản lý một vai trò mô hình. Chuyển tab vẫn giữ nguyên dữ liệu đang nhập để bạn quay lại.",
   },
   actionFailed: common.actionFailed,
+
+  tabs: {
+    label: { en: "Model settings", vi: "Các nhóm cấu hình mô hình" },
+    chat: common.chat,
+    embedding: common.embedding,
+    rerank: common.rerank,
+  },
 
   /** API kinds. Ollama and LM Studio are proper nouns and stay untranslated. */
   kind: {

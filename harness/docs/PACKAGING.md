@@ -8,10 +8,11 @@ node scripts/package.mjs
 ```
 
 Đây là lối vào production bắt buộc. Nó chạy Tauri với `app/tauri.production.conf.json`;
-hook build tải đúng Qdrant **v1.19.0** và SurrealDB **v3.2.4** cho target, kiểm SHA-256,
-rồi `externalBin` đưa cả hai vào `.app`/installer. Máy người dùng không cần Docker và
-không cần mạng để khởi động hai cơ sở dữ liệu. Binary sinh ra nằm tạm ở
-`app/binaries/` và bị gitignore vì có thể tái tạo từ version + digest đã ghim.
+hook build tải đúng Qdrant **v1.19.0**, SurrealDB **v3.2.4** và bản INT8 ONNX của
+`BAAI/bge-reranker-v2-m3`, kiểm kích thước cùng SHA-256, rồi đưa chúng vào
+`.app`/installer. Máy người dùng không cần Docker, inference API hay mạng khi chạy.
+Binary/model sinh ra trong `app/binaries/` và `app/models/` bị gitignore vì có thể tái
+tạo từ revision + digest đã ghim.
 
 Thêm tham số Tauri sau lệnh, chẳng hạn `node scripts/package.mjs --no-bundle` hoặc:
 
@@ -29,9 +30,16 @@ node scripts/package.mjs --target universal-apple-darwin
 node scripts/package.mjs --target x86_64-pc-windows-msvc
 ```
 
-Không phát hành bằng `tauri build` trần: cấu hình mặc định cố ý không có `externalBin`
-để `cargo test` không đòi tải 170–250 MB sidecar. Script production mới ghép cấu hình
-sidecar vào đúng lúc đóng gói.
+Không phát hành bằng `tauri build` trần: script production mới ghép cấu hình sidecar và
+tài nguyên model vào đúng lúc đóng gói. Model lượng tử chiếm khoảng 571 MB, tokenizer
+khoảng 17 MB; lần build đầu cần mạng, các lần sau dùng bản đã kiểm digest trong cache
+cục bộ.
+
+Reranker được ghim ở revision
+`a3046abee880d6e78833e4e885939754355156bd` của
+`onnx-community/bge-reranker-v2-m3-ONNX`; graph `model_quantized.onnx` phải có SHA-256
+`912fc1215c2dbff6499700534bd8d31253af01573861abbfc43afd1fab6cce5d`. Có thể chạy riêng
+`node scripts/prepare-reranker.mjs` để tải và kiểm toàn bộ năm tệp trước khi đóng gói.
 
 Sản phẩm host mặc định nằm ở `harness/target/release/bundle/`; khi truyền `--target`,
 nó nằm ở `harness/target/<target>/release/bundle/`.

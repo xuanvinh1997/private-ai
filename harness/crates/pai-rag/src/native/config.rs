@@ -81,12 +81,11 @@ impl Default for ChunkConfig {
 #[serde(default)]
 pub struct RerankConfig {
     pub enabled: bool,
-    pub backend: String,
     pub model: String,
     pub candidates: usize,
     pub top_n: usize,
-    pub url: String,
-    pub api_key: String,
+    /// Optional development override. Production discovers the model bundled in app resources.
+    pub path: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq)]
@@ -113,12 +112,10 @@ impl Default for RerankConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            backend: "http".into(),
-            model: String::new(),
+            model: super::rerank::MODEL_ID.into(),
             candidates: 30,
             top_n: 8,
-            url: String::new(),
-            api_key: String::new(),
+            path: PathBuf::new(),
         }
     }
 }

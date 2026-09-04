@@ -509,17 +509,15 @@ pub struct EmbeddingSetting {
     pub reason: Option<String>,
 }
 
-/// Optional HTTP reranking configuration.
+/// Local ONNX reranking configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RerankSetting {
     /// Off still retrieves, just less well. See `reason`.
     pub enabled: bool,
-    /// Currently always `http`.
+    /// Currently always `onnx`.
     pub backend: String,
-    /// Base URL or full `/v1/rerank` endpoint.
-    pub url: String,
-    /// Model name served by the HTTP endpoint.
+    /// Fixed local cross-encoder model.
     pub model: String,
     /// How many candidates to fetch for rescoring -- the latency dial.
     pub candidates: u32,

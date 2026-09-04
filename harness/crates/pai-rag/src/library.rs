@@ -86,6 +86,8 @@ pub struct Hit {
 #[serde(rename_all = "snake_case")]
 pub enum IngestStage {
     Reading,
+    /// Page-level optical character recognition for scanned PDFs and images.
+    Ocr,
     Stored,
     Failed,
     /// Skipped for a reason: too large, or past the file cap. Distinct from `Failed` - the file is fine, the library refused it.
@@ -101,6 +103,7 @@ impl IngestStage {
     pub fn as_str(self) -> &'static str {
         match self {
             IngestStage::Reading => "reading",
+            IngestStage::Ocr => "ocr",
             IngestStage::Stored => "stored",
             IngestStage::Failed => "failed",
             IngestStage::Skipped => "skipped",

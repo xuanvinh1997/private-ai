@@ -56,6 +56,26 @@ export const docs = {
   // Ingest progress bar
   ingest: {
     progressLabel: { en: "Document ingest progress", vi: "Tiến trình nạp tài liệu" },
+    kindSync: { en: "Library scan", vi: "Quét thư viện" },
+    kindAdd: { en: "Add documents", vi: "Thêm tài liệu" },
+    kindReprocess: { en: "Library reprocessing", vi: "Xử lý lại thư viện" },
+    statusCompleted: { en: "Completed", vi: "Đã hoàn tất" },
+    statusFailed: { en: "Stopped with an error", vi: "Đã dừng do lỗi" },
+    background: {
+      en: "This task keeps running when you switch screens.",
+      vi: "Tác vụ vẫn tiếp tục khi bạn chuyển sang màn hình khác.",
+    },
+    files: { en: "{done}/{total} files", vi: "{done}/{total} tệp" },
+    pages: { en: "{done}/{total} pages", vi: "{done}/{total} trang" },
+    chunks: { en: "{done}/{total} chunks", vi: "{done}/{total} đoạn" },
+    elapsed: { en: "{time} elapsed", vi: "Đã chạy {time}" },
+    summary: {
+      en: "{stored} stored · {skipped} unchanged/skipped · {failed} failed",
+      vi: "{stored} đã lưu · {skipped} không đổi/bỏ qua · {failed} lỗi",
+    },
+    moreFailures: { en: "+{count} more failed files", vi: "+{count} tệp lỗi khác" },
+    warning: { en: "Embedding warning", vi: "Cảnh báo nhúng" },
+    dismiss: { en: "Dismiss finished task", vi: "Ẩn tác vụ đã xong" },
   },
 
   // List of files that failed to ingest
@@ -200,6 +220,7 @@ export const docs = {
   stage: {
     preparing: common.preparing,
     reading: { en: "Reading", vi: "Đang đọc" },
+    ocr: { en: "Running OCR", vi: "Đang OCR" },
     stored: { en: "Stored", vi: "Đã lưu" },
     failed: { en: "Failed", vi: "Hỏng" },
     skipped: { en: "Skipped", vi: "Bỏ qua" },

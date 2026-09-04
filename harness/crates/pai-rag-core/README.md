@@ -6,4 +6,4 @@ existing library can be opened without rebuilding it.
 
 `pai-rag` uses this crate in-process. Text, Markdown, code, structured text, HTML, DOCX,
 and PDFs with a usable text layer are read natively. HTTP embedding, Qdrant, and optional
-HTTP reranking are native as well.
+in-process ONNX reranking with `BAAI/bge-reranker-v2-m3` are native as well.

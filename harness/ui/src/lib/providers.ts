@@ -129,9 +129,8 @@ export async function providerModels(providerId: string): Promise<ModelChoice[]>
 /** Safe default when the core is unreachable: retrieval continues without optional reranking. */
 const RERANK_MAC_DINH: RerankSetting = {
   enabled: false,
-  backend: "http",
-  url: "",
-  model: "",
+  backend: "onnx",
+  model: "BAAI/bge-reranker-v2-m3",
   candidates: 30,
   topN: 8,
   reason: null,
@@ -151,9 +150,6 @@ export async function rerankSetting(): Promise<RerankSetting> {
 export function setRerank(next: Omit<RerankSetting, "reason">): Promise<RerankSetting> {
   return invoke<RerankSetting>("set_rerank", {
     enabled: next.enabled,
-    backend: next.backend,
-    url: next.url,
-    model: next.model,
     candidates: next.candidates,
     topN: next.topN,
   });

@@ -49,6 +49,18 @@ async fn native_path_ingests_searches_reads_and_removes() {
     let events: Vec<_> = library.sync().collect().await;
     assert_eq!(events.first().unwrap().stage, IngestStage::Reading);
     assert_eq!(events.last().unwrap().stage, IngestStage::Finished);
+    assert!(events.iter().any(|event| {
+        event.stage == IngestStage::Reading
+            && event.path.ends_with("guide.md")
+            && event.done == 0
+            && event.total == 1
+    }));
+    assert!(events.iter().any(|event| {
+        event.stage == IngestStage::Stored
+            && event.path.ends_with("guide.md")
+            && event.done == 1
+            && event.total == 1
+    }));
     assert!(
         events
             .iter()
@@ -124,10 +136,7 @@ async fn native_embedding_and_qdrant_path_runs_end_to_end() {
                 "embedding": {
                     "kind": "ollama", "base_url": mock.url(), "api_key": "", "model": model
                 },
-                "rerank": {
-                    "enabled": true, "backend": "http", "model": "rerank-test",
-                    "url": mock.url(), "top_n": 8
-                },
+                "rerank": {"enabled": false},
                 "vectors": {"url": mock.url(), "api_key": "", "collection_prefix": "test"}
             }))
             .unwrap(),
@@ -171,7 +180,6 @@ async fn native_embedding_and_qdrant_path_runs_end_to_end() {
             .iter()
             .any(|line| line == "POST /collections/test_docs-test/points/query")
     );
-    assert!(requests.iter().any(|line| line == "POST /v1/rerank"));
     mock.stop();
 }
 
@@ -375,16 +383,6 @@ impl MockServices {
                         200,
                         json!({"status": "ok", "result": {"count": point_count}}),
                     ),
-                    ("POST", "/v1/rerank") => {
-                        assert_eq!(
-                            body.get("model").and_then(|value| value.as_str()),
-                            Some("rerank-test")
-                        );
-                        (
-                            200,
-                            json!({"results": [{"index": 0, "relevance_score": 0.9}]}),
-                        )
-                    }
                     _ => panic!("unexpected mock request: {method} {path} {body}"),
                 };
                 let reason = if status == 200 { "OK" } else { "Not Found" };

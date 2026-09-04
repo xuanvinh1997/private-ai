@@ -253,7 +253,7 @@ export interface OcrSetting {
 
 export interface IngestProgress {
   path: string;
-  /** One of `reading` `stored` `failed` `skipped` `removed` `embedding` `finished`. */
+  /** One of `reading` `ocr` `stored` `failed` `skipped` `removed` `embedding` `finished`. */
   stage: string;
   done: number;
   total: number;
@@ -317,15 +317,12 @@ export interface Provider {
   visionModel: string | null;
 }
 
-/** The effective embedding configuration. */
-/** Optional HTTP rerank settings. */
+/** Local ONNX rerank settings. */
 export interface RerankSetting {
   enabled: boolean;
-  /** Currently only an external `/v1/rerank` endpoint is supported. */
-  backend: "http";
-  /** Base URL or full `/v1/rerank` endpoint. */
-  url: string;
-  /** Model name served by the HTTP endpoint. */
+  /** Currently only in-process ONNX Runtime is supported. */
+  backend: "onnx";
+  /** Fixed multilingual cross-encoder shipped with the app. */
   model: string;
   /** How many chunks to fetch for rescoring; this is the latency dial. */
   candidates: number;
@@ -335,6 +332,7 @@ export interface RerankSetting {
   reason: string | null;
 }
 
+/** The effective embedding configuration. */
 export interface EmbeddingSetting {
   providerId: string | null;
   providerName: string | null;

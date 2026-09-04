@@ -1,5 +1,5 @@
 import { Key } from "@solid-primitives/keyed";
-import { createResource, createSignal, For, onMount, Show } from "solid-js";
+import { createResource, createSignal, createUniqueId, For, onMount, Show } from "solid-js";
 import { locale, S, t } from "../../lib/i18n";
 import {
   activeModels,
@@ -13,7 +13,7 @@ import {
   setProviderModel,
 } from "../../lib/providers";
 import type { ModelChoice, Provider, ProviderInput, ProviderPreset } from "../../lib/protocol";
-import Icon from "./../Icon";
+import Icon, { type IconName } from "./../Icon";
 import { IconButton } from "./../primitives";
 import ConfirmDialog from "./ConfirmDialog";
 import EmbeddingView from "./EmbeddingView";
@@ -26,7 +26,15 @@ type Sheet =
   | { kind: "form"; provider: Provider | null; preset: ProviderPreset | null }
   | { kind: "delete"; provider: Provider };
 
-/** The model providers screen, laid out in the order the questions come: which one is running, whether data leaves the machine, and whether the model can work. A provider holds two independent roles, chat and embedding, and the embedding role is only shown here, never chosen here. */
+type ModelsTab = "chat" | "embedding" | "rerank";
+
+const MODEL_TABS: readonly { id: ModelsTab; icon: IconName }[] = [
+  { id: "chat", icon: "chat" },
+  { id: "embedding", icon: "model" },
+  { id: "rerank", icon: "graph" },
+];
+
+/** One tab per model role. Panels remain mounted so a tab switch never discards an unfinished form. */
 export default function ProvidersView() {
   const [providers, setProviders] = createSignal<Provider[]>([]);
   const [presets, setPresets] = createSignal<ProviderPreset[]>([]);
@@ -35,6 +43,13 @@ export default function ProvidersView() {
   const [busy, setBusy] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
   const [formError, setFormError] = createSignal<string | null>(null);
+  const [tab, setTab] = createSignal<ModelsTab>("chat");
+  const uid = createUniqueId();
+  let tabList: HTMLDivElement | undefined;
+
+  const tabId = (id: ModelsTab) => `${uid}-${id}-tab`;
+  const panelId = (id: ModelsTab) => `${uid}-${id}-panel`;
+  const tabLabel = (id: ModelsTab) => t(S.providers.tabs[id]);
 
   /** The provider holding the chat role; the embedding role does not pass through this screen. */
   const active = () => providers().find((entry) => entry.activeChat) ?? null;
@@ -117,74 +132,141 @@ export default function ProvidersView() {
         more={t(S.providers.more)}
       />
 
-      <Show when={error()}>
-        {(message) => (
-          <Banner tone="danger" icon="warn" role="alert" title={t(S.providers.actionFailed)}>
-            {message()}
-          </Banner>
-        )}
-      </Show>
+      <div
+        ref={tabList}
+        role="tablist"
+        aria-label={t(S.providers.tabs.label)}
+        class="grid grid-cols-3 gap-3xs rounded-card border border-line bg-surface p-3xs shadow-[var(--edge-top)]"
+        onKeyDown={(event) => {
+          const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
+          if (!keys.includes(event.key)) return;
+          event.preventDefault();
+          const current = MODEL_TABS.findIndex((entry) => entry.id === tab());
+          const next =
+            event.key === "Home"
+              ? 0
+              : event.key === "End"
+                ? MODEL_TABS.length - 1
+                : (current +
+                    (event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 1) +
+                    MODEL_TABS.length) %
+                  MODEL_TABS.length;
+          const target = MODEL_TABS[next];
+          if (target === undefined) return;
+          setTab(target.id);
+          tabList?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+        }}
+      >
+        <For each={MODEL_TABS}>
+          {(entry) => (
+            <button
+              type="button"
+              id={tabId(entry.id)}
+              role="tab"
+              aria-selected={tab() === entry.id}
+              aria-controls={panelId(entry.id)}
+              tabIndex={tab() === entry.id ? 0 : -1}
+              onClick={() => setTab(entry.id)}
+              class="flex h-(--control-h) min-w-0 items-center justify-center gap-2xs rounded-btn border px-sm text-xs font-medium transition-colors duration-[var(--dur-fast)] focus-visible:ring-2 focus-visible:ring-accent"
+              classList={{
+                "border-accent bg-accent-soft text-accent-ink": tab() === entry.id,
+                "border-transparent text-muted hover:bg-[var(--overlay-hover)] hover:text-ink":
+                  tab() !== entry.id,
+              }}
+            >
+              <Icon name={entry.icon} size={13} />
+              <span class="min-w-0 truncate">{tabLabel(entry.id)}</span>
+            </button>
+          )}
+        </For>
+      </div>
 
-      <Show when={ready()} fallback={<Skeleton />}>
-        <Show when={providers().length > 0}>
-          <ActiveNotice provider={active()} model={chosen()} loading={models.loading} />
-
-          <RowGroup>
-            {/* Keyed by id: the list reloads after every action, and index keying would drop focus. */}
-            <Key each={providers()} by="id">
-              {(entry) => (
-                <ProviderRow
-                  provider={entry()}
-                  busy={busy()}
-                  models={models() ?? []}
-                  modelsLoading={models.loading}
-                  onActivate={() =>
-                    void act(t(S.providers.err.activate), () => setActiveProvider(entry().id))
-                  }
-                  onToggle={(next) =>
-                    void act(t(S.providers.err.toggle), () =>
-                      saveProvider({ ...inputOf(entry()), enabled: next }).then(() => undefined),
-                    )
-                  }
-                  onPickModel={(model) =>
-                    void act(t(S.providers.err.pickModel), () =>
-                      setProviderModel(entry().id, model),
-                    )
-                  }
-                  onRefreshModels={() => void refetchModels()}
-                  onEdit={() => {
-                    setFormError(null);
-                    setSheet({ kind: "form", provider: entry(), preset: null });
-                  }}
-                  onDelete={() => setSheet({ kind: "delete", provider: entry() })}
-                />
-              )}
-            </Key>
-          </RowGroup>
+      <section
+        id={panelId("chat")}
+        role="tabpanel"
+        aria-labelledby={tabId("chat")}
+        hidden={tab() !== "chat"}
+        class="flex flex-col gap-2xl"
+      >
+        <Show when={error()}>
+          {(message) => (
+            <Banner tone="danger" icon="warn" role="alert" title={t(S.providers.actionFailed)}>
+              {message()}
+            </Banner>
+          )}
         </Show>
 
-        <Catalog
-          presets={presets()}
-          added={providers()}
-          empty={providers().length === 0}
-          onPick={(preset) => {
-            setFormError(null);
-            setSheet({ kind: "form", provider: null, preset });
-          }}
-          onManual={() => {
-            setFormError(null);
-            setSheet({ kind: "form", provider: null, preset: null });
-          }}
-        />
+        <Show when={ready()} fallback={<Skeleton />}>
+          <Show when={providers().length > 0}>
+            <ActiveNotice provider={active()} model={chosen()} loading={models.loading} />
 
-        {/* The embedding role sits on this page, below the same list, so reading order matches doing order; shown only once a provider exists. */}
-        <Show when={providers().length > 0}>
-          <div class="border-t border-line pt-2xl">
-            <EmbeddingView reloadKey={stamp()} />
-            <RerankView />
-          </div>
+            <RowGroup>
+              {/* Keyed by id: the list reloads after every action, and index keying would drop focus. */}
+              <Key each={providers()} by="id">
+                {(entry) => (
+                  <ProviderRow
+                    provider={entry()}
+                    busy={busy()}
+                    models={models() ?? []}
+                    modelsLoading={models.loading}
+                    onActivate={() =>
+                      void act(t(S.providers.err.activate), () => setActiveProvider(entry().id))
+                    }
+                    onToggle={(next) =>
+                      void act(t(S.providers.err.toggle), () =>
+                        saveProvider({ ...inputOf(entry()), enabled: next }).then(() => undefined),
+                      )
+                    }
+                    onPickModel={(model) =>
+                      void act(t(S.providers.err.pickModel), () =>
+                        setProviderModel(entry().id, model),
+                      )
+                    }
+                    onRefreshModels={() => void refetchModels()}
+                    onEdit={() => {
+                      setFormError(null);
+                      setSheet({ kind: "form", provider: entry(), preset: null });
+                    }}
+                    onDelete={() => setSheet({ kind: "delete", provider: entry() })}
+                  />
+                )}
+              </Key>
+            </RowGroup>
+          </Show>
+
+          <Catalog
+            presets={presets()}
+            added={providers()}
+            empty={providers().length === 0}
+            onPick={(preset) => {
+              setFormError(null);
+              setSheet({ kind: "form", provider: null, preset });
+            }}
+            onManual={() => {
+              setFormError(null);
+              setSheet({ kind: "form", provider: null, preset: null });
+            }}
+          />
         </Show>
-      </Show>
+      </section>
+
+      <section
+        id={panelId("embedding")}
+        role="tabpanel"
+        aria-labelledby={tabId("embedding")}
+        hidden={tab() !== "embedding"}
+      >
+        <EmbeddingView reloadKey={stamp()} />
+      </section>
+
+      <section
+        id={panelId("rerank")}
+        role="tabpanel"
+        aria-labelledby={tabId("rerank")}
+        hidden={tab() !== "rerank"}
+      >
+        <RerankView />
+      </section>
 
       <Show when={formSheet()} keyed>
         {(open) => (
