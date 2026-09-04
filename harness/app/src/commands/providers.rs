@@ -5,6 +5,7 @@ use pai_providers::{ProviderInput, StoredProvider};
 use tauri::State;
 
 use crate::AppState;
+use crate::harness::Harness;
 use crate::protocol::{
     EmbeddingProbe, EmbeddingSetting, ModelChoice, ProviderInputWire, ProviderPreset,
     ProviderProbe, ProviderView,
@@ -152,9 +153,38 @@ pub async fn set_provider_model(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let harness = state.harness().await?;
+    apply_chat_model(&harness, &id, &model).await
+}
+
+/// The effective model in the shared driver. Reading the driver rather than the stored row also covers a
+/// provider whose model is still inherited from its built-in preset.
+#[tauri::command]
+pub async fn active_chat_model(state: State<'_, AppState>) -> Result<String, String> {
+    let harness = state.harness().await?;
+    Ok(harness.driver.model())
+}
+
+/// Pick the model of the provider that currently holds the chat role. The composer deliberately does not know
+/// provider ids: its catalogue and this write must both follow whichever provider the core considers active.
+#[tauri::command]
+pub async fn set_active_chat_model(
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let harness = state.harness().await?;
+    let active = harness
+        .providers
+        .active()
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| pai_llm::registry::no_provider().to_string())?;
+    apply_chat_model(&harness, active.id(), &model).await?;
+    Ok(harness.driver.model())
+}
+
+async fn apply_chat_model(harness: &Harness, id: &str, model: &str) -> Result<(), String> {
     harness
         .providers
-        .activate(&id, Some(&model))
+        .activate(id, Some(model))
         .await
         .map_err(|err| err.to_string())?;
     harness.apply_provider().await

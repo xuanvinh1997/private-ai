@@ -42,6 +42,7 @@ import {
   setProjectKind,
 } from "./lib/projects";
 import { titleFromMessage } from "./lib/sessions";
+import { activeChatModel, setActiveChatModel } from "./lib/providers";
 import type {
   AgentEvent,
   ApprovalDecision,
@@ -56,6 +57,7 @@ import type {
 import { S, t, type Msg } from "./lib/i18n";
 import { setTheme } from "./lib/theme";
 import { TranscriptActionsProvider } from "./lib/transcriptActions";
+import { notify } from "./lib/toast";
 import ApprovalDialog from "./components/ApprovalDialog";
 import { ChangesBoard } from "./components/ChangesPanel";
 import Composer from "./components/Composer";
@@ -85,6 +87,17 @@ const MODEL_CHUA_BIET = "pai:model-chua-biet";
 /** `currentId` before the UI holds a real session; not a session, so sending while it stands yields a
  * "session not found" error. It only exists between signal creation and `openBlankSession`. */
 const PHIEN_CHUA_MO = "phien-nhap";
+
+/** Keep the responsive shell decision in JavaScript so the sidebar visibility and inspector positioning cannot
+ * disagree across the same viewport range. */
+const NARROW_WORKSPACE_QUERY = "(max-width: 1047px)";
+
+/** Prefer the core's effective model; the catalogue fallback only covers an older/unreachable command boundary. */
+function modelForPicker(available: ModelChoice[], active: string): string {
+  if (active.trim() !== "") return active;
+  const chat = available.filter(usableForChat);
+  return chat.find((choice) => choice.tools)?.id ?? chat[0]?.id ?? MODEL_CHUA_BIET;
+}
 
 /** The shell's open dialog: one slot for all three, not three flags, so two dialogs cannot be on screen at once.
  * All three edit state this file owns - the project list and the session list. */
@@ -139,6 +152,7 @@ export default function App() {
   const [loading, setLoading] = createSignal(true);
   const [models, setModels] = createSignal<ModelChoice[]>([]);
   const [model, setModel] = createSignal(MODEL_CHUA_BIET);
+  const [modelSaving, setModelSaving] = createSignal(false);
   // The session being reloaded from the log; an id rather than a boolean, so a fast double switch cannot overwrite.
   const [loadingSession, setLoadingSession] = createSignal<string | null>(null);
   const [loadError, setLoadError] = createSignal<string | null>(null);
@@ -241,7 +255,11 @@ export default function App() {
       return;
     }
     setProjects(await listProjects());
-    const [list, available] = await Promise.all([listSessions(), listModels()]);
+    const [list, available, activeModel] = await Promise.all([
+      listSessions(),
+      listModels(),
+      activeChatModel(),
+    ]);
     if (list.length > 0) {
       setSessions(list);
       // Do *not* set `currentId` first: `switchTo` short-circuits on that comparison and would never load the
@@ -252,23 +270,33 @@ export default function App() {
       await openBlankSession();
     }
     setModels(available);
-    // Only pick among chat-capable models: defaulting to an embedding-only one opens the app with a dead conversation.
-    const chat = available.filter(usableForChat);
-    // Within those, prefer a tool-capable model, or the user meets an assistant that never reads a file.
-    setModel(chat.find((choice) => choice.tools)?.id ?? chat[0]?.id ?? MODEL_CHUA_BIET);
+    setModel(modelForPicker(available, activeModel));
     setLoading(false);
   });
 
-  /** Re-ask the core which models the active provider has. Asking only at startup broke the "plug in a new server"
-   * flow: the picker still showed the pre-settings list, usually empty. The current model is kept when it survives
-   * the new list, so changing a *different* provider does not move the next turn's model. */
+  /** Re-ask the core for both the active provider's catalogue and its effective model. Asking only at startup broke
+   * the "plug in a new server" flow, while deriving the selection from list order hid the model stored on disk. */
   const refreshModels = async () => {
     if (isDemo() || !inTauri()) return;
-    const available = await listModels();
+    const [available, activeModel] = await Promise.all([listModels(), activeChatModel()]);
     setModels(available);
-    const chat = available.filter(usableForChat);
-    if (chat.some((choice) => choice.id === model())) return;
-    setModel(chat.find((choice) => choice.tools)?.id ?? chat[0]?.id ?? MODEL_CHUA_BIET);
+    setModel(modelForPicker(available, activeModel));
+  };
+
+  /** The picker is optimistic, but a turn cannot start until the durable write has reached the core. */
+  const pickModel = async (next: string) => {
+    if (modelSaving() || next === model()) return;
+    const previous = model();
+    setModel(next);
+    setModelSaving(true);
+    try {
+      setModel(await setActiveChatModel(next));
+    } catch (err) {
+      setModel(previous);
+      notify("error", `${t(S.providers.err.pickModel)}: ${String(err)}`);
+    } finally {
+      setModelSaving(false);
+    }
   };
 
   /** Leaving settings is the moment to re-ask; one hook at the door covers provider, model, toggle and delete alike.
@@ -293,7 +321,7 @@ export default function App() {
   };
 
   onMount(() => {
-    const query = window.matchMedia("(max-width: 959px)");
+    const query = window.matchMedia(NARROW_WORKSPACE_QUERY);
     const sync = () => setNarrowWorkspace(query.matches);
     sync();
     query.addEventListener("change", sync);
@@ -913,7 +941,7 @@ export default function App() {
                       value={draft()}
                       onChange={setDraft}
                       onSubmit={() => void send(draft())}
-                      disabled={switching()}
+                      disabled={switching() || modelSaving()}
                       busy={conversation.busy()}
                       queued={queued()}
                       onUnqueue={() => setQueued("")}
@@ -922,7 +950,7 @@ export default function App() {
                       usage={conversation.usage()}
                       model={model() === MODEL_CHUA_BIET ? t(S.app.modelUnknown) : model()}
                       models={models()}
-                      onPickModel={setModel}
+                      onPickModel={(next) => void pickModel(next)}
                       onManageProviders={() => {
                         setSettingsPage("provider");
                         setTab("settings");
@@ -987,6 +1015,7 @@ export default function App() {
                   tab={workspacePanelTab()}
                   files={files()}
                   project={open}
+                  overlay={narrowWorkspace()}
                   onTab={setWorkspacePanelTab}
                   onReveal={(nodeId) => {
                     reveal(nodeId);

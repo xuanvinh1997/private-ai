@@ -494,6 +494,7 @@ export default function Composer(props: {
             models={props.models}
             onPick={props.onPickModel}
             onManageProviders={props.onManageProviders}
+            disabled={props.disabled || props.busy}
           />
 
           <Show

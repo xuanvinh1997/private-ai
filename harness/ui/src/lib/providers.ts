@@ -75,6 +75,31 @@ export function setProviderModel(id: string, model: string): Promise<void> {
   return invoke("set_provider_model", { id, model });
 }
 
+/** The model the core will use for the next chat turn, including a preset default that has not been written yet. */
+export async function activeChatModel(): Promise<string> {
+  if (isDemo()) {
+    return demoProviders().find((provider) => provider.activeChat)?.model ?? "";
+  }
+  if (!inTauri()) return "";
+  try {
+    return await invoke<string>("active_chat_model");
+  } catch (err) {
+    console.error("failed to read active chat model", err);
+    return "";
+  }
+}
+
+/** Persist a model on the active chat provider and apply it to the shared driver. */
+export async function setActiveChatModel(model: string): Promise<string> {
+  if (isDemo()) {
+    const active = demoProviders().find((provider) => provider.activeChat);
+    if (active === undefined) throw new Error("Chưa cấu hình nhà cung cấp AI nào");
+    demoSetProviderModel(active.id, model);
+    return model;
+  }
+  return invoke<string>("set_active_chat_model", { model });
+}
+
 /** Probe an *unsaved* config, which is why it takes a `ProviderInput`. `models[].tools` here is NOT authoritative
  * (read it from `activeModels()`); `models[].embedding` is usable, since a wrong guess only reorders a picker. */
 export function probeProvider(input: ProviderInput): Promise<ProviderProbe> {

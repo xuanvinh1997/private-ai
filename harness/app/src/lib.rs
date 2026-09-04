@@ -517,6 +517,8 @@ pub fn run() {
             commands::providers::remove_provider,
             commands::providers::set_active_provider,
             commands::providers::set_provider_model,
+            commands::providers::active_chat_model,
+            commands::providers::set_active_chat_model,
             commands::providers::probe_provider,
             commands::providers::provider_models,
             commands::providers::embedding_setting,

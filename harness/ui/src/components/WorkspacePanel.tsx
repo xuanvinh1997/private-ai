@@ -25,12 +25,13 @@ export type WorkspacePanelTab = "changes" | "files";
 
 const TABS: readonly WorkspacePanelTab[] = ["changes", "files"];
 
-/** Workspace inspector: one right column, two views of the same project. Tabs keep the position, width and close
- * button; below 1048px it overlays instead of squeezing the reading column, and both tabs stay mounted. */
+/** Workspace inspector: one right column, two views of the same project. The shell owns whether this is an
+ * overlay so its positioning cannot drift from the breakpoint that also controls the left sidebar. */
 export default function WorkspacePanel(props: {
   tab: WorkspacePanelTab;
   files: ChangedFile[];
   project: Project;
+  overlay: boolean;
   onTab: (tab: WorkspacePanelTab) => void;
   onReveal: (nodeId: string) => void;
   onPickFile: (path: string) => void;
@@ -73,7 +74,11 @@ export default function WorkspacePanel(props: {
       ref={panel}
       aria-label={t(S.chat.inspector.label)}
       style={{ width: `${workspacePanelWidth()}px` }}
-      class="absolute inset-y-0 right-0 z-[var(--z-floating)] flex max-w-[calc(100vw-48px)] shrink-0 flex-col border-l border-line bg-surface shadow-pop min-[1048px]:static min-[1048px]:max-w-[40vw] min-[1048px]:shadow-none"
+      class={`flex shrink-0 flex-col border-l border-line bg-surface ${
+        props.overlay
+          ? "absolute inset-y-0 right-0 z-[var(--z-floating)] max-w-[calc(100vw-48px)] shadow-pop"
+          : "relative max-w-[40vw] shadow-none"
+      }`}
     >
       <ResizeHandle
         edge="left"
