@@ -265,10 +265,11 @@ export default function DocsView(props: {
             )}
           </Show>
 
-          <Show when={!loading() && docs().length > 0}>
+          <Show when={!loading() && (docs().length > 0 || hasInlineFileProgress(task()))}>
             <DocumentTable
               docs={docs()}
               busy={busy()}
+              task={task()}
               onRemove={(doc) => setRemoving(doc)}
             />
           </Show>
@@ -323,6 +324,7 @@ function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) 
   const running = () => props.task.state === "running";
   const frame = () => props.task.progress;
   const determinate = () => frame().total > 0;
+  const fileProgress = () => hasInlineFileProgress(props.task);
   const percentage = () =>
     determinate() ? Math.min(100, Math.round((frame().done / frame().total) * 100)) : 0;
   const elapsed = () =>
@@ -395,7 +397,7 @@ function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) 
         </Show>
       </div>
 
-      <Show when={running()}>
+      <Show when={running() && !fileProgress()}>
         <div class="flex flex-col gap-2xs">
           <div class="flex items-center justify-between gap-sm text-2xs text-muted tabular-nums">
             <span>{determinate() ? count() : t(S.docs.ingest.background)}</span>
@@ -469,6 +471,11 @@ function DocumentTaskCard(props: { task: DocumentTask; onDismiss: () => void }) 
       </Show>
     </div>
   );
+}
+
+function hasInlineFileProgress(task: DocumentTask | null): boolean {
+  if (task?.state !== "running" || task.progress.total === 0) return false;
+  return ["reading", "ocr", "stored", "failed", "skipped"].includes(task.progress.stage);
 }
 
 function formatDuration(milliseconds: number): string {

@@ -13,10 +13,19 @@ import { InfoDot, Select, TextField } from "../settings/FormKit";
 /** Models the server calls embedding-capable; used for ordering, never for filtering. */
 export const embeddable = (model: ModelChoice) => model.embedding;
 
+/** Models the server calls image-capable; ordering only, since a server that declares nothing would erase the list. */
+export const seeing = (model: ModelChoice) => model.vision;
+
 /** Do two names mean one model; `:latest` is dropped because Ollama lists it but accepts the bare name. */
 export const sameModel = (left: string, right: string) => {
   const bare = (value: string) => value.trim().toLowerCase().replace(/:latest$/, "");
   return bare(left) === bare(right);
+};
+
+/** A model the server lists but says cannot see; only answerable when the list came back at all. */
+export const cannotSee = (models: ModelChoice[], value: string) => {
+  const hit = models.find((entry) => sameModel(entry.id, value));
+  return hit !== undefined && !hit.vision;
 };
 
 /** A configured name the server does not list; only answerable when there is a list to compare against. */
@@ -32,9 +41,10 @@ export type ModelRole = "chat" | "embedding" | "vision";
 const FITS: Record<ModelRole, (model: ModelChoice) => boolean> = {
   chat: usableForChat,
   embedding: embeddable,
-  // The provider probes do not yet expose a vision capability bit. Keep chat-capable models first, while
-  // allowing an exact model name because Ollama/compatible servers often omit capability metadata.
-  vision: usableForChat,
+  // Ollama's `/api/show` and LM Studio's listing both declare this one, so it is usually the server's own
+  // answer rather than a guess. Still only an ordering: a server that declares nothing would otherwise
+  // present an empty picker for a role that has a working model in it.
+  vision: seeing,
 };
 
 export default function ModelField(props: {
@@ -73,6 +83,7 @@ export default function ModelField(props: {
           : null;
       const id = model.id;
       if (ok) return n === null ? id : t(S.providers.opt.ctx, { id, n });
+      if (props.role === "vision") return t(S.providers.opt.notVision, { id });
       if (props.role === "embedding") return t(S.providers.opt.notEmbed, { id });
       return n === null
         ? t(S.providers.opt.chatOnlyEmbed, { id })
@@ -131,6 +142,17 @@ export default function ModelField(props: {
           placeholder={props.placeholder}
           onInput={props.onInput}
         />
+      </Show>
+
+      {/* The server listed this model and said it cannot see; OCR would fail per page, hours later. */}
+      <Show when={props.role === "vision" && cannotSee(props.models, props.value)}>
+        <p class="m-0 flex items-center gap-2xs text-2xs text-warn">
+          {t(S.providers.field.notVision)}
+          <InfoDot
+            label={t(S.providers.field.notVisionLabel)}
+            text={t(S.providers.field.notVisionText)}
+          />
+        </p>
       </Show>
 
       {/* Warn about an unlisted name for embedding only: a wrong chat name breaks on the first message. */}

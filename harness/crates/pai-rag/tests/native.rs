@@ -414,3 +414,55 @@ impl MockServices {
         self.task.abort();
     }
 }
+
+/// With OCR off, an image is a file the user asked to leave alone: skipped, not filed as a broken document.
+/// The library table is the whole reason -- a `Failed` row there is a standing claim that something is wrong.
+#[tokio::test]
+async fn ocr_off_skips_images_instead_of_failing_them() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("documents");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("guide.md"),
+        "# Cài đặt\n\nMột đoạn chữ đủ dài để nạp.",
+    )
+    .unwrap();
+    // Never decoded: the OCR switch is read before the file is opened.
+    fs::write(root.join("scan.png"), b"khong phai anh that").unwrap();
+    let config_path = temp.path().join("rag-config.json");
+    fs::write(
+        &config_path,
+        serde_json::to_vec_pretty(&json!({
+            "version": 1,
+            "data_dir": temp.path().join("data"),
+            "projects": [{"id": "docs-test", "name": "Docs", "root": root}],
+            "active_project": "docs-test",
+            "embedding": {"kind": "ollama", "base_url": "", "api_key": "", "model": ""},
+            "vision": {"kind": "ollama", "base_url": "", "api_key": "", "model": ""},
+            "vectors": {"url": "http://127.0.0.1:1", "api_key": "", "collection_prefix": "test"},
+            "chunk": {"size": 80, "overlap": 10},
+            "ocr": {"enabled": false}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let library = NativeLibrary::open(config_path, "docs-test".into(), root).unwrap();
+
+    let events: Vec<_> = library.sync().collect().await;
+    assert!(
+        events
+            .iter()
+            .any(|event| event.stage == IngestStage::Skipped && event.path.ends_with("scan.png")),
+        "ảnh phải được bỏ qua khi OCR tắt"
+    );
+    assert!(
+        !events
+            .iter()
+            .any(|event| event.stage == IngestStage::Failed),
+        "bỏ qua không phải là lỗi"
+    );
+
+    let documents = library.documents().await.unwrap();
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].title, "guide");
+}

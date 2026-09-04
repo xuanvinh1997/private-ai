@@ -1,7 +1,7 @@
 @import "tailwindcss";
 @import "./tokens.css";
-/* Must live here, not index.html: `--font-ui`/`--font-mono` name families no machine is guaranteed to have. */
-@import "./fonts.css";
+/* No `@font-face` and no bundled woff2: the type tokens name the Apple system family, which WKWebView already
+ * has. That also sidesteps the CSP (`default-src 'self'`), which would silently drop any remote font anyway. */
 
 /* Tailwind reads tokens from CSS variables, so one edit in tokens.css moves utilities and hand-written CSS alike. */
 @theme inline {
@@ -45,7 +45,7 @@
   --text-md: 1.02rem;
   --text-md--line-height: 1.45;
 
-  /* Manrope sets tight at small sizes; a little tracking keeps filenames and paths from clumping. */
+  /* SF Pro Text sets tight at small sizes; a little tracking keeps filenames and paths from clumping. */
   --text-2xs--letter-spacing: 0.008em;
   --text-xs--letter-spacing: 0.005em;
   --text-lg: 1.16rem;
@@ -130,14 +130,14 @@ button, input, textarea, select, a { app-region: no-drag; -webkit-app-region: no
   }
 }
 
-/* Serif for titles, sans for everything else - DESIGN.md calls the split unbreakable, and it is the
-   one thing that stops a warm palette from still reading as a generic tool. Scoped to h1/h2 on
-   purpose: h3 is where this app keeps 12px group labels, and a 12px serif label reads as a misprint.
-   Negative tracking is not decoration; Garamond set at 0 looks loose next to Manrope body copy. */
+/* Titles run in the same system family as everything else; what separates them is size, weight and tracking,
+   the way Apple's own large titles do. Still scoped to h1/h2: h3 is where this app keeps 12px group labels,
+   and those want the body tracking, not a display one. The negative tracking is not decoration - SF Pro's
+   Display optical size is drawn loose on purpose, and headings set at 0 drift apart from the body copy. */
 @layer base {
   h1, h2 {
     font-family: var(--font-display);
-    letter-spacing: -0.015em;
+    letter-spacing: -0.021em;
   }
 }
 

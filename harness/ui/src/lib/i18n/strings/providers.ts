@@ -19,6 +19,7 @@ export const providers = {
     label: { en: "Model settings", vi: "Các nhóm cấu hình mô hình" },
     chat: common.chat,
     embedding: common.embedding,
+    vision: common.vision,
     rerank: common.rerank,
   },
 
@@ -150,6 +151,7 @@ export const providers = {
       vi: "{id} · {n} token · chỉ dùng để nhúng",
     },
     notEmbed: { en: "{id} · not an embedding model", vi: "{id} · không phải mô hình nhúng" },
+    notVision: { en: "{id} · cannot see images", vi: "{id} · không đọc được ảnh" },
     none: common.unset,
     custom: { en: "Type another name…", vi: "Nhập tên khác…" },
   },
@@ -181,6 +183,15 @@ export const providers = {
     notListedText: {
       en: 'This list comes from the server. A name outside it can still work — a self-hosted server often serves exactly one model and lists none — so this is a reminder, not a block. To be sure, press "Test now" in the embedding section: it really sends a sentence and measures the vector that comes back.',
       vi: "Danh sách này do máy chủ trả về. Một cái tên không nằm trong đó vẫn có thể chạy — máy chủ tự dựng thường phục vụ đúng một mô hình và không liệt kê ra — nên đây là lời nhắc, không phải cái chặn. Muốn chắc thì bấm “Thử ngay” ở mục nhúng: nó gửi thật một câu đi và đo vector nhận về.",
+    },
+    notVision: {
+      en: "This server says that model cannot read images.",
+      vi: "Máy chủ nói mô hình này không đọc được ảnh.",
+    },
+    notVisionLabel: { en: "About this warning", vi: "Về cảnh báo này" },
+    notVisionText: {
+      en: "The server reported its own capability list and this model is not in the seeing group, so OCR would fail on every page. Two models from the same family can differ here: only the build that ships the image part can read a scan. Pick a model marked as seeing, or check `ollama show <model>` for `vision`.",
+      vi: "Máy chủ tự khai danh sách khả năng và mô hình này không nằm trong nhóm nhìn được ảnh, nên OCR sẽ hỏng ở từng trang. Cùng một họ mô hình vẫn có bản khác nhau: chỉ bản kèm phần đọc ảnh mới đọc được bản quét. Chọn mô hình có đánh dấu nhìn được, hoặc xem `ollama show <model>` có dòng `vision` không.",
     },
   },
 
@@ -249,12 +260,12 @@ export const providers = {
     visionModel: { en: "Vision model for OCR", vi: "Mô hình vision cho OCR" },
     visionPlaceholder: { en: "e.g. gemma3:12b", vi: "Ví dụ: gemma3:12b" },
     visionHint: {
-      en: "The first configured vision model becomes the OCR reader.",
-      vi: "Mô hình vision đầu tiên được cấu hình sẽ dùng để đọc OCR.",
+      en: "Who actually reads scans is chosen in the Vision tab.",
+      vi: "Chọn ai thật sự đọc bản quét ở tab Đọc ảnh.",
     },
     visionMore: {
-      en: "Scanned PDF pages and image files are sent to this model for transcription. Leave blank when this provider cannot read images.",
-      vi: "Trang PDF quét và tệp ảnh được gửi tới mô hình này để chép lại chữ. Để trống nếu nhà cung cấp này không đọc được ảnh.",
+      en: "Scanned PDF pages and image files are sent to this model for transcription. Leave blank when this provider cannot read images; the Vision tab is where the reader is chosen and tested.",
+      vi: "Trang PDF quét và tệp ảnh được gửi tới mô hình này để chép lại chữ. Để trống nếu nhà cung cấp này không đọc được ảnh; tab Đọc ảnh là nơi chọn và thử mô hình đọc.",
     },
   },
 

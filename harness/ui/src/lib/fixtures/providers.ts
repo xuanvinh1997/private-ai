@@ -6,6 +6,8 @@ import type {
   ProviderInput,
   ProviderPreset,
   ProviderProbe,
+  VisionProbe,
+  VisionSetting,
 } from "../protocol";
 
 /** Fake providers for `?demo=1`, chosen by hard state: remote-with-key on chat, local on embedding, one disabled,
@@ -91,22 +93,22 @@ export function demoProviders(): Provider[] {
 }
 
 const OLLAMA_MODELS: ModelChoice[] = [
-  { id: "qwen2.5-coder:14b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
-  { id: "qwen2.5-coder:32b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
+  { id: "qwen2.5-coder:14b", tools: true, chat: true, embedding: false, vision: false, contextWindow: 32768 },
+  { id: "qwen2.5-coder:32b", tools: true, chat: true, embedding: false, vision: false, contextWindow: 32768 },
   // A model that cannot call tools: the *only* state the model picker must warn about.
-  { id: "gemma3:12b", tools: false, chat: true, embedding: false, contextWindow: 8192 },
-  { id: "llama3.2:3b", tools: false, chat: true, embedding: false, contextWindow: 131072 },
+  { id: "gemma3:12b", tools: false, chat: true, embedding: false, vision: true, contextWindow: 8192 },
+  { id: "llama3.2:3b", tools: false, chat: true, embedding: false, vision: false, contextWindow: 131072 },
   // Embedding-only, so the chat picker must hide it; a real Ollama server returns both roles in one list.
-  { id: "embeddinggemma:latest", tools: false, chat: false, embedding: true, contextWindow: 2048 },
+  { id: "embeddinggemma:latest", tools: false, chat: false, embedding: true, vision: false, contextWindow: 2048 },
   // Both embedding and chat: not filtered, and the reason the rule is `embedding && !chat` rather than `chat`.
-  { id: "nomic-embed-text", tools: false, chat: true, embedding: true, contextWindow: 8192 },
+  { id: "nomic-embed-text", tools: false, chat: true, embedding: true, vision: false, contextWindow: 8192 },
 ];
 
 const OPENAI_MODELS: ModelChoice[] = [
-  { id: "gpt-4o-mini", tools: true, chat: true, embedding: false, contextWindow: 128000 },
-  { id: "gpt-4o", tools: true, chat: true, embedding: false, contextWindow: 128000 },
-  { id: "o3-mini", tools: true, chat: true, embedding: false, contextWindow: 200000 },
-  { id: "text-embedding-3-small", tools: false, chat: false, embedding: true, contextWindow: 8191 },
+  { id: "gpt-4o-mini", tools: true, chat: true, embedding: false, vision: true, contextWindow: 128000 },
+  { id: "gpt-4o", tools: true, chat: true, embedding: false, vision: true, contextWindow: 128000 },
+  { id: "o3-mini", tools: true, chat: true, embedding: false, vision: false, contextWindow: 200000 },
+  { id: "text-embedding-3-small", tools: false, chat: false, embedding: true, vision: false, contextWindow: 8191 },
 ];
 
 /** The same list as `probe_provider` sees it: every `tools` flag cleared. */
@@ -291,6 +293,67 @@ export function demoProbeEmbedding(providerId: string, model: string): Embedding
     ok: true,
     message: `Đã nhúng thử một câu bằng "${name}" và nhận về một vector.`,
     dimensions: dims,
+  };
+}
+
+/** The OCR switch in demo mode; a module-level flag, so toggling it on one screen shows on the other. */
+let demoOcrEnabled = true;
+
+export function demoVisionSetting(): VisionSetting {
+  const entry = all().find((provider) => provider.activeVision) ?? null;
+  if (entry === null) {
+    return {
+      providerId: null,
+      providerName: null,
+      model: null,
+      onDevice: false,
+      reason: "Chưa giao vai đọc ảnh cho provider nào.",
+      ocrEnabled: demoOcrEnabled,
+    };
+  }
+  const base = {
+    providerId: entry.id,
+    providerName: entry.name,
+    model: entry.visionModel,
+    onDevice: entry.onDevice,
+    ocrEnabled: demoOcrEnabled,
+  };
+  if (!entry.enabled) return { ...base, reason: `${entry.name} đang bị tắt.` };
+  if (entry.visionModel === null) {
+    return { ...base, reason: `Chưa chọn mô hình đọc ảnh cho ${entry.name}.` };
+  }
+  return { ...base, reason: null };
+}
+
+export function demoSetVision(providerId: string, model: string): VisionSetting {
+  for (const entry of all()) {
+    entry.activeVision = entry.id === providerId;
+    if (entry.id === providerId) entry.visionModel = model;
+  }
+  return demoVisionSetting();
+}
+
+export function demoSetOcrEnabled(enabled: boolean): VisionSetting {
+  demoOcrEnabled = enabled;
+  return demoVisionSetting();
+}
+
+/** Read the test image; the interesting branch is the last one, a chat model typed into the vision field. */
+export function demoProbeVision(providerId: string, model: string): VisionProbe {
+  const entry = all().find((provider) => provider.id === providerId) ?? null;
+  if (entry === null) return { ok: false, message: "Không tìm thấy provider này nữa.", text: null };
+  if (!entry.enabled) {
+    return { ok: false, message: `${entry.name} đang bị tắt, nên không gọi thử được.`, text: null };
+  }
+  const name = model.trim();
+  if (name === "") return { ok: false, message: "Chưa điền tên mô hình đọc ảnh.", text: null };
+  if (/vl|vision|llava|gemma3|gpt-4o/i.test(name)) {
+    return { ok: true, message: `"${name}" đọc đúng chữ trong ảnh thử.`, text: "PAI 4718" };
+  }
+  return {
+    ok: false,
+    message: `"${name}" có trả lời nhưng không đọc đúng chữ trong ảnh thử — mô hình này có thể không nhìn được ảnh.`,
+    text: "Xin lỗi, tôi không thể xem hình ảnh.",
   };
 }
 

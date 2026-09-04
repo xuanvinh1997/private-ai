@@ -50,13 +50,19 @@
   --data-1: #b85c3c; --data-2: #3c6f9e; --data-3: #2f7d70; --data-4: #8a6114;
   --data-5: #8b4f7d; --data-6: #5c7a35; --data-7: #a04a52; --data-8: #6b5f9c;
 
-  /* Three families; the display serif is the new one. DESIGN.md pairs a display serif with a humanist sans and
-   * calls the split unbreakable, but both originals are unreleased, so these come from its own substitutes list.
-   * EB Garamond over Cormorant: our largest heading is ~35px, where Cormorant reads as blurred. Manrope stays for
-   * body text, since the app.css type scale is tuned to its x-height. */
-  --font-display: "EB Garamond", "Tiempos Headline", Georgia, "Times New Roman", serif;
-  --font-ui: "Manrope", "Manrope Variable", "Segoe UI", "Helvetica Neue", sans-serif;
-  --font-mono: "IBM Plex Mono", "SF Mono", "Cascadia Mono", Consolas, monospace;
+  /* One typeface everywhere: the Apple system family. `-apple-system` is the only name that reaches the real
+   * SF Pro inside WKWebView - which is the whole runtime on macOS - and it brings what a bundled woff2 cannot:
+   * optical sizing (SF Pro Text below ~20px, Display above), the shipped Vietnamese coverage, and the same
+   * shapes the surrounding OS chrome draws. The rest of each list is the Windows/Linux ladder down.
+   * `--font-display` is no longer a serif: headings are the same family one weight up, per the request to use
+   * this font throughout. Keep the three tokens even so - call sites name a role, not a family. */
+  --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", "Segoe UI Variable Text",
+    "Segoe UI", system-ui, sans-serif;
+  --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue",
+    "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+  /* SF Mono is Apple's system monospace but is not exposed to `-apple-system`; `ui-monospace` is how WebKit
+   * hands it over, with the family name after it for the browsers that want it spelled out. */
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Cascadia Mono", Consolas, monospace;
 
   --sp-3xs: 2px; --sp-2xs: 4px; --sp-xs: 6px; --sp-sm: 8px; --sp-md: 12px;
   --sp-lg: 16px; --sp-xl: 20px; --sp-2xl: 24px; --sp-3xl: 32px; --sp-4xl: 40px;

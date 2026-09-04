@@ -13,8 +13,12 @@ import {
   demoRemoveProvider,
   demoSaveProvider,
   demoSetActiveProvider,
+  demoProbeVision,
   demoSetEmbedding,
+  demoSetOcrEnabled,
   demoSetProviderModel,
+  demoSetVision,
+  demoVisionSetting,
 } from "./fixtures/providers";
 import type {
   EmbeddingProbe,
@@ -25,6 +29,8 @@ import type {
   ProviderPreset,
   ProviderProbe,
   RerankSetting,
+  VisionProbe,
+  VisionSetting,
 } from "./protocol";
 
 /** Provider commands, split like `projects.ts`: screen-load calls swallow errors and return defaults, click-driven
@@ -183,6 +189,57 @@ export function setEmbedding(providerId: string, model: string): Promise<void> {
 export function probeEmbedding(providerId: string, model: string): Promise<EmbeddingProbe> {
   if (isDemo()) return Promise.resolve(demoProbeEmbedding(providerId, model));
   return invoke<EmbeddingProbe>("probe_embedding", { providerId, model });
+}
+
+/** The *effective* vision config. Unset is a normal state: documents with a text layer still index, images wait. */
+export async function visionSetting(): Promise<VisionSetting> {
+  const none: VisionSetting = {
+    providerId: null,
+    providerName: null,
+    model: null,
+    onDevice: false,
+    reason: null,
+    ocrEnabled: true,
+  };
+  if (isDemo()) return demoVisionSetting();
+  if (!inTauri()) return none;
+  try {
+    return await invoke<VisionSetting>("vision_setting");
+  } catch (err) {
+    console.error("failed to read vision setting", err);
+    return none;
+  }
+}
+
+/** Assign the vision role. Unlike `setEmbedding` nothing is re-embedded: it only changes who reads the *next* scan. */
+export function setVision(providerId: string, model: string): Promise<VisionSetting> {
+  if (isDemo()) return Promise.resolve(demoSetVision(providerId, model));
+  return invoke<VisionSetting>("set_vision", { providerId, model });
+}
+
+/** The OCR switch, the same setting the library screen shows: off skips images instead of reporting them broken. */
+export async function setOcr(enabled: boolean): Promise<VisionSetting> {
+  if (isDemo()) return demoSetOcrEnabled(enabled);
+  await invoke("set_ocr_enabled", { enabled });
+  return visionSetting();
+}
+
+/** Actually read a bundled test image; a model list never says which models can see. */
+export function probeVision(providerId: string, model: string): Promise<VisionProbe> {
+  if (isDemo()) return Promise.resolve(demoProbeVision(providerId, model));
+  return invoke<VisionProbe>("probe_vision", { providerId, model });
+}
+
+/** Suggested vision model per provider kind: an editable prefill, not a closed choice. */
+export function suggestedVisionModel(kind: Provider["kind"]): string {
+  switch (kind) {
+    case "ollama":
+      return "qwen2.5vl:7b";
+    case "lmstudio":
+      return "qwen2.5-vl-7b-instruct";
+    default:
+      return "gpt-4o-mini";
+  }
 }
 
 /** A `ProviderInput` for probing or listing a saved provider's models, keeping its stored key. */

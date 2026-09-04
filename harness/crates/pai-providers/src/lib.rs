@@ -9,6 +9,7 @@ pub mod probe;
 pub mod runtime;
 pub mod seam;
 pub mod store;
+pub mod vision;
 
 pub use embed::{
     DEFAULT_EMBEDDING_MODEL_OLLAMA, DEFAULT_EMBEDDING_MODEL_OPENAI, default_embedding_model,
@@ -16,7 +17,11 @@ pub use embed::{
 };
 pub use error::{ProviderError, Result};
 pub use presets::{PRESETS, Preset};
-pub use probe::{EmbeddingProbeResult, ProbeModel, ProbeResult, probe, probe_embedding};
+pub use probe::{
+    EmbeddingProbeResult, ProbeModel, ProbeResult, VisionProbeResult, probe, probe_embedding,
+    probe_vision,
+};
 pub use runtime::{ModelListing, ProviderRuntime};
 pub use seam::Providers;
 pub use store::{DB_FILE, ProviderInput, ProviderStore, Role, SqliteProviderStore, StoredProvider};
+pub use vision::{DEFAULT_VISION_MODEL_OLLAMA, default_vision_model, vision_reason};

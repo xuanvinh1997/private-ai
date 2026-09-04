@@ -8,7 +8,7 @@ use crate::AppState;
 use crate::harness::Harness;
 use crate::protocol::{
     EmbeddingProbe, EmbeddingSetting, ModelChoice, ProviderInputWire, ProviderPreset,
-    ProviderProbe, ProviderView,
+    ProviderProbe, ProviderView, VisionProbe, VisionSetting,
 };
 
 /// Wire string to provider kind; rejected rather than defaulted, since a mistyped `kind` silently becoming
@@ -238,6 +238,7 @@ pub async fn probe_provider(
                 tools: model.tools,
                 chat: model.chat,
                 embedding: model.embedding,
+                vision: model.vision,
                 context_window: model.context_window,
             })
             .collect(),
@@ -273,6 +274,7 @@ pub async fn provider_models(
             tools: model.tools,
             chat: model.chat,
             embedding: model.embedding,
+            vision: model.vision,
             context_window: model.context_window,
         })
         .collect())
@@ -348,5 +350,77 @@ pub async fn probe_embedding(
         ok: result.ok,
         message: result.message,
         dimensions: result.dimensions,
+    })
+}
+
+/// The vision configuration in effect. The OCR switch lives in the RAG config file rather than the provider
+/// store, and is read here too: "will a scanned page be read" is one question, not two screens.
+#[tauri::command]
+pub async fn vision_setting(state: State<'_, AppState>) -> Result<VisionSetting, String> {
+    let harness = state.harness().await?;
+    let held = harness.providers.vision().map_err(|err| err.to_string())?;
+    let reason = pai_providers::vision_reason(held.as_ref());
+    let (ocr_enabled, _) = harness.rag_config.ocr_status();
+    Ok(match held {
+        Some(provider) => VisionSetting {
+            provider_name: Some(provider.config.name.clone()),
+            on_device: provider.config.on_device(),
+            provider_id: Some(provider.id().to_string()),
+            model: provider.vision_model.clone(),
+            reason,
+            ocr_enabled,
+        },
+        None => VisionSetting {
+            provider_id: None,
+            provider_name: None,
+            model: None,
+            on_device: false,
+            reason,
+            ocr_enabled,
+        },
+    })
+}
+
+/// Grant the vision role to a provider with an explicit model. Like [`set_embedding`] there is no implicit
+/// branch: a chat model that cannot see returns a 400 per page, hours after the choice was made.
+#[tauri::command]
+pub async fn set_vision(
+    provider_id: String,
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<VisionSetting, String> {
+    let harness = state.harness().await?;
+    harness
+        .providers
+        .set_vision(&provider_id, Some(&model))
+        .await
+        .map_err(|err| err.to_string())?;
+    // Rewrites `rag-config.json`, which is where the document library reads the vision provider from.
+    harness.apply_provider().await?;
+    vision_setting(state).await
+}
+
+/// Really read a bundled test image with an unsaved model name; a reachable model list proves nothing about
+/// whether that model can see.
+#[tauri::command]
+pub async fn probe_vision(
+    provider_id: String,
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<VisionProbe, String> {
+    let harness = state.harness().await?;
+    let provider = harness
+        .providers
+        .list()
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .find(|item| item.id() == provider_id)
+        .ok_or_else(|| format!("không có nhà cung cấp `{provider_id}`"))?;
+
+    let result = pai_providers::probe_vision(&provider.config, &model).await;
+    Ok(VisionProbe {
+        ok: result.ok,
+        message: result.message,
+        text: result.text,
     })
 }

@@ -82,4 +82,5 @@ export const common = {
   testing: { en: "Testing…", vi: "Đang thử…" },
   themeSystem: { en: "System", vi: "Theo hệ thống" },
   unset: { en: "— none —", vi: "— chưa chọn —" },
+  vision: { en: "Vision", vi: "Đọc ảnh" },
 } satisfies Record<string, Msg>;

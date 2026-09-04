@@ -92,6 +92,7 @@ impl Harness {
                     tools: model.capabilities.tools,
                     chat: model.capabilities.chat,
                     embedding: model.capabilities.embedding,
+                    vision: model.capabilities.vision,
                     context_window: model.capabilities.context_window,
                 })
                 .collect(),

@@ -18,6 +18,7 @@ import { IconButton } from "./../primitives";
 import ConfirmDialog from "./ConfirmDialog";
 import EmbeddingView from "./EmbeddingView";
 import RerankView from "./RerankView";
+import VisionView from "./VisionView";
 import { Banner, Button, InfoDot, Row, RowGroup, SectionHead, Select, Toggle } from "../settings/FormKit";
 import ProviderForm from "./ProviderForm";
 
@@ -26,11 +27,12 @@ type Sheet =
   | { kind: "form"; provider: Provider | null; preset: ProviderPreset | null }
   | { kind: "delete"; provider: Provider };
 
-type ModelsTab = "chat" | "embedding" | "rerank";
+type ModelsTab = "chat" | "embedding" | "vision" | "rerank";
 
 const MODEL_TABS: readonly { id: ModelsTab; icon: IconName }[] = [
   { id: "chat", icon: "chat" },
   { id: "embedding", icon: "model" },
+  { id: "vision", icon: "eye" },
   { id: "rerank", icon: "graph" },
 ];
 
@@ -136,7 +138,7 @@ export default function ProvidersView() {
         ref={tabList}
         role="tablist"
         aria-label={t(S.providers.tabs.label)}
-        class="grid grid-cols-3 gap-3xs rounded-card border border-line bg-surface p-3xs shadow-[var(--edge-top)]"
+        class="grid grid-cols-4 gap-3xs rounded-card border border-line bg-surface p-3xs shadow-[var(--edge-top)]"
         onKeyDown={(event) => {
           const keys = ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"];
           if (!keys.includes(event.key)) return;
@@ -257,6 +259,15 @@ export default function ProvidersView() {
         hidden={tab() !== "embedding"}
       >
         <EmbeddingView reloadKey={stamp()} />
+      </section>
+
+      <section
+        id={panelId("vision")}
+        role="tabpanel"
+        aria-labelledby={tabId("vision")}
+        hidden={tab() !== "vision"}
+      >
+        <VisionView reloadKey={stamp()} />
       </section>
 
       <section

@@ -4,6 +4,7 @@
 
 use std::time::Duration;
 
+use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use pai_llm::{Capabilities, LlmErrorCode, ProviderConfig, ProviderKind, openai_base_url};
 use serde_json::Value;
 
@@ -21,6 +22,10 @@ pub struct ProbeModel {
     /// Embedding-capable: a guess on Ollama and OpenAI-compatible, but a useful one for sorting the picker,
     /// where a wrong order costs a scroll. On LM Studio it is authoritative, from `type: "embeddings"`.
     pub embedding: bool,
+    /// Sees images. Authoritative wherever the server declares capabilities -- Ollama's `/api/show` and LM
+    /// Studio's listing both do -- and a name guess otherwise. OCR is the one role where this matters:
+    /// a chat model without it returns HTTP 400 on every single page.
+    pub vision: bool,
     pub context_window: Option<u64>,
 }
 
@@ -171,6 +176,7 @@ fn parse_lmstudio(payload: &Value) -> Vec<ProbeModel> {
                         tools: caps.tools,
                         chat: caps.chat,
                         embedding: caps.embedding,
+                        vision: caps.vision,
                         context_window: caps.context_window,
                     })
                 })
@@ -197,6 +203,7 @@ fn parse_names(payload: &Value, array: &str, field: &str) -> Vec<ProbeModel> {
                         tools: caps.tools,
                         chat: caps.chat,
                         embedding: caps.embedding,
+                        vision: caps.vision,
                         context_window: caps.context_window,
                     })
                 })
@@ -381,4 +388,244 @@ fn first_vector(kind: ProviderKind, payload: &Value) -> Option<usize> {
         }
     };
     Some(row.as_array()?.len())
+}
+
+/// Budget for one OCR probe. Far longer than [`EMBED_TIMEOUT`]: a local vision model loads several gigabytes
+/// on first use, and a user who pressed a button will wait for an answer rather than a guess.
+const VISION_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// A small PNG carrying one line of black text on white. Sent as-is so the probe proves the exact thing OCR
+/// needs: that this endpoint accepts an image and reads letters off it.
+const VISION_SAMPLE: &[u8] = include_bytes!("../assets/vision-probe.png");
+
+/// What [`VISION_SAMPLE`] says. Checked in the reply, since "I see an image of text" is a 200 that reads nothing.
+const VISION_SAMPLE_TEXT: &str = "PAI 4718";
+
+/// The result of one real OCR probe.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VisionProbeResult {
+    pub ok: bool,
+    /// One sentence saying what to do next.
+    pub message: String,
+    /// What the model actually returned, trimmed and capped; shown so a partial read is visible as a partial read.
+    pub text: Option<String>,
+}
+
+impl VisionProbeResult {
+    fn fail(message: impl Into<String>) -> Self {
+        Self {
+            ok: false,
+            message: message.into(),
+            text: None,
+        }
+    }
+}
+
+/// Read one image with the chosen model. A model list cannot answer this -- Ollama's `/api/tags` never says
+/// which models can see -- so the only certainty is sending an image and looking for its text back.
+/// The request deliberately mirrors the one `pai-rag` makes during ingest, same endpoint and same content
+/// shape, or a probe could pass while OCR still fails.
+pub async fn probe_vision(config: &ProviderConfig, model: &str) -> VisionProbeResult {
+    let model = model.trim();
+    if model.is_empty() {
+        return VisionProbeResult::fail(
+            "Chưa có tên mô hình đọc ảnh để thử. Mô hình này khác mô hình trò chuyện — nó \
+             phải nhìn được ảnh.",
+        );
+    }
+    // `/v1/chat/completions` for every kind, exactly as the document library calls it: Ollama serves the
+    // OpenAI protocol on the same port, and that is the only shape with an `image_url` content part.
+    let url = format!("{}/v1/chat/completions", embed_root(&config.base_url));
+    let body = serde_json::json!({
+        "model": model,
+        "max_tokens": 64,
+        "temperature": 0,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Đọc đúng dòng chữ trong ảnh này và chỉ trả về dòng chữ đó."},
+                {"type": "image_url", "image_url": {
+                    "url": format!("data:image/png;base64,{}", BASE64.encode(VISION_SAMPLE))
+                }}
+            ]
+        }]
+    });
+
+    // Built here rather than threaded in: the config may never have been saved, and this timeout is unlike any other.
+    let http = reqwest::Client::builder()
+        .timeout(VISION_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new());
+    let mut request = http.post(&url).timeout(VISION_TIMEOUT).json(&body);
+    if !config.api_key.is_empty() {
+        request = request.bearer_auth(&config.api_key);
+    }
+
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(err) => {
+            // Not-connected group, same rule as [`probe`]: the key was never asked about, so do not mention it.
+            let detail = if err.is_timeout() {
+                "mô hình không trả lời kịp; mô hình đọc ảnh nạp lần đầu có thể rất lâu"
+            } else {
+                "không mở được kết nối"
+            };
+            return VisionProbeResult::fail(format!(
+                "Không gọi được {url} ({detail}). Kiểm tra máy chủ đã chạy chưa và địa chỉ có \
+                 đúng không."
+            ));
+        }
+    };
+
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap_or_default();
+    if !status_ok(status) {
+        return VisionProbeResult::fail(explain_vision(config, model, &url, status, &body));
+    }
+    let payload: Value = match serde_json::from_str(&body) {
+        Ok(payload) => payload,
+        Err(_) => {
+            return VisionProbeResult::fail(format!(
+                "{url} trả lời nhưng không phải JSON. Địa chỉ này có thể trỏ vào một dịch vụ khác."
+            ));
+        }
+    };
+    let Some(content) = payload.pointer("/choices/0/message/content") else {
+        return VisionProbeResult::fail(format!(
+            "Máy chủ ở {url} nhận `{model}` nhưng không trả về câu trả lời nào."
+        ));
+    };
+    let text = read_content(content).trim().to_string();
+    if text.is_empty() {
+        return VisionProbeResult::fail(format!(
+            "`{model}` nhận ảnh nhưng trả về câu trả lời rỗng. Đây thường là một mô hình không \
+             nhìn được ảnh."
+        ));
+    }
+    let shown: String = text.chars().take(200).collect();
+    // Compared without spaces: a model that answers "PAI4718" read the image just fine.
+    let squashed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let wanted: String = VISION_SAMPLE_TEXT
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    if squashed.contains(&wanted) {
+        return VisionProbeResult {
+            ok: true,
+            message: format!("`{model}` đọc đúng chữ trong ảnh thử."),
+            text: Some(shown),
+        };
+    }
+    VisionProbeResult {
+        ok: false,
+        message: format!(
+            "`{model}` có trả lời nhưng không đọc đúng chữ trong ảnh thử (`{VISION_SAMPLE_TEXT}`). \
+             Mô hình này có thể không nhìn được ảnh, hoặc đọc sai — xem câu trả lời bên dưới."
+        ),
+        text: Some(shown),
+    }
+}
+
+/// Turn a status and body into a next-action sentence for OCR. Separate from [`explain`] on purpose: the
+/// interesting failure here is a text-only model, and telling that user to "pick an embedding model" sends
+/// them to the wrong screen entirely.
+fn explain_vision(
+    config: &ProviderConfig,
+    model: &str,
+    url: &str,
+    status: u16,
+    body: &str,
+) -> String {
+    let err = pai_llm::LlmError::from_status(status, body);
+    let lowered = body.to_lowercase();
+    if matches!(err.code, LlmErrorCode::Auth) {
+        return if config.api_key.is_empty() {
+            format!("Máy chủ ở {url} đòi khoá API mà cấu hình này chưa có khoá.")
+        } else {
+            format!("Máy chủ ở {url} từ chối khoá API này (HTTP {status}). Kiểm tra lại khoá.")
+        };
+    }
+    let missing = lowered.contains("not found")
+        || lowered.contains("does not exist")
+        || lowered.contains("unknown model")
+        || lowered.contains("no such")
+        || lowered.contains("try pulling");
+    if missing {
+        return match config.kind {
+            ProviderKind::Ollama => format!(
+                "Máy chủ ở {url} không có mô hình `{model}`. Kéo nó về bằng \
+                 `ollama pull {model}` rồi thử lại."
+            ),
+            _ => format!("Máy chủ ở {url} không biết mô hình `{model}`. Kiểm tra lại tên."),
+        };
+    }
+    // The common case, and the one worth naming precisely: the model runs, it just cannot see. A tag can
+    // carry the same family name as a vision model and still ship without the image projector.
+    let blind = lowered.contains("image")
+        || lowered.contains("vision")
+        || lowered.contains("multimodal")
+        || lowered.contains("not support");
+    if blind {
+        return match config.kind {
+            ProviderKind::Ollama => format!(
+                "Máy chủ ở {url} có `{model}` nhưng chính nó nói mô hình này không nhận ảnh \
+                 ({}). Xem `ollama show {model}` — dòng capabilities phải có `vision`; \
+                 cùng một họ mô hình vẫn có bản không kèm phần đọc ảnh.",
+                err.message
+            ),
+            _ => format!(
+                "Máy chủ ở {url} có `{model}` nhưng nói mô hình này không nhận ảnh ({}). \
+                 Chọn một mô hình nhìn được ảnh, ví dụ `{}`.",
+                err.message,
+                crate::vision::default_vision_model(config.kind)
+            ),
+        };
+    }
+    format!(
+        "Máy chủ ở {url} trả về lỗi khi đọc ảnh bằng `{model}`: {}",
+        err.message
+    )
+}
+
+/// OpenAI `content` is either a string or a list of parts; both shapes come back from real servers.
+fn read_content(content: &Value) -> String {
+    if let Some(text) = content.as_str() {
+        return text.to_string();
+    }
+    content
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|part| part.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[cfg(test)]
+mod vision_tests {
+    use super::*;
+
+    #[test]
+    fn reads_both_openai_content_shapes() {
+        assert_eq!(read_content(&serde_json::json!("abc")), "abc");
+        assert_eq!(
+            read_content(
+                &serde_json::json!([{"type": "text", "text": "a"}, {"type": "text", "text": "b"}])
+            ),
+            "a\nb"
+        );
+    }
+
+    #[tokio::test]
+    async fn refuses_an_empty_model_name() {
+        let config = ProviderConfig::new(
+            "thử",
+            "Thử",
+            ProviderKind::Ollama,
+            "http://127.0.0.1:11434".to_string(),
+        );
+        let result = probe_vision(&config, "  ").await;
+        assert!(!result.ok);
+        assert!(result.text.is_none());
+    }
 }

@@ -391,6 +391,14 @@ Display sizes use weight 400 (regular), never bold. Negative letter-spacing (-0.
 Body type stays at weight 400 for paragraphs, weight 500 for labels and emphasized phrases. The sans body is humanist (StyreneB) — never geometric. Inter is an acceptable substitute because of its similar humanist proportions; Helvetica or Arial would be too neutral and break the warm-editorial feel.
 
 ### Note on Font Substitutes
+
+> **Điều app này thực sự dùng (2026-09):** không thay thế nữa mà bỏ hẳn phần chữ của
+> bản phân tích — `ui/src/styles/tokens.css` đặt cả ba token về họ chữ hệ thống của Apple
+> (`-apple-system` → SF Pro, `ui-monospace` → SF Mono). Đổi lấy: mất giọng serif mô tả bên
+> dưới, được đúng chữ mà macOS đang vẽ ở thanh menu và Dock ngay cạnh cửa sổ, cùng optical
+> sizing và dấu tiếng Việt do hệ điều hành lo. Phần còn lại của tài liệu — màu, khoảng cách,
+> elevation — vẫn là nguồn tham chiếu.
+
 If Copernicus / Tiempos Headline is unavailable, **Cormorant Garamond** at weight 500 with -0.02em letter-spacing is the closest open-source approximation. **EB Garamond** is a fallback. For StyreneB, **Inter** is the closest match — both are humanist sans designed for screen reading. **Söhne** is another close alternative if licensed.
 
 ## Layout

@@ -8,6 +8,8 @@ description = "Kho provider mô hình, danh mục dựng sẵn, và đường đ
 
 [dependencies]
 pai-core = { workspace = true }
+# The OCR probe sends a bundled test image as a data URI, exactly as the document library does.
+base64 = { workspace = true }
 pai-llm = { workspace = true }
 # `Driver` is the other end of a provider swap: the store means nothing without somewhere to push the new adapter.
 pai-agent = { workspace = true }

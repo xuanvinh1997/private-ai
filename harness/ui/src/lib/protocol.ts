@@ -180,6 +180,9 @@ export interface ModelChoice {
   chat: boolean;
   /** Can embed; the flags are not exclusive, and only `embedding && !chat` is hidden from the chat model picker. */
   embedding: boolean;
+  /** Can see images. Authoritative where the server declares it, a name guess otherwise — so it orders the
+   * vision picker and never filters it. */
+  vision: boolean;
   contextWindow: number | null;
 }
 
@@ -348,6 +351,26 @@ export interface EmbeddingProbe {
   message: string;
   /** Dimensions measured from the real vector. */
   dimensions: number | null;
+}
+
+/** The effective vision configuration: who reads images for OCR, and whether OCR is even on. */
+export interface VisionSetting {
+  providerId: string | null;
+  providerName: string | null;
+  model: string | null;
+  /** Page images never leave this machine while being read. */
+  onDevice: boolean;
+  reason: string | null;
+  /** The OCR switch; off means images and scanned pages are skipped rather than read. */
+  ocrEnabled: boolean;
+}
+
+/** Result of really reading the bundled test image; a model list never says which models can see. */
+export interface VisionProbe {
+  ok: boolean;
+  message: string;
+  /** What the model answered, so a wrong read reads as a wrong read. */
+  text: string | null;
 }
 
 export interface ProviderPreset {

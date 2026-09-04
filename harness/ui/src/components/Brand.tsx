@@ -1,5 +1,10 @@
 /** Brand mark: a shield with a spark cut out of it, saying the two things the product sells (data stays local,
- * a model inside). One path, `evenodd`, `currentColor`, so the spark is a hole and always matches its backdrop. */
+ * a model inside). One path, `evenodd`, `currentColor`, so the spark is a hole and always matches its backdrop.
+ *
+ * `currentColor` is also how the mark follows the theme: every call site paints it `text-accent`, so it moves
+ * with the coral token - #ba5a3a on cream, the lighter #e08b6b on the dark ground - instead of freezing one hex.
+ * The same path is drawn in two places that cannot read a token and so spell the accent out by hand: the favicon
+ * in `ui/index.html` and `app/icons/icon-source.svg`. Recolour the accent and all three have to move together. */
 export function BrandMark(props: { size?: number; class?: string }) {
   return (
     <svg

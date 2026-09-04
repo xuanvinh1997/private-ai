@@ -1,6 +1,7 @@
 import { Show } from "solid-js";
 import { S, t } from "../lib/i18n";
 import { BrandMark } from "./Brand";
+import NotificationBell from "./NotificationBell";
 import { IconButton } from "./primitives";
 
 /** Workspace top bar, deliberately thin: title, turn status, and one button. The project name is a breadcrumb
@@ -56,6 +57,8 @@ export default function WorkspaceHeader(props: {
           </span>
         </Show>
       </div>
+
+      <NotificationBell />
 
       <Show when={props.onToggleChangesPanel}>
         {(toggle) => (

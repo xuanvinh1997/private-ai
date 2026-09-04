@@ -28,6 +28,28 @@ export const app = {
   modelEmbedOnly: { en: "Embedding models only.", vi: "Máy chủ chỉ có mô hình nhúng." },
   modelNoTools: { en: "This model has no tools.", vi: "Mô hình này không gọi được công cụ." },
 
+  notifications: {
+    title: { en: "Notifications", vi: "Thông báo" },
+    open: { en: "Open notifications", vi: "Mở thông báo" },
+    openCount: {
+      en: "Open notifications, {n} unread",
+      vi: "Mở thông báo, {n} chưa đọc",
+    },
+    unreadStatus: {
+      en: "{n} unread app notifications",
+      vi: "{n} thông báo ứng dụng chưa đọc",
+    },
+    empty: { en: "You're all caught up", vi: "Bạn đã xem hết thông báo" },
+    emptyMore: {
+      en: "Task progress and important app messages will appear here.",
+      vi: "Tiến trình tác vụ và các thông tin quan trọng của ứng dụng sẽ hiện ở đây.",
+    },
+    clearFinished: { en: "Clear finished", vi: "Xoá mục đã xong" },
+    dismiss: { en: "Dismiss notification", vi: "Ẩn thông báo" },
+    info: { en: "App notice", vi: "Thông tin ứng dụng" },
+    error: { en: "Something needs attention", vi: "Có việc cần chú ý" },
+  },
+
   // Error messages: they must name what broke, so they are not shortened.
   error: {
     switchProject: {

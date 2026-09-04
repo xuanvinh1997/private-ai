@@ -54,6 +54,7 @@ export function IconButton(props: {
   busy?: boolean;
   expanded?: boolean;
   controls?: string;
+  hasPopup?: "menu" | "dialog";
   keys?: string;
   tip?: TipSide;
   ref?: (el: HTMLButtonElement) => void;
@@ -83,9 +84,11 @@ export function IconButton(props: {
         disabled={props.disabled || props.busy}
         aria-label={props.label}
         aria-busy={props.busy || undefined}
-        aria-pressed={props.active}
+        // Disclosure buttons announce expanded state; `pressed` would duplicate that state with different words.
+        aria-pressed={props.expanded === undefined ? props.active : undefined}
         aria-expanded={props.expanded}
         aria-controls={props.controls}
+        aria-haspopup={props.hasPopup}
         aria-keyshortcuts={props.keys}
         class={`grid ${box()} place-items-center rounded-icon border border-transparent transition duration-[var(--dur-fast)]`}
         classList={{
@@ -103,7 +106,11 @@ export function IconButton(props: {
           class={props.busy ? "motion-safe:animate-spin" : undefined}
         />
       </button>
-      <Tip anchor={() => trigger} open={tipOpen()} side={props.tip ?? "bottom"}>
+      <Tip
+        anchor={() => trigger}
+        open={tipOpen() && props.expanded !== true}
+        side={props.tip ?? "bottom"}
+      >
         {props.label}
       </Tip>
     </span>

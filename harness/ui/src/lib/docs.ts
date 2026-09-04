@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { createSignal } from "solid-js";
 import { inTauri } from "./agent";
 import { S, t, type Msg } from "./i18n";
+import { dismissAppNotification, upsertAppNotification } from "./notifications";
 import type {
   DocumentFormat,
   DocumentHit,
@@ -47,12 +48,84 @@ function updateDocumentTask(
   scope: string,
   id: string,
   update: (task: DocumentTask) => DocumentTask,
-) {
+): DocumentTask | undefined {
+  let updated: DocumentTask | undefined;
   setDocumentTasks((all) => {
     const current = all[scope];
     if (current === undefined || current.id !== id) return all;
-    return { ...all, [scope]: update(current) };
+    updated = update(current);
+    return { ...all, [scope]: updated };
   });
+  return updated;
+}
+
+const documentNotificationId = (id: string) => `document:${id}`;
+
+function documentTaskTitle(kind: DocumentTaskKind): string {
+  if (kind === "sync") return t(S.docs.ingest.kindSync);
+  if (kind === "add") return t(S.docs.ingest.kindAdd);
+  return t(S.docs.ingest.kindReprocess);
+}
+
+function documentTaskCount(task: DocumentTask): string {
+  const frame = task.progress;
+  if (frame.total <= 0) return "";
+  if (frame.stage === "embedding") {
+    return t(S.docs.ingest.chunks, { done: frame.done, total: frame.total });
+  }
+  if (frame.stage === "ocr") {
+    return t(S.docs.ingest.pages, { done: frame.done, total: frame.total });
+  }
+  return t(S.docs.ingest.files, { done: frame.done, total: frame.total });
+}
+
+function syncDocumentTaskNotification(task: DocumentTask, announce: boolean): void {
+  const running = task.state === "running";
+  const summary = t(S.docs.ingest.summary, {
+    stored: task.stored,
+    skipped: task.skipped,
+    failed: task.failures.length,
+  });
+  const count = documentTaskCount(task);
+  const message = running
+    ? `${stageLabel(task.progress.stage)}${count === "" ? "" : ` · ${count}`}`
+    : `${t(
+        task.state === "failed"
+          ? S.docs.ingest.statusFailed
+          : S.docs.ingest.statusCompleted,
+      )} · ${summary}`;
+  const detail =
+    task.error ??
+    task.warning ??
+    (task.failures[0] === undefined
+      ? task.progress.path
+      : `${task.failures[0].path}: ${task.failures[0].error}`);
+  const tone = running
+    ? "progress"
+    : task.state === "failed"
+      ? "error"
+      : task.warning !== null || task.failures.length > 0
+        ? "warning"
+        : "success";
+
+  upsertAppNotification(
+    {
+      id: documentNotificationId(task.id),
+      tone,
+      title: documentTaskTitle(task.kind),
+      message,
+      detail: detail || undefined,
+      progress: running
+        ? {
+            done: task.progress.done,
+            total: task.progress.total,
+            label: `${stageLabel(task.progress.stage)}${count === "" ? "" : `, ${count}`}`,
+          }
+        : undefined,
+      dismissible: !running,
+    },
+    announce,
+  );
 }
 
 /** Run at most one document mutation per project while exposing its lifecycle to any mounted screen. */
@@ -82,9 +155,10 @@ export function runDocumentTask(
     documents: null,
   };
   setDocumentTasks((all) => ({ ...all, [scope]: task }));
+  syncDocumentTaskNotification(task, true);
 
   const note = (progress: IngestProgress) => {
-    updateDocumentTask(scope, id, (current) => {
+    const updated = updateDocumentTask(scope, id, (current) => {
       const fatal = progress.stage === "failed" && progress.error !== null && progress.total === 0;
       const failure =
         progress.stage === "failed" && progress.error !== null && !fatal
@@ -103,25 +177,28 @@ export function runDocumentTask(
         error: fatal ? progress.error : current.error,
       };
     });
+    if (updated !== undefined) syncDocumentTaskNotification(updated, false);
   };
 
   const promise = execute(note)
     .then((documents) => {
-      updateDocumentTask(scope, id, (current) => ({
+      const updated = updateDocumentTask(scope, id, (current) => ({
         ...current,
         state: current.error === null ? "completed" : "failed",
         finishedAt: Date.now(),
         documents,
       }));
+      if (updated !== undefined) syncDocumentTaskNotification(updated, true);
       return documents;
     })
     .catch((error: unknown) => {
-      updateDocumentTask(scope, id, (current) => ({
+      const updated = updateDocumentTask(scope, id, (current) => ({
         ...current,
         state: "failed",
         finishedAt: Date.now(),
         error: String(error),
       }));
+      if (updated !== undefined) syncDocumentTaskNotification(updated, true);
       throw error;
     })
     .finally(() => {
@@ -132,8 +209,10 @@ export function runDocumentTask(
 }
 
 export function dismissDocumentTask(scope: string) {
+  const current = documentTasks()[scope];
+  if (current === undefined || current.state === "running") return;
+  dismissAppNotification(documentNotificationId(current.id));
   setDocumentTasks((all) => {
-    if (all[scope]?.state === "running") return all;
     const next = { ...all };
     delete next[scope];
     return next;

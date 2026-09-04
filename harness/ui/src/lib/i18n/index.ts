@@ -16,6 +16,7 @@ import { app } from "./strings/app";
 import { chat } from "./strings/chat";
 import { providers } from "./strings/providers";
 import { embedding } from "./strings/embedding";
+import { vision } from "./strings/vision";
 import { settings } from "./strings/settings";
 import { mcp } from "./strings/mcp";
 import { projects } from "./strings/projects";
@@ -30,6 +31,7 @@ export const S = {
   chat,
   providers,
   embedding,
+  vision,
   settings,
   mcp,
   projects,

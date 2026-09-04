@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /** Token guard: an unresolved `var()` makes CSS drop the whole declaration silently, with no warning. */
@@ -168,46 +168,67 @@ describe("token CSS", () => {
   });
 });
 
-/** Bundled fonts: a `src: url(...)` pointing at a missing file is skipped silently, so only users ever see it. */
-describe("font đóng gói", () => {
-  const FONTS_CSS = join(SRC, "styles/fonts.css");
-  const css = readFileSync(FONTS_CSS, "utf8");
+/** Type family: one system stack, nothing bundled. A woff2 that goes missing, or an `@import` the CSP blocks,
+ * fails silently to a fallback - so the guard is that we never depend on a file or a host in the first place. */
+describe("họ chữ hệ thống", () => {
+  const css = readFileSync(join(SRC, "styles/tokens.css"), "utf8");
+  const stack = (token: string) =>
+    css.match(new RegExp(`${token}\\s*:\\s*([^;]+);`))?.[1]!.replace(/\s+/g, " ").trim() ?? "";
 
-  const faces = [...css.matchAll(/@font-face\s*\{([^}]*)\}/g)].map((m) => m[1]!);
-  const field = (face: string, name: string) =>
-    face.match(new RegExp(`${name}\\s*:\\s*([^;]+);`))?.[1]?.trim() ?? "";
-
-  it("mọi url() trong fonts.css trỏ tới tệp có thật", () => {
-    const urls = [...css.matchAll(/url\("([^"]+)"\)/g)].map((m) => m[1]!);
-    expect(urls.length, "fonts.css không khai tệp font nào").toBeGreaterThan(0);
-
-    const missing = urls.filter((u) => !existsSync(resolve(dirname(FONTS_CSS), u)));
-    expect(missing, "url() hỏng làm @font-face bị bỏ im lặng").toEqual([]);
+  // `-apple-system` is the only name that resolves to the real SF Pro in WKWebView, which is the macOS runtime.
+  it("--font-ui và --font-display bắt đầu bằng -apple-system", () => {
+    for (const token of ["--font-ui", "--font-display"]) {
+      expect(stack(token), `${token} chưa khai`).not.toBe("");
+      expect(stack(token).startsWith("-apple-system"), `${token}: ${stack(token)}`).toBe(true);
+    }
   });
 
-  // The app is in Vietnamese: without the `vietnamese` subset, accented characters fall back to another family.
-  it("mỗi họ chữ đều có lát vietnamese", () => {
-    // U+1EA0-1EF9 is the Vietnamese accented block, the surest marker of this subset.
-    const withVietnamese = new Set(
-      faces
-        .filter((face) => field(face, "unicode-range").includes("U+1EA0-1EF9"))
-        .map((face) => field(face, "font-family")),
+  // SF Mono is not reachable through `-apple-system`; `ui-monospace` is how WebKit hands it over.
+  it("--font-mono bắt đầu bằng ui-monospace", () => {
+    expect(stack("--font-mono").startsWith("ui-monospace"), stack("--font-mono")).toBe(true);
+  });
+
+  // Every stack ends at a generic family, or a machine without any of the named ones picks its own default.
+  it("mọi stack kết thúc bằng một họ chữ chung", () => {
+    for (const token of ["--font-ui", "--font-display", "--font-mono"]) {
+      expect(stack(token)).toMatch(/(sans-serif|serif|monospace)$/);
+    }
+  });
+
+  // Nothing bundled and nothing remote: no `@font-face` to break, no host the CSP `default-src 'self'` blocks.
+  it("không có @font-face và không tải font từ mạng", () => {
+    for (const file of ["styles/tokens.css", "styles/app.css"]) {
+      // Comments stripped first: both files explain in prose why there is no `@font-face` and no remote host.
+      const text = readFileSync(join(SRC, file), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+      expect(text, `${file} còn @font-face`).not.toMatch(/@font-face/);
+      expect(text, `${file} tải font từ mạng`).not.toMatch(/https?:/);
+    }
+    expect(existsSync(join(SRC, "assets/fonts")), "assets/fonts vẫn còn").toBe(false);
+  });
+});
+
+/** Logo: the same mark is drawn in three files, and only one of them can read a token. The other two spell the
+ * accent out by hand, which is exactly how they drifted to a green from a retired palette while the UI went coral. */
+describe("màu logo", () => {
+  const tokens = readFileSync(join(SRC, "styles/tokens.css"), "utf8");
+  const token = (name: string) =>
+    tokens.match(new RegExp(`\\n\\s*${name}\\s*:\\s*(#[0-9a-f]{6})\\s*;`))?.[1]!;
+
+  it("favicon trong index.html dùng đúng --accent", () => {
+    const html = readFileSync(join(SRC, "../index.html"), "utf8");
+    // The path lives in a data URI, so `#` is percent-encoded; compare on the six hex digits.
+    expect(html, `favicon lệch --accent (${token("--accent")})`).toContain(
+      `fill='%23${token("--accent")!.slice(1)}'`,
     );
-    for (const family of ['"Manrope"', '"IBM Plex Mono"', '"EB Garamond"']) {
-      expect(withVietnamese.has(family), `${family} thiếu subset vietnamese`).toBe(true);
-    }
   });
 
-  it("mọi @font-face đều dùng swap và khai unicode-range", () => {
-    for (const face of faces) {
-      expect(field(face, "font-display"), `thiếu font-display: ${face}`).toBe("swap");
-      expect(field(face, "unicode-range"), `thiếu unicode-range: ${face}`).not.toBe("");
+  it("icon hệ điều hành dùng đúng --accent và --accent-ink của chủ đề sáng", () => {
+    const svg = readFileSync(join(SRC, "../../app/icons/icon-source.svg"), "utf8");
+    for (const name of ["--accent", "--accent-ink"]) {
+      expect(svg, `icon-source.svg thiếu ${name} (${token(name)})`).toContain(
+        `stop-color="${token(name)}"`,
+      );
     }
-  });
-
-  // No `@import`/`url()` to an outside host: the app CSP is `default-src 'self'`, so remote fonts fail silently.
-  it("không có font nào lấy từ mạng", () => {
-    expect(css).not.toMatch(/https?:/);
   });
 });
 

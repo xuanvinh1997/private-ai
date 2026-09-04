@@ -1,4 +1,5 @@
 import { createSignal } from "solid-js";
+import { upsertAppNotification } from "./notifications";
 
 /** Floating notices for things that just happened; the composer status line is for conditions that persist. */
 
@@ -51,6 +52,16 @@ export function notify(kind: ToastKind, text: string): void {
   }
 
   const toast: Toast = { id: ++seq, kind, text: trimmed };
+  upsertAppNotification(
+    {
+      id: `toast:${toast.id}`,
+      tone: kind,
+      title: "",
+      message: trimmed,
+      dismissible: true,
+    },
+    true,
+  );
   setToasts((all) => {
     const next = [...all, toast];
     // Trim from the front: oldest first, since the newest describes the gesture just made.

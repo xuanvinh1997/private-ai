@@ -20,6 +20,9 @@ pub struct ModelListing {
     pub chat: bool,
     /// Embedding-capable; the field the embedding screen reads so it need not guess a default name.
     pub embedding: bool,
+    /// Sees images; the field the vision screen reads, so a model that cannot see is visibly the wrong pick
+    /// before it is chosen rather than after a 400 per page.
+    pub vision: bool,
     pub tools: bool,
     pub context_window: Option<u64>,
 }
@@ -147,6 +150,7 @@ impl ProviderRuntime {
                             id: model.name,
                             chat: model.capabilities.chat,
                             embedding: model.capabilities.embedding,
+                            vision: model.capabilities.vision,
                             tools: model.capabilities.tools,
                             context_window: model.capabilities.context_window,
                         })
@@ -169,6 +173,7 @@ impl ProviderRuntime {
                 id: model.id,
                 chat: model.chat,
                 embedding: model.embedding,
+                vision: model.vision,
                 tools: model.tools,
                 context_window: model.context_window,
             })

@@ -73,10 +73,10 @@ const MINUTE = 60_000;
 /** Fake models; two entries exist as states to see: `tools: false` must warn, and `embedding && !chat` must be hidden. */
 export function demoModels(): ModelChoice[] {
   return [
-    { id: "qwen2.5-coder:14b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
-    { id: "qwen2.5-coder:32b", tools: true, chat: true, embedding: false, contextWindow: 32768 },
-    { id: "gemma3:12b", tools: false, chat: true, embedding: false, contextWindow: 8192 },
-    { id: "embeddinggemma:latest", tools: false, chat: false, embedding: true, contextWindow: 2048 },
+    { id: "qwen2.5-coder:14b", tools: true, chat: true, embedding: false, vision: false, contextWindow: 32768 },
+    { id: "qwen2.5-coder:32b", tools: true, chat: true, embedding: false, vision: false, contextWindow: 32768 },
+    { id: "gemma3:12b", tools: false, chat: true, embedding: false, vision: true, contextWindow: 8192 },
+    { id: "embeddinggemma:latest", tools: false, chat: false, embedding: true, vision: false, contextWindow: 2048 },
   ];
 }
 

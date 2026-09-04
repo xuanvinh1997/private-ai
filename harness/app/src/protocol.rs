@@ -285,6 +285,9 @@ pub struct ModelChoice {
     /// `embedding && !chat` is hidden from the chat picker, since filtering on `chat` would erase usable models
     /// on older Ollama servers where capability has to be inferred.
     pub embedding: bool,
+    /// Sees images. Authoritative where the server declares it (Ollama `/api/show`, LM Studio), a name guess
+    /// otherwise -- so the vision picker orders by it and never filters on it.
+    pub vision: bool,
     pub context_window: Option<u64>,
 }
 
@@ -507,6 +510,33 @@ pub struct EmbeddingSetting {
     pub on_device: bool,
     /// The sentence explaining why it is unavailable, when it is.
     pub reason: Option<String>,
+}
+
+/// The vision configuration in effect: which provider reads images, under which model, and why it cannot.
+/// Separate from [`EmbeddingSetting`] because reading a scanned page sends the whole page somewhere, while
+/// embedding sends text -- the privacy question is asked once per role, not once per screen.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionSetting {
+    pub provider_id: Option<String>,
+    pub provider_name: Option<String>,
+    pub model: Option<String>,
+    /// Page images never leave this machine while reading.
+    pub on_device: bool,
+    /// The sentence explaining why OCR cannot read images, when it cannot.
+    pub reason: Option<String>,
+    /// The OCR switch itself, so one screen answers "will scans be read" without a second round trip.
+    pub ocr_enabled: bool,
+}
+
+/// One real OCR attempt on a bundled test image.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VisionProbe {
+    pub ok: bool,
+    pub message: String,
+    /// What the model returned, so a wrong read is visible as a wrong read rather than a bare failure.
+    pub text: Option<String>,
 }
 
 /// Local ONNX reranking configuration.
