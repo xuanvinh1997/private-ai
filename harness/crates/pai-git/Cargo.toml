@@ -1,0 +1,29 @@
+[package]
+name = "pai-git"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tool đọc trạng thái và lịch sử một kho git"
+
+[dependencies]
+pai-core = { workspace = true }
+pai-tools = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+# `Invocation::cancel_token` trả về `tokio_util::sync::CancellationToken`; muốn `select!` trên nó
+# thì phải gọi được tên kiểu, nên crate này phụ thuộc trực tiếp chứ không mượn qua pai-tools.
+tokio-util = { workspace = true }
+# Chỉ để gửi tín hiệu cho CẢ nhóm tiến trình. Giết mỗi `git` không giết những tiến trình con nó đẻ ra
+# (pager, ext-diff, textconv); pai-project/src/clone.rs cũng phải dùng libc vì đúng lý do này.
+libc = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

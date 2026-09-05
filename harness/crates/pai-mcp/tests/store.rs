@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 
-use pai_mcp::catalog::{self, CATALOG};
+use pai_mcp::catalog::{self, CATALOG, CatalogEntry, EnvVar};
 use pai_mcp::{ConfigError, McpStore, McpTransport, ServerConfig};
 
 fn store(dir: &std::path::Path) -> McpStore {
@@ -239,20 +239,38 @@ fn moi_muc_danh_muc_dung_duoc() {
 }
 
 /// An empty optional variable removes its whole argument; a bare leftover flag would make the server refuse to start.
+/// Built here rather than taken from `CATALOG`: the rule belongs to `instantiate`, and a catalogue that happens to
+/// hold no entry with an optional slot must not be able to delete this test by accident.
 #[test]
 fn bien_khong_bat_buoc_bo_trong_thi_bo_ca_doi_so() {
-    let entry = catalog::find("git").expect("danh mục có git");
-    let config = catalog::instantiate(entry, &BTreeMap::new()).expect("git không bắt buộc gì");
-    let McpTransport::Stdio { args, env, .. } = &config.transport else {
-        panic!("git phải là stdio");
+    let entry = CatalogEntry {
+        id: "thu-nghiem",
+        name: "Thử nghiệm",
+        summary: "Chỉ dùng trong test.",
+        command: "uvx",
+        args: &["may-chu", "--repository=${KHO}"],
+        env: &[EnvVar {
+            key: "KHO",
+            label: "Đường dẫn kho",
+            required: false,
+            secret: false,
+        }],
+        homepage: "https://example.invalid",
+        requires: &["python"],
+        url: None,
     };
-    assert_eq!(args, &["mcp-server-git".to_string()]);
+
+    let config = catalog::instantiate(&entry, &BTreeMap::new()).expect("không bắt buộc gì");
+    let McpTransport::Stdio { args, env, .. } = &config.transport else {
+        panic!("phải là stdio");
+    };
+    assert_eq!(args, &["may-chu".to_string()]);
     assert!(env.is_empty());
 
-    let values = BTreeMap::from([("GIT_REPOSITORY".to_string(), "/kho/cua/toi".to_string())]);
-    let config = catalog::instantiate(entry, &values).expect("điền vào thì dựng được");
+    let values = BTreeMap::from([("KHO".to_string(), "/kho/cua/toi".to_string())]);
+    let config = catalog::instantiate(&entry, &values).expect("điền vào thì dựng được");
     let McpTransport::Stdio { args, env, .. } = &config.transport else {
-        panic!("git phải là stdio");
+        panic!("phải là stdio");
     };
     assert_eq!(args[1], "--repository=/kho/cua/toi");
     assert!(

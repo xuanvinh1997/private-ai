@@ -32,6 +32,9 @@ pai-sandbox = { workspace = true }
 pai-shell = { workspace = true }
 pai-terminal = { workspace = true }
 pai-fs = { workspace = true }
+pai-git = { workspace = true }
+pai-memory = { workspace = true }
+pai-web = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -38,6 +38,10 @@ parking_lot = "0.12"
 # --- network ---
 # rustls instead of system OpenSSL: the bundle must run on a bare machine, and a C dep is one more thing to sign at release.
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls", "charset", "http2"] }
+# Shared by the whole web layer: `pai-web` needs a real parser for its SSRF filter (`http://evil@127.0.0.1/`,
+# `http://127.1/` are the shapes a hand-rolled check misses) and `pai-web-core` needs one to make relative
+# links absolute. Two consumers, one version -- the same `url` `reqwest` already compiles.
+url = "2"
 
 # --- MCP ---
 # Official MCP Rust SDK; both roles from one crate so client and server share a single protocol implementation.
@@ -97,6 +101,10 @@ pai-rag = { path = "crates/pai-rag" }
 pai-rag-core = { path = "crates/pai-rag-core" }
 pai-providers = { path = "crates/pai-providers" }
 pai-asr = { path = "crates/pai-asr" }
+pai-web = { path = "crates/pai-web" }
+pai-web-core = { path = "crates/pai-web-core" }
+pai-memory = { path = "crates/pai-memory" }
+pai-git = { path = "crates/pai-git" }
 
 [profile.dev]
 opt-level = 1

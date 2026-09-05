@@ -10,10 +10,12 @@ use pai_agent::{
 };
 use pai_core::{Composed, Context, Layer, Plugin, PluginCatalog, Row, compose};
 use pai_fs::FsPlugin;
+use pai_git::GitPlugin;
 use pai_hooks::{HookConfig, HooksPlugin};
 use pai_index::IndexPlugin;
 use pai_llm::{AdapterRegistry, LlmAdapter, OllamaAdapter, ProviderKind};
 use pai_lsp::LspPlugin;
+use pai_memory::MemoryPlugin;
 use pai_mcp::{ExposeOptions, McpPlugin, ServerConfig, token_path};
 use pai_project::{Project, ProjectKind, ProjectStore, SqliteProjectStore};
 use pai_providers::{
@@ -25,6 +27,7 @@ use pai_sandbox::SandboxPlugin;
 use pai_session::{SessionScope, SessionService, SessionStore, SqliteSessionStore};
 use pai_shell::ShellPlugin;
 use pai_terminal::TerminalPlugin;
+use pai_web::WebPlugin;
 use pai_tools::{ToolPipeline, ToolRegistry, Tools, ToolsPlugin};
 
 use crate::llm::ActiveLlm;
@@ -556,6 +559,14 @@ patches:
     id: sandbox
     plugin: sandbox
   - op: insert
+    id: web
+    plugin: web
+    config:
+      brave_api_key: null
+  - op: insert
+    id: memory
+    plugin: memory
+  - op: insert
     id: mcp
     plugin: mcp
     config:
@@ -584,6 +595,9 @@ patches:
     id: lsp
     plugin: lsp
   - op: insert
+    id: git
+    plugin: git
+  - op: insert
     id: shell
     plugin: shell
   - op: insert
@@ -600,6 +614,7 @@ const CODE_PLUGINS: &[&str] = &[
     "subagent",
     "index",
     "lsp",
+    "git",
     "shell",
     "terminal",
 ];
@@ -753,6 +768,28 @@ fn catalog(
     catalog.register("sandbox", |_| {
         Ok(Box::new(SandboxPlugin::new()) as Box<dyn Plugin>)
     });
+    // App layer, not project layer: `web` captures no path, and rebuilding it per project would throw away a warm
+    // connection pool. It is also the first native crate that leaves this device, so its tools declare it themselves.
+    catalog.register("web", |value| {
+        let row: WebRow = serde_json::from_value(value.clone())?;
+        // A blank string in a settings file means "not set", not "the empty key"; the plugin then reads the
+        // environment, so leaving the field out keeps whatever the shell already provides.
+        let key = row
+            .brave_api_key
+            .filter(|key| !key.trim().is_empty());
+        Ok(Box::new(match key {
+            Some(key) => WebPlugin::with_brave_key(Some(key)),
+            None => WebPlugin::new(),
+        }) as Box<dyn Plugin>)
+    });
+    {
+        let data_dir = data_dir.clone();
+        // One memory for the whole application, deliberately: a fact learned in one project is still true in the next,
+        // and the seam it provides refuses a second mount in the same realm anyway.
+        catalog.register("memory", move |_| {
+            Ok(Box::new(MemoryPlugin::new(data_dir.join("memory.sqlite3"))) as Box<dyn Plugin>)
+        });
+    }
     {
         let (data_dir, workspace) = (data_dir.clone(), workspace.clone());
         catalog.register("index", move |_| {
@@ -790,6 +827,17 @@ fn catalog(
             Ok(Box::new(TerminalPlugin::new(workspace.clone())) as Box<dyn Plugin>)
         });
     }
+    {
+        let workspace = workspace.clone();
+        // Project layer: git reads one repository, and that is the open project's own, so switching projects
+        // unplugs and replugs it with the new root.
+        catalog.register("git", move |_| {
+            let Some(workspace) = workspace.clone() else {
+                return Err(khong_co_du_an());
+            };
+            Ok(Box::new(GitPlugin::new(workspace.clone())) as Box<dyn Plugin>)
+        });
+    }
     catalog.register("shell", move |_| {
         let Some(workspace) = workspace.clone() else {
             return Err(khong_co_du_an());
@@ -814,6 +862,15 @@ fn catalog(
         });
     }
     catalog
+}
+
+/// Configuration of the `web` row. The search key belongs here rather than in the environment alone: an app the
+/// user configures through settings should not need a shell to hold a secret, and this is the same layered file
+/// every other row is patched in. An absent key falls back to the environment, which is what a headless run has.
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct WebRow {
+    brave_api_key: Option<String>,
 }
 
 /// Configuration of the `hooks` row.

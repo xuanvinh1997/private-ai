@@ -1,0 +1,23 @@
+[package]
+name = "pai-web-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Lõi tất định của lớp web: HTML sang Markdown, không chạm mạng"
+
+[dependencies]
+encoding_rs = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+# Kept out of `[workspace.dependencies]` on purpose: only the web layer parses HTML.
+# One crate rather than two, because `dom_query` carries both halves of this job -- a CSS
+# selector engine for stripping page furniture and a Markdown serializer for what is left --
+# and it is already in the application's dependency graph (Tauri's `wry` depends on it), so
+# reaching for `htmd` would add a second HTML parser to the build and buy nothing.
+dom_query = "0.27"
+url = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

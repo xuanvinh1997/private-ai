@@ -1,0 +1,31 @@
+[package]
+name = "pai-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Tool đọc web và tìm kiếm web, chạy native trong tiến trình"
+
+[dependencies]
+pai-core = { workspace = true }
+pai-tools = { workspace = true }
+pai-web-core = { workspace = true }
+async-trait = { workspace = true }
+# `net` on top of the workspace set: `guard` resolves hostnames with `tokio::net::lookup_host`.
+# Asked for by name rather than left to feature unification -- it compiles today only because
+# `reqwest` happens to turn the same feature on, and that is a dependency's decision to change.
+tokio = { workspace = true, features = ["net"] }
+# `CancellationToken`: every network wait in this crate races against the caller giving up.
+tokio-util = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+url = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }

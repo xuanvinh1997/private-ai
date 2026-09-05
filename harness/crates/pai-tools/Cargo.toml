@@ -19,6 +19,16 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 dashmap = { workspace = true }
 parking_lot = { workspace = true }
+chrono = { workspace = true }
+
+# The IANA zone table, compiled in: `time.now` must answer for `America/New_York` on a machine
+# that has never heard of it, and reading the host's `/usr/share/zoneinfo` is exactly the kind
+# of filesystem dependency this crate is supposed to be free of.
+chrono-tz = "0.10"
+# Reads the machine's own zone *name*, which `chrono::Local` cannot give — it offers an offset,
+# and an offset forgets that summer ends. Already in the tree as a `chrono` dependency, so
+# naming it here adds a line, not a build.
+iana-time-zone = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
